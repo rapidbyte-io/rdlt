@@ -187,16 +187,20 @@ impl Changes {
 
     /// The flags over a transform's output, whose `lineage` gives each output column's input
     /// columns: an output column is unchanged where it reads a column and every column it reads
-    /// is unchanged.
-    pub(super) fn relined(self, lineage: &[Vec<usize>]) -> Self {
+    /// is unchanged, and changed where it reads none or only changed ones.
+    ///
+    /// None where an insert or update flags unchanged some but not all of the columns an output
+    /// column reads, which would then be computed from a placeholder; a delete or a truncate keeps
+    /// no values, so its flags ask nothing.
+    pub(super) fn relined(self, lineage: &[Vec<usize>]) -> Option<Self> {
         let Some(flags) = &self.flags else {
-            return self;
+            return Some(self);
         };
         let width = lineage.len().div_ceil(8);
         let mut relined =
             BinaryBuilder::with_capacity(flags.len(), flags.len().saturating_mul(width));
         let mut bytes = vec![0_u8; width];
-        for bitmap in flags {
+        for (bitmap, op) in flags.iter().zip(self.op.values()) {
             let Some(bitmap) = bitmap else {
                 relined.append_null();
                 continue;
@@ -204,16 +208,20 @@ impl Changes {
             let unchanged = UnchangedFlags::new(bitmap);
             bytes.fill(0);
             for (column, reads) in lineage.iter().enumerate() {
-                if !reads.is_empty() && reads.iter().all(|input| unchanged.contains(*input)) {
-                    bytes[column / 8] |= 1 << (column % 8);
+                let flagged = reads.iter().filter(|input| unchanged.contains(**input));
+                match flagged.count() {
+                    0 => {}
+                    all if all == reads.len() => bytes[column / 8] |= 1 << (column % 8),
+                    _ if upsert(*op) => return None,
+                    _ => {}
                 }
             }
             relined.append_value(&bytes);
         }
-        Self {
+        Some(Self {
             flags: Some(relined.finish()),
             ..self
-        }
+        })
     }
 
     /// The change columns with each insert or update `keep` does not keep turned into a delete

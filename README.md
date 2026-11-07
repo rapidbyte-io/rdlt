@@ -245,8 +245,9 @@ they arrive.
   A filter on a stream that could not carry that delete is refused when the plan is built.
   `StreamReport::filtered` counts what filters dropped and turned into deletes.
 - **Partial updates** pass a transform that declares its lineage, as ops and SQL do: a column
-  computed only from unchanged columns stays unchanged. A filter takes them where it declares
-  the columns it reads and the update sent each of them.
+  computed only from unchanged columns stays unchanged, and one computed from an unchanged and
+  a changed column is refused. A filter takes them where it declares the columns it reads and
+  the update sent each of them.
 
 The memory budget holds a transform to its declared bound before it runs, and measures code's
 output after (ADR 0053).

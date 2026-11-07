@@ -316,7 +316,8 @@ pub const TRANSFORM_FAILED: Code = Code("transform_failed");
 pub const TRANSFORM_INVALID: Code = Code("transform_invalid");
 
 /// The code of the error for a change batch whose updates leave columns unchanged, met by a
-/// transform that says nothing of which columns it reads, or by a filter that may read one.
+/// transform that says nothing of which columns it reads, by a filter that may read one, or by
+/// a transform computing a column from one beside a changed one.
 pub const TRANSFORM_PARTIAL: Code = Code("transform_partial");
 
 /// The code of the error for a transform that refuses the schema of its input, whose output

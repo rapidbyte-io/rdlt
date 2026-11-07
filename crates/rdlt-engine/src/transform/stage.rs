@@ -286,7 +286,10 @@ impl Stage {
             let output = applied(transform, declared, &data, schema)?;
             changes = match (changes, &declared.lineage) {
                 (Some(changes), Some(lineage)) if changes.flags_any_of(None) => {
-                    Some(changes.relined(lineage))
+                    let mixed = || Refusal::Mixed {
+                        transform: transform.name().to_owned(),
+                    };
+                    Some(changes.relined(lineage).ok_or_else(mixed)?)
                 }
                 (changes, _) => changes,
             };

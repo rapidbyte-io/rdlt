@@ -56,6 +56,9 @@ pub(crate) enum Refusal {
     /// A batch's updates flag unchanged a column a filter may read, whose value the source did
     /// not send.
     Unsent { transform: String },
+    /// An insert or update flags unchanged a column a transform computes an output column from
+    /// beside one it changed, so the output would be computed from a placeholder.
+    Mixed { transform: String },
     /// A bug in the stage.
     Internal(String),
 }
@@ -134,6 +137,11 @@ impl fmt::Display for Refusal {
                 "updates leave columns unchanged that the filter of transform {transform} may \
                  read, whose values the source did not send"
             ),
+            Self::Mixed { transform } => write!(
+                f,
+                "transform {transform} computes a column from one an update left unchanged and \
+                 one it changed, whose value the source did not send"
+            ),
             Self::Internal(message) => f.write_str(message),
         }
     }
@@ -187,6 +195,7 @@ pub(crate) fn refused(stream: &StreamName, refusal: Refusal) -> Error {
         | Refusal::Flush { .. }
         | Refusal::Partial { .. }
         | Refusal::Unsent { .. }
+        | Refusal::Mixed { .. }
         | Refusal::Internal(_) => error,
     };
     error.with_stream(stream)
@@ -218,7 +227,7 @@ fn classed(refusal: &Refusal) -> (ErrorKind, Option<Code>) {
         | Refusal::Flush {
             transform: None, ..
         } => (ErrorKind::Source, codes::ROW_EXCEEDS_BUDGET),
-        Refusal::Partial { .. } | Refusal::Unsent { .. } => {
+        Refusal::Partial { .. } | Refusal::Unsent { .. } | Refusal::Mixed { .. } => {
             (ErrorKind::Transform, codes::TRANSFORM_PARTIAL)
         }
         Refusal::Internal(_) => return (ErrorKind::Internal, None),

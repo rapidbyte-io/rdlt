@@ -59,6 +59,8 @@ determinism under simulation whatever the configuration says.
     written.
   - A transform declaring no lineage refuses a batch whose updates flag columns unchanged,
     `transform_partial`, so no derived column is written from a value the source did not send.
+    A row where an output column reads both an unchanged and a changed column fails
+    `transform_partial` too: its value would be computed from a placeholder.
   - A column flagged unchanged holds a placeholder, so a filter that reads one cannot judge its
     row. A filter may declare the columns `keep` reads; a batch whose updates flag one of them,
     or any column where the filter declares none, is refused, `transform_partial`. A filter on a

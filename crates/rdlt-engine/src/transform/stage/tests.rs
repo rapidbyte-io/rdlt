@@ -708,6 +708,72 @@ fn flags_move_with_the_columns_a_lineage_says_they_became() {
     assert_eq!(flags_of(&output[0]), [0b0000_0001]);
 }
 
+/// A transform adding a column computed from the first two of its input, saying so.
+struct Both;
+
+impl Transform for Both {
+    fn name(&self) -> &'static str {
+        "both"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        let mut fields: Vec<_> = input.fields().iter().cloned().collect();
+        fields.push(Arc::new(Field::new("both", DataType::Boolean, false)));
+        Ok(Arc::new(Schema::new(fields)))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        let mut columns = batch.columns().to_vec();
+        columns.push(Arc::new(BooleanArray::from(vec![true; batch.num_rows()])));
+        Ok(RecordBatch::try_new(self.output(batch.schema_ref())?, columns).unwrap())
+    }
+
+    fn lineage(&self, input: &Schema) -> Option<Vec<Vec<usize>>> {
+        let mut lineage: Vec<Vec<usize>> = (0..input.fields().len()).map(|n| vec![n]).collect();
+        lineage.push(vec![0, 1]);
+        Some(lineage)
+    }
+}
+
+#[test]
+fn an_upsert_whose_column_reads_a_changed_and_an_unchanged_column_is_refused() {
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(code(Both));
+    // The name is left unchanged and the id is not: `both` would be computed from a placeholder.
+    let name: &[u8] = &[0b0000_0010];
+    for op in [ChangeOp::Insert, ChangeOp::Update] {
+        let batch = changes(&[(Some(1), op, Some(name))]);
+        let refused = run(&plan, &["id"], batch, u64::MAX).unwrap_err();
+        assert!(
+            matches!(&refused, Refusal::Mixed { transform } if transform == "both"),
+            "{op:?}: {refused:?}"
+        );
+    }
+}
+
+#[test]
+fn a_column_reading_only_unchanged_columns_stays_unchanged_and_a_delete_s_mixed_flags_pass() {
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(code(Both));
+    let (both, name): (&[u8], &[u8]) = (&[0b0000_0011], &[0b0000_0010]);
+    let batch = changes(&[
+        (Some(1), ChangeOp::Update, Some(both)),
+        (Some(2), ChangeOp::Delete, Some(name)),
+        (Some(3), ChangeOp::Update, None),
+    ]);
+    let output = run(&plan, &["id"], batch, u64::MAX).unwrap();
+    let flags = output[0].column_by_name(UNCHANGED_COLUMN).unwrap();
+    let flags = flags.as_binary::<i32>();
+    // Both inputs unchanged: so is `both`. A delete keeps no values, so its flags ask nothing.
+    assert_eq!(flags.value(0), [0b0000_0111]);
+    assert_eq!(flags.value(1), [0b0000_0010]);
+    assert!(flags.is_null(2));
+}
+
 #[test]
 fn flags_that_flag_nothing_pass_a_lineage_as_they_are() {
     let plan = stream()
@@ -1279,6 +1345,12 @@ fn a_refused_batch_fails_its_stream_as_its_transform_s_doing() {
             },
             codes::TRANSFORM_PARTIAL,
         ),
+        (
+            Refusal::Mixed {
+                transform: named("t"),
+            },
+            codes::TRANSFORM_PARTIAL,
+        ),
     ];
     for (refusal, code) in cases {
         fails_with(refusal, ErrorKind::Transform, Some(code));
@@ -1396,6 +1468,9 @@ fn each_refusal_names_its_stream_and_reads_as_what_it_refused() {
             transform: named("t"),
         },
         Refusal::Unsent {
+            transform: named("t"),
+        },
+        Refusal::Mixed {
             transform: named("t"),
         },
         Refusal::Internal(named("bug")),
