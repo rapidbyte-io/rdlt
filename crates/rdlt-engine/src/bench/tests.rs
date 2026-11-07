@@ -172,3 +172,31 @@ fn lines_that_are_not_objects_are_refused_the_first_an_array_as_invalid_json() {
         assert_eq!(refused.code, code.as_str(), "{lines}");
     }
 }
+
+#[test]
+fn a_transformed_batch_runs_its_stage_and_counts_the_rows_left() {
+    use arrow_array::{ArrayRef, Int64Array};
+    use rdlt_connector::StreamName;
+
+    use super::{Transformed, Untransformed};
+    use crate::plan::StreamPlan;
+    use crate::transform::{Literal, Op};
+
+    let stream = || StreamPlan::new(StreamName::new("s").unwrap());
+    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
+    let batch = RecordBatch::try_from_iter([("id", ids)]).unwrap();
+    let plan = stream().transform(Op::constant([("c", Literal::Integer(1))]));
+    let transformed = Transformed::try_new(&plan, &[], batch.clone()).unwrap();
+    assert_eq!(transformed.run().unwrap(), 3);
+    assert_eq!(transformed.batches().unwrap()[0].num_columns(), 2);
+    assert!(matches!(
+        Transformed::try_new(&stream(), &[], batch.clone()),
+        Err(Untransformed::NoStage)
+    ));
+    let clashing = stream().transform(Op::constant([("id", Literal::Integer(1))]));
+    let refused = Transformed::try_new(&clashing, &[], batch).unwrap_err();
+    assert!(
+        matches!(&refused, Untransformed::Refused(error) if error.code() == Some(codes::TRANSFORM_SCHEMA)),
+        "{refused:?}"
+    );
+}

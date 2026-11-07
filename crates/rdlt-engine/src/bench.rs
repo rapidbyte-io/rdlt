@@ -21,6 +21,7 @@ mod tables;
 mod tally;
 #[cfg(test)]
 mod tests;
+mod transformed;
 mod wide;
 mod zipf;
 
@@ -60,6 +61,7 @@ pub use resident::{Resident, reset_peak, resident_kib};
 pub use sink::{SinkSession, SinkWriter, Sinking, ipc_sink, null_sink, sink_factory, written};
 pub use tables::{Metered, Schedule, Tables, TablesCell, phases};
 pub use tally::{Staged, staged};
+pub use transformed::{Transformed, Untransformed};
 pub use wide::{Form, Wide};
 pub use zipf::Zipf;
 
