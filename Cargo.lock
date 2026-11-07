@@ -2184,6 +2184,7 @@ version = "0.0.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "arrow-select",
  "clap",
  "http",
  "hyper",

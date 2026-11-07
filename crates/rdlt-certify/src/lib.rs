@@ -25,6 +25,7 @@ mod published;
 mod registry;
 mod report;
 mod target;
+mod transform;
 
 pub use kill::KILL_CLAUSES;
 pub use limits::{CREDIT_WATCH, RUN_TIMEOUT};
@@ -37,6 +38,7 @@ pub use rdlt_connector::testing::{
 pub use registry::{Family, clauses, markdown};
 pub use report::{json, line, plain};
 pub use target::Target;
+pub use transform::{TRANSFORM_CLAUSES, TransformInputs, certify_transform};
 
 use rdlt_connector::Role;
 use rdlt_connector::testing::{
