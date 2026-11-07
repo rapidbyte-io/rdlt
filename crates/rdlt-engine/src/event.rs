@@ -268,14 +268,18 @@ impl Announcer {
     /// Tells the environment that what `kind` makes happened, now, where it is told anything and
     /// the run has not told its end; the caller holds none of the locks of the engine's state,
     /// since an observer may take its time.
+    ///
+    /// The event is built before the run's telling is locked, since building it may run code of a
+    /// connector's, and the end needs the lock.
     pub(crate) fn announce(&self, kind: impl FnOnce() -> EventKind) {
         if !self.observes() {
             return;
         }
+        let kind = kind();
         let mut told = self.telling.told.lock();
         if !told.ended {
             told.last += 1;
-            self.tell(told.last, kind());
+            self.tell(told.last, kind);
         }
     }
 
