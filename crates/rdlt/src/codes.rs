@@ -1,0 +1,29 @@
+//! The facade's codes: what its errors carry beside the engine's and the host's.
+//!
+//! An embedder reads a failure's code from its [`Error`](crate::Error) or its report, and
+//! compares it with these; it makes none.
+
+use rdlt_engine::Code;
+
+/// A value of the document is of the wrong kind, or names no choice.
+pub const DOCUMENT_INVALID: Code = Code::new("document_invalid");
+/// A key of the document is not one its place takes.
+pub const DOCUMENT_UNKNOWN_KEY: Code = Code::new("document_unknown_key");
+/// The document's `version` is not 1.
+pub const DOCUMENT_VERSION: Code = Code::new("document_version");
+/// A connector's id, version requirement or digest, or the pipeline's name, is not one.
+pub const REFERENCE_INVALID: Code = Code::new("reference_invalid");
+/// A stream's name is not one.
+pub const STREAM_INVALID: Code = Code::new("stream_invalid");
+/// A `code` transform names nothing the host registered.
+pub const TRANSFORM_UNKNOWN: Code = Code::new("transform_unknown");
+/// A transform needs a feature this build of the facade lacks.
+pub const TRANSFORM_UNAVAILABLE: Code = Code::new("transform_unavailable");
+/// An `hmac_sha256` mask has no key.
+pub const MASK_KEY_MISSING: Code = Code::new("mask_key_missing");
+/// A TLS file the host names cannot be read.
+pub const TLS_UNREADABLE: Code = Code::new("tls_unreadable");
+/// The compute pool could not start, or the host's cores are unknown.
+pub const ENVIRONMENT_UNAVAILABLE: Code = Code::new("environment_unavailable");
+/// A source or destination failed a call the facade made of it.
+pub const CONNECTOR_FAILED: Code = Code::new("connector_failed");
