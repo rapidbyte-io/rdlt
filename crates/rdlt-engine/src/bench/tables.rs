@@ -3,7 +3,7 @@
 //! A followed stream is one unbounded partition pushing a batch of a thousand rows and a
 //! checkpoint a pace apart on the bench's clock, committed on a short interval, for a fixed span
 //! and on until every row it pushed has landed; the snapshot runs at the engine's defaults. Each
-//! writes through as many writers as lanes, and every run lands every row it pushes.
+//! writes through a writer a core, and every run lands every row it pushes.
 
 mod landing;
 #[cfg(test)]
@@ -269,7 +269,7 @@ impl Tables {
         self.config.partitions()
     }
 
-    /// Writers the cell's sink declares: one a core, so the engine has as many lanes.
+    /// Writers the cell's sink declares: one a core, so the engine has as many writers.
     pub fn writers(&self) -> NonZeroU16 {
         self.writers
     }

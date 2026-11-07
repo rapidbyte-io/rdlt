@@ -115,8 +115,8 @@ impl Default for RetryPolicy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineConfig {
     memory: NonZeroU64,
-    lanes: Option<NonZeroU16>,
-    lane_window: NonZeroUsize,
+    writers: Option<NonZeroU16>,
+    writer_window: NonZeroUsize,
     partitions: NonZeroUsize,
     partition_buffer: NonZeroUsize,
     barrier_wait: Duration,
@@ -138,8 +138,8 @@ impl EngineConfig {
     pub fn builder() -> EngineConfigBuilder {
         EngineConfigBuilder {
             memory: None,
-            lanes: None,
-            lane_window: None,
+            writers: None,
+            writer_window: None,
             partitions: None,
             partition_buffer: None,
             barrier_wait: None,
@@ -164,15 +164,16 @@ impl EngineConfig {
         self.memory
     }
 
-    /// Writers per destination; `None` uses one per core of [`Env::cores`](crate::Env::cores),
-    /// up to the destination's limit.
-    pub fn lanes(&self) -> Option<NonZeroU16> {
-        self.lanes
+    /// Writers per destination: concurrent destination writers, each holding a table writer for
+    /// every table it writes; `None` uses one per core of [`Env::cores`](crate::Env::cores), up to
+    /// the destination's limit.
+    pub fn writers(&self) -> Option<NonZeroU16> {
+        self.writers
     }
 
-    /// Writes queued per lane.
-    pub fn lane_window(&self) -> NonZeroUsize {
-        self.lane_window
+    /// Writes queued per writer.
+    pub fn writer_window(&self) -> NonZeroUsize {
+        self.writer_window
     }
 
     /// Partitions read at once, at most [`MAX_PLAN_PARTITIONS`], the most an attempt reads.
@@ -212,9 +213,9 @@ impl EngineConfig {
     /// engine's own retryable error, coded [`DEADLINE_EXCEEDED`](crate::codes::DEADLINE_EXCEEDED).
     ///
     /// The calls are a check, a discovery, a plan, an acknowledgement, an open, a schema change,
-    /// a writer's opening, a write, a flush, a commit and a close. A wait for room in the memory
-    /// budget ends at twice this, and an hour at least, so a call that hangs fails at its own
-    /// deadline before a wait that began while it ran.
+    /// a table writer's opening, a write, a flush, a commit and a close. A wait for room in the
+    /// memory budget ends at twice this, and an hour at least, so a call that hangs fails at its
+    /// own deadline before a wait that began while it ran.
     pub fn connector_wait(&self) -> Duration {
         self.connector_wait
     }
@@ -284,8 +285,8 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             memory: NonZeroU64::new(256 << 20).unwrap_or(NonZeroU64::MIN),
-            lanes: None,
-            lane_window: NonZeroUsize::new(4).unwrap_or(NonZeroUsize::MIN),
+            writers: None,
+            writer_window: NonZeroUsize::new(4).unwrap_or(NonZeroUsize::MIN),
             partitions: NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN),
             partition_buffer: NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN),
             barrier_wait: Duration::from_secs(5),
@@ -306,8 +307,8 @@ impl Default for EngineConfig {
 #[derive(Clone, Debug)]
 pub struct EngineConfigBuilder {
     memory: Option<u64>,
-    lanes: Option<u16>,
-    lane_window: Option<usize>,
+    writers: Option<u16>,
+    writer_window: Option<usize>,
     partitions: Option<usize>,
     partition_buffer: Option<usize>,
     barrier_wait: Option<Duration>,
@@ -330,18 +331,19 @@ impl EngineConfigBuilder {
         self
     }
 
-    /// Destination writers (default: one per core of [`Env::cores`](crate::Env::cores), up to
+    /// Writers per destination: concurrent destination writers, each holding a table writer for
+    /// every table it writes (default: one per core of [`Env::cores`](crate::Env::cores), up to
     /// the destination's limit).
     #[must_use]
-    pub fn lanes(mut self, lanes: u16) -> Self {
-        self.lanes = Some(lanes);
+    pub fn writers(mut self, writers: u16) -> Self {
+        self.writers = Some(writers);
         self
     }
 
-    /// Writes queued per lane (default 4).
+    /// Writes queued per writer (default 4).
     #[must_use]
-    pub fn lane_window(mut self, writes: usize) -> Self {
-        self.lane_window = Some(writes);
+    pub fn writer_window(mut self, writes: usize) -> Self {
+        self.writer_window = Some(writes);
         self
     }
 
@@ -445,12 +447,16 @@ impl EngineConfigBuilder {
         let config = EngineConfig {
             memory: nonzero(self.memory, defaults.memory, NonZeroU64::new)
                 .ok_or_else(|| invalid("memory"))?,
-            lanes: match self.lanes {
-                Some(lanes) => Some(NonZeroU16::new(lanes).ok_or_else(|| invalid("lanes"))?),
+            writers: match self.writers {
+                Some(writers) => Some(NonZeroU16::new(writers).ok_or_else(|| invalid("writers"))?),
                 None => None,
             },
-            lane_window: nonzero(self.lane_window, defaults.lane_window, NonZeroUsize::new)
-                .ok_or_else(|| invalid("lane_window"))?,
+            writer_window: nonzero(
+                self.writer_window,
+                defaults.writer_window,
+                NonZeroUsize::new,
+            )
+            .ok_or_else(|| invalid("writer_window"))?,
             partitions: read_at_once(self.partitions, defaults.partitions)?,
             partition_buffer: nonzero(
                 self.partition_buffer,

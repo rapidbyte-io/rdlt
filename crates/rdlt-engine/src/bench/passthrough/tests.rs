@@ -95,7 +95,7 @@ fn every_chosen_cell_moves_every_row_through_its_partitions_and_streams() {
 }
 
 #[test]
-fn sixteen_partitions_write_through_more_than_one_lane_of_the_matrix_s_sink() {
+fn sixteen_partitions_write_through_more_than_one_writer_of_the_matrix_s_sink() {
     let cores = Cores::new(NonZeroUsize::new(4).unwrap());
     let cell = Cell {
         partitions: NonZeroUsize::new(16).unwrap(),
@@ -106,15 +106,15 @@ fn sixteen_partitions_write_through_more_than_one_lane_of_the_matrix_s_sink() {
         .engine_report();
     let written = report
         .counters
-        .lanes
+        .writers
         .iter()
-        .filter(|lane| !lane.writing.is_zero())
+        .filter(|writer| !writer.writing.is_zero())
         .count();
-    assert!(written > 1, "{written} lanes written");
+    assert!(written > 1, "{written} writers written");
 }
 
 #[test]
-fn the_paired_cell_writes_through_one_lane_whatever_its_partitions() {
+fn the_paired_cell_writes_through_one_writer_whatever_its_partitions() {
     let cores = Cores::new(NonZeroUsize::new(4).unwrap());
     let cell = Cell {
         partitions: NonZeroUsize::new(16).unwrap(),
@@ -124,9 +124,9 @@ fn the_paired_cell_writes_through_one_lane_whatever_its_partitions() {
     let report = Passthrough::paired(cores, cell).unwrap().engine_report();
     let written = report
         .counters
-        .lanes
+        .writers
         .iter()
-        .filter(|lane| !lane.writing.is_zero())
+        .filter(|writer| !writer.writing.is_zero())
         .count();
     assert_eq!(written, 1);
 }

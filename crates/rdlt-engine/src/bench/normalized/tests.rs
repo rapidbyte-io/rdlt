@@ -68,11 +68,11 @@ fn a_load_split_over_partitions_within_a_small_budget_loads_every_root_item_and_
         assert_eq!(report.rows, bench.rows());
         let written = report
             .counters
-            .lanes
+            .writers
             .iter()
-            .filter(|lane| !lane.writing.is_zero())
+            .filter(|writer| !writer.writing.is_zero())
             .count();
-        assert!(written > 1, "{written} lanes written");
+        assert!(written > 1, "{written} writers written");
     }
 }
 

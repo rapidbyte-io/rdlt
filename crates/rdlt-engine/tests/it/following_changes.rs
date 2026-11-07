@@ -21,7 +21,7 @@ fn following() -> rdlt_engine::EngineConfigBuilder {
     let every =
         CommitPolicy::new(Some(Duration::from_secs(1)), None, None).expect("an interval is valid");
     EngineConfig::builder()
-        .lanes(2)
+        .writers(2)
         .barrier_wait(Duration::from_millis(100))
         .replan(Duration::from_millis(200))
         .commit(every)

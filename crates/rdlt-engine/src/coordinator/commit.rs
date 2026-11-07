@@ -57,7 +57,7 @@ impl Coordinator {
         let (mut laps, mut phases) = (Laps::new(env.as_ref()), CommitPhases::default());
         self.step(Some(Step::Flush), laps.last);
         crash_point!("engine.flush.before");
-        self.parts.lanes.flush().await?;
+        self.parts.writers.flush().await?;
         crash_point!("engine.flush.after");
         phases.flush = laps.lap();
         self.step(Some(Step::Commit), laps.last);

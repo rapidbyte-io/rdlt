@@ -95,8 +95,8 @@ fn nulls(rows: usize) -> RecordBatch {
     batch(Arc::new(NullArray::new(rows)))
 }
 
-/// What a bounded destination took of `batches`, written by two writers in turn: the rows that
-/// reached the destination, how each write fared, and whether the load went beyond.
+/// What a bounded destination took of `batches`, written by two table writers in turn: the rows
+/// that reached the destination, how each write fared, and whether the load went beyond.
 async fn written(batches: Vec<RecordBatch>) -> (usize, Vec<bool>, bool) {
     let taken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let sink = Sink(Capabilities::minimal(), Arc::clone(&taken));
@@ -112,7 +112,13 @@ async fn written(batches: Vec<RecordBatch>) -> (usize, Vec<bool>, bool) {
     assert_eq!(opened.epoch, Epoch(1));
     let mut writers = Vec::new();
     for _ in 0..2 {
-        writers.push(opened.session.writer(&table()).await.expect("a writer"));
+        writers.push(
+            opened
+                .session
+                .writer(&table())
+                .await
+                .expect("a table writer"),
+        );
     }
     let mut fared = Vec::new();
     for (index, batch) in batches.into_iter().enumerate() {

@@ -261,7 +261,7 @@ fn config() -> Result<EngineConfig, Violation> {
     EngineConfig::builder()
         .memory(MEMORY)
         .partition_buffer(1)
-        .lane_window(1)
+        .writer_window(1)
         .batch(batch)
         .commit(commit)
         .retry(retry)

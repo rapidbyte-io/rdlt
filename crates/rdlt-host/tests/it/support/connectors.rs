@@ -360,7 +360,7 @@ impl DestinationSession for SlowSession {
     }
 }
 
-/// How a [`Writes`] destination's writers go wrong.
+/// How a [`Writes`] destination's table writers go wrong.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Writing {
     /// Each write fails with a data error.
@@ -451,7 +451,7 @@ impl Hook {
     }
 }
 
-/// A writer of the memory destination that runs its hook at the hooked write.
+/// A table writer of the memory destination that runs its hook at the hooked write.
 struct HookedWriter {
     inner: Box<dyn DestinationWriter>,
     hook: &'static Hook,
@@ -479,7 +479,7 @@ impl DestinationWriter for HookedWriter {
 /// The writes a [`Writes`] destination that keeps them was given, in order, each with its segment.
 pub(crate) type Kept = Mutex<Vec<(u64, RecordBatch)>>;
 
-/// The memory destination, whose writers go wrong as `writing` says.
+/// The memory destination, whose table writers go wrong as `writing` says.
 pub(crate) struct Writes {
     inner: Box<dyn DestinationFactory>,
     writing: Writing,
@@ -588,7 +588,7 @@ impl DestinationWriter for WrongWriter {
             match writing {
                 Writing::Fails => Err(ConnectorError::data("the write was refused")),
                 Writing::Stalls => std::future::pending().await,
-                Writing::Panics => panic!("the writer panicked"),
+                Writing::Panics => panic!("the table writer panicked"),
                 Writing::Hooked(_) => Ok(()),
                 Writing::Keeps(kept) => {
                     let mut kept = kept.lock();

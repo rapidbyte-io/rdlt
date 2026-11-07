@@ -11,7 +11,7 @@ use crate::env::SystemEnv;
 use crate::plan::{PipelinePlan, StreamPlan};
 
 fn engine() -> Engine {
-    let config = EngineConfig::builder().lanes(3).build().unwrap();
+    let config = EngineConfig::builder().writers(3).build().unwrap();
     Engine::new(config, Arc::new(SystemEnv::one_core()))
 }
 
@@ -67,7 +67,7 @@ fn engines_and_handles_describe_themselves() {
     let engine = engine();
     let rendered = format!("{engine:?}");
     assert!(rendered.starts_with("Engine"), "{rendered}");
-    assert!(rendered.contains("lanes: Some(3)"), "{rendered}");
+    assert!(rendered.contains("writers: Some(3)"), "{rendered}");
     let plan = PipelinePlan::new(
         PipelineId::parse("p").unwrap(),
         [StreamPlan::new(StreamName::new("s").unwrap())],

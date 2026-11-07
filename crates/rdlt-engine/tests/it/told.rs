@@ -138,7 +138,7 @@ async fn on_demand(name: &str, cursor: usize) -> RunOutcome {
     let policy = CommitPolicy::new(None, Some(every), None).expect("a policy");
     let config = EngineConfig::builder()
         .commit(policy)
-        .lanes(2)
+        .writers(2)
         .partitions(shape.partitions)
         .barrier_wait(Duration::from_secs(5));
     engine(config)
@@ -194,7 +194,7 @@ async fn one_slot(name: &str) -> RunOutcome {
         .connect(json!({ "name": name }), ConnectContext::new())
         .await
         .expect("registered");
-    let config = EngineConfig::builder().partitions(1).lanes(1);
+    let config = EngineConfig::builder().partitions(1).writers(1);
     engine(config)
         .with_limit(Duration::from_hours(5))
         .run(
@@ -446,7 +446,7 @@ async fn a_cursor_waiting_for_room_commits_without_waiting_on_a_barrier_slow_to_
             .commit(CommitPolicy::new(None, Some(1_000_000), None).expect("a policy"))
             .memory(48 << 20)
             .partitions(3)
-            .lanes(1)
+            .writers(1)
             .barrier_wait(Duration::from_secs(20))
     };
     let limit = config().build().expect("valid").limits().cursor_bytes;

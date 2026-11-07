@@ -37,7 +37,7 @@ pub struct RayonPool {
 #[error("compute pool failed to start")]
 pub struct ComputePoolError(#[source] pub(crate) Box<dyn std::error::Error + Send + Sync>);
 
-/// The cores a run may use: the engine gives each a lane and a compute thread, and a process that
+/// The cores a run may use: the engine gives each a writer and a compute thread, and a process that
 /// builds its own tokio runtime gives it [`runtime_workers`](Self::runtime_workers).
 ///
 /// The runtime's workers run the engine's per-row work and its destination writes, and the
@@ -73,7 +73,7 @@ impl Cores {
     /// The worker threads a process that builds its own tokio runtime gives it: half the cores,
     /// rounded down, and two at least where there are two.
     ///
-    /// One worker runs the engine's per-row work and every lane's writes alone, and more workers
+    /// One worker runs the engine's per-row work and every writer's writes alone, and more workers
     /// than half the cores slow a run of one partition.
     pub fn runtime_workers(self) -> NonZeroUsize {
         let count = self.count.get();

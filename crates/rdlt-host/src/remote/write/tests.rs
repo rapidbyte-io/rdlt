@@ -22,7 +22,7 @@ use crate::remote::checked::Checked;
 use crate::remote::clients::Clients;
 use crate::remote::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options};
 
-/// A writer over no connector: what it sends queues in `frames`, which holds one frame, and
+/// A table writer over no connector: what it sends queues in `frames`, which holds one frame, and
 /// its answers are what `acks` sends.
 struct Fixture {
     writer: RemoteWriter,
@@ -30,7 +30,7 @@ struct Fixture {
     acks: mpsc::Sender<v1::WriteAck>,
 }
 
-/// A writer with `credit` bytes of credit, each wait for an answer due within a second.
+/// A table writer with `credit` bytes of credit, each wait for an answer due within a second.
 fn fixture(credit: u64) -> Fixture {
     let options = Options {
         deadlines: Deadlines {
@@ -93,14 +93,14 @@ fn credit(bytes: u64) -> v1::WriteAck {
     }
 }
 
-/// The next `count` frames the writer queued, each within a second.
+/// The next `count` frames the table writer queued, each within a second.
 async fn queued(frames: &mut mpsc::Receiver<v1::WriteFrame>, count: usize) -> Vec<Frame> {
     let mut queued = Vec::with_capacity(count);
     for _ in 0..count {
         let frame = tokio::time::timeout(Duration::from_secs(1), frames.recv())
             .await
             .expect("a frame is queued in time")
-            .expect("the writer is open");
+            .expect("the table writer is open");
         queued.push(frame.frame.expect("a frame"));
     }
     queued
@@ -333,8 +333,8 @@ fn stats(rows: u64) -> v1::WriteAck {
     }
 }
 
-/// Fails the test unless `ended` failed as a call past its deadline, which is also how a writer
-/// whose flush went unanswered refuses.
+/// Fails the test unless `ended` failed as a call past its deadline, which is also how a table
+/// writer whose flush went unanswered refuses.
 fn deadline_exceeded<T: std::fmt::Debug>(ended: rdlt_connector::Result<T>) {
     let error = ended.expect_err("the call fails");
     assert_eq!(
@@ -372,16 +372,19 @@ async fn a_writer_whose_flush_went_unanswered_refuses_every_later_call() {
             .expect("the answers are read");
         let flushed = tokio::time::timeout(Duration::from_millis(20), writer.flush())
             .await
-            .expect("the writer refuses at once");
+            .expect("the table writer refuses at once");
         deadline_exceeded(flushed);
         let written = tokio::time::timeout(
             Duration::from_millis(20),
             writer.write(SegmentId(1), keyed("alpha")),
         )
         .await
-        .expect("the writer refuses at once");
+        .expect("the table writer refuses at once");
         deadline_exceeded(written);
-        assert!(frames.try_recv().is_err(), "a refused writer sends nothing");
+        assert!(
+            frames.try_recv().is_err(),
+            "a refused table writer sends nothing"
+        );
     }
 }
 
@@ -407,7 +410,10 @@ async fn a_write_dropped_while_its_own_flush_waits_refuses_the_writer() {
         writer.write(SegmentId(1), keyed("alpha")),
     )
     .await
-    .expect("the writer refuses at once");
+    .expect("the table writer refuses at once");
     deadline_exceeded(written);
-    assert!(frames.try_recv().is_err(), "a refused writer sends nothing");
+    assert!(
+        frames.try_recv().is_err(),
+        "a refused table writer sends nothing"
+    );
 }

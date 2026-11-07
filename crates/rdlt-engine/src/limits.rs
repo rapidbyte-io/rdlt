@@ -109,18 +109,18 @@ pub(crate) const QUOTED_BYTES: usize = 128;
 pub(crate) const PLANS_AT_ONCE: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is not zero");
 
 /// Calls the engine has in flight at once into a source beside its reads, and into a destination
-/// beside its open writers: the coordinator's plan or acknowledgement, and a session's schema
-/// change, commit or close, each in turn; a writer's opening is that writer's own call.
+/// beside its open table writers: the coordinator's plan or acknowledgement, and a session's schema
+/// change, commit or close, each in turn; a table writer's opening is that table writer's own call.
 pub(crate) const OTHER_CALLS: usize = 1;
 
-/// The fewest calls a connector carries at once that a run can use: a read or a writer, and the
-/// engine's [`OTHER_CALLS`] beside it.
+/// The fewest calls a connector carries at once that a run can use: a read or a table writer, and
+/// the engine's [`OTHER_CALLS`] beside it.
 ///
 /// An attempt refuses a connector carrying fewer as it starts.
 pub(crate) const LEAST_CALLS: usize = OTHER_CALLS + 1;
 
-/// The reads, or the open writers, a connector carrying `calls` at once leaves the engine: all
-/// but its [`OTHER_CALLS`], for a connector carrying at least [`LEAST_CALLS`].
+/// The reads, or the open table writers, a connector carrying `calls` at once leaves the engine:
+/// all but its [`OTHER_CALLS`], for a connector carrying at least [`LEAST_CALLS`].
 pub(crate) fn carried(calls: NonZeroUsize) -> NonZeroUsize {
     NonZeroUsize::new(calls.get().saturating_sub(OTHER_CALLS)).unwrap_or(NonZeroUsize::MIN)
 }

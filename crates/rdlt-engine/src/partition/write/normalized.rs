@@ -32,7 +32,7 @@ use crate::table::{Admission, Creation, Incoming, LoweringPlan, Prepared, Stamp}
 use discarded::Discarded;
 
 /// Lowers `units`, written from pushes of `kind`, of a stream that normalizes as `shape` into its
-/// table and child tables, and queues them on their lanes.
+/// table and child tables, and queues them on their writers.
 ///
 /// - Each unit is cut, before its tables are known, into pieces whose split makes no more than a
 ///   piece may hold.
@@ -97,14 +97,14 @@ pub(super) async fn write_normalized(
             // No piece asks for more: what the room has left goes back to the budget.
             room.close();
         }
-        // The piece's parts on their lanes share what holds them, the piece's batches and its
+        // The piece's parts on their writers share what holds them, the piece's batches and its
         // planned parts, until the last of them is written: the parts go first, then the
         // piece's rows and with them its share of the unit, then their charge.
         let hold = Arc::new(Mutex::new((kept, held, reserved)));
         let mut cut = cut.into_iter().peekable();
         while let Some(piece) = cut.next() {
             // The partition waits for its allowance only while it holds no piece it has not
-            // handed to its lane; the pieces the allowance has room for are lowered together.
+            // handed to its writer; the pieces the allowance has room for are lowered together.
             let taken = taking(&context.cancel, &lent, piece.bytes, unfit).await?;
             let mut window = vec![(piece, taken)];
             while !full(window.len()) {
@@ -117,7 +117,7 @@ pub(super) async fn write_normalized(
             let tables: Vec<usize> = pieces.iter().map(|piece| piece.table).collect();
             let prepared = lower(context, pieces, stamp).await;
             for ((prepared, taken), table) in prepared.into_iter().zip(taken).zip(tables) {
-                // The piece on its lane holds its part of the allowance, which goes back to it
+                // The piece on its writer holds its part of the allowance, which goes back to it
                 // as the piece is written, and with it what holds the piece's parts.
                 let permit = Box::new((taken, Arc::clone(&hold))) as Permit;
                 queue(job, context, open, table, prepared?, permit).await?;

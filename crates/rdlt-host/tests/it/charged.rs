@@ -185,7 +185,11 @@ async fn a_writer_releases_each_answer_s_charge_once_it_is_decoded() {
             generation: None,
             merge: None,
         };
-        let mut writer = opened.session.writer(&table).await.expect("a writer opens");
+        let mut writer = opened
+            .session
+            .writer(&table)
+            .await
+            .expect("a table writer opens");
         let ids = arrow_array::Int64Array::from(vec![1_i64, 2, 3]);
         let batch = arrow_array::RecordBatch::try_from_iter([("id", Arc::new(ids) as _)]).unwrap();
         writer

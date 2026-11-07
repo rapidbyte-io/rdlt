@@ -100,7 +100,7 @@ async fn write(link: Link, store: &str) -> Duration {
         .session
         .writer(&table())
         .await
-        .expect("the writer opens");
+        .expect("the table writer opens");
     let started = Instant::now();
     for segment in 1..=8 {
         writer

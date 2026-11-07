@@ -38,7 +38,7 @@ pub(super) fn config(
         .max_attempts(4)
         .initial(Duration::from_millis(1))
         .max_delay(Duration::from_millis(100));
-    let lanes = u16::try_from(1 + rng.below(3)).unwrap_or(1);
+    let writers = u16::try_from(1 + rng.below(3)).unwrap_or(1);
     let builder = EngineConfig::builder();
     let builder = if streaming {
         builder.replan(REPLAN)
@@ -50,12 +50,12 @@ pub(super) fn config(
         None => builder,
     };
     let memory = least + rng.below(least);
-    let lane_window = to_usize(1 + rng.below(3));
+    let writer_window = to_usize(1 + rng.below(3));
     let partitions = to_usize(1 + rng.below(4)).max(endless + 1);
     builder
         .memory(memory)
-        .lanes(lanes)
-        .lane_window(lane_window)
+        .writers(writers)
+        .writer_window(writer_window)
         .partitions(partitions)
         .partition_buffer(to_usize(1 + rng.below(4)))
         .barrier_wait(Duration::from_millis(10 + rng.below(2000)))
@@ -76,14 +76,14 @@ pub(super) fn waited(seed: Seed, hangs: bool) -> Option<Duration> {
 }
 
 /// The growth limits of an engine of the world `seed`, drawn apart from the world, so every other
-/// draw of the seed is as it was: in a quarter of worlds one to three destination writers open at
-/// once, so lanes close the writers they wrote longest ago, and the defaults elsewhere.
+/// draw of the seed is as it was: in a quarter of worlds one to three table writers open at
+/// once, so writers close the table writers they wrote longest ago, and the defaults elsewhere.
 pub(super) fn growth(seed: Seed) -> GrowthLimits {
     let mut rng = SplitMix64::new(seed.value().rotate_left(29));
     let defaults = GrowthLimits::default();
     if rng.chance(250) {
-        let writers = to_usize(1 + rng.below(3));
-        GrowthLimits::new(defaults.child_tables().get(), writers)
+        let table_writers = to_usize(1 + rng.below(3));
+        GrowthLimits::new(defaults.child_tables().get(), table_writers)
             .expect("the drawn limits are valid")
     } else {
         defaults

@@ -15,11 +15,11 @@ use rdlt_connector::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{Lanes, Write};
+use super::{Write, Writers};
 use crate::budget::MemoryBudget;
 use crate::env::{Env, InlineEnv};
 use crate::error::ErrorKind;
-use crate::report::{Flushes, LaneCounters, Tally};
+use crate::report::{Flushes, Tally, WriterCounters};
 use crate::table::{Model, SharedSession, Tables, testing::resolver};
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -73,7 +73,7 @@ impl Drop for Recording {
     }
 }
 
-/// A session whose writers record what they stage, each named after its table: `t<index>`.
+/// A session whose table writers record what they stage, each named after its table: `t<index>`.
 struct Session {
     log: Log,
     fail_open: bool,
@@ -92,7 +92,7 @@ impl DestinationSession for Session {
         table: &'a TableRef,
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
         if self.fail_open {
-            return Box::pin(async { Err(ConnectorError::data("no writer")) });
+            return Box::pin(async { Err(ConnectorError::data("no table writer")) });
         }
         let writer: Box<dyn DestinationWriter> = Box::new(Recording {
             table: table.name[1..].parse().unwrap(),
@@ -116,14 +116,14 @@ impl DestinationSession for Session {
     }
 }
 
-/// `count` lanes over `tables` tables, `t0` onwards, whose writers log to `log`.
-fn lanes(
+/// `count` writers over `tables` tables, `t0` onwards, whose table writers log to `log`.
+fn writers(
     count: usize,
     tables: usize,
     log: &Log,
     fails: [bool; 3],
     window: usize,
-) -> (Lanes, Vec<super::Lane>) {
+) -> (Writers, Vec<super::Writer>) {
     budgeted(
         count,
         tables,
@@ -134,7 +134,7 @@ fn lanes(
     )
 }
 
-/// [`lanes`] under `budget`.
+/// [`writers`] under `budget`.
 fn budgeted(
     count: usize,
     tables: usize,
@@ -142,7 +142,7 @@ fn budgeted(
     [fail_open, fail_write, fail_flush]: [bool; 3],
     window: usize,
     budget: &MemoryBudget,
-) -> (Lanes, Vec<super::Lane>) {
+) -> (Writers, Vec<super::Writer>) {
     let session = Session {
         log: Arc::clone(log),
         fail_open,
@@ -153,14 +153,14 @@ fn budgeted(
     over(session, (count, tables, window), budget, &Arc::default())
 }
 
-/// `count` lanes over `tables` tables of `session`, queueing `window` writes each, counting into
+/// `count` writers over `tables` tables of `session`, queueing `window` writes each, counting into
 /// `tally`.
 fn over(
     session: Session,
     (count, tables, window): (usize, usize, usize),
     budget: &MemoryBudget,
     tally: &Arc<Tally>,
-) -> (Lanes, Vec<super::Lane>) {
+) -> (Writers, Vec<super::Writer>) {
     let all = Tables::new(SharedSession::new(Box::new(session)));
     for table in 0..tables {
         let name = format!("t{table}");
@@ -173,9 +173,9 @@ fn over(
         };
         all.add(resolver(&name), &table, Model::default()).unwrap();
     }
-    let writers = crate::config::GrowthLimits::default().writers();
+    let writers = crate::config::GrowthLimits::default().table_writers();
     let env: Arc<dyn Env> = Arc::new(InlineEnv);
-    Lanes::new(
+    Writers::new(
         (NonZeroUsize::new(count).unwrap(), writers),
         &Arc::new(all),
         NonZeroUsize::new(window).unwrap(),
@@ -190,28 +190,28 @@ fn rows(count: i64) -> RecordBatch {
 }
 
 async fn write(
-    lanes: &Lanes,
+    writers: &Writers,
     budget: &MemoryBudget,
-    lane: usize,
+    writer: usize,
     table: usize,
     segment: u64,
     count: i64,
 ) -> Result<(), crate::Error> {
     write_at(
-        lanes,
+        writers,
         budget,
-        (lane, table, SchemaVersion(0)),
+        (writer, table, SchemaVersion(0)),
         segment,
         count,
     )
     .await
 }
 
-/// Writes `count` rows of segment `segment` to `table` on `lane`, lowered for `version`.
+/// Writes `count` rows of segment `segment` to `table` on `writer`, lowered for `version`.
 async fn write_at(
-    lanes: &Lanes,
+    writers: &Writers,
     budget: &MemoryBudget,
-    (lane, table, version): (usize, usize, SchemaVersion),
+    (writer, table, version): (usize, usize, SchemaVersion),
     segment: u64,
     count: i64,
 ) -> Result<(), crate::Error> {
@@ -222,63 +222,66 @@ async fn write_at(
         batch: rows(count),
         reservation: Box::new(budget.acquire(10).await.expect("the budget has room")),
     };
-    lanes.write(lane, write).await
+    writers.write(writer, write).await
 }
 
 #[test]
-fn places_up_to_the_lanes_take_a_lane_each_and_more_wrap_evenly() {
+fn places_up_to_the_writers_take_a_writer_each_and_more_wrap_evenly() {
     let log = Log::default();
-    let (four, _) = lanes(4, 1, &log, [false, false, false], 1);
-    let routes = |lanes: &Lanes, table: usize, places: usize| {
+    let (four, _) = writers(4, 1, &log, [false, false, false], 1);
+    let routes = |writers: &Writers, table: usize, places: usize| {
         (0..places)
-            .map(|place| lanes.route(table, place))
+            .map(|place| writers.route(table, place))
             .collect::<Vec<_>>()
     };
     assert_eq!(routes(&four, 0, 4), [0, 1, 2, 3]);
     assert_eq!(
         routes(&four, 1, 4),
         [1, 2, 3, 0],
-        "a table starts a lane further on"
+        "a table starts a writer further on"
     );
     let mut taken = [0_usize; 4];
-    for lane in routes(&four, 0, 16) {
-        taken[lane] += 1;
+    for writer in routes(&four, 0, 16) {
+        taken[writer] += 1;
     }
-    assert_eq!(taken, [4; 4], "sixteen places on four lanes take four each");
-    let (sixteen, _) = lanes(16, 1, &log, [false, false, false], 1);
+    assert_eq!(
+        taken, [4; 4],
+        "sixteen places on four writers take four each"
+    );
+    let (sixteen, _) = writers(16, 1, &log, [false, false, false], 1);
     let used: std::collections::BTreeSet<usize> = routes(&sixteen, 0, 16).into_iter().collect();
     assert_eq!(used.len(), 16);
 }
 
 proptest::proptest! {
-    /// Distinct places of one table take distinct lanes while there are lanes for them, and
-    /// every route names a lane.
+    /// Distinct places of one table take distinct writers while there are writers for them, and
+    /// every route names a writer.
     #[test]
-    fn places_of_a_table_take_distinct_lanes_up_to_the_lanes(
+    fn places_of_a_table_take_distinct_writers_up_to_the_writers(
         count in 1_usize..=64,
         table in 0_usize..8,
         first in 0_usize..1_000,
     ) {
         let log = Log::default();
-        let (lanes, _) = lanes(count, table + 1, &log, [false, false, false], 1);
+        let (writers, _) = writers(count, table + 1, &log, [false, false, false], 1);
         let routed: Vec<usize> = (first..first + count)
-            .map(|place| lanes.route(table, place))
+            .map(|place| writers.route(table, place))
             .collect();
-        proptest::prop_assert!(routed.iter().all(|lane| *lane < count));
+        proptest::prop_assert!(routed.iter().all(|writer| *writer < count));
         let distinct: std::collections::BTreeSet<_> = routed.iter().collect();
         proptest::prop_assert_eq!(distinct.len(), count);
     }
 }
 
 #[tokio::test]
-async fn a_lane_stages_writes_in_order_and_flushes_every_table_before_answering() {
+async fn a_writer_stages_writes_in_order_and_flushes_every_table_before_answering() {
     let log = Log::default();
     let budget = crate::budget::budget(1_000);
-    let (lanes, mut tasks) = lanes(1, 2, &log, [false, false, false], 8);
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
-    write(&lanes, &budget, 0, 1, 1, 3).await.unwrap();
-    write(&lanes, &budget, 0, 0, 2, 4).await.unwrap();
-    lanes.flush().await.unwrap();
+    let (writers, mut tasks) = writers(1, 2, &log, [false, false, false], 8);
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    write(&writers, &budget, 0, 1, 1, 3).await.unwrap();
+    write(&writers, &budget, 0, 0, 2, 4).await.unwrap();
+    writers.flush().await.unwrap();
     assert_eq!(
         *log.lock(),
         [
@@ -289,92 +292,94 @@ async fn a_lane_stages_writes_in_order_and_flushes_every_table_before_answering(
             "t0 v0 flush",
             "t1 v0 flush"
         ],
-        "a writer opens on its table's first write"
+        "a table writer opens on its table's first write"
     );
     assert_eq!(
         budget.reserved(),
         0,
         "staged writes release their reservations"
     );
-    drop(lanes);
-    lane.await.unwrap().unwrap();
+    drop(writers);
+    writer.await.unwrap().unwrap();
 }
 
 #[tokio::test]
-async fn a_failed_write_ends_the_lane_with_a_destination_error() {
+async fn a_failed_write_ends_the_writer_with_a_destination_error() {
     let log = Log::default();
     let budget = crate::budget::budget(1_000);
-    let (lanes, mut tasks) = lanes(1, 1, &log, [false, true, false], 1);
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
-    write(&lanes, &budget, 0, 0, 1, 1).await.unwrap();
-    let error = lane.await.unwrap().unwrap_err();
+    let (writers, mut tasks) = writers(1, 1, &log, [false, true, false], 1);
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    write(&writers, &budget, 0, 0, 1, 1).await.unwrap();
+    let error = writer.await.unwrap().unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Destination);
-    let after = write(&lanes, &budget, 0, 0, 2, 1).await.unwrap_err();
+    let after = write(&writers, &budget, 0, 0, 2, 1).await.unwrap_err();
     assert_eq!(after.kind(), ErrorKind::Cancelled);
     assert_eq!(
-        lanes.flush().await.unwrap_err().kind(),
+        writers.flush().await.unwrap_err().kind(),
         ErrorKind::Cancelled
     );
 }
 
 #[tokio::test]
-async fn a_failed_flush_ends_the_lane_and_the_flush_is_not_answered() {
+async fn a_failed_flush_ends_the_writer_and_the_flush_is_not_answered() {
     let log = Log::default();
     let budget = crate::budget::budget(1_000);
-    let (lanes, mut tasks) = lanes(1, 1, &log, [false, false, true], 1);
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
-    write(&lanes, &budget, 0, 0, 1, 1).await.unwrap();
+    let (writers, mut tasks) = writers(1, 1, &log, [false, false, true], 1);
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    write(&writers, &budget, 0, 0, 1, 1).await.unwrap();
     assert_eq!(
-        lanes.flush().await.unwrap_err().kind(),
+        writers.flush().await.unwrap_err().kind(),
         ErrorKind::Cancelled
     );
     assert_eq!(
-        lane.await.unwrap().unwrap_err().kind(),
+        writer.await.unwrap().unwrap_err().kind(),
         ErrorKind::Destination
     );
 }
 
 #[tokio::test]
-async fn cancelling_a_lane_ends_it() {
+async fn cancelling_a_writer_ends_it() {
     let log = Log::default();
     let cancel = CancellationToken::new();
-    let (_lanes, mut tasks) = lanes(1, 1, &log, [false, false, false], 1);
-    let lane = tokio::spawn(tasks.remove(0).run(cancel.clone()));
+    let (_writers, mut tasks) = writers(1, 1, &log, [false, false, false], 1);
+    let writer = tokio::spawn(tasks.remove(0).run(cancel.clone()));
     cancel.cancel();
     assert_eq!(
-        lane.await.unwrap().unwrap_err().kind(),
+        writer.await.unwrap().unwrap_err().kind(),
         ErrorKind::Cancelled
     );
 }
 
 #[tokio::test]
-async fn a_lane_that_cannot_open_a_writer_ends_with_a_destination_error() {
+async fn a_writer_that_cannot_open_a_table_writer_ends_with_a_destination_error() {
     let log = Log::default();
     let budget = crate::budget::budget(1_000);
-    let (lanes, mut tasks) = lanes(1, 1, &log, [true, false, false], 1);
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
-    write(&lanes, &budget, 0, 0, 1, 1).await.unwrap();
-    let error = lane.await.unwrap().unwrap_err();
+    let (writers, mut tasks) = writers(1, 1, &log, [true, false, false], 1);
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    write(&writers, &budget, 0, 0, 1, 1).await.unwrap();
+    let error = writer.await.unwrap().unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Destination);
     assert!(
-        error.to_string().contains("creating a writer for table t0"),
+        error
+            .to_string()
+            .contains("creating a table writer for table t0"),
         "{error}"
     );
 }
 
 #[tokio::test]
-async fn each_write_goes_through_a_writer_of_the_schema_version_it_was_lowered_for() {
+async fn each_write_goes_through_a_table_writer_of_the_schema_version_it_was_lowered_for() {
     let log = Log::default();
     let budget = crate::budget::budget(1_000);
-    let (lanes, mut tasks) = lanes(1, 1, &log, [false, false, false], 8);
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    let (writers, mut tasks) = writers(1, 1, &log, [false, false, false], 8);
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     let at = |version| (0, 0, SchemaVersion(version));
-    write_at(&lanes, &budget, at(1), 1, 2).await.unwrap();
-    write_at(&lanes, &budget, at(2), 1, 3).await.unwrap();
+    write_at(&writers, &budget, at(1), 1, 2).await.unwrap();
+    write_at(&writers, &budget, at(2), 1, 3).await.unwrap();
     // A partition still lowering for the older version writes after the table changed: the
-    // older version's writer, retired by the newer's first write, opens again.
-    write_at(&lanes, &budget, at(1), 2, 4).await.unwrap();
-    lanes.flush().await.unwrap();
+    // older version's table writer, retired by the newer's first write, opens again.
+    write_at(&writers, &budget, at(1), 2, 4).await.unwrap();
+    writers.flush().await.unwrap();
     assert_eq!(
         *log.lock(),
         [
@@ -390,27 +395,27 @@ async fn each_write_goes_through_a_writer_of_the_schema_version_it_was_lowered_f
             "t0 v2 flush"
         ]
     );
-    drop(lanes);
-    lane.await.unwrap().unwrap();
+    drop(writers);
+    writer.await.unwrap().unwrap();
 }
 
 #[tokio::test]
-async fn a_flush_reaches_only_the_writers_written_since_the_last() {
+async fn a_flush_reaches_only_the_table_writers_written_since_the_last() {
     let log = Log::default();
     let budget = crate::budget::budget(1_000);
-    let (lanes, mut tasks) = lanes(1, 1, &log, [false, false, false], 8);
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    let (writers, mut tasks) = writers(1, 1, &log, [false, false, false], 8);
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     let at = |version| (0, 0, SchemaVersion(version));
-    write_at(&lanes, &budget, at(1), 1, 2).await.unwrap();
-    write_at(&lanes, &budget, at(2), 1, 3).await.unwrap();
-    lanes.flush().await.unwrap();
+    write_at(&writers, &budget, at(1), 1, 2).await.unwrap();
+    write_at(&writers, &budget, at(2), 1, 3).await.unwrap();
+    writers.flush().await.unwrap();
     log.lock().clear();
-    // The table has moved on to version 2: its older writer has nothing left to flush.
-    write_at(&lanes, &budget, at(2), 2, 4).await.unwrap();
-    lanes.flush().await.unwrap();
+    // The table has moved on to version 2: its older table writer has nothing left to flush.
+    write_at(&writers, &budget, at(2), 2, 4).await.unwrap();
+    writers.flush().await.unwrap();
     assert_eq!(*log.lock(), ["t0 v2 s2 r4", "t0 v2 flush"]);
-    drop(lanes);
-    lane.await.unwrap().unwrap();
+    drop(writers);
+    writer.await.unwrap().unwrap();
 }
 
 /// Waits until `log` holds `entry`.
@@ -425,42 +430,43 @@ async fn logged(log: &Log, entry: &str) {
 }
 
 #[tokio::test]
-async fn a_write_holds_its_bytes_until_its_writer_flushes_them() {
-    // A writer may buffer what it stages until it flushes, so the bytes stay charged till then.
+async fn a_write_holds_its_bytes_until_its_table_writer_flushes_them() {
+    // A table writer may buffer what it stages until it flushes, so the bytes stay charged till
+    // then.
     let log = Log::default();
     let budget = crate::budget::budget(1_000);
-    let (lanes, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
-    write(&lanes, &budget, 0, 0, 1, 3).await.unwrap();
+    let (writers, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    write(&writers, &budget, 0, 0, 1, 3).await.unwrap();
     logged(&log, "t0 v0 s1 r3").await;
     assert_eq!(budget.reserved(), 10);
-    lanes.flush().await.unwrap();
+    writers.flush().await.unwrap();
     assert_eq!(budget.reserved(), 0);
-    drop(lanes);
-    lane.await.unwrap().unwrap();
+    drop(writers);
+    writer.await.unwrap().unwrap();
 }
 
 #[tokio::test]
-async fn a_lane_flushes_its_writers_once_the_budget_is_pressed() {
+async fn a_writer_flushes_its_table_writers_once_the_budget_is_pressed() {
     let log = Log::default();
     // Pushes may take 27 bytes of this budget: two writes of ten and no third.
     let budget = crate::budget::budget(64);
-    let (lanes, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
-    write(&lanes, &budget, 0, 0, 1, 3).await.unwrap();
-    write(&lanes, &budget, 0, 0, 1, 4).await.unwrap();
+    let (writers, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    write(&writers, &budget, 0, 0, 1, 3).await.unwrap();
+    write(&writers, &budget, 0, 0, 1, 4).await.unwrap();
     logged(&log, "t0 v0 s1 r4").await;
-    // A request that waits for the written bytes gets them once the lane flushes on its own.
+    // A request that waits for the written bytes gets them once the writer flushes on its own.
     let waiting = tokio::time::timeout(Duration::from_secs(5), budget.acquire(10))
         .await
-        .expect("the lane releases what it flushed");
+        .expect("the writer releases what it flushed");
     assert!(log.lock().iter().any(|entry| entry == "t0 v0 flush"));
     drop(waiting);
-    drop(lanes);
-    lane.await.unwrap().unwrap();
+    drop(writers);
+    writer.await.unwrap().unwrap();
 }
 
-/// How many writers `log` says are open.
+/// How many table writers `log` says are open.
 fn open(log: &Log) -> usize {
     let log = log.lock();
     let opened = log.iter().filter(|entry| entry.starts_with("open")).count();
@@ -472,50 +478,50 @@ fn open(log: &Log) -> usize {
 }
 
 #[tokio::test]
-async fn a_lane_retires_the_writer_of_a_superseded_version() {
+async fn a_writer_retires_the_table_writer_of_a_superseded_version() {
     let log = Log::default();
     let budget = crate::budget::budget(1_000_000);
-    let (lanes, mut tasks) = lanes(1, 1, &log, [false, false, false], 8);
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    let (writers, mut tasks) = writers(1, 1, &log, [false, false, false], 8);
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     for version in 1..=50 {
-        write_at(&lanes, &budget, (0, 0, SchemaVersion(version)), 1, 1)
+        write_at(&writers, &budget, (0, 0, SchemaVersion(version)), 1, 1)
             .await
             .unwrap();
     }
-    lanes.flush().await.unwrap();
+    writers.flush().await.unwrap();
     assert_eq!(open(&log), 1);
-    // What a retired writer staged was flushed before it closed.
+    // What a retired table writer staged was flushed before it closed.
     let retired = log.lock().iter().position(|entry| entry == "close t0 v1");
     let flushed = log.lock().iter().position(|entry| entry == "t0 v1 flush");
     assert!(flushed.is_some() && flushed < retired, "{:?}", log.lock());
-    drop(lanes);
-    lane.await.unwrap().unwrap();
+    drop(writers);
+    writer.await.unwrap().unwrap();
 }
 
 #[tokio::test]
-async fn a_lane_holds_no_more_writers_than_its_share() {
+async fn a_writer_holds_no_more_table_writers_than_its_share() {
     let log = Log::default();
     let budget = crate::budget::budget(1_000_000);
     let tables = 200;
-    let (lanes, mut tasks) = lanes(1, tables, &log, [false, false, false], 8);
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
-    let share = crate::config::GrowthLimits::default().writers().get();
+    let (writers, mut tasks) = writers(1, tables, &log, [false, false, false], 8);
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    let share = crate::config::GrowthLimits::default().table_writers().get();
     for table in 0..tables {
-        write(&lanes, &budget, 0, table, 1, 1).await.unwrap();
-        assert!(open(&log) <= share, "{} writers open", open(&log));
+        write(&writers, &budget, 0, table, 1, 1).await.unwrap();
+        assert!(open(&log) <= share, "{} table writers open", open(&log));
     }
-    // Every table's writes reach the destination, flushed before a writer closes.
-    lanes.flush().await.unwrap();
+    // Every table's writes reach the destination, flushed before a table writer closes.
+    writers.flush().await.unwrap();
     for table in 0..tables {
         let flushed = format!("t{table} v0 flush");
         assert!(log.lock().contains(&flushed), "{flushed}");
     }
-    drop(lanes);
-    lane.await.unwrap().unwrap();
+    drop(writers);
+    writer.await.unwrap().unwrap();
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_lane_counts_the_time_a_full_queue_blocks_and_its_writes_and_flushes_take() {
+async fn a_writer_counts_the_time_a_full_queue_blocks_and_its_writes_and_flushes_take() {
     let log = Log::default();
     let budget = crate::budget::budget(1_000);
     let tally = Arc::new(Tally::default());
@@ -526,21 +532,21 @@ async fn a_lane_counts_the_time_a_full_queue_blocks_and_its_writes_and_flushes_t
         fail_flush: false,
         pace: Duration::from_secs(1),
     };
-    let (lanes, tasks) = over(session, (2, 1, 1), &budget, &tally);
+    let (writers, tasks) = over(session, (2, 1, 1), &budget, &tally);
     let running: Vec<_> = tasks
         .into_iter()
-        .map(|lane| tokio::spawn(lane.run(CancellationToken::new())))
+        .map(|writer| tokio::spawn(writer.run(CancellationToken::new())))
         .collect();
     // The queue holds one write: the third waits while the first is written, a second.
     for segment in 1..=3 {
-        write(&lanes, &budget, 1, 0, segment, 1).await.unwrap();
+        write(&writers, &budget, 1, 0, segment, 1).await.unwrap();
     }
-    lanes.flush().await.unwrap();
-    drop(lanes);
-    for lane in running {
-        lane.await.unwrap().unwrap();
+    writers.flush().await.unwrap();
+    drop(writers);
+    for writer in running {
+        writer.await.unwrap().unwrap();
     }
-    let second = LaneCounters {
+    let second = WriterCounters {
         blocked: Duration::from_secs(1),
         writing: Duration::from_secs(3),
         flushing: Duration::from_secs(2),
@@ -549,11 +555,14 @@ async fn a_lane_counts_the_time_a_full_queue_blocks_and_its_writes_and_flushes_t
             ..Flushes::default()
         },
     };
-    assert_eq!(tally.counters().lanes, [LaneCounters::default(), second]);
+    assert_eq!(
+        tally.counters().writers,
+        [WriterCounters::default(), second]
+    );
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_cancelled_lane_adds_what_it_counted() {
+async fn a_cancelled_writer_adds_what_it_counted() {
     let log = Log::default();
     let budget = crate::budget::budget(1_000);
     let tally = Arc::new(Tally::default());
@@ -565,21 +574,21 @@ async fn a_cancelled_lane_adds_what_it_counted() {
         pace: Duration::from_secs(1),
     };
     let cancel = CancellationToken::new();
-    let (lanes, mut tasks) = over(session, (1, 1, 1), &budget, &tally);
-    let lane = tokio::spawn(tasks.remove(0).run(cancel.clone()));
+    let (writers, mut tasks) = over(session, (1, 1, 1), &budget, &tally);
+    let writer = tokio::spawn(tasks.remove(0).run(cancel.clone()));
     for segment in 1..=2 {
-        write(&lanes, &budget, 0, 0, segment, 1).await.unwrap();
+        write(&writers, &budget, 0, 0, segment, 1).await.unwrap();
     }
-    lanes.flush().await.unwrap();
+    writers.flush().await.unwrap();
     // The third write is cancelled halfway, so its time is not counted.
-    write(&lanes, &budget, 0, 0, 3, 1).await.unwrap();
+    write(&writers, &budget, 0, 0, 3, 1).await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     cancel.cancel();
-    let ended = tokio::time::timeout(Duration::from_secs(60), lane)
+    let ended = tokio::time::timeout(Duration::from_secs(60), writer)
         .await
-        .expect("a cancelled lane ends");
+        .expect("a cancelled writer ends");
     assert_eq!(ended.unwrap().unwrap_err().kind(), ErrorKind::Cancelled);
-    let counted = LaneCounters {
+    let counted = WriterCounters {
         blocked: Duration::ZERO,
         writing: Duration::from_secs(2),
         flushing: Duration::from_secs(2),
@@ -588,12 +597,12 @@ async fn a_cancelled_lane_adds_what_it_counted() {
             ..Flushes::default()
         },
     };
-    assert_eq!(tally.counters().lanes, [counted]);
+    assert_eq!(tally.counters().writers, [counted]);
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_failed_write_or_flush_counts_its_time() {
-    // A write takes one second and a flush two; the lane fails at the refused call.
+    // A write takes one second and a flush two; the writer fails at the refused call.
     for (fail_write, fail_flush, counted) in [(true, false, (1, 0)), (false, true, (1, 2))] {
         let budget = crate::budget::budget(1_000);
         let tally = Arc::new(Tally::default());
@@ -604,19 +613,19 @@ async fn a_failed_write_or_flush_counts_its_time() {
             fail_flush,
             pace: Duration::from_secs(1),
         };
-        let (lanes, mut tasks) = over(session, (1, 1, 1), &budget, &tally);
-        let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
-        write(&lanes, &budget, 0, 0, 1, 1).await.unwrap();
+        let (writers, mut tasks) = over(session, (1, 1, 1), &budget, &tally);
+        let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+        write(&writers, &budget, 0, 0, 1, 1).await.unwrap();
         if fail_flush {
-            let flushed = tokio::time::timeout(Duration::from_secs(60), lanes.flush()).await;
+            let flushed = tokio::time::timeout(Duration::from_secs(60), writers.flush()).await;
             assert!(flushed.expect("a refused flush ends").is_err());
         }
-        let ended = tokio::time::timeout(Duration::from_secs(60), lane)
+        let ended = tokio::time::timeout(Duration::from_secs(60), writer)
             .await
-            .expect("a failed lane ends");
+            .expect("a failed writer ends");
         assert!(ended.unwrap().is_err());
         let (writing, flushing) = counted;
-        let counted = LaneCounters {
+        let counted = WriterCounters {
             blocked: Duration::ZERO,
             writing: Duration::from_secs(writing),
             flushing: Duration::from_secs(flushing),
@@ -625,43 +634,48 @@ async fn a_failed_write_or_flush_counts_its_time() {
                 ..Flushes::default()
             },
         };
-        assert_eq!(tally.counters().lanes, [counted], "fail_write {fail_write}");
+        assert_eq!(
+            tally.counters().writers,
+            [counted],
+            "fail_write {fail_write}"
+        );
     }
 }
 
 #[tokio::test]
-async fn a_lane_started_under_pressure_flushes_what_it_holds_at_once() {
+async fn a_writer_started_under_pressure_flushes_what_it_holds_at_once() {
     let log = Log::default();
     let budget = crate::budget::budget(64);
-    let (lanes, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
-    // Pressure is on before the lane first waits for it.
+    let (writers, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
+    // Pressure is on before the writer first waits for it.
     let pressing = budget.pressing();
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
-    write(&lanes, &budget, 0, 0, 1, 3).await.unwrap();
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    write(&writers, &budget, 0, 0, 1, 3).await.unwrap();
     logged(&log, "t0 v0 flush").await;
     assert_eq!(budget.reserved(), 0, "the write's bytes were released");
     drop(pressing);
-    drop(lanes);
-    lane.await.unwrap().unwrap();
+    drop(writers);
+    writer.await.unwrap().unwrap();
 }
 
-/// What the lane's tally counted of its writers' flushes, once `lanes` and the lane are gone.
+/// What the writer's tally counted of its table writers' flushes, once `writers` and the writer are
+/// gone.
 async fn flushes_of(
-    lanes: Lanes,
-    lane: tokio::task::JoinHandle<Result<(), crate::Error>>,
+    writers: Writers,
+    writer: tokio::task::JoinHandle<Result<(), crate::Error>>,
     tally: &Tally,
 ) -> Flushes {
-    drop(lanes);
-    let ended = tokio::time::timeout(Duration::from_secs(5), lane).await;
+    drop(writers);
+    let ended = tokio::time::timeout(Duration::from_secs(5), writer).await;
     ended
-        .expect("the lane ends once its senders are gone")
+        .expect("the writer ends once its senders are gone")
         .unwrap()
         .unwrap();
-    tally.counters().lanes[0].flushes
+    tally.counters().writers[0].flushes
 }
 
 #[tokio::test]
-async fn a_lane_counts_each_writer_flush_by_what_asked_for_it() {
+async fn a_writer_counts_each_table_writer_flush_by_what_asked_for_it() {
     let log = Log::default();
     // Pushes may take 27 bytes of this budget: two writes of ten and no third.
     let budget = crate::budget::budget(64);
@@ -673,32 +687,32 @@ async fn a_lane_counts_each_writer_flush_by_what_asked_for_it() {
         fail_flush: false,
         pace: Duration::ZERO,
     };
-    let (lanes, mut tasks) = over(session, (1, 2, 8), &budget, &tally);
-    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
-    // A newer version retires the older's writer, which flushes what it was written; a commit
+    let (writers, mut tasks) = over(session, (1, 2, 8), &budget, &tally);
+    let writer = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    // A newer version retires the older's table writer, which flushes what it was written; a commit
     // then flushes the newer.
-    write_at(&lanes, &budget, (0, 0, SchemaVersion(1)), 1, 1)
+    write_at(&writers, &budget, (0, 0, SchemaVersion(1)), 1, 1)
         .await
         .unwrap();
-    write_at(&lanes, &budget, (0, 0, SchemaVersion(2)), 1, 1)
+    write_at(&writers, &budget, (0, 0, SchemaVersion(2)), 1, 1)
         .await
         .unwrap();
-    lanes.flush().await.unwrap();
-    // A commit flushes each writer written since the last flush: two tables'.
-    write_at(&lanes, &budget, (0, 0, SchemaVersion(2)), 2, 1)
+    writers.flush().await.unwrap();
+    // A commit flushes each table writer written since the last flush: two tables'.
+    write_at(&writers, &budget, (0, 0, SchemaVersion(2)), 2, 1)
         .await
         .unwrap();
-    write(&lanes, &budget, 0, 1, 2, 1).await.unwrap();
-    lanes.flush().await.unwrap();
-    // A request waiting for the bytes two staged writes hold presses the lane to flush both.
-    write_at(&lanes, &budget, (0, 0, SchemaVersion(2)), 3, 1)
+    write(&writers, &budget, 0, 1, 2, 1).await.unwrap();
+    writers.flush().await.unwrap();
+    // A request waiting for the bytes two staged writes hold presses the writer to flush both.
+    write_at(&writers, &budget, (0, 0, SchemaVersion(2)), 3, 1)
         .await
         .unwrap();
-    write(&lanes, &budget, 0, 1, 3, 1).await.unwrap();
+    write(&writers, &budget, 0, 1, 3, 1).await.unwrap();
     logged(&log, "t1 v0 s3 r1").await;
     let admitted = tokio::time::timeout(Duration::from_secs(5), budget.acquire(10))
         .await
-        .expect("the lane releases what it flushed");
+        .expect("the writer releases what it flushed");
     drop(admitted);
     let expected = Flushes {
         pressure: 2,
@@ -706,7 +720,7 @@ async fn a_lane_counts_each_writer_flush_by_what_asked_for_it() {
         retired: 1,
     };
     assert_eq!(
-        flushes_of(lanes, lane, &tally).await,
+        flushes_of(writers, writer, &tally).await,
         expected,
         "{:?}",
         log.lock()

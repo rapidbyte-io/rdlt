@@ -22,7 +22,7 @@ pub(crate) fn received(error: &ConnectorError, redactions: &Redactions) -> Conne
     error.received(&|text| redactions.scrubbed(text))
 }
 
-/// A source, a destination, a session or a writer placed in process, with the secrets it
+/// A source, a destination, a session or a table writer placed in process, with the secrets it
 /// was sent.
 pub(crate) struct Guarded<T> {
     pub(crate) inner: T,

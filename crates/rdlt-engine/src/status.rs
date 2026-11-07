@@ -18,7 +18,7 @@ use serde::Serialize;
 use crate::report::{Report, RunStatus};
 
 pub(crate) use clock::{RunClock, stamp};
-pub(crate) use live::{Ended, LaneCalls, Live, Place};
+pub(crate) use live::{Ended, Live, Place, WriterCalls};
 
 /// What a run is doing now.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -35,9 +35,9 @@ pub struct Status {
     /// The oldest request waiting for room in each share of the memory budget, by when it began
     /// to wait.
     pub waiting: OpenWaits,
-    /// Each lane's call into the destination in flight, by the lane's place; none for a lane
+    /// Each writer's call into the destination in flight, by the writer's place; none for a writer
     /// between calls.
-    pub lanes: Vec<Option<LaneCall>>,
+    pub writers: Vec<Option<WriterCall>>,
     /// Each stream's freshness and how far its source says its reads are behind, by stream name.
     pub streams: BTreeMap<String, StreamStatus>,
     /// The run so far, as its report counts it: the attempt in progress listed as ending now.
@@ -84,7 +84,7 @@ pub enum Phase {
 pub enum Step {
     /// Asking every partition that checkpoints when asked to do so, and waiting for their answers.
     Barrier,
-    /// Flushing the lanes, so the destination holds every write the commit publishes.
+    /// Flushing the table writers, so the destination holds every write the commit publishes.
     Flush,
     /// The destination's commit.
     Commit,
@@ -137,24 +137,24 @@ pub struct OpenWaits {
     pub reads: Option<SystemTime>,
 }
 
-/// A lane's call into the destination in flight.
+/// A writer's call into the destination in flight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub struct LaneCall {
+pub struct WriterCall {
     /// The call.
     pub call: Call,
     /// When it was made.
     pub since: SystemTime,
 }
 
-/// A lane's call into the destination.
+/// A writer's call into the destination.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Call {
-    /// Opening a writer for a table.
+    /// Opening a table writer.
     Open,
     /// Writing a batch.
     Write,
-    /// Flushing a writer.
+    /// Flushing a table writer.
     Flush,
 }
 

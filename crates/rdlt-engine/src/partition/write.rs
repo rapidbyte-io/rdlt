@@ -1,5 +1,5 @@
 //! Writing what a partition gathered: shredding JSON, fitting each batch to its table, lowering
-//! it a piece at a time and queueing each piece on its lane with the memory it holds.
+//! it a piece at a time and queueing each piece on its writer with the memory it holds.
 
 mod allowance;
 mod changes;
@@ -201,7 +201,7 @@ async fn reserving(
 }
 
 /// Lowers `units`, each some batches of one schema and the memory they hold, written from pushes
-/// of `kind`, into the partition's table and queues them on its lane, in order.
+/// of `kind`, into the partition's table and queues them on its writer, in order.
 ///
 /// - The stream's include and transforms run first, as [`stage::staged`] says.
 /// - Each unit's plan is found in order, since finding it may change the table.
@@ -210,7 +210,7 @@ async fn reserving(
 ///   them, the columns it holds nothing in, and the metadata lowering adds. A row that alone
 ///   takes more than one request of the units' room may fails the write.
 /// - Each piece reserves that from the room before it is lowered. The partition waits for a
-///   piece only while it holds none it has not handed to its lane; pieces the room has space
+///   piece only while it holds none it has not handed to its writer; pieces the room has space
 ///   for at once are lowered together, [`window::LOWERING_WINDOW`] at most.
 /// - A cut that reads no value, and a window of pieces whose lowering copies none, run on the
 ///   partition's task: their steps grow with the columns alone, fewer than a trip to the
@@ -310,7 +310,7 @@ fn measured(
 }
 
 /// Lowers the pieces of `planned`, each reserving what it takes from `room`, and queues them on
-/// the partition's lane, in order.
+/// the partition's writer, in order.
 async fn lowered(
     job: &PartitionJob,
     context: &PartitionContext,

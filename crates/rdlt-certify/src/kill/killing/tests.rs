@@ -145,7 +145,10 @@ async fn kills_land_after_the_settled_commit_before_the_scheduled_one_and_losing
         pipeline: PipelineId::parse("killing").expect("a valid id"),
     };
     let mut session = killing.open(&context).await.expect("opens").session;
-    let mut writer = session.writer(&table("rows")).await.expect("a writer");
+    let mut writer = session
+        .writer(&table("rows"))
+        .await
+        .expect("a table writer");
     writer.write(SegmentId(1), batch()).await.expect("written");
     assert_eq!(kills.count(), 0, "no commit yet");
     let lost = session
@@ -188,7 +191,7 @@ async fn the_tables_written_are_named_once_each() {
     };
     let mut session = killing.open(&context).await.expect("opens").session;
     for name in ["a", "b", "a"] {
-        session.writer(&table(name)).await.expect("a writer");
+        session.writer(&table(name)).await.expect("a table writer");
     }
     let names: Vec<String> = killing
         .tables()

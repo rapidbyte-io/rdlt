@@ -225,7 +225,7 @@ async fn a_writer_waits_once_its_credit_is_spent() {
     let destination = RemoteDestination::new(connection).unwrap();
     let mut opened = destination.open(&context()).await.unwrap();
     let mut writer = opened.session.writer(&table()).await.unwrap();
-    // The destination's writer takes the first batch and stalls, so only the credit of the
+    // The destination's table writer takes the first batch and stalls, so only the credit of the
     // schema and that batch returns: the writes go while the window of credit and it last, each
     // frame spending its size, and the next waits.
     let mut written = 0;

@@ -130,7 +130,7 @@ async fn backpressured_partitions_do_not_lose_a_live_source() {
     let source = Arc::new(blobs(serde_json::json!({}), &Options::default()).await);
     let mut feeds = Vec::new();
     for _ in 0..8 {
-        // The engine takes one event of each read and no more, as when its lanes are full.
+        // The engine takes one event of each read and no more, as when its writers are full.
         let (sink, mut feed) = partition_channel(NonZeroUsize::new(1).expect("not zero"));
         let source = Arc::clone(&source);
         tokio::spawn(async move {
@@ -197,7 +197,8 @@ fn ids(count: i64) -> RecordBatch {
         .expect("a valid batch")
 }
 
-/// A writer of `table` in a session of the destination `served` over `store`, within `limits`.
+/// A table writer of `table` in a session of the destination `served` over `store`, within
+/// `limits`.
 pub(crate) async fn writer(
     served: Served,
     limits: Limits,
@@ -218,7 +219,7 @@ pub(crate) async fn writer(
         .session
         .writer(&table())
         .await
-        .expect("the writer opens")
+        .expect("the table writer opens")
 }
 
 /// Writes `batch` again and again until a write fails, or the flush once `count` succeed.
@@ -276,15 +277,15 @@ async fn a_stalled_writer_fails_once_its_write_ack_deadline_passes() {
         ..quick()
     };
     let mut writer = writer(served, Limits::default(), "flow_stalls", &options).await;
-    // Batches of about 160 KB: 27 of them spend the credit floor, and the connector's writer
-    // stalls on the first it takes, so beyond the first's no credit comes back and the writer
+    // Batches of about 160 KB: 27 of them spend the credit floor, and the connector's table writer
+    // stalls on the first it takes, so beyond the first's no credit comes back and the table writer
     // waits for credit that does not come.
     let written = tokio::time::timeout(
         Duration::from_secs(10),
         write_until_failed(writer.as_mut(), &ids(20_000), 40),
     )
     .await
-    .expect("the writer does not hang past its deadline");
+    .expect("the table writer does not hang past its deadline");
     assert_eq!(written.code(), Some(DEADLINE_EXCEEDED));
 }
 
@@ -300,9 +301,9 @@ async fn a_schema_that_could_not_be_sent_is_sent_again_with_the_next_write() {
         ..Options::default()
     };
     let mut writer = writer(served, Limits::default(), "flow_gated", &options).await;
-    // Frames of 4.8 MB, the first beyond the credit the connector opens with. Its writer takes
-    // the first and waits, which returns the first's credit and grows the window to two frames:
-    // the second waits decoded for the writer, the third to be decoded, and no credit is left.
+    // Frames of 4.8 MB, the first beyond the credit the connector opens with. Its table writer takes
+    // the first and waits, so the window grows to two frames: the second waits decoded, the third
+    // to be decoded, and no credit is left.
     for _ in 0..3 {
         writer
             .write(SegmentId(1), ids(600_000))
@@ -317,7 +318,7 @@ async fn a_schema_that_could_not_be_sent_is_sent_again_with_the_next_write() {
         .await
         .expect_err("no credit returns in time");
     assert_eq!(late.code(), Some(DEADLINE_EXCEEDED));
-    // Written again once the connector's writer goes on, the batch follows its schema.
+    // Written again once the connector's table writer goes on, the batch follows its schema.
     GATE.open();
     writer
         .write(SegmentId(1), texts)
@@ -495,7 +496,8 @@ async fn a_batch_is_cut_to_the_connectors_own_frames_for_a_host_that_takes_large
     reading.abort();
 }
 
-/// A writer of the table `orders` on a fake destination that answers its writes as `fault` says.
+/// A table writer of the table `orders` on a fake destination that answers its writes as `fault`
+/// says.
 pub(crate) async fn trickled(
     fault: rdlt_testkit::fake::Fault,
     options: &Options,
@@ -518,7 +520,7 @@ pub(crate) async fn trickled(
         .session
         .writer(&table())
         .await
-        .expect("the writer opens")
+        .expect("the table writer opens")
 }
 
 #[tokio::test(start_paused = true)]
@@ -607,7 +609,7 @@ async fn five_writers_of_frame_sized_batches_through_one_connection_are_all_take
                 .session
                 .writer(&table())
                 .await
-                .expect("a writer opens"),
+                .expect("a table writer opens"),
         );
     }
     // Each batch takes a frame of nearly the frame limit: five of them, all in flight, pass the
@@ -642,7 +644,7 @@ async fn five_writers_of_frame_sized_batches_through_one_connection_are_all_take
         .expect("the commit is taken");
     let written = tokio::time::timeout(bounded, writing.join_all())
         .await
-        .expect("no writer is held for ever");
+        .expect("no table writer is held for ever");
     assert_eq!(written.len(), 5);
     for stats in written {
         assert!(stats.expect("each write is taken").rows > 0);

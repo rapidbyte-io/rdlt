@@ -5,7 +5,7 @@ use std::time::Duration;
 use rdlt_connector::{PartitionId, PipelineId, StreamName};
 
 use super::clock::{stamp, unstamp};
-use super::{Call, LaneCalls, Live, Partitions, Phase, Place, Quiet, RunClock, Step};
+use super::{Call, Live, Partitions, Phase, Place, Quiet, RunClock, Step, WriterCalls};
 use crate::budget::budget;
 use crate::env::{Env, InlineEnv};
 use crate::report::{RunStatus, Tally};
@@ -44,7 +44,7 @@ fn a_stamp_past_the_latest_is_the_latest_which_leaves_room_for_a_call_beside_it(
     assert_eq!(
         latest << 2 >> 2,
         latest,
-        "a lane's call fits in the two bits left"
+        "a writer's call fits in the two bits left"
     );
 }
 
@@ -60,15 +60,15 @@ async fn a_run_s_clock_reads_an_instant_as_its_start_s_wall_time_and_the_time_si
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_lane_s_call_shows_until_it_returns_with_when_it_was_made() {
+async fn a_writer_s_call_shows_until_it_returns_with_when_it_was_made() {
     let clock = RunClock::new(&InlineEnv);
-    let calls = LaneCalls::new(clock.began(), 2);
+    let calls = WriterCalls::new(clock.began(), 2);
     tokio::time::advance(Duration::from_secs(3)).await;
     let at = InlineEnv.instant();
     calls.calling(1, Call::Flush, at);
     let read = calls.read(&clock);
     assert_eq!(read[0], None);
-    let call = read[1].expect("lane 1 calls");
+    let call = read[1].expect("writer 1 calls");
     assert_eq!((call.call, call.since), (Call::Flush, clock.wall(at)));
     calls.calling(0, Call::Open, at);
     assert_eq!(
@@ -82,7 +82,7 @@ async fn a_lane_s_call_shows_until_it_returns_with_when_it_was_made() {
     );
     calls.returned(1);
     assert_eq!(calls.read(&clock)[1], None);
-    // A lane the calls do not know is no lane of theirs.
+    // A writer the calls do not know is no writer of theirs.
     calls.calling(7, Call::Write, at);
     assert_eq!(calls.read(&clock).len(), 2);
 }

@@ -1,12 +1,12 @@
 //! One attempt of a run: open the destination, plan the streams, and load until done.
 
 mod check;
-mod lanes;
 mod sequences;
 mod streams;
 #[cfg(test)]
 mod tests;
 mod together;
+mod writers;
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -30,7 +30,6 @@ use crate::coordinator::{
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side, codes};
 use crate::event::{Announcer, Telling};
-use crate::lane::Lanes;
 use crate::limits::LEAST_CALLS;
 use crate::naming::{Naming, recorded};
 use crate::partition::{
@@ -44,10 +43,11 @@ use crate::stored::{StateLimits, Stored};
 use crate::table::{SharedSession, Tables};
 use crate::transform::stage::Stage;
 use crate::watch;
+use crate::writer::Writers;
 
-use lanes::start_lanes;
 pub(crate) use sequences::Keying;
 use streams::Planning;
+use writers::start_writers;
 
 /// Everything a run's attempts share.
 pub(crate) struct RunContext {
@@ -119,7 +119,7 @@ pub(crate) async fn run(
 }
 
 /// Refuses an attempt whose source or destination carries too few calls at once for a read or a
-/// writer beside the engine's other call into it, before it opens the destination.
+/// table writer beside the engine's other call into it, before it opens the destination.
 ///
 /// # Errors
 ///
@@ -128,7 +128,11 @@ pub(crate) async fn run(
 fn within_calls(context: &RunContext) -> Result<(), Error> {
     let sides = [
         ("source", context.source.max_calls(), "a read"),
-        ("destination", context.destination.max_calls(), "a writer"),
+        (
+            "destination",
+            context.destination.max_calls(),
+            "a table writer",
+        ),
     ];
     for (side, calls, held) in sides {
         let Some(calls) = calls.filter(|calls| calls.get() < LEAST_CALLS) else {
@@ -266,7 +270,7 @@ pub(crate) fn within_partition_limit(partitions: usize) -> Result<(), Error> {
     .with_code(codes::PLAN_INVALID))
 }
 
-/// Runs the lanes, the partitions and the coordinator in one scope until all of them end.
+/// Runs the writers, the partitions and the coordinator in one scope until all of them end.
 async fn launch(
     context: &RunContext,
     (opened, planned): (Opened, Vec<Planned>),
@@ -275,7 +279,7 @@ async fn launch(
     announcer: &Announcer,
 ) -> Result<(), Error> {
     let mut scope = TaskScope::new(&CancellationToken::new());
-    let lanes = start_lanes(context, &tables, &mut scope);
+    let writers = start_writers(context, &tables, &mut scope);
     let ((progress, progress_feed), (barrier, barrier_feed)) =
         (mpsc::unbounded_channel(), watch::channel(0));
     let (stop_reads, latest) = (CancellationToken::new(), Arc::new(Latest::default()));
@@ -286,7 +290,7 @@ async fn launch(
         stop: stop_reads.clone(),
         cancel: scope.token().clone(),
     };
-    let partition_context = shared_by_partitions(context, opened.epoch, (&lanes, &tables), ends);
+    let partition_context = shared_by_partitions(context, opened.epoch, (&writers, &tables), ends);
     let (tasks, spawned) = mpsc::unbounded_channel();
     let (streams, partitions) = spawn_partitions(&mut scope, planned, &partition_context);
     let coordinator = Coordinator::new(CoordinatorParts {
@@ -295,7 +299,7 @@ async fn launch(
         barrier_wait: context.config.barrier_wait(),
         tables,
         source: Arc::clone(&context.source),
-        lanes,
+        writers,
         epoch: opened.epoch,
         after: opened.landed.as_ref().map(|landed| landed.key),
         streams,
@@ -332,17 +336,17 @@ struct Ends {
     cancel: CancellationToken,
 }
 
-/// What the attempt's partitions share: its session's epoch, its `lanes` and `tables`, and their
+/// What the attempt's partitions share: its session's epoch, its `writers` and `tables`, and their
 /// `ends`.
 fn shared_by_partitions(
     context: &RunContext,
     epoch: Epoch,
-    (lanes, tables): (&Lanes, &Arc<Tables>),
+    (writers, tables): (&Writers, &Arc<Tables>),
     ends: Ends,
 ) -> Arc<PartitionContext> {
     Arc::new(PartitionContext {
         source: Arc::clone(&context.source),
-        lanes: lanes.clone(),
+        writers: writers.clone(),
         tables: Arc::clone(tables),
         budget: context.budget.clone(),
         rendering: Arc::new(crate::cost::rendering(context.destination.capabilities())),
@@ -370,7 +374,7 @@ fn shared_by_partitions(
 /// Starts a task per partition to read, and returns the streams and partitions as the
 /// coordinator tracks them.
 ///
-/// The context goes on to the launcher, so only the partitions and the launcher keep the lanes
+/// The context goes on to the launcher, so only the partitions and the launcher keep the writers
 /// and the progress channel open.
 fn spawn_partitions(
     scope: &mut TaskScope<Error>,

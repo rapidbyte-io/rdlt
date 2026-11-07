@@ -1233,7 +1233,7 @@ async fn in_pieces(store: &str, destination: Arc<dyn Destination>) -> RunOutcome
             .policy(SchemaPolicy::Freeze),
     );
     let source = batches(store, vec![BatchStream::new("events", vec![batch])]).await;
-    let config = commit_every(1_000_000_000).memory(40 << 20).lanes(1);
+    let config = commit_every(1_000_000_000).memory(40 << 20).writers(1);
     engine(config)
         .run(pipeline(store, [plan]), source, destination)
         .await
