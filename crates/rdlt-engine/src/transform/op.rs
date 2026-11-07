@@ -122,7 +122,9 @@ impl Transform for Op {
             Self::Rename(_) => batch.columns().to_vec(),
             Self::Constant(constants) => {
                 let mut columns = batch.columns().to_vec();
-                columns.extend(constants.iter().map(|(_, value)| repeated(value, rows)));
+                for (name, value) in constants {
+                    columns.push(repeated(name, value, rows)?);
+                }
                 columns
             }
             Self::Mask { columns, with } => mask::apply(&batch, columns, with)?,
@@ -201,11 +203,26 @@ fn constants(input: &Schema, columns: &[(String, Literal)]) -> Result<SchemaRef,
     )))
 }
 
+/// Bytes: the text of `rows` rows of `per_row` bytes each, which a `Utf8` column holds only up
+/// to what its 32-bit offsets reach; the error names `column` otherwise.
+pub(super) fn text_room(
+    rows: usize,
+    per_row: usize,
+    column: &str,
+) -> Result<usize, TransformError> {
+    rows.checked_mul(per_row)
+        .filter(|bytes| i32::try_from(*bytes).is_ok())
+        .ok_or_else(|| {
+            TransformError::new("makes more text than one column holds").with_column(column)
+        })
+}
+
 /// A column of `rows` rows, each holding `value`, its buffers taken at their final sizes.
-fn repeated(value: &Literal, rows: usize) -> ArrayRef {
-    match value {
+fn repeated(name: &str, value: &Literal, rows: usize) -> Result<ArrayRef, TransformError> {
+    Ok(match value {
         Literal::Text(text) => {
-            let mut builder = StringBuilder::with_capacity(rows, rows.saturating_mul(text.len()));
+            let room = text_room(rows, text.len(), name)?;
+            let mut builder = StringBuilder::with_capacity(rows, room);
             for _ in 0..rows {
                 builder.append_value(text);
             }
@@ -216,7 +233,7 @@ fn repeated(value: &Literal, rows: usize) -> ArrayRef {
         Literal::Boolean(false) => {
             Arc::new(BooleanArray::new(BooleanBuffer::new_unset(rows), None))
         }
-    }
+    })
 }
 
 fn literal_bound(value: &Literal) -> Bound {
