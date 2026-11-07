@@ -105,7 +105,7 @@ fn nothing_is_told_once_the_run_told_its_end() {
     attempt.announce(|| EventKind::AttemptStarted);
     run.end(RunStatus::Cancelled);
     // A task the end left running tells nothing more, and the end is told once.
-    attempt.announce(|| unreachable!("no event is built after the end"));
+    attempt.announce(|| EventKind::AttemptStarted);
     run.end(RunStatus::Failed);
     let kinds: Vec<EventKind> = kept
         .0
@@ -133,4 +133,25 @@ fn a_run_s_events_are_numbered_from_one_without_a_gap_across_its_announcers() {
     second.end(RunStatus::Succeeded);
     let seqs: Vec<u64> = kept.0.lock().iter().map(|event| event.seq).collect();
     assert_eq!(seqs, [1, 2, 3, 4]);
+}
+
+#[test]
+fn an_event_is_built_without_the_run_s_telling_locked() {
+    let kept = Arc::new(Kept::default());
+    let env: Arc<dyn Env> = Arc::clone(&kept) as Arc<dyn Env>;
+    let telling = Arc::new(Telling::default());
+    let announcer = Announcer::new(
+        env,
+        PipelineId::parse("built").unwrap(),
+        1,
+        Arc::clone(&telling),
+    );
+    announcer.announce(|| {
+        assert!(
+            telling.told.try_lock().is_some(),
+            "the end could take the lock while the event is built"
+        );
+        EventKind::AttemptStarted
+    });
+    assert_eq!(kept.0.lock().len(), 1);
 }
