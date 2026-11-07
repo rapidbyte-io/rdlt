@@ -258,3 +258,16 @@ fn an_hmac_mask_bounds_a_row_at_its_hex_digits_and_dictionary_values_twice() {
     let held = crate::transform::column_bytes(input.column(0).as_ref());
     assert_eq!(bytes, 512 + 69 * 4 + 69 * held);
 }
+
+#[test]
+fn a_redaction_making_more_text_than_a_column_holds_is_refused_naming_it() {
+    let rows = RecordBatch::try_from_iter([(
+        "n",
+        Arc::new(arrow_array::NullArray::new(600_000)) as ArrayRef,
+    )])
+    .unwrap();
+    let refused = Op::mask(["n"], Mask::redact("x".repeat(4096)))
+        .apply(rows)
+        .unwrap_err();
+    assert_eq!(refused.column(), Some("n"));
+}

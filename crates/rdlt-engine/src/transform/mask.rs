@@ -14,7 +14,7 @@ use hmac::{Hmac, Mac as _};
 use rdlt_connector::{ColumnPath, Secret};
 use sha2::Sha256;
 
-use super::op::{ARRAY_ROOM, fields};
+use super::op::{ARRAY_ROOM, fields, text_room};
 use super::{Bound, TransformError};
 
 /// How a mask replaces each value.
@@ -193,12 +193,13 @@ fn masked_at(
 fn masked(array: &dyn Array, with: &Mask, path: &ColumnPath) -> Result<ArrayRef, TransformError> {
     match with {
         Mask::HmacSha256(key) => hashed(array, key.expose().as_bytes(), path),
-        Mask::Redact(text) => Ok(redacted(array, text)),
+        Mask::Redact(text) => redacted(array, text, path),
         Mask::Null => Ok(Arc::new(NullArray::new(array.len()))),
     }
 }
 
 fn hashed(array: &dyn Array, key: &[u8], path: &ColumnPath) -> Result<ArrayRef, TransformError> {
+    let room = text_room(array.len(), 64, &path.to_string())?;
     if let Some(dictionary) = array.as_any_dictionary_opt() {
         let values = hashed(dictionary.values().as_ref(), key, path)?;
         return arrow_select::take::take(values.as_ref(), dictionary.keys(), None).map_err(|_| {
@@ -207,7 +208,7 @@ fn hashed(array: &dyn Array, key: &[u8], path: &ColumnPath) -> Result<ArrayRef, 
     }
     let keyed = Hmac::<Sha256>::new_from_slice(key).expect("an HMAC takes a key of any length");
     let rows = array.len();
-    let mut out = StringBuilder::with_capacity(rows, rows.saturating_mul(64));
+    let mut out = StringBuilder::with_capacity(rows, room);
     let mut digits = [0_u8; 64];
     let mut push = |bytes: Option<&[u8]>| match bytes {
         Some(bytes) => {
@@ -262,10 +263,11 @@ fn hex(digest: &[u8], digits: &mut [u8; 64]) {
     }
 }
 
-fn redacted(array: &dyn Array, text: &str) -> ArrayRef {
+fn redacted(array: &dyn Array, text: &str, path: &ColumnPath) -> Result<ArrayRef, TransformError> {
     let rows = array.len();
+    let room = text_room(rows, text.len(), &path.to_string())?;
     let nulls = array.logical_nulls();
-    let mut out = StringBuilder::with_capacity(rows, rows.saturating_mul(text.len()));
+    let mut out = StringBuilder::with_capacity(rows, room);
     for row in 0..rows {
         if nulls.as_ref().is_none_or(|nulls| nulls.is_valid(row)) {
             out.append_value(text);
@@ -273,7 +275,7 @@ fn redacted(array: &dyn Array, text: &str) -> ArrayRef {
             out.append_null();
         }
     }
-    Arc::new(out.finish())
+    Ok(Arc::new(out.finish()))
 }
 
 pub(super) fn bound(input: &Schema, columns: &[ColumnPath], with: &Mask) -> Bound {

@@ -135,3 +135,27 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn a_constant_of_more_text_than_a_column_holds_is_refused_naming_it() {
+    let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(600_000));
+    let rows = RecordBatch::try_new_with_options(
+        Arc::new(arrow_schema::Schema::empty()),
+        Vec::new(),
+        &options,
+    )
+    .unwrap();
+    let text = Literal::Text("x".repeat(4096));
+    let refused = Op::constant([("note", text)]).apply(rows).unwrap_err();
+    assert_eq!(refused.column(), Some("note"));
+}
+
+#[test]
+fn text_room_is_what_32_bit_offsets_reach() {
+    use super::text_room;
+    let most = usize::try_from(i32::MAX).unwrap();
+    assert_eq!(text_room(most, 1, "c"), Ok(most));
+    assert_eq!(text_room(most + 1, 1, "c").unwrap_err().column(), Some("c"));
+    assert!(text_room(usize::MAX, 2, "c").is_err());
+    assert!(text_room(40_000_000, 64, "c").is_err());
+}
