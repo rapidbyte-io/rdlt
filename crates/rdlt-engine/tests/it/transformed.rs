@@ -435,14 +435,21 @@ fn noted(
 /// Merges, into store `name`, an insert of `people` row 1 and an update leaving its note
 /// unchanged, through `plan`'s transforms.
 async fn partial(name: &str, plan: StreamPlan) -> RunOutcome {
+    partial_written(name, plan, WriteMode::Merge, 1).await
+}
+
+/// Writes as `write` says, into store `name`, an insert of `people` row `id` and an update
+/// leaving its note unchanged, through `plan`'s transforms.
+async fn partial_written(name: &str, plan: StreamPlan, write: WriteMode, id: i64) -> RunOutcome {
     let unchanged: &[u8] = &[0b0000_0100];
+    let note = format!("n{id}");
     let pushes = vec![
-        noted((1, "ok", Some("n1")), ChangeOp::Insert, None, 1),
-        noted((1, "late", None), ChangeOp::Update, Some(unchanged), 2),
+        noted((id, "ok", Some(&note)), ChangeOp::Insert, None, 1),
+        noted((id, "late", None), ChangeOp::Update, Some(unchanged), 2),
     ];
     let mut served = Served::new(Form::Changes, pushes);
     served.key = Some(ColumnPath::from("id"));
-    let plan = plan.read(ReadMode::Cdc).write(WriteMode::Merge);
+    let plan = plan.read(ReadMode::Cdc).write(write);
     engine(commit_every(4))
         .run(
             pipeline(name, [plan]),
@@ -711,6 +718,35 @@ impl Transform for Live {
     fn keep_reads(&self, input: &Schema) -> Option<Vec<usize>> {
         input.index_of("status").ok().map(|status| vec![status])
     }
+}
+
+#[tokio::test]
+async fn a_merged_filter_reading_beyond_the_key_refuses_an_update_it_keeps_leaving_a_column_unchanged()
+ {
+    // The filter keeps the update, whose status is not test, by its status: a row it once turned
+    // into a delete would come back without the note the update left unchanged.
+    let live = || stream("people").transform(code(Live));
+    let outcome = partial("partial_rejoined", live()).await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Transform, Some(codes::TRANSFORM_PARTIAL))
+    );
+    // A change log keeps the update as it is sent.
+    let logged = partial_written("partial_logged", live(), WriteMode::Append, 1).await;
+    succeeded(&logged);
+    assert_eq!(logged.report.streams["people"].filtered.dropped, 0);
+    // A filter reading only the key never flips its answer for a row, and keeps the update.
+    let keyed = Even {
+        keyed: true,
+        lined: true,
+    };
+    let kept = stream("people").transform(code(keyed));
+    succeeded(&partial_written("partial_keyed_kept", kept, WriteMode::Merge, 2).await);
+    assert_eq!(
+        texts_of("partial_keyed_kept", "note"),
+        [(2, Some("n2".to_owned()))]
+    );
 }
 
 #[tokio::test]

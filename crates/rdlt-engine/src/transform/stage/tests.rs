@@ -4,7 +4,7 @@ use arrow_array::cast::AsArray as _;
 use arrow_array::types::{Int8Type, Int32Type, Int64Type};
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray, Int8Array,
-    Int32Array, Int64Array, RecordBatch, RunArray, StringArray,
+    Int32Array, Int64Array, RecordBatch, RunArray, StringArray, StructArray,
 };
 use arrow_buffer::{BooleanBuffer, NullBuffer};
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
@@ -1526,6 +1526,9 @@ fn each_refusal_names_its_stream_and_reads_as_what_it_refused() {
         Refusal::Mixed {
             transform: named("t"),
         },
+        Refusal::Rejoined {
+            transform: named("t"),
+        },
         Refusal::Internal(named("bug")),
     ];
     refusals.extend(refused_rooms());
@@ -1842,4 +1845,107 @@ fn a_null_among_the_values_of_a_non_nullable_dictionary_decodes_as_lowering_take
     let statuses: Vec<Option<&str>> = output[0].column(1).as_string::<i32>().iter().collect();
     assert_eq!(statuses, [Some("live"), None]);
     assert!(output[0].schema_ref().field(1).is_nullable());
+}
+
+/// A change batch of one row of `id`, `name` and `note`, its note flagged unchanged where
+/// `partial`.
+fn noted_change(id: i64, op: ChangeOp, partial: bool) -> RecordBatch {
+    let note: &[u8] = &[0b0000_0100];
+    let batch = changes(&[(Some(id), op, partial.then_some(note))]);
+    let mut columns = batch.columns().to_vec();
+    let mut fields: Vec<_> = batch.schema_ref().fields().iter().cloned().collect();
+    columns.insert(2, Arc::new(StringArray::from(vec![format!("x{id}")])));
+    fields.insert(2, Arc::new(Field::new("note", DataType::Utf8, true)));
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+}
+
+#[test]
+fn a_filter_reading_beyond_the_key_refuses_an_update_it_keeps_leaving_a_column_unchanged() {
+    // The filter reads `name`, which no update leaves unchanged; the update leaves `note`.
+    type Case = (WriteMode, i64, bool, Option<(u64, u64)>);
+    let cases: [Case; 6] = [
+        // Kept by a merge or history: the row may have left as a delete, and would come back
+        // without its note.
+        (WriteMode::Merge, 2, true, None),
+        (WriteMode::History, 2, true, None),
+        // Dropped, it still becomes a delete of its key.
+        (WriteMode::Merge, 3, true, Some((0, 1))),
+        // An update sending every column is judged as any.
+        (WriteMode::Merge, 2, false, Some((0, 0))),
+        // A log keeps what it is sent, flags and all.
+        (WriteMode::Append, 2, true, Some((0, 0))),
+        (WriteMode::Append, 3, true, Some((1, 0))),
+    ];
+    for (write, id, partial, counted) in cases {
+        let beyond = Even {
+            reads: Some(vec![1]),
+            lined: true,
+        };
+        let plan = stream()
+            .read(ReadMode::Cdc)
+            .write(write)
+            .transform(code(beyond));
+        let batch = noted_change(id, ChangeOp::Update, partial);
+        let case = format!("{write:?}, row {id}, partial {partial}");
+        match (ran(&plan, &["id"], batch, u64::MAX), counted) {
+            (Err(Refusal::Rejoined { transform }), None) => assert_eq!(transform, "even", "{case}"),
+            (Ok(ran), Some(counted)) => assert_eq!((ran.dropped, ran.deleted), counted, "{case}"),
+            (outcome, counted) => panic!("{case}: {outcome:?}, expected {counted:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_filter_reading_a_struct_holding_a_nested_key_refuses_a_merged_update_it_keeps() {
+    // The key is `s.id`, but `s` holds a status beside it, which can flip the filter's answer.
+    let row = noted_change(2, ChangeOp::Update, true);
+    let nested = StructArray::from(vec![
+        (
+            Arc::new(Field::new("id", DataType::Int64, true)),
+            Arc::new(Int64Array::from(vec![2])) as ArrayRef,
+        ),
+        (
+            Arc::new(Field::new("status", DataType::Utf8, true)),
+            Arc::new(StringArray::from(vec!["live"])) as ArrayRef,
+        ),
+    ]);
+    let mut columns = row.columns().to_vec();
+    let mut fields: Vec<_> = row.schema_ref().fields().iter().cloned().collect();
+    columns[1] = Arc::new(nested.clone());
+    fields[1] = Arc::new(Field::new("s", nested.data_type().clone(), true));
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+    let reading = Even {
+        reads: Some(vec![1]),
+        lined: true,
+    };
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(code(reading));
+    let key = [ColumnPath::try_from(vec!["s".to_owned(), "id".to_owned()]).unwrap()];
+    let stage = Stage::new(&plan, &key, None).unwrap();
+    let chain = stage.chain(batch.schema_ref()).unwrap();
+    let refused = stage.run(&chain, batch, u64::MAX).unwrap_err();
+    assert!(matches!(refused, Refusal::Rejoined { .. }), "{refused:?}");
+}
+
+#[test]
+fn a_filter_reading_only_the_key_keeps_a_merged_update_leaving_a_column_unchanged() {
+    let keyed = Even {
+        reads: Some(vec![0]),
+        lined: true,
+    };
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(code(keyed));
+    let output = ran(
+        &plan,
+        &["id"],
+        noted_change(2, ChangeOp::Update, true),
+        u64::MAX,
+    )
+    .unwrap();
+    assert_eq!(ops(&output.batches), [(Some(2), ChangeOp::Update.code())]);
+    assert_eq!(flags_of(&output.batches[0]), [0b0000_0100]);
 }

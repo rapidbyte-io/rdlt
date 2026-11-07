@@ -1,6 +1,7 @@
 //! Each transform held to what it declares: its lineage and the columns its filter reads, the
 //! changes it can carry, its filter's answer, and its output's rows, schema and bound.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::{Array, BooleanArray, RecordBatch};
@@ -20,14 +21,20 @@ pub(super) struct Declared {
     pub(super) lineage: Option<Vec<Vec<usize>>>,
     /// The input columns its filter reads, where it filters and says.
     keep_reads: Option<Vec<usize>>,
+    /// Whether its filter's answer for a row of a key may change from one change to the next:
+    /// it reads a column other than the stream's top-level key columns, or says nothing of what
+    /// it reads.
+    flips: bool,
 }
 
-/// What `transform` declares of batches of `input`, whose output is `output`, refusing a
-/// lineage or the columns its filter reads where they name columns `input` lacks.
+/// What `transform` declares of batches of `input`, whose output is `output`, of a stream keyed
+/// by `key`, refusing a lineage or the columns its filter reads where they name columns `input`
+/// lacks.
 pub(super) fn declares(
     transform: &dyn Transform,
     input: &Schema,
     output: &Schema,
+    key: &BTreeSet<String>,
 ) -> Result<Declared, Refusal> {
     let bound = transform.bound(input);
     let lineage = transform.lineage(input);
@@ -51,10 +58,16 @@ pub(super) fn declares(
     if keep_reads.iter().flatten().any(|column| *column >= inputs) {
         return Err(breach(Breach::Reads));
     }
+    let beyond = |reads: &Vec<usize>| {
+        let mut names = reads.iter().map(|column| input.field(*column).name());
+        names.any(|name| !key.contains(name))
+    };
+    let flips = transform.filters() && keep_reads.as_ref().is_none_or(beyond);
     Ok(Declared {
         bound,
         lineage,
         keep_reads,
+        flips,
     })
 }
 
@@ -116,6 +129,22 @@ pub(super) fn carried(
     }
     if transform.filters() && changes.flags_any_of(declared.keep_reads.as_deref()) {
         return Err(Refusal::Unsent { transform: name() });
+    }
+    Ok(())
+}
+
+/// Refuses `keep`, `transform`'s answer, where it keeps an insert or update flagging columns
+/// unchanged and its answer may flip: of a stream merged by key, a row it once turned into a
+/// delete would come back without the values the source did not send.
+pub(super) fn rejoined(
+    transform: &dyn Transform,
+    declared: &Declared,
+    changes: &Changes,
+    keep: &BooleanArray,
+) -> Result<(), Refusal> {
+    if declared.flips && changes.keeps_flagged(keep) {
+        let transform = transform.name().to_owned();
+        return Err(Refusal::Rejoined { transform });
     }
     Ok(())
 }

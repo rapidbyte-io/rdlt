@@ -191,9 +191,24 @@ fn an_update_leaving_a_column_unchanged_passes_a_projection_as_it_arrived() {
 
 #[test]
 fn a_filter_on_the_key_passes_an_update_leaving_another_column_unchanged() {
-    let sql = "SELECT * FROM input WHERE id > 0 AND status <> 'test'";
+    let sql = "SELECT * FROM input WHERE id > 0";
     let moved = flags_through(sql, update_leaving_email_unchanged()).unwrap();
     assert_eq!(moved, [0b0000_0010]);
+}
+
+#[test]
+fn a_filter_reading_beyond_the_key_refuses_an_update_it_keeps_leaving_a_column_unchanged() {
+    // `status` changed, but a filter reading it may drop the row as a delete and later keep it,
+    // and the row would come back without the value of `email` it had.
+    let sql = "SELECT * FROM input WHERE id > 0 AND status <> 'test'";
+    let refused = flags_through(sql, update_leaving_email_unchanged()).unwrap_err();
+    let Untransformed::Refused(error) = refused else {
+        panic!("the stage refused no batch");
+    };
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Transform, Some(codes::TRANSFORM_PARTIAL))
+    );
 }
 
 #[test]

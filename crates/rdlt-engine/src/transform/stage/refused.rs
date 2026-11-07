@@ -63,6 +63,10 @@ pub(crate) enum Refusal {
     /// An insert or update flags unchanged a column a transform computes an output column from
     /// beside one it changed, so the output would be computed from a placeholder.
     Mixed { transform: String },
+    /// A filter whose answer may flip, reading columns beyond the key of a stream merged by
+    /// key, keeps an insert or update flagging columns unchanged: a row it dropped as a delete
+    /// would come back without their values.
+    Rejoined { transform: String },
     /// A bug in the stage.
     Internal(String),
 }
@@ -157,6 +161,7 @@ impl fmt::Display for Refusal {
                 "transform {transform} computes a column from one an update left unchanged and \
                  one it changed, whose value the source did not send"
             ),
+            Self::Rejoined { transform } => rejoined(f, transform),
             Self::Internal(message) => f.write_str(message),
         }
     }
@@ -190,6 +195,17 @@ fn flush(
     write!(f, ", take {asked} bytes, beyond the {free} {LEFT}")
 }
 
+/// Writes why a filter of `transform` that may flip refuses a kept update leaving columns
+/// unchanged.
+fn rejoined(f: &mut fmt::Formatter<'_>, transform: &str) -> fmt::Result {
+    write!(
+        f,
+        "the filter of transform {transform} reads columns beyond the key and keeps an update \
+         leaving columns unchanged: a row it turned into a delete would come back without their \
+         values"
+    )
+}
+
 /// What is left of the memory budget's request the stage holds.
 const LEFT: &str = "left of one request of the memory budget";
 
@@ -215,6 +231,7 @@ pub(crate) fn refused(stream: &StreamName, refusal: Refusal) -> Error {
         | Refusal::Partial { .. }
         | Refusal::Unsent { .. }
         | Refusal::Mixed { .. }
+        | Refusal::Rejoined { .. }
         | Refusal::Internal(_) => error,
     };
     error.with_stream(stream)
@@ -247,9 +264,10 @@ fn classed(refusal: &Refusal) -> (ErrorKind, Option<Code>) {
         | Refusal::Flush {
             transform: None, ..
         } => (ErrorKind::Source, codes::ROW_EXCEEDS_BUDGET),
-        Refusal::Partial { .. } | Refusal::Unsent { .. } | Refusal::Mixed { .. } => {
-            (ErrorKind::Transform, codes::TRANSFORM_PARTIAL)
-        }
+        Refusal::Partial { .. }
+        | Refusal::Unsent { .. }
+        | Refusal::Mixed { .. }
+        | Refusal::Rejoined { .. } => (ErrorKind::Transform, codes::TRANSFORM_PARTIAL),
         Refusal::Internal(_) => return (ErrorKind::Internal, None),
     };
     (kind, Some(code))
