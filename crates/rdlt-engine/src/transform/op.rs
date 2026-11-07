@@ -178,6 +178,22 @@ impl Transform for Op {
         Some(lineage)
     }
 
+    fn passes(&self, input: &Schema) -> Option<Vec<Option<usize>>> {
+        let mut passed: Vec<Option<usize>> = (0..input.fields().len()).map(Some).collect();
+        match self {
+            Self::Rename(_) => {}
+            Self::Constant(columns) => passed.extend(columns.iter().map(|_| None)),
+            Self::Mask { columns, .. } => {
+                for path in columns {
+                    if let Ok(Some(place)) = mask::place(input, path) {
+                        passed[place[0]] = None;
+                    }
+                }
+            }
+        }
+        Some(passed)
+    }
+
     fn bound(&self, input: &Schema) -> Option<Bound> {
         Some(match self {
             Self::Rename(_) => Bound::new(0),

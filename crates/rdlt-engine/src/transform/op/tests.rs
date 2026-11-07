@@ -233,3 +233,21 @@ fn an_op_says_which_column_it_names_a_schema_lacks() {
         assert_eq!(op.lacks(&schema).as_deref(), lacks, "{op:?}");
     }
 }
+
+#[test]
+fn each_op_says_which_input_column_each_output_column_passes_unchanged() {
+    let input = people(2);
+    let key = || Mask::Null;
+    let cases = [
+        (Op::rename([("note", "remark")]), vec![Some(0), Some(1)]),
+        (
+            Op::constant([("region", Literal::Text("eu".to_owned()))]),
+            vec![Some(0), Some(1), None],
+        ),
+        (Op::mask(["note"], key()), vec![Some(0), None]),
+        (Op::mask(["absent"], key()), vec![Some(0), Some(1)]),
+    ];
+    for (op, passes) in cases {
+        assert_eq!(op.passes(input.schema_ref()), Some(passes), "{op:?}");
+    }
+}

@@ -107,6 +107,13 @@ pub trait Transform: Send + Sync + 'static {
     fn keep_reads(&self, _input: &Schema) -> Option<Vec<usize>> {
         None
     }
+
+    /// For each output column of batches of `input`, the input column, by ordinal, it passes on
+    /// unchanged, where it does: what holds a declarative transform to the keys, change columns
+    /// and change time it must pass as they arrive; none for trusted code, which is not held.
+    fn passes(&self, _input: &Schema) -> Option<Vec<Option<usize>>> {
+        None
+    }
 }
 
 /// Why a transform refused an input schema or failed on a batch: text the engine shows, bounded,

@@ -17,6 +17,9 @@ pub(crate) enum Refusal {
     },
     /// The transforms do not pass a column the stream keys or times by on as it arrives.
     Kept { column: String },
+    /// A transform declaring what it passes makes a column under the name of one the stream
+    /// keys or times by, or of a change column, rather than pass that column as it arrives.
+    Claimed { transform: String, column: String },
     /// An op names a column the stream's declared schema lacks as the op meets it.
     Absent { transform: String, column: String },
     /// A transform failed on a batch.
@@ -77,6 +80,9 @@ pub(crate) enum Breach {
     Lineage,
     /// The columns its filter says it reads are not all its input's.
     Reads,
+    /// What it says it passes does not give one entry an output column, each naming its
+    /// input's columns.
+    Passes,
 }
 
 impl fmt::Display for Breach {
@@ -89,6 +95,9 @@ impl fmt::Display for Breach {
             Self::Schema => f.write_str("it returned a batch unlike the schema it declares"),
             Self::Lineage => f.write_str("its lineage does not match its input and output"),
             Self::Reads => f.write_str("its filter says it reads columns its input lacks"),
+            Self::Passes => {
+                f.write_str("what it says it passes does not match its input and output")
+            }
         }
     }
 }
@@ -101,6 +110,11 @@ impl fmt::Display for Refusal {
                 f,
                 "its transforms do not pass on column {column}, which keys or times the stream, \
                  as it arrives"
+            ),
+            Self::Claimed { transform, column } => write!(
+                f,
+                "transform {transform} makes column {column}, which keys or times the stream or \
+                 carries its changes, rather than pass it on as it arrives"
             ),
             Self::Absent { transform, column } => write!(
                 f,
@@ -192,6 +206,7 @@ pub(crate) fn refused(stream: &StreamName, refusal: Refusal) -> Error {
             error.with_source(cause)
         }
         Refusal::Kept { .. }
+        | Refusal::Claimed { .. }
         | Refusal::Absent { .. }
         | Refusal::Contract { .. }
         | Refusal::Bound { .. }
@@ -213,6 +228,7 @@ fn classed(refusal: &Refusal) -> (ErrorKind, Option<Code>) {
         Refusal::Schema { .. } | Refusal::Kept { .. } | Refusal::Absent { .. } => {
             (ErrorKind::Config, codes::TRANSFORM_SCHEMA)
         }
+        Refusal::Claimed { .. } => (ErrorKind::Config, codes::TRANSFORM_INVALID),
         Refusal::Failed { .. } => (ErrorKind::Transform, codes::TRANSFORM_FAILED),
         Refusal::Contract { bounded: true, .. } => (ErrorKind::Internal, codes::TRANSFORM_CONTRACT),
         Refusal::Contract { bounded: false, .. } => {

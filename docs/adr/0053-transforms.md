@@ -26,6 +26,11 @@ determinism under simulation whatever the configuration says.
     source's change time are always included, and pass every transform as they arrive. The plan
     refuses an op naming one, `transform_invalid`, and the stage refuses a chain whose output
     drops or retypes one, `transform_schema`.
+  - A transform may declare, for each output column, the input column it passes on unchanged.
+    Ops and SQL do; code need not. The stage refuses a declaring transform whose output under a
+    key's, a change column's or the change time's name is not that column passed unchanged,
+    `transform_invalid`: a document can name SQL, so SQL is held to the keys code is trusted to
+    keep.
   - A declared schema is fitted as the stage makes it.
 - **Trust.** Declarative ops are data. The engine validates and bounds them, and they are safe
   in a tenant's document. A Rust transform is code: it runs in process, only as the embedder's

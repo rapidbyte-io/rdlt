@@ -96,6 +96,32 @@ fn keyed() -> Served {
     }
 }
 
+/// A transform that says it passes every column on unchanged but `id`, which it makes anew.
+struct Remade;
+
+impl Transform for Remade {
+    fn name(&self) -> &'static str {
+        "remade"
+    }
+
+    fn output(&self, input: &Schema) -> std::result::Result<SchemaRef, TransformError> {
+        Ok(Arc::new(input.clone()))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> std::result::Result<RecordBatch, TransformError> {
+        Ok(batch)
+    }
+
+    fn passes(&self, input: &Schema) -> Option<Vec<Option<usize>>> {
+        let fields = input.fields().iter().enumerate();
+        Some(
+            fields
+                .map(|(at, field)| (field.name() != "id").then_some(at))
+                .collect(),
+        )
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_check_answers_the_catalog_and_opens_no_session() {
     let name = "check_catalog";
@@ -141,8 +167,16 @@ fn refused_plans() -> Vec<Case> {
             Some(codes::TRANSFORM_SCHEMA),
         ),
         Case::new(
-            merged.transform(Op::mask(["id"], Mask::Null)),
+            merged.clone().transform(Op::mask(["id"], Mask::Null)),
             keyed(),
+            Some(codes::TRANSFORM_INVALID),
+        ),
+        Case::new(
+            merged.transform(Arc::new(Remade) as Arc<dyn Transform>),
+            Served {
+                key: Some(ColumnPath::from("id")),
+                ..declared()
+            },
             Some(codes::TRANSFORM_INVALID),
         ),
         Case::new(
