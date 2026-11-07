@@ -218,6 +218,9 @@ A program that embeds rdlt builds three things and starts a run:
 | Normalize nested data into child tables | `.schema(SchemaSettings::new().nested(Nested::normalize()))` |
 | Fix a column's type | `.hint("amount", LogicalType::Int64)` |
 | Keep columns out of the table and its state | `.exclude(["ssn"])` |
+| Keep only some columns, and the key | `.include_only(["id", "email"])`, never beside `.exclude(..)` |
+| Rename, mask or add columns | `.transform(Op::rename([("amount", "amount_cents")]))`, `.transform(Op::mask(["email"], Mask::hmac_sha256(key)))`, `.transform(Op::constant([("region", Literal::Text("eu".into()))]))` |
+| Reshape with your own code | `.transform(Arc::new(MyTransform) as Arc<dyn Transform>)` |
 | Follow the source until stopped, or for a set time | `.with_until(Until::Forever)` or `.with_until(Until::For(duration))` on the `PipelinePlan` |
 | Read on from the earliest data a source kept, rather than fail, when its retention dropped a read's place | `.on_retention_loss(RetentionLoss::Reset)`, beside an incremental read |
 | Read a stream again from its beginning, or drop its tables | `engine.reset(..)` with `ResetScope::Positions` or `ResetScope::Tables` |
@@ -225,6 +228,28 @@ A program that embeds rdlt builds three things and starts a run:
 `ReadMode` and `LogicalType` come from `rdlt-connector`, and every other type here from
 `rdlt-engine`. A column's schema setting overrides its stream's, and a stream's overrides the
 pipeline's.
+
+### Transforms
+
+Transforms run once per batch, in the order a stream lists them, before the engine fits the
+batch to its table. Keys, change columns and the source's change time pass every transform as
+they arrive.
+
+- **Ops** are data: `rename`, `mask` (`hmac_sha256` in lower-case hex, `redact`, or `null`,
+  nested struct fields included) and `constant`. They are bounded and validated, safe in a
+  tenant's configuration.
+- **Code** implements `rdlt_engine::Transform`. It runs in process as the embedder's own trusted
+  code.
+- **Filters** never leave stale rows. An append drops a row a filter does not keep. A change
+  stream merged by key turns its upsert into a delete, which the stream's delete mode applies.
+  A filter on a stream that could not carry that delete is refused when the plan is built.
+  `StreamReport::filtered` counts what filters dropped and turned into deletes.
+- **Partial updates** pass a transform that declares its lineage, as ops and SQL do: a column
+  computed only from unchanged columns stays unchanged. A filter takes them where it declares
+  the columns it reads and the update sent each of them.
+
+The memory budget holds a transform to its declared bound before it runs, and measures code's
+output after (ADR 0053).
 
 ### Defaults
 
