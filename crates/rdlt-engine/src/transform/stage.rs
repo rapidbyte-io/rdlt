@@ -16,14 +16,17 @@ use arrow_array::{BooleanArray, RecordBatch};
 use arrow_schema::{ArrowError, Schema, SchemaRef};
 use arrow_select::filter;
 use rdlt_connector::cost::arrays;
-use rdlt_connector::{ColumnPath, ReadMode, UNCHANGED_COLUMN};
+use rdlt_connector::{ColumnPath, OP_COLUMN, ReadMode, SEQ_COLUMN, UNCHANGED_COLUMN};
 
 use self::changes::{ChangePlaces, Changes};
-use self::contract::{Declared, applied, carried, declares, kept};
+use self::contract::{Declared, applied, carried, declares, kept, passed};
 use self::decoding::Encoded;
 pub(crate) use self::refused::{Breach, Refusal, refused};
 use super::{Transform, TransformStep, allocated_beyond};
 use crate::plan::StreamPlan;
+
+/// The columns a change batch carries its changes in, which no transform may make.
+const CHANGE_COLUMNS: [&str; 3] = [OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN];
 
 /// What a filter does with a row it does not keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +167,12 @@ impl Stage {
         };
         let mut schemas = vec![first];
         let mut declared = Vec::with_capacity(self.steps.len());
+        let guarded: Vec<&str> = self
+            .kept
+            .iter()
+            .map(String::as_str)
+            .chain(CHANGE_COLUMNS)
+            .collect();
         for step in self.steps.iter() {
             let transform = step.as_transform();
             let current = Arc::clone(schemas.last().expect("a chain starts at its input"));
@@ -174,6 +183,7 @@ impl Stage {
                     error,
                 })?;
             declared.push(declares(transform, &current, &output)?);
+            passed(transform, &current, &output, &guarded)?;
             schemas.push(output);
         }
         let data = Arc::clone(schemas.last().expect("a chain starts at its input"));

@@ -929,18 +929,22 @@ fn code_whose_output_passes_the_room_is_cut_until_a_row_alone_does() {
 
 #[test]
 fn transforms_that_drop_or_retype_a_column_the_stream_keeps_are_refused() {
-    for plan in [
-        stream().transform(Op::rename([("id", "key")])),
-        stream().transform(Op::mask(["id"], Mask::Null)),
-    ] {
+    let refusal = |plan: StreamPlan| {
         let key = [ColumnPath::from("id")];
         let stage = Stage::new(&plan, &key, None).unwrap();
-        let refused = stage.chain(people(&[1]).schema_ref()).unwrap_err();
-        assert!(
-            matches!(&refused, Refusal::Kept { column } if column == "id"),
-            "{refused:?}"
-        );
-    }
+        stage.chain(people(&[1]).schema_ref()).unwrap_err()
+    };
+    let dropped = refusal(stream().transform(Op::rename([("id", "key")])));
+    assert!(
+        matches!(&dropped, Refusal::Kept { column } if column == "id"),
+        "{dropped:?}"
+    );
+    // A mask declares it passes the key on no longer, which is refused before its type is.
+    let retyped = refusal(stream().transform(Op::mask(["id"], Mask::Null)));
+    assert!(
+        matches!(&retyped, Refusal::Claimed { column, .. } if column == "id"),
+        "{retyped:?}"
+    );
 }
 
 #[test]
@@ -1119,8 +1123,51 @@ fn a_filter_reading_only_columns_an_update_sent_judges_its_rows() {
     assert_eq!(flags_of(&output.batches[0]), [0b0000_0010]);
 }
 
+/// A transform passing its input on and saying it passes nothing of it, in no output column.
+struct Mispassed;
+
+impl Transform for Mispassed {
+    fn name(&self) -> &'static str {
+        "mispassed"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        Ok(Arc::new(input.clone()))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        Ok(batch)
+    }
+
+    fn passes(&self, _input: &Schema) -> Option<Vec<Option<usize>>> {
+        Some(Vec::new())
+    }
+}
+
+/// A transform that says each output column passes on the input column one past the last.
+struct PassedBeyond;
+
+impl Transform for PassedBeyond {
+    fn name(&self) -> &'static str {
+        "passed beyond"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        Ok(Arc::new(input.clone()))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        Ok(batch)
+    }
+
+    fn passes(&self, input: &Schema) -> Option<Vec<Option<usize>>> {
+        let columns = input.fields().len();
+        Some(vec![Some(columns); columns])
+    }
+}
+
 #[test]
-fn a_lineage_or_filter_naming_columns_its_input_lacks_breaks_the_contract() {
+fn a_lineage_filter_or_passing_naming_columns_its_input_lacks_breaks_the_contract() {
     let reads_beyond = Even {
         reads: Some(vec![3]),
         lined: true,
@@ -1128,6 +1175,8 @@ fn a_lineage_or_filter_naming_columns_its_input_lacks_breaks_the_contract() {
     let cases = [
         (code(Overlined), Breach::Lineage),
         (code(reads_beyond), Breach::Reads),
+        (code(Mispassed), Breach::Passes),
+        (code(PassedBeyond), Breach::Passes),
     ];
     for (transform, expected) in cases {
         let plan = stream().transform(transform);
@@ -1446,6 +1495,10 @@ fn each_refusal_names_its_stream_and_reads_as_what_it_refused() {
         Refusal::Kept {
             column: named("id"),
         },
+        Refusal::Claimed {
+            transform: named("t"),
+            column: named("id"),
+        },
         Refusal::Absent {
             transform: named("mask"),
             column: named("x"),
@@ -1503,6 +1556,7 @@ fn a_breach_reads_as_what_broke() {
         Breach::Schema,
         Breach::Lineage,
         Breach::Reads,
+        Breach::Passes,
     ];
     let shown: std::collections::BTreeSet<String> =
         breaches.iter().map(ToString::to_string).collect();
@@ -1615,6 +1669,84 @@ fn a_stage_that_only_includes_columns_passes_an_encoded_column_as_it_arrived() {
         output[0].column(1).data_type(),
         DataType::Dictionary(..)
     ));
+}
+
+/// A transform declaring what it passes: every column as it arrives, but `remade`, which it
+/// computes anew under the same name, and `added`, a column it adds.
+struct Declaring {
+    remade: Option<&'static str>,
+    added: Option<&'static str>,
+}
+
+impl Transform for Declaring {
+    fn name(&self) -> &'static str {
+        "declaring"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        let mut fields: Vec<Field> = input.fields().iter().map(|f| f.as_ref().clone()).collect();
+        if let Some(added) = self.added {
+            fields.push(Field::new(added, DataType::Int8, true));
+        }
+        Ok(Arc::new(Schema::new(fields)))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        let schema = self.output(batch.schema_ref())?;
+        let mut columns = batch.columns().to_vec();
+        if self.added.is_some() {
+            columns.push(Arc::new(Int8Array::from(vec![0; batch.num_rows()])));
+        }
+        RecordBatch::try_new(schema, columns).map_err(|_| TransformError::new("unbuilt"))
+    }
+
+    fn passes(&self, input: &Schema) -> Option<Vec<Option<usize>>> {
+        let mut passed: Vec<Option<usize>> = (0..input.fields().len())
+            .map(|column| {
+                (Some(input.field(column).name().as_str()) != self.remade).then_some(column)
+            })
+            .collect();
+        if self.added.is_some() {
+            passed.push(None);
+        }
+        Some(passed)
+    }
+}
+
+#[test]
+fn a_transform_declaring_what_it_passes_may_not_remake_a_key_a_change_time_or_a_change_column() {
+    let timed = |remade, added| {
+        let plan = stream().transform(code(Declaring { remade, added }));
+        let stage = Stage::new(
+            &plan,
+            &[ColumnPath::from("id")],
+            Some(&ColumnPath::from("note")),
+        )
+        .expect("the plan has a stage");
+        stage.chain(people(&[1]).schema_ref()).map(|_| ())
+    };
+    for (remade, added) in [
+        (Some("id"), None),
+        (Some("note"), None),
+        (None, Some(OP_COLUMN)),
+        (None, Some(SEQ_COLUMN)),
+        (None, Some(UNCHANGED_COLUMN)),
+    ] {
+        let refused = timed(remade, added).unwrap_err();
+        assert!(
+            matches!(refused, Refusal::Claimed { .. }),
+            "{remade:?} {added:?}: {refused:?}"
+        );
+        fails_with(refused, ErrorKind::Config, Some(codes::TRANSFORM_INVALID));
+    }
+    assert!(timed(Some("name"), None).is_ok());
+    assert!(timed(None, Some("added")).is_ok());
+}
+
+#[test]
+fn trusted_code_declaring_nothing_it_passes_may_remake_a_key_of_its_type() {
+    let plan = stream().transform(code(Unlined));
+    assert!(ran(&plan, &["id"], people(&[1]), u64::MAX).is_ok());
 }
 
 #[test]

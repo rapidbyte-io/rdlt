@@ -58,6 +58,47 @@ pub(super) fn declares(
     })
 }
 
+/// Refuses `transform`, where it declares what it passes, making an output column under a name
+/// of `guarded` other than the input column of that name passed on unchanged.
+pub(super) fn passed(
+    transform: &dyn Transform,
+    input: &Schema,
+    output: &Schema,
+    guarded: &[&str],
+) -> Result<(), Refusal> {
+    let Some(passed) = transform.passes(input) else {
+        return Ok(());
+    };
+    let name = || transform.name().to_owned();
+    let fits = passed.len() == output.fields().len()
+        && passed
+            .iter()
+            .flatten()
+            .all(|column| *column < input.fields().len());
+    if !fits {
+        let breach = Breach::Passes;
+        return Err(Refusal::Contract {
+            transform: name(),
+            bounded: transform.bound(input).is_some(),
+            breach,
+        });
+    }
+    for (field, passed) in output.fields().iter().zip(&passed) {
+        if !guarded.contains(&field.name().as_str()) {
+            continue;
+        }
+        let arrived = input.index_of(field.name()).ok();
+        if passed.is_none() || *passed != arrived {
+            let column = field.name().clone();
+            return Err(Refusal::Claimed {
+                transform: name(),
+                column,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Refuses `changes` where they flag columns unchanged that `transform` cannot carry: it
 /// declares no lineage, or it filters reading a flagged column, whose value the source did not
 /// send.
