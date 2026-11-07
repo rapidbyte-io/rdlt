@@ -1,0 +1,1 @@
+SELECT t, lower(t) AS y FROM input AS i WHERE n > 1

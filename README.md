@@ -892,7 +892,7 @@ the whole engine runs under deterministic simulation.
 | Soak | Spawned connectors that are killed, stopped, crash and flood their output | 1,200 s nightly |
 | Kani | 14 proofs: wire credit, handshake limits, reading a length prefix from any bytes, the memory budget's shares, and a destination's answer to a commit | Every proof of each crate a pull request touches; all nightly |
 | Quint | [`exactly_once.qnt`](specs/exactly_once.qnt) (7 invariants and convergence) and [`replan.qnt`](specs/replan.qnt) (no partition lost or doubled when a run plans again) | Simulated when a pull request changes them; model-checked with TLC nightly |
-| Fuzzing | 7 targets: state records, wire messages, the scan that sizes a wire message before it is decoded, Arrow IPC frames, the data plane, JSON shredding, normalizing | 1,200 s per target nightly |
+| Fuzzing | 9 targets: state records, wire messages, the scan that sizes a wire message before it is decoded, Arrow IPC frames, the data plane, JSON shredding, normalizing, planning SQL transforms, and the transform stage on drawn batches | 1,200 s per target nightly |
 | Mutation testing | cargo-mutants over 7 crates; no mutant of a change may survive ([ADR 0003](docs/adr/0003-mutation-testing-before-push.md)) | Before a push, with `just ready` on Linux, which CI does not repeat; the full pass nightly, over 4 nights |
 | Coverage | At least 96% of lines and 93% of branches of the engine, connector, host, wire, certify and adopt crates | Every pull request |
 | Instruction counts | 28 hot paths under valgrind; a case taking more than 2% more instructions or allocations than `main` fails unless a commit names it in an `Instructions-Accepted:` trailer | Every pull request, Linux |

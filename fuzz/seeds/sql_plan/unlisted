@@ -1,0 +1,1 @@
+SELECT random() AS r, now() AS t, repeat(t, 3) AS u FROM input

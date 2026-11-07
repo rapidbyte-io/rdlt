@@ -1,0 +1,1 @@
+SELECT count(*) AS c FROM input GROUP BY n HAVING count(*) > 1

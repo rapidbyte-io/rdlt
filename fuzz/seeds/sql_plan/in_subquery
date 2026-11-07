@@ -1,0 +1,1 @@
+SELECT n FROM input WHERE n IN (SELECT n FROM input)

@@ -271,7 +271,9 @@ mutants-diff base="origin/main" jobs="4":
     exit "$failed"
 
 # Fuzz one target for a number of seconds, for example `just fuzz state_record 60`, from its
-# corpus, which keeps what it finds, and the seeds `fuzz/seeds/<target>` holds for it, if any
+# corpus, which keeps what it finds, and the seeds `fuzz/seeds/<target>` holds for it, if any.
+# `sql_plan` is handed inputs as long as a query's text may be, 64 KiB, and an input it takes two
+# seconds over is a finding
 fuzz target seconds="60":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -280,7 +282,19 @@ fuzz target seconds="60":
     mkdir -p "${corpora[0]}"
     seeds="{{ justfile_directory() }}/fuzz/seeds/{{ target }}"
     if [[ -d "$seeds" ]]; then corpora+=("$seeds"); fi
-    cargo +{{ nightly }} fuzz run {{ target }} --target "$(rustc -vV | sed -n 's/host: //p')" "${corpora[@]}" -- -max_total_time={{ seconds }}
+    # Under ASan, sql_plan passed libFuzzer's 2 GiB within four minutes with 72 MB of live heap,
+    # and stayed near 700 MB with no allocation stacks kept; a caller's options win.
+    if [[ "{{ target }}" == sql_plan ]]; then
+        export ASAN_OPTIONS="malloc_context_size=0${ASAN_OPTIONS:+:$ASAN_OPTIONS}"
+    fi
+    # Only the targets that plan or run SQL build rdlt-sql, and DataFusion with it.
+    features=()
+    if [[ "{{ target }}" == sql_plan || "{{ target }}" == transform_apply ]]; then
+        features=(--features sql)
+    fi
+    options=(-max_total_time={{ seconds }})
+    if [[ "{{ target }}" == sql_plan ]]; then options+=(-max_len=65536 -timeout=2); fi
+    cargo +{{ nightly }} fuzz run {{ target }} ${features[@]+"${features[@]}"} --target "$(rustc -vV | sed -n 's/host: //p')" "${corpora[@]}" -- "${options[@]}"
 
 # Prove the Kani harnesses of `crate`, or of every crate that holds any, or only those of the
 # proofs of `crate`'s `module`, a path such as `budget::admits`, with Kani's release bundle as

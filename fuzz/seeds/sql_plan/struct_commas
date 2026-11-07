@@ -1,0 +1,1 @@
+SELECT STRUCT(n, n, n, STRUCT(t, t, STRUCT(f, f, f)), n) AS s FROM input

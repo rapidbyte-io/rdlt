@@ -21,6 +21,8 @@ compile_error!(
      panic = \"unwind\""
 );
 
+#[cfg(feature = "bench")]
+pub mod bench;
 mod contain;
 mod depth;
 mod dialect;
