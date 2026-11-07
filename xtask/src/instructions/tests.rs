@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::{
-    Counted, Counts, VALGRIND, Verdict, accepted, allocations, change, listed_cases, per_iteration,
-    table, totals, unknown, valgrind_version, verdict,
+    Counted, Counts, VALGRIND, Verdict, accepted, allocations, benched, change, listed_cases,
+    per_iteration, table, totals, unknown, valgrind_version, verdict,
 };
 
 const CALLGRIND: &str = "version: 1\ncreator: callgrind-3.25.1\npid: 7\n\
@@ -210,4 +210,10 @@ fn valgrind_versions_read_as_major_and_minor() {
         assert!(valgrind_version(printed).is_err(), "{printed:?}");
     }
     assert!((3, 21) < VALGRIND && (3, 22) >= VALGRIND);
+}
+
+#[test]
+fn the_benchmarks_counted_are_those_a_tree_holds() {
+    assert_eq!(benched(|package| package == "rdlt-engine"), ["rdlt-engine"]);
+    assert_eq!(benched(|_| true), ["rdlt-engine", "rdlt-sql"]);
 }

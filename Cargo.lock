@@ -3463,6 +3463,7 @@ dependencies = [
  "serde_json",
  "sqlparser",
  "stacker",
+ "stats_alloc",
  "thiserror",
  "tokio",
 ]

@@ -7,7 +7,8 @@ the gate. The counts of a change are in its CI run's summary; nothing reads a co
 
 ## Cases
 
-The cases are those of the engine's `allocations` bench whose names hold a `/`.
+The cases are those of the `allocations` benches of the engine and of rdlt-sql whose names hold a
+`/`.
 
 | Case | One iteration |
 |---|---|
@@ -21,6 +22,10 @@ The cases are those of the engine's `allocations` bench whose names hold a `/`.
 | `ipc/roundtrip` | `rdlt_wire`'s `Encoder` and `Decoder` over one 8,192-row batch of the passthrough workload's columns: its schema and its frames encoded, then decoded |
 | `json/check` | `bench::check_json` over a column of 8,192 escaped JSON values, the string-heavy corpus's rows |
 | `lowering/append_text`, `lowering/merge_unique`, `lowering/merge_duplicates`, `lowering/history`, `lowering/changes`, `lowering/split_json`, `lowering/one_bad_value`, `lowering/one_dropped_row`, `lowering/temporal_widening` | preparing the lowering bench's batch of that name, of 8,192 rows, on the calling thread, as [lowering.md](lowering.md) describes it |
+| `transform/include` | `bench::Transformed::run` of a stream including `email` alone, keyed by `id`, over a batch of 8,192 rows of an id, an email, an amount and a status: two of its four columns kept |
+| `transform/mask` | `bench::Transformed::run` masking the email column of the same batch with an `HMAC-SHA256` |
+| `sql/projection` | `bench::Transformed::run` of `SELECT id, lower(email) AS email, amount * 100 AS cents FROM input` over the same batch, its emails in mixed case |
+| `sql/filter` | `bench::Transformed::run` of `SELECT * FROM input WHERE status <> 'test'` over the same batch, keeping nine rows in ten |
 
 The cases that run the engine, the passthrough, commit and wide cases, fix their layout whatever
 the host has: a count is the same on every machine only on one layout, so this is a measuring
@@ -33,10 +38,10 @@ one more key.
 - `just instructions [base]` runs `cargo xtask instructions --base <base> --limit 2`, `base`
   `origin/main` unless given. It checks the base out in a temporary worktree outside the tree, so
   none of this tree's cargo configuration reaches the base's build, and builds the `allocations`
-  bench of both trees side by side as `cargo bench` builds it (the release profile: fat LTO, one
-  codegen unit), each into its own target directory under `target/instructions`, since two
-  checkouts sharing one would take each other's builds as their own, and both with the toolchain
-  `rust-toolchain.toml` names. It then runs each case under
+  benches of both trees side by side, in one `cargo bench` invocation each, as it builds them
+  (the release profile: fat LTO, one codegen unit), each into its own target directory under
+  `target/instructions`, since two checkouts sharing one would take each other's builds as their
+  own, and both with the toolchain `rust-toolchain.toml` names. It then runs each case under
   `valgrind --tool=callgrind --fair-sched=yes` at one and at three iterations.
 - A case's count is the difference of the two runs over two, so what the process does once,
   making the case's inputs among it, cancels out. Callgrind counts every thread, so work moved
