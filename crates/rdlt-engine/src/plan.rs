@@ -3,6 +3,7 @@
 mod retention;
 #[cfg(test)]
 mod tests;
+mod transforms;
 mod until;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,6 +17,7 @@ use rdlt_wire::limits::{EXCLUDED_BYTES, excluded_bytes};
 
 use crate::error::{Code, Error, codes};
 use crate::policy::{self, Nested, SchemaPolicy, SchemaSettings};
+use crate::transform::TransformStep;
 
 pub use retention::RetentionLoss;
 pub use until::Until;
@@ -75,6 +77,10 @@ pub struct StreamPlan {
     hints: BTreeMap<ColumnPath, LogicalType>,
     /// Shared, so the many copies of the plan a run makes copy no name.
     excluded: Arc<BTreeSet<ColumnPath>>,
+    /// The columns the stream includes, where it lists them; shared as `excluded` is.
+    included: Option<Arc<BTreeSet<ColumnPath>>>,
+    /// Shared, so the many copies of the plan a run makes copy no transform.
+    transforms: Arc<Vec<TransformStep>>,
     retention: RetentionLoss,
 }
 
@@ -92,6 +98,8 @@ impl StreamPlan {
             columns: BTreeMap::new(),
             hints: BTreeMap::new(),
             excluded: Arc::default(),
+            included: None,
+            transforms: Arc::default(),
             retention: RetentionLoss::default(),
         }
     }
@@ -188,6 +196,33 @@ impl StreamPlan {
         self
     }
 
+    /// Keeps only the top-level columns `names` names, beside any it includes already, and the
+    /// columns the stream needs: its keys, its change columns and the source's change time.
+    ///
+    /// A column added upstream never reaches the table unless it is listed. A stream includes
+    /// or excludes, never both, and includes at most [`NAMED_COLUMNS`] columns; the wire carries
+    /// only exclusions, so the engine drops what a stream does not include as each batch
+    /// arrives.
+    ///
+    /// [`NAMED_COLUMNS`]: crate::NAMED_COLUMNS
+    #[must_use]
+    pub fn include_only<C: Into<ColumnPath>>(mut self, names: impl IntoIterator<Item = C>) -> Self {
+        let included = self.included.get_or_insert_with(Arc::default);
+        Arc::make_mut(included).extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Adds a transform, run on every batch after those added before it.
+    ///
+    /// Keys, change columns and the source's change time pass every transform as they arrive.
+    /// A filter may stand only where a row it stops keeping leaves its table: an append, a
+    /// replace, or a change stream matched by key whose deletes are not ignored.
+    #[must_use]
+    pub fn transform(mut self, step: impl Into<TransformStep>) -> Self {
+        Arc::make_mut(&mut self.transforms).push(step.into());
+        self
+    }
+
     /// The stream.
     pub fn name(&self) -> &StreamName {
         &self.name
@@ -245,6 +280,16 @@ impl StreamPlan {
     /// The columns the stream excludes, in order.
     pub fn excluded(&self) -> impl Iterator<Item = &ColumnPath> {
         self.excluded.iter()
+    }
+
+    /// The columns the stream includes, if it lists any.
+    pub fn included(&self) -> Option<&BTreeSet<ColumnPath>> {
+        self.included.as_deref()
+    }
+
+    /// The stream's transforms, in the order they run.
+    pub fn transforms(&self) -> &[TransformStep] {
+        &self.transforms
     }
 
     /// Whether the stream excludes `column`.
@@ -310,8 +355,11 @@ impl PipelinePlan {
     /// `incremental` and `cdc` with `append` or `merge`), a key only on merge streams, delete and
     /// truncate modes only on `cdc` streams merged by key, settings, hints, keys and exclusions
     /// naming top-level columns, no excluded column the stream needs or sets (a change column, a
-    /// key column, or one it sets or hints), and no more excluded names than a read's start
-    /// carries.
+    /// key column, or one it sets or hints), no more excluded names than a read's start
+    /// carries, an include beside no exclusion, and transforms the stream can carry (no op
+    /// naming a key or change column, no two ops naming one column, no name beginning with the
+    /// engine's prefix, ops and literals within their limits, and a filter only where a row it
+    /// stops keeping leaves its table).
     pub fn new(
         pipeline: PipelineId,
         streams: impl IntoIterator<Item = StreamPlan>,
@@ -346,6 +394,7 @@ impl PipelinePlan {
             check_modes(stream)?;
             check_columns(stream)?;
             check_exclusion(stream)?;
+            transforms::check(stream)?;
         }
         Ok(Self {
             pipeline,
