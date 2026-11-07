@@ -52,8 +52,9 @@ pub const TRANSFORM_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "T-BOUND",
-        statement: "what a transform's filter and apply allocate beyond their input stays \
-                    within the bound it declares",
+        statement: "the buffers a transform returns, its output and its filter's answer, \
+                    beyond its input stay within the bound it declares; scratch memory it frees \
+                    before returning is not measured",
         unless: "the transform declares no bound",
     },
     Clause {
