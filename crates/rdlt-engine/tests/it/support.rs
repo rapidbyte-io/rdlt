@@ -7,6 +7,7 @@ pub(crate) mod hooked;
 pub(crate) mod listening;
 pub(crate) mod making;
 pub(crate) mod script;
+pub(crate) mod served;
 pub(crate) mod targets;
 
 use std::future::Future;
