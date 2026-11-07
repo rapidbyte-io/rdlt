@@ -125,3 +125,30 @@ fn the_python_extension_uses_the_sdk_and_certification_and_nothing_uses_it() {
         );
     }
 }
+
+#[test]
+fn rdlt_sql_builds_on_the_engine_and_nothing_below_it_uses_it_even_in_tests() {
+    let names = crates(&[
+        "rdlt-sql",
+        "rdlt-engine",
+        "rdlt-connector",
+        "rdlt-host",
+        "rdlt-wire",
+        "rdlt-certify",
+    ]);
+    let allowed = [
+        edge("rdlt-sql", "rdlt-engine", false),
+        edge("rdlt-sql", "rdlt-connector", false),
+        edge("rdlt-sql", "rdlt-certify", true),
+    ];
+    assert_eq!(check(&names, &allowed), Vec::new());
+    for from in ["rdlt-engine", "rdlt-connector", "rdlt-host", "rdlt-wire"] {
+        for dev in [false, true] {
+            let case = edge(from, "rdlt-sql", dev);
+            assert_eq!(
+                check(&names, std::slice::from_ref(&case)),
+                vec![Violation::Forbidden(case)]
+            );
+        }
+    }
+}

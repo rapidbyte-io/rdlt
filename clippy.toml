@@ -1,5 +1,5 @@
-# rdlt-engine and rdlt-testkit repeat these settings in clippy.toml files of their own, the only
-# ones clippy reads for them.
+# rdlt-engine, rdlt-sql and rdlt-testkit repeat these settings in clippy.toml files of their own,
+# the only ones clippy reads for them.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-print-in-tests = true

@@ -846,6 +846,7 @@ flowchart LR
 | Crate | What it is |
 |---|---|
 | [`rdlt-engine`](crates/rdlt-engine) | The engine: plans, runs, schemas, shredding JSON and lowering batches, commits, the memory budget |
+| [`rdlt-sql`](crates/rdlt-sql) | Stateless SQL transforms: DataFusion's planner and expressions, evaluated by the engine |
 | [`rdlt-connector`](crates/rdlt-connector) | The connector contract and SDK: traits, vocabulary, in-process certification, serving the protocol, `sqlgen` |
 | [`rdlt-connector-macros`](crates/rdlt-connector-macros) | The `#[source]` and `#[destination]` attributes |
 | [`rdlt-connector-reference`](crates/rdlt-connector-reference) | The reference connectors and their binaries |
