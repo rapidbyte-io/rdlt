@@ -8,6 +8,18 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+datafusion-sql.workspace = true
+rdlt-connector.workspace = true
+rdlt-engine.workspace = true
+regex.workspace = true
+sqlparser.workspace = true
+stacker.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true
+
+# Used through DataFusion's SQL front end, for the growth of its stack that only a dependency on
+# it can turn on.
+[package.metadata.cargo-machete]
+ignored = ["sqlparser"]

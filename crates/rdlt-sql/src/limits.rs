@@ -4,9 +4,14 @@
 /// Bytes: the longest text a SQL transform may have.
 pub const SQL_BYTES: usize = 64 << 10;
 
-/// How deep a SQL transform's expressions may nest: each parenthesis, call or `CASE` is a level,
-/// and so is each operator of a chain, so `a + b + c` takes two.
+/// How deep a SQL transform's expressions may nest, each expression within as many as lie
+/// above it in the parsed query: a parenthesis, a call, a `CASE` and each operator of a chain
+/// are a level each, so `lower(t)` is one deep and `a + b + c` two.
 pub const SQL_DEPTH: usize = 64;
+
+/// How deep the parser may recurse, growing its stack as it goes: beyond what any query the
+/// depth limit admits takes, so text deeper still is refused as the limit refuses it.
+pub(crate) const PARSER_DEPTH: usize = 4 * SQL_DEPTH;
 
 /// Bytes: the longest literal a SQL transform may hold.
 pub const SQL_LITERAL_BYTES: usize = 4 << 10;
