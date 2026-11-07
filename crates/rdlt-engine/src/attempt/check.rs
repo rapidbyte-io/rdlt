@@ -2,9 +2,10 @@
 
 use std::collections::BTreeSet;
 
-use rdlt_connector::{Catalog, ColumnPath, Field, LogicalType, ReadMode, StreamSpec, TypeKind};
+use rdlt_connector::{
+    Capabilities, Catalog, ColumnPath, Field, LogicalType, ReadMode, StreamSpec, TypeKind,
+};
 
-use super::RunContext;
 use crate::error::{Code, Error, codes};
 use crate::plan::{DeleteMode, OnTruncate, RetentionLoss, StreamPlan, WriteMode};
 use crate::transform::TransformStep;
@@ -12,7 +13,7 @@ use crate::transform::TransformStep;
 /// The stream's catalog entry, once the source can read it as planned and the destination can
 /// write it as planned.
 pub(super) fn check_stream<'a>(
-    context: &RunContext,
+    capabilities: &Capabilities,
     plan: &StreamPlan,
     catalog: &'a Catalog,
 ) -> Result<&'a StreamSpec, Error> {
@@ -46,7 +47,7 @@ pub(super) fn check_stream<'a>(
         let detail = format!("the source cannot read it as {:?}", plan.read_mode());
         return Err(refuse(codes::READ_MODE_UNSUPPORTED, &detail));
     }
-    let modes = context.destination.capabilities().write_modes;
+    let modes = capabilities.write_modes;
     let writable = match plan.write_mode() {
         WriteMode::Append => modes.append,
         WriteMode::Replace => modes.replace,
@@ -62,7 +63,7 @@ pub(super) fn check_stream<'a>(
     {
         return Err(refuse(codes::CHANGE_TIME_INVALID, &detail));
     }
-    let types = &context.destination.capabilities().types;
+    let types = &capabilities.types;
     if plan.keeps_history()
         && !types.contains(&TypeKind::Timestamp)
         && !types.contains(&TypeKind::Int64)
@@ -71,7 +72,7 @@ pub(super) fn check_stream<'a>(
                       holds when a history table's versions begin and end";
         return Err(refuse(codes::HISTORY_VALIDITY_UNSUPPORTED, detail));
     }
-    if let Some((code, detail)) = unmergeable(context, plan) {
+    if let Some((code, detail)) = unmergeable(capabilities, plan) {
         return Err(refuse(code, &detail));
     }
     Ok(spec)
@@ -135,11 +136,10 @@ pub(super) fn check_transformed(
 }
 
 /// Why the destination cannot merge `plan`'s change stream as planned, if it is one and cannot.
-fn unmergeable(context: &RunContext, plan: &StreamPlan) -> Option<(Code, String)> {
+fn unmergeable(capabilities: &Capabilities, plan: &StreamPlan) -> Option<(Code, String)> {
     if !plan.merges_changes() {
         return None;
     }
-    let capabilities = context.destination.capabilities();
     if !capabilities.merge_changes {
         let detail = "the destination does not merge change streams".to_owned();
         return Some((codes::CHANGE_MERGE_UNSUPPORTED, detail));

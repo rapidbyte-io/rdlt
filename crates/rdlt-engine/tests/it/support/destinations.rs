@@ -218,6 +218,10 @@ pub(crate) enum Step {
     LoseResponseThenOpen,
     /// Opening panics, as a connector with a bug may.
     PanicOnOpen,
+    /// The destination's own check fails.
+    Check,
+    /// The destination's own check panics.
+    PanicOnCheck,
     /// The first commit's connection is lost before it lands; the others land.
     CommitOnce,
     /// Every commit lands, and is answered with the receipt of the commit after it.
@@ -272,6 +276,10 @@ impl Destination for Failing {
     }
 
     fn check(&self) -> BoxFuture<'_, Result<()>> {
+        assert!(self.step != Step::PanicOnCheck, "injected panic");
+        if self.step == Step::Check {
+            return Box::pin(async { Err(injected()) });
+        }
         self.inner.check()
     }
 

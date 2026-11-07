@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use arrow_array::{Array, Int64Array, RecordBatch};
 use rdlt_connector::{
-    ConnectContext, Destination, PipelineId, Source, StreamName, destination_factory,
+    Catalog, ConnectContext, Destination, PipelineId, Source, StreamName, destination_factory,
     source_factory,
 };
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination, published};
@@ -328,6 +328,20 @@ impl TestEngine {
         tokio::time::timeout(LIMIT, reset)
             .await
             .expect("the reset ends within the test's limit")
+    }
+
+    /// Checks `plan` against `source` and `destination`, failing the test if it has not ended
+    /// within [`LIMIT`].
+    pub(crate) async fn check(
+        &self,
+        plan: &PipelinePlan,
+        source: Arc<dyn Source>,
+        destination: Arc<dyn Destination>,
+    ) -> Result<Catalog, rdlt_engine::Error> {
+        let check = self.engine.check(plan, source, destination);
+        tokio::time::timeout(LIMIT, check)
+            .await
+            .expect("the check ends within the test's limit")
     }
 }
 

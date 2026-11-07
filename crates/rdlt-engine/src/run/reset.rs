@@ -9,10 +9,8 @@ use rdlt_connector::{
 };
 
 use super::Engine;
-use crate::deadline::Waits;
 use crate::error::{Error, ErrorKind, Side, codes};
 use crate::naming::Naming;
-use crate::scope::contained;
 
 /// What a reset clears of each stream.
 #[non_exhaustive]
@@ -66,20 +64,9 @@ impl Engine {
         source: Arc<dyn Source>,
         destination: Arc<dyn Destination>,
     ) -> Result<ResetReport, Error> {
-        // A reset holds nothing but what decoding the connectors' answers takes: a budget of the
-        // run's memory holds it.
-        let budget = crate::budget::MemoryBudget::new(
-            self.config.memory().get(),
-            Arc::clone(&self.env),
-            self.config.budget_wait(),
-        );
-        let waits =
-            Waits::new(Arc::clone(&self.env), self.config.connector_wait()).charging(&budget);
-        let (source, destination) = (waits.source(source), waits.destination(destination));
-        let resetting = self.resetting(pipeline, streams, scope, source, destination);
-        contained(resetting)
-            .await
-            .unwrap_or_else(|panic| Err(Error::internal(format!("the reset panicked: {panic}"))))
+        let resetting =
+            |source, destination| self.resetting(pipeline, streams, scope, source, destination);
+        self.guarded("reset", source, destination, resetting).await
     }
 
     /// Resets as [`Engine::reset`] says, a connector's panic unwinding out of it.

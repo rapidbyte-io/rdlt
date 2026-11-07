@@ -20,7 +20,7 @@ use crate::limits::PLANS_AT_ONCE;
 use crate::naming::Naming;
 use crate::normalize::{self, Shape};
 use crate::partition::ChangeMode;
-use crate::plan::{DeleteMode, RetentionLoss, StreamPlan, WriteMode};
+use crate::plan::{DeleteMode, PipelinePlan, RetentionLoss, StreamPlan, WriteMode};
 use crate::policy::Nested;
 use crate::table::{
     ChangeLayout, Incoming, LineageColumns, MetaNames, Model, Resolver, Settings, Tables,
@@ -54,7 +54,7 @@ impl<'a> Planning<'a> {
         let mut accepted = Vec::with_capacity(plans.len());
         let mut refused = None;
         for plan in plans {
-            match checked(self.context, plan, self.catalog) {
+            match checked(&self.capabilities, &self.context.plan, plan, self.catalog) {
                 Ok(checked) => accepted.push(checked),
                 Err(error) => {
                     refused = Some(error);
@@ -98,10 +98,13 @@ impl<'a> Planning<'a> {
         tables: &Tables,
         sourced: Sourced,
     ) -> Result<Planned, Error> {
-        let Checked { spec, shape, key } = checked;
-        let primary = spec.primary_key().into_iter().flatten();
-        let keys: Vec<ColumnPath> = primary.chain(&key).cloned().collect();
-        let stage = Stage::new(plan, &keys, spec.change_time()).map(Arc::new);
+        let Checked {
+            spec,
+            shape,
+            key,
+            stage,
+            declared,
+        } = checked;
         let generation = match (plan.write_mode(), &sourced.cycle) {
             (WriteMode::Replace, Some(cycle)) => Some(cycle.generation),
             _ => None,
@@ -119,8 +122,7 @@ impl<'a> Planning<'a> {
             .map(|keying| (table.path.clone(), keying));
         let index = tables.add_normalized(resolver, &table, model, shape.clone())?;
         let mut children = Vec::new();
-        if let Some(declared) = spec.schema() {
-            let declared = &kept(declared, plan, stage.as_deref())?;
+        if let Some(declared) = &declared {
             let incoming = match &shape {
                 Some(shape) => {
                     let made = normalize::declared::children(declared, shape)?;
@@ -214,28 +216,46 @@ impl<'a> Planning<'a> {
     }
 }
 
-/// A stream the checks accept: its catalog entry, how it normalizes, and the columns it merges by.
-struct Checked<'a> {
+/// A stream the checks accept: its catalog entry, how it normalizes, the columns it merges by, its
+/// stage, and its declared schema as the stage makes it.
+pub(crate) struct Checked<'a> {
     spec: &'a StreamSpec,
     shape: Option<Shape>,
     key: Vec<ColumnPath>,
+    stage: Option<Arc<Stage>>,
+    declared: Option<TableSchema>,
 }
 
-/// Checks `plan`'s settings against the catalog and the destination, none of which a stream's
-/// table work changes.
-fn checked<'a>(
-    context: &RunContext,
+/// Checks `plan`'s settings, in a run of `pipeline`, against the catalog and the destination's
+/// `capabilities`, none of which a stream's table work changes, and builds its stage and declared
+/// schema.
+pub(crate) fn checked<'a>(
+    capabilities: &Capabilities,
+    pipeline: &PipelinePlan,
     plan: &StreamPlan,
     catalog: &'a Catalog,
 ) -> Result<Checked<'a>, Error> {
-    let spec = check_stream(context, plan, catalog)?;
+    let spec = check_stream(capabilities, plan, catalog)?;
     check_excluded(plan, spec)?;
-    let max_depth = normalized_depth(context, plan);
+    let max_depth = normalized_depth(pipeline, plan);
     unnormalizable(plan, max_depth.is_some())?;
     let key = merge_key(plan, spec)?;
     check_transformed(plan, spec, &key)?;
+    let primary = spec.primary_key().into_iter().flatten();
+    let keys: Vec<ColumnPath> = primary.chain(&key).cloned().collect();
+    let stage = Stage::new(plan, &keys, spec.change_time()).map(Arc::new);
+    let declared = spec
+        .schema()
+        .map(|declared| kept(declared, plan, stage.as_deref()))
+        .transpose()?;
     let shape = max_depth.map(|max_depth| shape(plan, max_depth, &key));
-    Ok(Checked { spec, shape, key })
+    Ok(Checked {
+        spec,
+        shape,
+        key,
+        stage,
+        declared,
+    })
 }
 
 /// `plan`'s stream, its table at `index`, ready to load `partitioned` through `stage`,
@@ -321,8 +341,8 @@ fn unnormalizable(plan: &StreamPlan, normalized: bool) -> Result<(), Error> {
 }
 
 /// The depth `plan`'s stream normalizes to, if its settings or the pipeline's say it does.
-fn normalized_depth(context: &RunContext, plan: &StreamPlan) -> Option<u8> {
-    let pipeline = context.plan.schema_settings();
+fn normalized_depth(pipeline: &PipelinePlan, plan: &StreamPlan) -> Option<u8> {
+    let pipeline = pipeline.schema_settings();
     let nested = plan
         .schema_settings()
         .nested_setting()
