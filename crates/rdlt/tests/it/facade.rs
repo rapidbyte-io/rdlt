@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use rdlt::{
     Code, Column, Connector, Document, ErrorKind, Hint, Host, MaskStep, MaskWith, Origin, Pipeline,
@@ -276,8 +277,12 @@ async fn a_destination_refusing_its_configuration_fails_the_build_as_the_destina
     );
 }
 
+/// What a [`Cataloged`] source's configuration lists to have it never answer.
+const STALLS: &str = "stalls";
+
 /// A source that reads nothing: its catalog holds the streams its configuration lists, each a
-/// namespace and a name or a name alone, and cannot be read where it lists none.
+/// namespace and a name or a name alone, cannot be read where it lists none, and is never
+/// answered where it lists [`STALLS`].
 struct Cataloged(Vec<Vec<String>>);
 
 impl SourceConnector for Cataloged {
@@ -304,6 +309,9 @@ impl SourceConnector for Cataloged {
                 ConnectorErrorKind::Transient,
                 unreachable,
             ));
+        }
+        if self.0.iter().flatten().any(|part| part == STALLS) {
+            std::future::pending::<()>().await;
         }
         let named = self.0.iter().map(|parts| match parts.as_slice() {
             [namespace, name] => StreamName::with_namespace(namespace, name),
@@ -334,6 +342,36 @@ async fn a_reset_resolves_a_name_against_the_source_s_catalog() {
         refused.to_string().contains("the source's catalog"),
         "{refused}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_source_that_never_answers_discovery_fails_the_build_after_the_connector_wait() {
+    let source = Side::new(Connector::new(Cataloged::ID)).config(serde_json::json!([[STALLS]]));
+    let destination = Side::new(Connector::new("io.rapidbyte.memory"))
+        .config(serde_json::json!({ "store": "facade-stalled" }));
+    let host = memory_host().source::<Cataloged>();
+    let building = Pipeline::builder("stalled", source, destination)
+        .stream(Stream::new("users"))
+        .build(&host);
+    let began = tokio::time::Instant::now();
+    let built = tokio::time::timeout(Duration::from_hours(1), building).await;
+    let refused = built
+        .expect("bounded by the connector wait")
+        .expect_err("refused");
+    assert_eq!(began.elapsed(), Duration::from_mins(30));
+    let said = refused.to_string();
+    assert_eq!(
+        refused.code().map(Code::as_str),
+        Some("connector_failed"),
+        "{said}"
+    );
+    assert_eq!(
+        refused.connector_code(),
+        Some("deadline_exceeded"),
+        "{said}"
+    );
+    assert_eq!(refused.origin(), Origin::Source, "{said}");
+    assert!(refused.is_retryable(), "{said}");
 }
 
 #[tokio::test(start_paused = true)]
