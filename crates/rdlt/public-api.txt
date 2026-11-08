@@ -788,6 +788,7 @@ pub struct rdlt::Host
 impl rdlt::Host
 pub fn rdlt::Host::allow_env(self, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>) -> Self
 pub fn rdlt::Host::allow_files(self, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<std::path::PathBuf>>) -> Self
+pub fn rdlt::Host::allow_network(self) -> Self
 pub fn rdlt::Host::always_readable(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn rdlt::Host::connectors(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn rdlt::Host::destination<C: rdlt_connector::destination::DestinationConnector>(self) -> Self

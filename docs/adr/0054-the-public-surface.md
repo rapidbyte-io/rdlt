@@ -18,8 +18,8 @@ operates its host.
   the same error from code or a file. The engine parses no configuration: the document's types
   are the facade's, each word mapped onto the engine's, and `Document::json_schema` gives their
   JSON Schema.
-- **One vocabulary.** Host: `connectors`, `trust_binaries`, `writable`, `readable`,
-  `always_readable`, `allow_env`, `allow_files`, `secret_store`, `remote`, `source`,
+- **One vocabulary.** Host: `connectors`, `trust_binaries`, `allow_network`, `writable`,
+  `readable`, `always_readable`, `allow_env`, `allow_files`, `secret_store`, `remote`, `source`,
   `destination`, `transform`. Author: `access: { read, write, network }`, secret references,
   `connector: <id>` or `{ id, version, digest, endpoint }`, `transform: [{ code: name }]`.
   `rdlt-host`'s builders use the same words; its `Registry` keeps `trusted_source`, as `source`
@@ -30,6 +30,11 @@ operates its host.
   A placement the host was not given is refused (`placement_refused`), never made another way.
   `Host::new()` runs local connectors in bubblewrap and `.trust_binaries()` opts out; where no
   sandbox exists, the refusal names both remedies.
+- **The network is the operator's to allow.** Nothing a document says widens what its host
+  allows: `access: { network: true }` on a sandboxed local connector is refused
+  (`placement_refused`, naming the setting) unless the host calls `allow_network`, as its paths
+  lie within the roots the host names. A trusted binary has the host's access already, and a
+  remote connector its own network.
 - **Code is named, never embedded.** A document refers to in-process connectors and code
   transforms by the names the host registered.
 - **A mask key is a secret reference.** It is one `${env:NAME}`, `${file:/path}` or
