@@ -43,9 +43,11 @@ pub(super) fn decoded_schema(arrived: &SchemaRef) -> Result<(SchemaRef, Encoded)
         // What lowering's decoder makes of a column of this type, which the type alone fixes.
         let empty = decoded(&new_empty_array(field.data_type())).map_err(|error| failed(&error))?;
         let data_type = empty.data_type().clone();
-        let nullable = field.is_nullable() || holds_nulls(field.data_type());
+        // The values a dictionary's keys or a run-end encoding's runs name may hold a null
+        // whatever their field says, which decoding makes a null of the column. A table holds
+        // the column as lowering would: nullable, a key's null refused as lowering refuses it.
         let decoded = field.as_ref().clone().with_data_type(data_type);
-        fields[*place] = Arc::new(decoded.with_nullable(nullable));
+        fields[*place] = Arc::new(decoded.with_nullable(true));
     }
     let decoded_fields: Fields = places
         .iter()
@@ -92,16 +94,6 @@ pub(super) fn decode(
     let options = RecordBatchOptions::new().with_row_count(Some(data.num_rows()));
     RecordBatch::try_new_with_options(Arc::clone(schema), columns, &options)
         .map_err(|error| failed(&error))
-}
-
-/// Whether the values an encoding of `data_type` names may hold a null its field does not show,
-/// which decoding makes a null of the column: a table holds it as lowering would, nullable
-/// unless the column keys it.
-fn holds_nulls(data_type: &DataType) -> bool {
-    match data_type {
-        DataType::RunEndEncoded(_, values) => values.is_nullable(),
-        _ => true,
-    }
 }
 
 /// Whether a column of `data_type` holds a dictionary's keys or runs, naming values beside it.
