@@ -76,6 +76,10 @@ pub use rdlt::json
 pub mod rdlt::codes
 pub const rdlt::codes::CONNECTOR_FAILED: rdlt_engine::error::codes::Code
 pub const rdlt::codes::DOCUMENT_INVALID: rdlt_engine::error::codes::Code
+pub const rdlt::codes::DOCUMENT_REFUSED: rdlt_engine::error::codes::Code
+pub const rdlt::codes::DOCUMENT_SYNTAX: rdlt_engine::error::codes::Code
+pub const rdlt::codes::DOCUMENT_TOO_DEEP: rdlt_engine::error::codes::Code
+pub const rdlt::codes::DOCUMENT_TOO_LARGE: rdlt_engine::error::codes::Code
 pub const rdlt::codes::DOCUMENT_UNKNOWN_KEY: rdlt_engine::error::codes::Code
 pub const rdlt::codes::DOCUMENT_VERSION: rdlt_engine::error::codes::Code
 pub const rdlt::codes::ENVIRONMENT_UNAVAILABLE: rdlt_engine::error::codes::Code
@@ -89,6 +93,9 @@ pub const rdlt::codes::TRANSFORM_UNAVAILABLE: rdlt_engine::error::codes::Code
 pub const rdlt::codes::TRANSFORM_UNKNOWN: rdlt_engine::error::codes::Code
 pub mod rdlt::limits
 pub const rdlt::limits::BUILD_WAIT: core::time::Duration
+pub const rdlt::limits::DOCUMENT_BYTES: usize
+pub const rdlt::limits::DOCUMENT_DEPTH: usize
+pub const rdlt::limits::DOCUMENT_NODES: usize
 pub const rdlt::limits::EVENT_BUFFER: usize
 pub const rdlt::limits::EVENT_BUFFER_MAX: usize
 #[non_exhaustive] pub enum rdlt::Connector
@@ -751,6 +758,7 @@ pub rdlt::Document::version: u8
 impl rdlt::Document
 pub fn rdlt::Document::json_schema() -> serde_json::value::Value
 pub fn rdlt::Document::new(impl core::convert::Into<alloc::string::String>, rdlt::Side, rdlt::Side) -> Self
+pub fn rdlt::Document::parse(&str) -> core::result::Result<Self, rdlt::Error>
 impl core::clone::Clone for rdlt::Document
 pub fn rdlt::Document::clone(&self) -> rdlt::Document
 impl core::cmp::PartialEq for rdlt::Document
