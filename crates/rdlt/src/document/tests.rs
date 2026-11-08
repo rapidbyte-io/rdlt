@@ -754,6 +754,37 @@ fn no_debug_shows_a_side_s_configuration() {
 }
 
 #[test]
+fn no_debug_shows_more_of_an_endpoint_than_where_it_listens() {
+    let shown = |endpoint: &str| {
+        let connector = Connector::new("io.rapidbyte.postgres").endpoint(endpoint);
+        let side = Side::new(connector);
+        let document = Document::new("p", side.clone(), side.clone());
+        let builder = crate::Pipeline::builder("p", side.clone(), side.clone());
+        [
+            format!("{side:?}"),
+            format!("{document:?}"),
+            format!("{builder:?}"),
+        ]
+    };
+    for written in [
+        "grpcs://user:CANARY@db.example:7443",
+        "CANARY is no endpoint",
+    ] {
+        for shown in shown(written) {
+            assert!(!shown.contains("CANARY"), "{shown}");
+            assert!(
+                shown.contains("***") && shown.contains("io.rapidbyte.postgres"),
+                "{shown}"
+            );
+        }
+    }
+    for shown in shown("grpcs://db.example:7443") {
+        assert!(shown.contains("db.example:7443"), "{shown}");
+        assert!(!shown.contains("grpcs"), "{shown}");
+    }
+}
+
+#[test]
 fn a_null_size_or_duration_says_nothing() {
     let resources = serde_json::json!({ "memory": null, "writers": 2 });
     let resources = serde_json::from_value::<Resources>(resources).expect("it reads");
