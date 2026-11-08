@@ -1140,6 +1140,36 @@ fn an_include_of_no_columns_reads_and_writes_apart_from_no_include() {
 }
 
 #[test]
+fn a_version_other_than_1_is_refused_by_the_reader_and_the_schema_alike() {
+    let text = |version: &str| {
+        format!(
+            "version: {version}\npipeline: p\nsource: {{ connector: a.b }}\n\
+             destination: {{ connector: c.d }}\nstreams: []\n"
+        )
+    };
+    let written = |version: u32| {
+        serde_json::json!({
+            "version": version, "pipeline": "p", "source": { "connector": "a.b" },
+            "destination": { "connector": "c.d" }, "streams": []
+        })
+    };
+    let validator = validator();
+    for version in ["2", "300"] {
+        let refused = Document::parse(&text(version)).expect_err("another version");
+        assert_eq!(
+            refused.code().map(rdlt_engine::Code::as_str),
+            Some("document_version")
+        );
+        let said = refused.to_string();
+        assert!(said.starts_with("1:"), "{said}");
+        assert!(!said.contains(version), "{said}");
+    }
+    assert!(!validator.is_valid(&written(2)));
+    assert!(Document::parse(&text("1")).is_ok());
+    assert!(validator.is_valid(&written(1)));
+}
+
+#[test]
 fn a_document_with_a_key_written_out_is_never_written() {
     let literal = MaskStep::new(["email"], MaskWith::HmacSha256).key("CANARY-key");
     let mut document = example();

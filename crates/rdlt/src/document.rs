@@ -59,7 +59,7 @@ pub use until::Until;
 #[non_exhaustive]
 pub struct Document {
     /// The document's format: 1, the only one.
-    #[serde(deserialize_with = "read::count")]
+    #[serde(deserialize_with = "read::version")]
     #[schemars(extend("const" = 1))]
     pub version: u8,
     /// The pipeline's name.

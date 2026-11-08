@@ -319,6 +319,20 @@ pub(super) fn paths<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Pa
         .collect())
 }
 
+/// What the only version of a document is, as a refusal of another says it.
+pub(super) const ONLY_VERSION: &str = "1, the only version";
+
+/// A document's version, which is 1 alone, for `#[serde(deserialize_with)]`.
+pub(super) fn version<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u8, D::Error> {
+    let Count(version) = Count::<u64>::deserialize(deserializer)?;
+    if version == 1 {
+        Ok(1)
+    } else {
+        let refused = Unexpected::Other("another version");
+        Err(de::Error::invalid_value(refused, &ONLY_VERSION))
+    }
+}
+
 /// A document's whole number, for `#[serde(deserialize_with)]`.
 pub(super) fn count<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
