@@ -1,0 +1,5 @@
+---
+source: crates/rdlt/src/document/fault/tests.rs
+expression: refused(&text).to_string()
+---
+7:14: resources.writers: its value is of the wrong kind: expected a whole number

@@ -1,0 +1,5 @@
+---
+source: crates/rdlt/src/document/fault/tests.rs
+expression: refused(&text).to_string()
+---
+5:12: streams: the document is not YAML or JSON this reader takes

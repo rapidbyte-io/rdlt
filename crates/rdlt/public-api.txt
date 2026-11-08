@@ -75,7 +75,9 @@ pub use rdlt::arrow
 pub use rdlt::json
 pub mod rdlt::codes
 pub const rdlt::codes::CONNECTOR_FAILED: rdlt_engine::error::codes::Code
+pub const rdlt::codes::DOCUMENT_DUPLICATE_KEY: rdlt_engine::error::codes::Code
 pub const rdlt::codes::DOCUMENT_INVALID: rdlt_engine::error::codes::Code
+pub const rdlt::codes::DOCUMENT_MISSING_KEY: rdlt_engine::error::codes::Code
 pub const rdlt::codes::DOCUMENT_REFUSED: rdlt_engine::error::codes::Code
 pub const rdlt::codes::DOCUMENT_SYNTAX: rdlt_engine::error::codes::Code
 pub const rdlt::codes::DOCUMENT_TOO_DEEP: rdlt_engine::error::codes::Code

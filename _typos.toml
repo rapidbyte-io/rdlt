@@ -6,3 +6,11 @@ extend-exclude = ["target/", "proptest-regressions/", "crates/rdlt/public-api.tx
 [default.extend-identifiers]
 # The open flag O_WRONLY, as rustix names it.
 WRONLY = "WRONLY"
+
+[default.extend-words]
+# Keys and words misspelled on purpose, in the tests of a document's errors.
+apend = "apend"
+conectors = "conectors"
+replce = "replce"
+retyr = "retyr"
+wrte = "wrte"

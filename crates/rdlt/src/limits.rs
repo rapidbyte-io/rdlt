@@ -26,3 +26,6 @@ pub(crate) const ORIGIN_BYTES: usize = 1_024;
 
 /// Bytes: how much of a key path a document's error shows.
 pub(crate) const PATH_BYTES: usize = 256;
+
+/// Bytes: how much of an unknown key a document's error shows.
+pub(crate) const KEY_BYTES: usize = 64;

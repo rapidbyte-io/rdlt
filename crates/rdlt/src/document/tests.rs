@@ -496,73 +496,117 @@ fn the_document_s_schema_names_its_keys_as_a_document_writes_them() {
     }
 }
 
+/// A document holding `fields` over the fewest keys a document needs.
+fn document_with(fields: &serde_json::Value) -> serde_json::Value {
+    let side = serde_json::json!({ "connector": "a.b" });
+    let mut document = serde_json::json!({
+        "version": 1, "pipeline": "p", "source": side, "destination": side, "streams": []
+    });
+    for (key, value) in fields.as_object().expect("fields") {
+        document[key] = value.clone();
+    }
+    document
+}
+
+/// A document of one stream holding `fields`.
+fn stream_with(fields: &serde_json::Value) -> serde_json::Value {
+    let mut stream = serde_json::json!({ "name": "s" });
+    for (key, value) in fields.as_object().expect("fields") {
+        stream[key] = value.clone();
+    }
+    document_with(&serde_json::json!({ "streams": [stream] }))
+}
+
+/// A document of one stream masking with `fields`.
+fn mask_with(fields: &serde_json::Value) -> serde_json::Value {
+    let mut mask = serde_json::json!({ "columns": ["e"], "with": "hmac_sha256" });
+    for (key, value) in fields.as_object().expect("fields") {
+        mask[key] = value.clone();
+    }
+    stream_with(&serde_json::json!({ "transform": [{ "mask": mask }] }))
+}
+
 /// Documents refused for a value of a kind its place does not take, each holding the canary
 /// `31337424` or `CANARY`, or the fraction `0.9876543`.
-fn refusals() -> Vec<serde_json::Value> {
-    let side = serde_json::json!({ "connector": "a.b" });
-    let document = |fields: serde_json::Value| {
-        let mut document = serde_json::json!({
-            "version": 1, "pipeline": "p", "source": side, "destination": side, "streams": []
-        });
-        for (key, value) in fields.as_object().expect("fields") {
-            document[key] = value.clone();
-        }
-        document
-    };
-    let stream = |fields: serde_json::Value| {
-        let mut stream = serde_json::json!({ "name": "s" });
-        for (key, value) in fields.as_object().expect("fields") {
-            stream[key] = value.clone();
-        }
-        document(serde_json::json!({ "streams": [stream] }))
-    };
-    let mask = |fields: serde_json::Value| {
-        let mut mask = serde_json::json!({ "columns": ["e"], "with": "hmac_sha256" });
-        for (key, value) in fields.as_object().expect("fields") {
-            mask[key] = value.clone();
-        }
-        stream(serde_json::json!({ "transform": [{ "mask": mask }] }))
-    };
+pub(crate) fn refusals() -> Vec<serde_json::Value> {
+    let mut refused = value_refusals();
+    refused.extend(setting_refusals());
+    refused
+}
+
+fn value_refusals() -> Vec<serde_json::Value> {
     vec![
-        document(serde_json::json!({ "version": "CANARY" })),
-        document(serde_json::json!({ "pipeline": 31_337_424 })),
-        document(serde_json::json!({ "source": { "connector": 31_337_424 } })),
-        document(serde_json::json!({ "source": { "connector": { "id": 31_337_424 } } })),
-        document(
-            serde_json::json!({ "source": { "connector": "a.b", "access": { "read": [31_337_424] } } }),
+        document_with(&serde_json::json!({ "version": "CANARY" })),
+        document_with(&serde_json::json!({ "pipeline": 31_337_424 })),
+        document_with(&serde_json::json!({ "source": { "connector": 31_337_424 } })),
+        document_with(&serde_json::json!({ "source": { "connector": { "id": 31_337_424 } } })),
+        document_with(
+            &serde_json::json!({ "source": { "connector": "a.b", "access": { "read": [31_337_424] } } }),
         ),
-        document(serde_json::json!({ "resources": { "memory": 0.987_654_3 } })),
-        document(serde_json::json!({ "resources": { "memory": "CANARY" } })),
-        document(serde_json::json!({ "resources": { "writers": "CANARY" } })),
-        document(serde_json::json!({ "resources": { "partitions": true } })),
-        document(serde_json::json!({ "commit": { "every": 31_337_424 } })),
-        document(serde_json::json!({ "commit": { "rows": 0.987_654_3 } })),
-        document(serde_json::json!({ "retry": { "max_attempts": "CANARY" } })),
-        document(serde_json::json!({ "until": 31_337_424 })),
-        document(serde_json::json!({ "until": "CANARY" })),
-        stream(serde_json::json!({ "name": 31_337_424 })),
-        stream(serde_json::json!({ "include": [31_337_424] })),
-        stream(serde_json::json!({ "read": "CANARY" })),
-        stream(serde_json::json!({ "read": 31_337_424 })),
-        stream(serde_json::json!({ "write": "CANARY" })),
-        stream(serde_json::json!({ "write": { "CANARY": {} } })),
-        stream(serde_json::json!({ "write": { "merge": { "key": [31_337_424] } } })),
-        stream(serde_json::json!({ "nested": { "normalize": { "max_depth": "CANARY" } } })),
-        stream(serde_json::json!({ "columns": { "c": { "hint": "CANARY" } } })),
-        stream(serde_json::json!({ "columns": { "c": { "policy": 31_337_424 } } })),
-        stream(
-            serde_json::json!({ "columns": { "c": { "hint": { "decimal": { "precision": "CANARY", "scale": 1 } } } } }),
+        document_with(&serde_json::json!({ "resources": { "memory": 0.987_654_3 } })),
+        document_with(&serde_json::json!({ "resources": { "memory": "CANARY" } })),
+        document_with(&serde_json::json!({ "resources": { "writers": "CANARY" } })),
+        document_with(&serde_json::json!({ "resources": { "partitions": true } })),
+        document_with(&serde_json::json!({ "commit": { "every": 31_337_424 } })),
+        document_with(&serde_json::json!({ "commit": { "rows": 0.987_654_3 } })),
+        document_with(&serde_json::json!({ "retry": { "max_attempts": "CANARY" } })),
+        document_with(&serde_json::json!({ "until": 31_337_424 })),
+        document_with(&serde_json::json!({ "until": "CANARY" })),
+        stream_with(&serde_json::json!({ "name": 31_337_424 })),
+        stream_with(&serde_json::json!({ "include": [31_337_424] })),
+        stream_with(&serde_json::json!({ "read": "CANARY" })),
+        stream_with(&serde_json::json!({ "read": 31_337_424 })),
+        stream_with(&serde_json::json!({ "write": "CANARY" })),
+        stream_with(&serde_json::json!({ "write": { "CANARY": {} } })),
+        stream_with(&serde_json::json!({ "write": { "merge": { "key": [31_337_424] } } })),
+        stream_with(&serde_json::json!({ "nested": { "normalize": { "max_depth": "CANARY" } } })),
+        stream_with(&serde_json::json!({ "columns": { "c": { "hint": "CANARY" } } })),
+        stream_with(&serde_json::json!({ "columns": { "c": { "policy": 31_337_424 } } })),
+        stream_with(
+            &serde_json::json!({ "columns": { "c": { "hint": { "decimal": { "precision": "CANARY", "scale": 1 } } } } }),
         ),
-        stream(serde_json::json!({ "transform": [{ "sql": 31_337_424 }] })),
-        stream(serde_json::json!({ "transform": [{ "rename": { "a": 31_337_424 } }] })),
-        stream(serde_json::json!({ "transform": [{ "constant": { "a": 0.987_654_3 } }] })),
-        mask(serde_json::json!({ "key": 31_337_424 })),
-        mask(serde_json::json!({ "with": "CANARY" })),
+        stream_with(&serde_json::json!({ "transform": [{ "sql": 31_337_424 }] })),
+        stream_with(&serde_json::json!({ "transform": [{ "rename": { "a": 31_337_424 } }] })),
+        stream_with(&serde_json::json!({ "transform": [{ "constant": { "a": 0.987_654_3 } }] })),
+        mask_with(&serde_json::json!({ "key": 31_337_424 })),
+        mask_with(&serde_json::json!({ "with": "CANARY" })),
+    ]
+}
+
+/// Documents refused at the settings beside a stream's mode, a read, a retry and a connector.
+fn setting_refusals() -> Vec<serde_json::Value> {
+    vec![
+        mask_with(&serde_json::json!({ "with": "redact", "text": 31_337_424 })),
+        document_with(&serde_json::json!({ "defaults": { "read": "CANARY" } })),
+        document_with(&serde_json::json!({ "defaults": { "write": "CANARY" } })),
+        document_with(&serde_json::json!({ "defaults": { "nested": "CANARY" } })),
+        document_with(&serde_json::json!({ "commit": { "bytes": "CANARY" } })),
+        document_with(&serde_json::json!({ "retry": { "initial": 31_337_424 } })),
+        document_with(&serde_json::json!({ "retry": { "max_delay": "CANARY" } })),
+        document_with(
+            &serde_json::json!({ "source": { "connector": { "id": "a.b", "version": 31_337_424 } } }),
+        ),
+        document_with(
+            &serde_json::json!({ "source": { "connector": { "id": "a.b", "digest": 31_337_424 } } }),
+        ),
+        document_with(
+            &serde_json::json!({ "source": { "connector": { "id": "a.b", "endpoint": 31_337_424 } } }),
+        ),
+        stream_with(&serde_json::json!({ "deletes": "CANARY" })),
+        stream_with(&serde_json::json!({ "on_truncate": "CANARY" })),
+        stream_with(&serde_json::json!({ "on_retention_loss": "CANARY" })),
+        stream_with(&serde_json::json!({ "exclude": [31_337_424] })),
+        stream_with(&serde_json::json!({ "columns": { "c": { "nested": "CANARY" } } })),
+        stream_with(&serde_json::json!({ "columns": { "c": { "on_unsupported": "CANARY" } } })),
+        stream_with(&serde_json::json!({ "transform": [{ "code": 31_337_424 }] })),
+        stream_with(&serde_json::json!({ "write": { "CANARY": 5 } })),
+        stream_with(&serde_json::json!({ "nested": { "CANARY": 5 } })),
+        stream_with(&serde_json::json!({ "columns": { "c": { "hint": { "CANARY": 5 } } } })),
     ]
 }
 
 /// Documents each holding a canary where a mapping or a list belongs.
-fn misplaced() -> Vec<serde_json::Value> {
+pub(crate) fn misplaced() -> Vec<serde_json::Value> {
     let side = serde_json::json!({ "connector": "a.b" });
     let document = |key: &str, value: serde_json::Value| {
         let mut document = serde_json::json!({

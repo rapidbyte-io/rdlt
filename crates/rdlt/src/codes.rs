@@ -13,6 +13,10 @@ pub const DOCUMENT_TOO_DEEP: Code = Code::new("document_too_deep");
 pub const DOCUMENT_REFUSED: Code = Code::new("document_refused");
 /// The document is not YAML or JSON.
 pub const DOCUMENT_SYNTAX: Code = Code::new("document_syntax");
+/// The document lacks a key its place needs.
+pub const DOCUMENT_MISSING_KEY: Code = Code::new("document_missing_key");
+/// A key is given twice in one mapping.
+pub const DOCUMENT_DUPLICATE_KEY: Code = Code::new("document_duplicate_key");
 /// A value of the document is of the wrong kind, or names no choice.
 pub const DOCUMENT_INVALID: Code = Code::new("document_invalid");
 /// A key of the document is not one its place takes.

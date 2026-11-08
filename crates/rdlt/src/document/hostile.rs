@@ -1,8 +1,11 @@
 //! A document read as hostile input: bounded in size, depth and nodes, with no anchor, alias,
-//! tag or second document before serde sees any of it, and no merge key or repeated key read.
+//! tag, repeated key or second document before serde sees any of it, and no merge key read.
 
 #[cfg(test)]
 mod tests;
+
+use std::borrow::Cow;
+use std::collections::HashSet;
 
 use serde::de::DeserializeOwned;
 use serde_saphyr::granit_parser::{ErrorKind, Event, Marker, Parser};
@@ -32,8 +35,39 @@ pub(crate) fn read<T: DeserializeOwned>(text: &str) -> Result<T, Fault> {
         .map_err(|error| Fault::of(&error, path))
 }
 
+/// What the screen is inside: a list, or a mapping, the keys it holds and whether a key is next.
+enum Open<'a> {
+    List,
+    Mapping {
+        keys: HashSet<Cow<'a, str>>,
+        key_next: bool,
+    },
+}
+
+impl<'a> Open<'a> {
+    /// Whether `node`, a scalar's text or none for a list or a mapping, is a key this mapping
+    /// holds already, the keys compared as text: a mapping's nodes are a key and a value in turn.
+    fn repeats(&mut self, node: Option<Cow<'a, str>>) -> bool {
+        let Self::Mapping { keys, key_next } = self else {
+            return false;
+        };
+        let is_key = *key_next;
+        *key_next = !is_key;
+        is_key && node.is_some_and(|key| !keys.insert(key))
+    }
+}
+
+/// Opens `new` inside what is open, in which it takes a node's place.
+fn opening<'a>(open: &mut Vec<Open<'a>>, new: Open<'a>) {
+    if let Some(within) = open.last_mut() {
+        within.repeats(None);
+    }
+    open.push(new);
+}
+
 /// Refuses, at the event that holds it, what the reader reports without a place of its own: a
-/// tag on any node, an anchor, an alias, a second document, and nesting or nodes past the limits.
+/// tag on any node, an anchor, an alias, a key a mapping already holds, a second document, and
+/// nesting or nodes past the limits.
 ///
 /// A syntax error is left for the reader to report.
 fn screened(text: &str) -> Result<(), Fault> {
@@ -41,7 +75,8 @@ fn screened(text: &str) -> Result<(), Fault> {
         emit_unresolved_aliases: true,
         emit_anchor_events: true,
     };
-    let (mut documents, mut depth, mut nodes) = (0_usize, 0_usize, 0_usize);
+    let mut open = Vec::new();
+    let (mut documents, mut nodes) = (0_usize, 0_usize);
     for parsed in Parser::new_from_str_with_options(text, events) {
         let (event, span) = match parsed {
             Ok(parsed) => parsed,
@@ -71,11 +106,25 @@ fn screened(text: &str) -> Result<(), Fault> {
             return Err(Fault::refused(refused, at));
         }
         match event {
-            Event::SequenceStart(..) | Event::MappingStart(..) => depth += 1,
-            Event::SequenceEnd | Event::MappingEnd => depth = depth.saturating_sub(1),
+            Event::Scalar(value, ..) => {
+                if open
+                    .last_mut()
+                    .is_some_and(|within: &mut Open<'_>| within.repeats(Some(value)))
+                {
+                    return Err(Fault::repeated(at));
+                }
+            }
+            Event::SequenceStart(..) => opening(&mut open, Open::List),
+            Event::MappingStart(..) => {
+                let (keys, key_next) = (HashSet::new(), true);
+                opening(&mut open, Open::Mapping { keys, key_next });
+            }
+            Event::SequenceEnd | Event::MappingEnd => {
+                open.pop();
+            }
             _ => {}
         }
-        if depth > DOCUMENT_DEPTH || nodes > DOCUMENT_NODES {
+        if open.len() > DOCUMENT_DEPTH || nodes > DOCUMENT_NODES {
             return Err(Fault::too_deep(at));
         }
     }
