@@ -293,10 +293,12 @@ fn side(role: Role) -> (Origin, ErrorKind) {
 /// A connector's failure of `kind` as the engine classes one: configuration, credentials and
 /// capabilities are `Config`, anything else `failed`.
 fn classed(kind: ConnectorErrorKind, failed: ErrorKind) -> ErrorKind {
-    match kind {
-        ConnectorErrorKind::Config | ConnectorErrorKind::Auth | ConnectorErrorKind::Unsupported => {
-            ErrorKind::Config
-        }
+    match (kind, failed) {
+        (
+            ConnectorErrorKind::Config | ConnectorErrorKind::Auth | ConnectorErrorKind::Unsupported,
+            _,
+        ) => ErrorKind::Config,
+        (ConnectorErrorKind::Fenced, ErrorKind::Destination) => ErrorKind::Fenced,
         _ => failed,
     }
 }

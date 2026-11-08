@@ -116,6 +116,20 @@ fn a_handshake_s_failure_keeps_whether_to_retry_and_the_connector_s_bounded_code
 }
 
 #[test]
+fn a_fenced_handshake_is_classed_as_the_engine_classes_it() {
+    let fenced = || ProviderError::HandshakeFailed {
+        id: id(),
+        source: Box::new(ConnectorError::new(ConnectorErrorKind::Fenced, "older")),
+    };
+    placed(
+        Role::Destination,
+        fenced(),
+        (ErrorKind::Fenced, Origin::Destination),
+    );
+    placed(Role::Source, fenced(), (ErrorKind::Source, Origin::Source));
+}
+
+#[test]
 fn a_connector_refusing_its_config_and_a_placement_the_host_refuses_are_config() {
     let handshake = |error: ConnectorError| ProviderError::HandshakeFailed {
         id: id(),
