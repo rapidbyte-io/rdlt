@@ -101,7 +101,7 @@ exclude_re = [
   "crates/rdlt-host/src/secrets/resolve\\.rs:.*replace SecretResolver::directories -> Vec<PathBuf> with vec!\\[\\]$",
   "crates/rdlt-sql/src/dialect\\.rs:.*replace <impl Dialect for Guarded>::(supports|support|allow)_([^f]\\w*|filter_during_aggregation) -> bool with true$",
   "crates/rdlt/src/lower\\.rs:.*replace \\| with \\^ in digest_of$",
-  "crates/rdlt/src/lower/transforms\\.rs:137:5: replace sql -> Result<Step, Error> with ",
+  "crates/rdlt/src/lower/transforms\\.rs:.*replace sql_refused -> Result<Step, Error> with ",
 ]
 # A mutant that hangs a test is caught when nextest terminates the test, which it does well within
 # this; cargo-mutants' own timeout would count it as a timeout instead. It is above what a mutant
