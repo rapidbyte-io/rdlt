@@ -82,7 +82,8 @@ pub struct Access {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub write: Vec<PathBuf>,
-    /// Whether it shares the host's network.
+    /// Whether it shares the host's network, which a sandboxed connector does only where its
+    /// host allows it (`Host::allow_network`).
     #[serde(
         default,
         deserialize_with = "read::flag",
@@ -116,7 +117,7 @@ impl Access {
         self
     }
 
-    /// The access, sharing the host's network.
+    /// The access, sharing the host's network where the host allows it.
     #[must_use]
     pub fn network(mut self) -> Self {
         self.network = true;

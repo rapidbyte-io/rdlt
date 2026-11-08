@@ -63,6 +63,7 @@ struct Keyed {
 #[derive(Clone, Debug, Default)]
 struct LocalPolicy {
     trusted: bool,
+    network: bool,
     connectors: Vec<PathBuf>,
     writable: Vec<PathBuf>,
     readable: Vec<PathBuf>,
@@ -96,6 +97,15 @@ impl Host {
     #[cfg(feature = "local")]
     pub fn trust_binaries(mut self) -> Self {
         self.local.trusted = true;
+        self
+    }
+
+    /// Lets a pipeline let its sandboxed connectors share this host's network, its loopback
+    /// services included, which a document's `access: { network: true }` asks for and nothing
+    /// but this allows.
+    #[cfg(feature = "local")]
+    pub fn allow_network(mut self) -> Self {
+        self.local.network = true;
         self
     }
 
@@ -258,6 +268,41 @@ impl Host {
         let Keyed { key } =
             serde_json::from_str(&resolved).map_err(|_| Error::secret(SecretError::NotJson))?;
         Ok(key)
+    }
+
+    /// Refuses `side`, the pipeline's `role`, asking to share this host's network where its
+    /// connector would run in the sandbox and the host has not allowed that: nothing a document
+    /// says widens what its host allows.
+    ///
+    /// A trusted binary has the host's access and a remote connector its own network; a
+    /// compiled-in connector honours no access, as placing it says.
+    #[cfg(feature = "local")]
+    pub(crate) fn admits_network(&self, side: &Side, role: Role) -> Result<(), Error> {
+        let remote = matches!(
+            &side.connector,
+            Connector::Reference(reference) if reference.endpoint.is_some()
+        );
+        let allowed = self.local.trusted || self.local.network;
+        if !side.access.network || allowed || remote || self.compiled_in(&side.connector, role) {
+            return Ok(());
+        }
+        Err(Error::refused(
+            role,
+            "shares the host's network only where the host allows it, with `allow_network`",
+        ))
+    }
+
+    /// Whether `connector`, as `role`, is one compiled into this host.
+    #[cfg(feature = "local")]
+    fn compiled_in(&self, connector: &Connector, role: Role) -> bool {
+        let named = |spec: &ConnectorSpec| spec.id.as_str() == connector.id();
+        match role {
+            Role::Source => self.sources.iter().any(|factory| named(factory.spec())),
+            Role::Destination => self
+                .destinations
+                .iter()
+                .any(|factory| named(factory.spec())),
+        }
     }
 
     /// The code transform registered as `name`.

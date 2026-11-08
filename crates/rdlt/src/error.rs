@@ -126,6 +126,15 @@ impl Error {
         Self::built(kind, origin, code, message, Some(Box::new(error)))
     }
 
+    /// A placement of the connector of `role` its host refuses: the connector `says` what.
+    #[cfg(feature = "local")]
+    pub(crate) fn refused(role: Role, says: &str) -> Self {
+        let (origin, _) = side(role);
+        let message = format!("the {} connector {says}", noun(role));
+        let code = Code::new("placement_refused");
+        Self::built(ErrorKind::Config, origin, code, message, None)
+    }
+
     /// `error`, which the connector of `role` answered `context` with.
     pub(crate) fn connector(role: Role, context: &str, error: ConnectorError) -> Self {
         let (origin, failed) = side(role);

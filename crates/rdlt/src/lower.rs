@@ -56,6 +56,11 @@ pub(crate) async fn prepare<'a>(
     let config = engine_config(document)?;
     reference(&document.source, Role::Source)?;
     reference(&document.destination, Role::Destination)?;
+    #[cfg(feature = "local")]
+    {
+        host.admits_network(&document.source, Role::Source)?;
+        host.admits_network(&document.destination, Role::Destination)?;
+    }
     let mut entries = Vec::new();
     for stream in &document.streams {
         entries.push(streams::Entry::lowered(stream, host).await?);

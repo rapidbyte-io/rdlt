@@ -4,7 +4,7 @@ use rdlt_connector::{
     Catalog, ColumnPath, ConnectorId, DecimalType, LogicalType, Role, StreamName,
 };
 use rdlt_connector::{ReadMode as Read, Secret, StreamSpec, TimeUnit};
-use rdlt_engine::{Code, ErrorKind, Mask, Op, SchemaSettings};
+use rdlt_engine::{Code, ErrorKind, Mask, Op, Origin, SchemaSettings};
 use rdlt_host::{ConnectorRef, Digest};
 
 use super::{Lowered, prepare, reference};
@@ -425,6 +425,48 @@ async fn lowering_refuses_a_document_s_mistakes_with_their_codes() {
         None,
     )
     .await;
+}
+
+/// A document whose source is `side`.
+#[cfg(feature = "local")]
+fn sourced(side: Side) -> Document {
+    let mut sourced = document(vec![Stream::new("a")]);
+    sourced.source = side;
+    sourced
+}
+
+#[cfg(feature = "local")]
+#[tokio::test(start_paused = true)]
+async fn a_document_shares_the_network_only_where_its_host_allows_it() {
+    let networked = |connector: Connector| Side::new(connector).access(Access::new().network());
+    let spawned = || networked(Connector::new("io.rapidbyte.sqlite"));
+    let refusal = |document: Document| async move {
+        let prepared = prepare(&document, &Host::new()).await;
+        prepared.err().expect("the host has not allowed it")
+    };
+    let source = refusal(sourced(spawned())).await;
+    let mut written = document(vec![Stream::new("a")]);
+    written.destination = spawned();
+    let destination = refusal(written).await;
+    for (refused, origin) in [(source, Origin::Source), (destination, Origin::Destination)] {
+        assert_eq!(refused.code().map(Code::as_str), Some("placement_refused"));
+        assert_eq!(
+            (refused.kind(), refused.origin()),
+            (ErrorKind::Config, origin)
+        );
+        assert!(refused.to_string().contains("allow_network"), "{refused}");
+    }
+    for host in [Host::new().allow_network(), Host::new().trust_binaries()] {
+        assert!(prepare(&sourced(spawned()), &host).await.is_ok());
+    }
+    let remote =
+        networked(Connector::new("io.rapidbyte.sqlite").endpoint("grpcs://db.example:7443"));
+    assert!(prepare(&sourced(remote), &Host::new()).await.is_ok());
+    let compiled = networked(Connector::new("io.rapidbyte.memory"));
+    let host = Host::new().source::<rdlt_connector_reference::MemorySource>();
+    assert!(prepare(&sourced(compiled), &host).await.is_ok());
+    let quiet = Side::new(Connector::new("io.rapidbyte.sqlite"));
+    assert!(prepare(&sourced(quiet), &Host::new()).await.is_ok());
 }
 
 #[tokio::test(start_paused = true)]
