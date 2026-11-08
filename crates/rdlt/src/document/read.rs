@@ -291,6 +291,14 @@ pub(super) fn texts<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<St
     Ok(texts.into_iter().map(|Text(text)| text).collect())
 }
 
+/// A document's optional list of texts, for `#[serde(deserialize_with)]`.
+pub(super) fn optional_texts<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    let texts = Option::<Listed<Text>>::deserialize(deserializer)?;
+    Ok(texts.map(|Listed(texts)| texts.into_iter().map(|Text(text)| text).collect()))
+}
+
 /// A document's list of paths, for `#[serde(deserialize_with)]`.
 pub(super) fn paths<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<PathBuf>, D::Error> {
     let Listed(texts) = Listed::<Text>::deserialize(deserializer)?;

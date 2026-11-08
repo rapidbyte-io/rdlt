@@ -84,8 +84,8 @@ impl Entry {
         for (column, hinted) in &self.hints {
             plan = plan.hint(column.as_str(), hinted.clone());
         }
-        if !stream.included.is_empty() {
-            plan = plan.include_only(stream.included.iter().map(String::as_str));
+        if let Some(included) = &stream.included {
+            plan = plan.include_only(included.iter().map(String::as_str));
         }
         if !stream.exclude.is_empty() {
             plan = plan.exclude(stream.exclude.iter().map(String::as_str));
