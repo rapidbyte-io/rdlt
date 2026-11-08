@@ -158,7 +158,7 @@ pub enum Connector {
 
 /// A connector's id with what its placement must honour: the versions it accepts, the binary it
 /// must be, or where it listens.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct ConnectorReference {
@@ -232,6 +232,24 @@ impl Connector {
         };
         change(&mut reference);
         Self::Reference(reference)
+    }
+}
+
+/// Shows of an endpoint only where it listens, and nothing of text that is no endpoint: a
+/// reference's text may hold a credential.
+impl fmt::Debug for ConnectorReference {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let endpoint = self.endpoint.as_deref().map(|endpoint| {
+            rdlt_host::Endpoint::parse(endpoint)
+                .map_or_else(|_| "***".to_owned(), |listening| listening.to_string())
+        });
+        formatter
+            .debug_struct("ConnectorReference")
+            .field("id", &self.id)
+            .field("version", &self.version)
+            .field("digest", &self.digest)
+            .field("endpoint", &endpoint)
+            .finish()
     }
 }
 
