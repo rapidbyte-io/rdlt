@@ -82,6 +82,9 @@ determinism under simulation whatever the configuration says.
     lowering measures a decode, before it does. Decoded text keeps 32-bit offsets, as its
     values do, so a part an encoded column of which would decode beyond 2 GiB is cut as a part
     over its room is. Lowering decodes them anyway, so the work moves earlier rather than grows.
+  - A decoded column is nullable, as lowering takes it into a table, whatever the field of the
+    values a dictionary or a run-end encoding names says: Arrow checks neither's values against
+    it, and a key's null is refused as lowering refuses it.
   - Transforms, ops and SQL alike, then see every column flat: a filter on a categorical or a
     Parquet dictionary string is computed like any other. A stage that only includes columns
     decodes nothing and shares every array.

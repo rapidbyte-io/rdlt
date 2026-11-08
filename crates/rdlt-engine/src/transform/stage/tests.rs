@@ -1705,22 +1705,29 @@ fn a_column_measuring_exactly_what_32_bit_offsets_name_is_decoded_whole() {
 }
 
 #[test]
-fn a_decoded_run_end_column_whose_values_hold_no_null_keeps_its_field_as_it_arrived() {
+fn a_null_among_the_values_of_non_nullable_runs_decodes_as_lowering_takes_it() {
+    // Arrow checks no run-end encoding's values against their field, so runs whose field says
+    // they hold no null may hold one.
     let runs = Arc::new(Field::new("run_ends", DataType::Int32, false));
-    let encoded = |nullable_values| {
-        let values = Field::new("values", DataType::Utf8, nullable_values);
-        DataType::RunEndEncoded(Arc::clone(&runs), Arc::new(values))
-    };
-    for (nullable_values, nullable) in [(false, false), (true, true)] {
-        let field = Field::new("tag", encoded(nullable_values), false);
-        let (decoded, _) = decoding::decoded_schema(&Arc::new(Schema::new(vec![field]))).unwrap();
-        assert_eq!(
-            decoded.field(0).is_nullable(),
-            nullable,
-            "{nullable_values}"
-        );
-        assert_eq!(decoded.field(0).data_type(), &DataType::Utf8);
-    }
+    let values = Arc::new(Field::new("values", DataType::Utf8, false));
+    let held = RunArray::<Int32Type>::try_new(
+        &Int32Array::from(vec![1, 2]),
+        &StringArray::from(vec![Some("ann"), None]),
+    )
+    .unwrap();
+    let data_type = DataType::RunEndEncoded(runs, values);
+    let names = held.to_data().into_builder().data_type(data_type.clone());
+    let names = RunArray::<Int32Type>::from(names.build().unwrap());
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", data_type, false),
+    ]);
+    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+    let input = RecordBatch::try_new(Arc::new(schema), vec![ids, Arc::new(names)]).unwrap();
+    let output = run(&stream().transform(code(Unlined)), &["id"], input, u64::MAX).unwrap();
+    let names: Vec<Option<&str>> = output[0].column(1).as_string::<i32>().iter().collect();
+    assert_eq!(names, [Some("ann"), None]);
+    assert!(output[0].schema_ref().field(1).is_nullable());
 }
 
 #[test]
