@@ -1,6 +1,5 @@
 use std::cell::Cell;
 use std::thread;
-use std::time::{Duration, Instant};
 
 use datafusion_sql::sqlparser::dialect::{Dialect, GenericDialect};
 use datafusion_sql::sqlparser::keywords::ALL_KEYWORDS;
@@ -268,21 +267,15 @@ fn a_query_read_with_its_table_first_is_refused() {
 }
 
 #[test]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "how long a parse takes is what this test holds, not a run's clock"
-)]
 fn text_failing_inside_a_nest_of_any_keyword_is_refused_without_reading_it_again() {
-    // Read twice a level, 24 levels take sixteen million readings: seconds even optimised.
-    let slow = Duration::from_millis(500);
+    // Read twice a level, 24 levels would take sixteen million readings, far past the budget.
     for word in ALL_KEYWORDS {
         for (open, close) in [("(", ")"), ("[", "]")] {
             let nest = format!("{word}{open}").repeat(24);
-            let text = format!("SELECT {nest}1 +{} AS x FROM input", close.repeat(24));
-            let started = Instant::now();
-            assert!(Sql::parse(&text).is_err(), "{word}{open}");
-            let took = started.elapsed();
-            assert!(took < slow, "{word}{open} took {took:?}");
+            refused_within_budget(format!(
+                "SELECT {nest}1 +{} AS x FROM input",
+                close.repeat(24)
+            ));
         }
     }
 }
@@ -324,25 +317,22 @@ const OPENERS: [&str; 22] = [
     "(",
 ];
 
-/// `text` refused, from a 2 MiB thread, within a second, however it nests.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "how long a parse takes is what this test holds, not a run's clock"
-)]
-fn refused_quickly(text: String) {
+/// `text` refused from a 2 MiB thread, however it nests, its reading spending less than its
+/// budget: what each operand read and every token its typed string may take cost come to
+/// fewer than [`READS`] a token.
+fn refused_within_budget(text: String) {
     let shown: String = text.chars().take(48).collect();
-    let took = thread::Builder::new()
+    let (refused, spent, budget) = thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(move || {
-            let started = Instant::now();
-            let refused = Sql::parse(&text).is_err();
-            (refused, started.elapsed())
+            let (spent, budget, failed) = spending(&text);
+            (failed || Sql::parse(&text).is_err(), spent, budget)
         })
         .unwrap()
         .join()
         .unwrap();
-    assert!(took.0, "{shown}");
-    assert!(took.1 < Duration::from_secs(1), "{shown} took {:?}", took.1);
+    assert!(refused, "{shown}");
+    assert!(spent < budget, "{shown} spent {spent} of {budget}");
 }
 
 /// `opened` repeated as often as `bytes` of text allow, broken at the innermost.
@@ -355,7 +345,7 @@ fn broken(opened: &str, bytes: usize) -> String {
 fn a_nest_of_types_holding_expressions_is_refused_where_it_opens() {
     for opener in &OPENERS[..10] {
         for bytes in [1 << 10, SQL_BYTES] {
-            refused_quickly(broken(opener, bytes));
+            refused_within_budget(broken(opener, bytes));
         }
     }
     let levels = (SQL_BYTES - 32) / 7;
@@ -364,11 +354,11 @@ fn a_nest_of_types_holding_expressions_is_refused_where_it_opens() {
         "ARRAY<".repeat(levels),
         ">".repeat(levels)
     );
-    refused_quickly(array);
+    refused_within_budget(array);
 }
 
 #[test]
-fn a_drawn_mix_of_openers_is_refused_quickly_at_the_text_s_limit() {
+fn a_drawn_mix_of_openers_is_refused_within_its_budget_at_the_text_s_limit() {
     // A fixed generator, so each run draws the same pairs and triples.
     let seed = Cell::new(0x9e37_79b9_7f4a_7c15_u64);
     let draw = |below: usize| {
@@ -382,7 +372,7 @@ fn a_drawn_mix_of_openers_is_refused_quickly_at_the_text_s_limit() {
     for _ in 0..64 {
         let openers = 2 + draw(2);
         let opened: String = (0..openers).map(|_| OPENERS[draw(OPENERS.len())]).collect();
-        refused_quickly(broken(&opened, SQL_BYTES));
+        refused_within_budget(broken(&opened, SQL_BYTES));
     }
 }
 
@@ -464,12 +454,12 @@ fn an_interval_where_an_operand_stands_is_refused_for_its_shape() {
     assert!(Sql::parse("SELECT \"interval\" FROM input").is_ok());
     let listed = ", a".repeat((SQL_BYTES - 256) / 3);
     let intervals = "INTERVAL ".repeat(20);
-    refused_quickly(format!("SELECT {intervals}CAST(a{listed}) AS x FROM input"));
+    refused_within_budget(format!("SELECT {intervals}CAST(a{listed}) AS x FROM input"));
 }
 
 #[test]
-fn a_run_of_any_keyword_at_the_text_s_limit_is_refused_quickly() {
+fn a_run_of_any_keyword_at_the_text_s_limit_is_refused_within_its_budget() {
     for word in ALL_KEYWORDS {
-        refused_quickly(broken(&format!("{word} "), SQL_BYTES));
+        refused_within_budget(broken(&format!("{word} "), SQL_BYTES));
     }
 }
