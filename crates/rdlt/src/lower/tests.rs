@@ -416,6 +416,9 @@ async fn lowering_refuses_a_document_s_mistakes_with_their_codes() {
     let mut uncommitted = document(vec![Stream::new("a")]);
     uncommitted.commit = Some(Commit::new());
     refused(&uncommitted, "commit_policy_invalid", None).await;
+    let mut unattempted = document(vec![Stream::new("a")]);
+    unattempted.retry = Some(crate::Retry::new().max_attempts(0));
+    refused(&unattempted, "config_invalid", None).await;
     let mut unbudgeted = document(vec![Stream::new("a")]);
     unbudgeted.resources = Resources::new().memory(0);
     refused(&unbudgeted, "config_invalid", None).await;
