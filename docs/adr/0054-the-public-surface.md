@@ -46,6 +46,15 @@ operates its host.
   list, a mapping) and the kind it expected, and a word by the choices it could have been; never
   by the value itself, since a value may be a secret. A refusal is raised at the value's place,
   so a reader of the document gives the path to it.
+- **The document is hostile input.** YAML or JSON, read by serde-saphyr: at most
+  `DOCUMENT_BYTES` (1 MiB), nesting at most `DOCUMENT_DEPTH` (32), at most `DOCUMENT_NODES`
+  nodes. A pass over granit-parser's events refuses anchors, aliases, tags, repeated keys, a
+  second document and depth and nodes past the limits, each at its place; the reader then refuses
+  a merge key and holds the same limits. There are no includes: a value kept in a file is a
+  `${file:…}` reference the operator scopes. An error says `file:line:col`, the key path and the
+  nearest known key within two edits, and never quotes a value. A connector's `config` is
+  free-form and checked by the connector after its handshake. `Document::json_schema` is the
+  document's schema; `HostFile` is the operator's file, read the same way.
 - **Streams are named as the catalog shows them.** A stream's name in a document is its
   namespace, a dot and its name, or its name alone, and resolves to the catalog's stream that
   shows as it; a name two of the catalog's streams show as is refused (`stream_ambiguous`). A
