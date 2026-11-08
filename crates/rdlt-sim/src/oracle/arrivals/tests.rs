@@ -1,7 +1,10 @@
 use rdlt_connector::LogicalType;
 use rdlt_testkit::drawn::Scalar;
 
-use super::{Arrival, pushed};
+use super::{Arrival, pushed, shredded};
+use crate::rng::SplitMix64;
+use crate::swarm::Features;
+use crate::workload::{Reshaping, Row, SimStream, Workload};
 
 #[test]
 fn pushed_scalars_are_inferred_as_json_holds_them() {
@@ -74,10 +77,7 @@ fn only_json_surely_holds_a_pushed_container() {
 fn a_push_may_arrive_as_wide_as_the_pushes_the_engine_may_shred_with_it() {
     let mut mixed = 0;
     for seed in 0..300 {
-        let workload = crate::workload::Workload::generate(
-            &mut crate::rng::SplitMix64::new(seed),
-            crate::swarm::Features::ALL,
-        );
+        let workload = Workload::generate(&mut SplitMix64::new(seed), Features::ALL);
         for stream in workload.streams.iter().filter(|stream| stream.json) {
             for phase in 0..crate::workload::PHASES {
                 for partition in 0..stream.partitions.len() {
@@ -135,6 +135,52 @@ fn exact_integers_join_floats_as_floats_and_other_integers_as_integers() {
     assert_eq!(
         typed(LogicalType::Int64).fits(&LogicalType::Float64),
         Some(false)
+    );
+}
+
+/// A row of id `id` holding `value` in its one drift column.
+fn holding(id: i64, value: Scalar) -> Row {
+    Row {
+        id,
+        partition: 0,
+        offset: id,
+        value: 0,
+        key: None,
+        tag: None,
+        extras: vec![Some(value)],
+        delivered: 0,
+    }
+}
+
+#[test]
+fn a_json_column_s_integers_are_judged_whether_pushed_as_integers_or_whole_numbers() {
+    let inexact = || Scalar::Decimal("357782901226230031".to_owned());
+    let typed = Arrival::Typed(LogicalType::Int64);
+    let rows = |values: Vec<Scalar>| -> Vec<Row> {
+        let values = values.into_iter().zip(1..);
+        values.map(|(value, id)| holding(id, value)).collect()
+    };
+    let workload = Workload::generate(&mut SplitMix64::new(0), Features::ALL);
+    let mut stream = workload.streams[0].clone();
+    stream.reshaping = Reshaping::default();
+    let arriving = |stream: &SimStream, values| shredded(stream, &rows(values), 0);
+    assert_eq!(
+        arriving(&stream, vec![Scalar::Null, inexact()]),
+        Some(typed.clone())
+    );
+    assert_eq!(
+        arriving(&stream, vec![Scalar::Int(3), inexact()]),
+        Some(typed.clone())
+    );
+    assert_eq!(
+        arriving(&stream, vec![Scalar::Decimal("12".to_owned())]),
+        Some(Arrival::ExactInt)
+    );
+    // The filter drops the row of id 2, whose value a float would round.
+    stream.reshaping.filter = Some(2);
+    assert_eq!(
+        arriving(&stream, vec![Scalar::Int(3), inexact()]),
+        Some(Arrival::ExactInt)
     );
 }
 

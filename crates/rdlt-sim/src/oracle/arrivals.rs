@@ -136,11 +136,12 @@ fn typed(stream: &SimStream, logical: &LogicalType, rows: &[Row], column: usize)
 }
 
 /// The arrival of 64-bit integers, `rows`' values of drift column `column`, exact where a float
-/// holds every one `stream`'s filter keeps.
+/// holds every one `stream`'s filter keeps: a whole number a JSON push holds is one of them.
 fn exact(stream: &SimStream, rows: &[Row], column: usize) -> Arrival {
     let kept = rows.iter().filter(|row| stream.reshaping.keeps(row));
     Arrival::integers(kept.filter_map(|row| match &row.extras[column] {
         Some(Scalar::Int(value)) => Some(*value),
+        Some(Scalar::Decimal(digits)) => digits.parse().ok(),
         _ => None,
     }))
 }
