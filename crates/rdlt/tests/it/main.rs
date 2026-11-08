@@ -7,3 +7,5 @@ mod facade;
 mod ledger;
 mod metered;
 mod support;
+#[cfg(feature = "otel")]
+mod telemetry;

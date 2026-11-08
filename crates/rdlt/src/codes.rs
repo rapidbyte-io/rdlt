@@ -43,6 +43,8 @@ pub const MASK_KEY_MISSING: Code = Code::new("mask_key_missing");
 pub const MASK_KEY_LITERAL: Code = Code::new("mask_key_literal");
 /// A TLS file the host names cannot be read.
 pub const TLS_UNREADABLE: Code = Code::new("tls_unreadable");
+/// Export of traces and metrics could not be installed.
+pub const TELEMETRY_UNAVAILABLE: Code = Code::new("telemetry_unavailable");
 /// The compute pool could not start, or the host's cores are unknown.
 pub const ENVIRONMENT_UNAVAILABLE: Code = Code::new("environment_unavailable");
 /// A source or destination failed a call the facade made of it.

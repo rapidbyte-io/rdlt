@@ -85,7 +85,20 @@ operates its host.
   `Lagged { dropped }` and reads on. `Event::seq` is gap-free within a run, and the engine's
   observer only copies an event into the ring. `Run::stop` stops a run from the task that holds
   it; `Run::control` hands another task or a signal handler the same.
-- **Features.** `local` (default), `remote` and `sql`. `rdlt::arrow` re-exports Arrow, and
+- **Observability.** Metrics are the facade's, through the `metrics` crate: counters and
+  histograms from a run's events, gauges sampled from its status once a second, labelled by
+  `pipeline` and `stream` alone; the engine has no metrics dependency. The engine opens `tracing`
+  spans for a run, an attempt, a partition's read, a commit and its phases, and each connector
+  call but a write; none a batch. The host sends a W3C `traceparent` in each call's gRPC metadata,
+  from a context source the facade's `otel` installs; `serve` reads it only when it is a
+  lower-case version 00 context of 55 bytes and runs the call in a span naming the host's trace.
+  `rdlt::telemetry::otlp()` exports both over OTLP, configured by `OTEL_*`: an `https` collector
+  is verified against the operating system's roots or `OTEL_EXPORTER_OTLP_CERTIFICATE`, a failed
+  export is logged through `tracing` and never stalls a run, and no error or log names an
+  endpoint, which may hold credentials. No span, metric label or trace attribute holds a secret
+  or a connector's configuration; connector text in them (a stream or partition name) is shown as
+  the host shows it.
+- **Features.** `local` (default), `remote`, `sql` and `otel`. `rdlt::arrow` re-exports Arrow, and
   `rdlt::Value` and `rdlt::json!` serde_json's, so an embedder never chases their versions. The
   facade runs on tokio. `just public-api` holds the public API to a reviewed snapshot, in the
   lint job.

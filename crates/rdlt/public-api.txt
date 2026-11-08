@@ -92,6 +92,7 @@ pub const rdlt::codes::MASK_KEY_MISSING: rdlt_engine::error::codes::Code
 pub const rdlt::codes::PATTERN_UNMATCHED: rdlt_engine::error::codes::Code
 pub const rdlt::codes::REFERENCE_INVALID: rdlt_engine::error::codes::Code
 pub const rdlt::codes::STREAM_INVALID: rdlt_engine::error::codes::Code
+pub const rdlt::codes::TELEMETRY_UNAVAILABLE: rdlt_engine::error::codes::Code
 pub const rdlt::codes::TLS_UNREADABLE: rdlt_engine::error::codes::Code
 pub const rdlt::codes::TRANSFORM_UNAVAILABLE: rdlt_engine::error::codes::Code
 pub const rdlt::codes::TRANSFORM_UNKNOWN: rdlt_engine::error::codes::Code
@@ -103,6 +104,20 @@ pub const rdlt::limits::DOCUMENT_NODES: usize
 pub const rdlt::limits::EVENT_BUFFER: usize
 pub const rdlt::limits::EVENT_BUFFER_MAX: usize
 pub const rdlt::limits::SAMPLED_EVERY: core::time::Duration
+pub mod rdlt::telemetry
+pub struct rdlt::telemetry::Telemetry
+impl core::fmt::Debug for rdlt::telemetry::Telemetry
+pub fn rdlt::telemetry::Telemetry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for rdlt::telemetry::Telemetry
+pub fn rdlt::telemetry::Telemetry::drop(&mut self)
+impl core::marker::Freeze for rdlt::telemetry::Telemetry
+impl core::marker::Send for rdlt::telemetry::Telemetry
+impl core::marker::Sync for rdlt::telemetry::Telemetry
+impl core::marker::Unpin for rdlt::telemetry::Telemetry
+impl core::marker::UnsafeUnpin for rdlt::telemetry::Telemetry
+impl !core::panic::unwind_safe::RefUnwindSafe for rdlt::telemetry::Telemetry
+impl !core::panic::unwind_safe::UnwindSafe for rdlt::telemetry::Telemetry
+pub fn rdlt::telemetry::otlp() -> core::result::Result<rdlt::telemetry::Telemetry, rdlt::Error>
 #[non_exhaustive] pub enum rdlt::Connector
 pub rdlt::Connector::Id(alloc::string::String)
 pub rdlt::Connector::Reference(rdlt::ConnectorReference)
