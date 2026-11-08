@@ -281,6 +281,10 @@ async fn a_destination_refusing_its_configuration_fails_the_build_as_the_destina
 /// runs in a process of its own, so the test that sets this reaches no other.
 static GROWN: AtomicBool = AtomicBool::new(false);
 
+/// Whether a [`Cataloged`] source's stream shown as `a.b.c` has since been replaced by another
+/// stream shown alike.
+static REPLACED: AtomicBool = AtomicBool::new(false);
+
 /// Whether a [`Cataloged`] source given up while connecting let go of what it held.
 static RELEASED: AtomicBool = AtomicBool::new(false);
 
@@ -341,6 +345,10 @@ impl SourceConnector for Cataloged {
             [name] => StreamName::new(name),
             _ => panic!("a stream is named by one part or two"),
         });
+        if REPLACED.load(Ordering::SeqCst) {
+            let replacing = StreamName::with_namespace("a.b", "c").expect("a stream's name");
+            return Ok(Catalog::new(vec![StreamSpec::new(replacing)]).expect("a catalog"));
+        }
         let grown = GROWN
             .load(Ordering::SeqCst)
             .then(|| StreamName::with_namespace("a.b", "c"));
@@ -392,6 +400,25 @@ async fn a_reset_refuses_a_planned_name_another_stream_of_the_catalog_has_come_t
         refused.to_string().contains("the source's catalog"),
         "{refused}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reset_refuses_a_planned_stream_the_catalog_has_replaced_under_its_name() {
+    let listed = serde_json::json!([["a", "b.c"]]);
+    let source = Side::new(Connector::new(Cataloged::ID)).config(listed);
+    let destination = Side::new(Connector::new("io.rapidbyte.memory"))
+        .config(serde_json::json!({ "store": "facade-replaced" }));
+    let host = memory_host().source::<Cataloged>();
+    let pipeline = Pipeline::builder("replaced", source, destination)
+        .stream(Stream::new("a.b.c"))
+        .build(&host)
+        .await
+        .expect("built");
+    REPLACED.store(true, Ordering::SeqCst);
+    let reset = pipeline.reset(["a.b.c"], ResetScope::Tables).await;
+    let refused = reset.expect_err("the catalog's a.b.c is another stream now");
+    assert_eq!(refused.code().map(Code::as_str), Some("stream_ambiguous"));
+    assert_eq!(refused.stream(), Some("a.b.c"));
 }
 
 #[tokio::test(start_paused = true)]

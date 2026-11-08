@@ -302,9 +302,10 @@ impl Pipeline {
     /// # Errors
     ///
     /// `stream_invalid` for a name that is no stream's, `stream_ambiguous` for one two of the
-    /// catalog's streams show as or one that splits into a namespace and a name more than one
-    /// way with nothing to say which, or the engine's refusal, as `stream_not_found` for a
-    /// stream the pipeline never committed.
+    /// catalog's streams show as, one the catalog shows as another stream than the pipeline
+    /// planned, or one that splits into a namespace and a name more than one way with nothing to
+    /// say which, or the engine's refusal, as `stream_not_found` for a stream the pipeline never
+    /// committed.
     pub async fn reset(
         &self,
         streams: impl IntoIterator<Item = impl Into<StreamSelector>>,
@@ -335,9 +336,9 @@ impl Pipeline {
     }
 
     /// The stream `name` names, against the source's catalog, discovered once into `catalog`: a
-    /// name two of its streams show as is refused, whatever the pipeline plans; else the
-    /// pipeline's stream that shows as it, else the catalog's, else a stream of that name where
-    /// only one can be meant.
+    /// name two of its streams show as is refused, whatever the pipeline plans, and so is one it
+    /// shows as another stream than the pipeline planned; else the pipeline's stream that shows
+    /// as it, else the catalog's, else a stream of that name where only one can be meant.
     async fn stream(&self, name: &str, catalog: &mut Option<Catalog>) -> Result<StreamName, Error> {
         let offered = match catalog {
             Some(offered) => offered,
@@ -349,13 +350,19 @@ impl Pipeline {
             .streams()
             .iter()
             .map(rdlt_engine::StreamPlan::name);
-        if let Some(stream) = planned.find(|stream| stream.to_string() == name) {
-            return Ok(stream.clone());
+        match (planned.find(|stream| stream.to_string() == name), shown) {
+            (Some(planned), Some(current)) if *planned != current => {
+                let message = format!(
+                    "stream {name}: the source's catalog now shows another stream as it than the \
+                     pipeline planned: name the stream meant by its identity, a StreamName"
+                );
+                let code = rdlt_engine::codes::STREAM_AMBIGUOUS;
+                Err(Error::config(code, message).in_stream(name))
+            }
+            (Some(planned), _) => Ok(planned.clone()),
+            (None, Some(current)) => Ok(current),
+            (None, None) => lower::unlisted(name),
         }
-        if let Some(stream) = shown {
-            return Ok(stream);
-        }
-        lower::unlisted(name)
     }
 }
 
