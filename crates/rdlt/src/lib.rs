@@ -67,7 +67,9 @@ pub use events::{Events, Lagged};
 pub use host::Host;
 #[cfg(feature = "remote")]
 pub use host::Tls;
-pub use pipeline::{Checked, Pipeline, PipelineBuilder, PlacedConnector, Placement};
+pub use pipeline::{
+    Checked, Pipeline, PipelineBuilder, PlacedConnector, Placement, StreamSelector,
+};
 pub use rdlt_connector::{
     BoxFuture, Catalog, ConnectorId, ConnectorSpec, DestinationConnector, DestinationFactory,
     Epoch, PipelineId, Role, Secret, SourceConnector, SourceFactory, StreamName, StreamSpec,

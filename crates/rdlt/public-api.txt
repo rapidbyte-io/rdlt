@@ -415,6 +415,32 @@ impl core::marker::Unpin for rdlt::SchemaPolicy
 impl core::marker::UnsafeUnpin for rdlt::SchemaPolicy
 impl core::panic::unwind_safe::RefUnwindSafe for rdlt::SchemaPolicy
 impl core::panic::unwind_safe::UnwindSafe for rdlt::SchemaPolicy
+#[non_exhaustive] pub enum rdlt::StreamSelector
+pub rdlt::StreamSelector::Identity(rdlt_connector::id::StreamName)
+pub rdlt::StreamSelector::Shown(alloc::string::String)
+impl core::clone::Clone for rdlt::StreamSelector
+pub fn rdlt::StreamSelector::clone(&self) -> rdlt::StreamSelector
+impl core::cmp::Eq for rdlt::StreamSelector
+impl core::cmp::PartialEq for rdlt::StreamSelector
+pub fn rdlt::StreamSelector::eq(&self, &rdlt::StreamSelector) -> bool
+impl core::convert::From<&alloc::string::String> for rdlt::StreamSelector
+pub fn rdlt::StreamSelector::from(&alloc::string::String) -> Self
+impl core::convert::From<&str> for rdlt::StreamSelector
+pub fn rdlt::StreamSelector::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for rdlt::StreamSelector
+pub fn rdlt::StreamSelector::from(alloc::string::String) -> Self
+impl core::convert::From<rdlt_connector::id::StreamName> for rdlt::StreamSelector
+pub fn rdlt::StreamSelector::from(rdlt_connector::id::StreamName) -> Self
+impl core::fmt::Debug for rdlt::StreamSelector
+pub fn rdlt::StreamSelector::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::StreamSelector
+impl core::marker::Freeze for rdlt::StreamSelector
+impl core::marker::Send for rdlt::StreamSelector
+impl core::marker::Sync for rdlt::StreamSelector
+impl core::marker::Unpin for rdlt::StreamSelector
+impl core::marker::UnsafeUnpin for rdlt::StreamSelector
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::StreamSelector
+impl core::panic::unwind_safe::UnwindSafe for rdlt::StreamSelector
 #[non_exhaustive] pub enum rdlt::TransformStep
 pub rdlt::TransformStep::Code(alloc::string::String)
 pub rdlt::TransformStep::Constant(alloc::vec::Vec<(alloc::string::String, rdlt_engine::transform::op::Literal)>)
@@ -892,7 +918,7 @@ pub fn rdlt::Pipeline::destination(&self) -> &rdlt::PlacedConnector
 pub async fn rdlt::Pipeline::discover(&self) -> core::result::Result<rdlt_connector::catalog::Catalog, rdlt::Error>
 pub fn rdlt::Pipeline::document(&self) -> &rdlt::Document
 pub fn rdlt::Pipeline::from_document(rdlt::Document) -> rdlt::PipelineBuilder
-pub async fn rdlt::Pipeline::reset(&self, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::AsRef<str>>, rdlt_engine::run::reset::ResetScope) -> core::result::Result<rdlt_engine::run::reset::ResetReport, rdlt::Error>
+pub async fn rdlt::Pipeline::reset(&self, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<rdlt::StreamSelector>>, rdlt_engine::run::reset::ResetScope) -> core::result::Result<rdlt_engine::run::reset::ResetReport, rdlt::Error>
 pub fn rdlt::Pipeline::source(&self) -> &rdlt::PlacedConnector
 pub fn rdlt::Pipeline::start(&self) -> rdlt::Run
 pub fn rdlt::Pipeline::with_event_buffer(self, core::num::nonzero::NonZeroUsize) -> Self

@@ -1,7 +1,10 @@
 //! Pipelines: built from a document on a host, then checked, discovered, reset and run.
 
+mod selector;
 #[cfg(test)]
 mod tests;
+
+pub use selector::StreamSelector;
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -276,13 +279,14 @@ impl Pipeline {
         discovered(self.source.as_ref(), self.config.connector_wait()).await
     }
 
-    /// Resets `streams`, each by its name as the catalog shows it, as `scope` says, in one
-    /// commit.
+    /// Resets `streams`, each by its name as the catalog shows it or by its identity, as `scope`
+    /// says, in one commit.
     ///
     /// The reset opens the destination, which fences every run of the pipeline in progress: a
     /// reset is a write. A stream the pipeline no longer selects is named as the source's catalog
     /// shows it too, and a name two of the catalog's streams show as now is refused, so a reset
-    /// never drops the tables of a stream it did not mean.
+    /// never drops the tables of a stream it did not mean. A namespaced stream neither the
+    /// pipeline nor the catalog holds now is named by its identity, a [`StreamName`].
     ///
     /// # Errors
     ///
@@ -291,19 +295,31 @@ impl Pipeline {
     /// pipeline never committed.
     pub async fn reset(
         &self,
-        streams: impl IntoIterator<Item = impl AsRef<str>>,
+        streams: impl IntoIterator<Item = impl Into<StreamSelector>>,
         scope: ResetScope,
     ) -> Result<ResetReport, Error> {
         let mut catalog = None;
         let mut names = Vec::new();
-        for name in streams {
-            names.push(self.stream(name.as_ref(), &mut catalog).await?);
+        for stream in streams {
+            names.push(self.selected(stream.into(), &mut catalog).await?);
         }
         let pipeline = self.plan.pipeline();
         let (source, destination) = (Arc::clone(&self.source), Arc::clone(&self.destination));
         let engine = self.engine();
         let resetting = engine.reset(pipeline, &names, scope, source, destination);
         resetting.await.map_err(Error::engine)
+    }
+
+    /// The stream `selector` selects, any catalog needed discovered once into `catalog`.
+    async fn selected(
+        &self,
+        selector: StreamSelector,
+        catalog: &mut Option<Catalog>,
+    ) -> Result<StreamName, Error> {
+        match selector {
+            StreamSelector::Shown(name) => self.stream(&name, catalog).await,
+            StreamSelector::Identity(identity) => Ok(identity),
+        }
     }
 
     /// The stream `name` names, against the source's catalog, discovered once into `catalog`: a

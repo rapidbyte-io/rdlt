@@ -57,3 +57,38 @@ fn a_builder_sets_each_part_of_its_document() {
         &document
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_reset_reaches_a_stream_gone_from_plan_and_catalog_by_its_identity() {
+    use rdlt_connector_reference::{MemoryDestination, MemorySource};
+
+    use crate::{Code, Connector, Host, ResetScope, Side, Stream, StreamName};
+
+    let memory = || Connector::new("io.rapidbyte.memory");
+    let source = Side::new(memory()).config(serde_json::json!({ "streams": { "users": [] } }));
+    let destination = Side::new(memory()).config(serde_json::json!({ "store": "identity" }));
+    let host = Host::new()
+        .source::<MemorySource>()
+        .destination::<MemoryDestination>();
+    let pipeline = super::Pipeline::builder("identity", source, destination)
+        .stream(Stream::new("users"))
+        .build(&host)
+        .await
+        .expect("built");
+    let identity = StreamName::with_namespace("sales", "orders").expect("a stream's name");
+    let mut catalog = None;
+    let chosen = pipeline
+        .selected(identity.clone().into(), &mut catalog)
+        .await;
+    assert_eq!(chosen.expect("its own name"), identity);
+    let guessed = pipeline.selected("sales.orders".into(), &mut catalog).await;
+    assert_eq!(
+        guessed.expect("a name").namespace(),
+        None,
+        "a shown name says no namespace"
+    );
+    let reset = pipeline.reset([identity], ResetScope::Positions).await;
+    let refused = reset.expect_err("never committed");
+    assert_eq!(refused.code().map(Code::as_str), Some("stream_not_found"));
+    assert_eq!(refused.stream(), Some("sales.orders"));
+}
