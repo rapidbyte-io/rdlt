@@ -5,8 +5,8 @@ use pyo3::types::{PyAnyMethods as _, PyTypeMethods as _};
 use rdlt_connector::prelude::*;
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
 
-use super::NativePipeline;
-use crate::embedded;
+use super::{NativePipeline, ResetStream};
+use crate::{embedded, runtime};
 
 /// A document that loads `rows` rows from the memory source into the memory store `name`.
 pub(crate) fn memory_document(name: &str, rows: usize) -> String {
@@ -127,5 +127,46 @@ fn a_check_fails_where_the_connector_fails_after_the_build_passed() {
             raised.get_type(py).name().unwrap().to_string(),
             "SourceError"
         );
+    });
+}
+
+#[test]
+fn a_built_pipeline_discovers_its_catalog_and_resets_its_streams() {
+    embedded::with(|py| {
+        let builder = rdlt::Pipeline::from_text(&memory_document("discovered", 2), "test").unwrap();
+        let pipeline = NativePipeline::built(py, builder, memory_host()).unwrap();
+        let catalog: serde_json::Value =
+            serde_json::from_str(&pipeline.discover(py).unwrap()).unwrap();
+        assert_eq!(catalog.as_array().map(Vec::len), Some(1), "{catalog}");
+        let running = Arc::clone(&pipeline.pipeline);
+        let outcome = runtime::wait(py, async move { running.start().await }).unwrap();
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+        let streams = vec![ResetStream::Shown("rows".to_owned())];
+        let reset: serde_json::Value =
+            serde_json::from_str(&pipeline.reset(py, streams, false).unwrap()).unwrap();
+        assert_eq!(reset["streams"], serde_json::json!(["rows"]));
+        assert_eq!(reset["dropped"], serde_json::json!([]));
+        assert!(reset["epoch"].is_u64(), "{reset}");
+    });
+}
+
+#[test]
+fn a_reset_refuses_an_identity_that_is_no_stream_and_quotes_nothing() {
+    embedded::with(|py| {
+        let builder = rdlt::Pipeline::from_text(&memory_document("identity", 1), "test").unwrap();
+        let pipeline = NativePipeline::built(py, builder, memory_host()).unwrap();
+        let streams = vec![ResetStream::Identity {
+            namespace: Some("hunter2\u{1}".to_owned()),
+            name: "rows".to_owned(),
+        }];
+        let raised = pipeline.reset(py, streams, false).unwrap_err();
+        assert_eq!(
+            raised.get_type(py).name().unwrap().to_string(),
+            "ConfigError"
+        );
+        let said = raised.value(py).str().unwrap().to_string();
+        assert!(!said.contains("hunter2"), "{said}");
+        let code = raised.value(py).getattr("code").unwrap();
+        assert_eq!(code.extract::<String>().unwrap(), "stream_invalid");
     });
 }

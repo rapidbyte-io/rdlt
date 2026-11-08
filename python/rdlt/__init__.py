@@ -1,7 +1,27 @@
 """Move data exactly once from Python with rdlt."""
 
 from rdlt._native import __version__
-from rdlt._pipeline import Pipeline, PipelineBuilder
+from rdlt._pipeline import (
+    Access,
+    Column,
+    Commit,
+    Connector,
+    Defaults,
+    Pipeline,
+    PipelineBuilder,
+    Resources,
+    Retry,
+    SchemaRules,
+    Stream,
+    StreamName,
+    WriteMode,
+    append,
+    history,
+    merge,
+    pipeline,
+    replace,
+    stream,
+)
 from rdlt.errors import (
     ConfigError,
     DestinationError,
@@ -15,10 +35,17 @@ from rdlt.errors import (
     TransformError,
 )
 from rdlt.host import Host, StrPath, Tls
-from rdlt.model import ErrorReport, Json
+from rdlt.model import Catalog, CatalogStream, ErrorReport, Json, ReadMode
 
 __all__ = [
+    "Access",
+    "Catalog",
+    "CatalogStream",
+    "Column",
+    "Commit",
     "ConfigError",
+    "Connector",
+    "Defaults",
     "DestinationError",
     "Error",
     "ErrorReport",
@@ -29,11 +56,24 @@ __all__ = [
     "MemoryBudgetError",
     "Pipeline",
     "PipelineBuilder",
+    "ReadMode",
+    "Resources",
+    "Retry",
     "SchemaError",
+    "SchemaRules",
     "SourceError",
     "StoppedError",
     "StrPath",
+    "Stream",
+    "StreamName",
     "Tls",
     "TransformError",
+    "WriteMode",
     "__version__",
+    "append",
+    "history",
+    "merge",
+    "pipeline",
+    "replace",
+    "stream",
 ]
