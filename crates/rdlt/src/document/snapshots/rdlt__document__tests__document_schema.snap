@@ -848,7 +848,7 @@ expression: schema
         },
         {
           "additionalProperties": false,
-          "description": "A query of the table `input`: its columns projected, its rows optionally filtered.",
+          "description": "A query of one table, `input`, which holds what the step before it leaves, the stream's\nrows at the first step: its columns projected, its rows optionally filtered.",
           "properties": {
             "sql": {
               "type": "string"

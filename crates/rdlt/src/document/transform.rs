@@ -28,7 +28,8 @@ pub enum TransformStep {
     #[serde(serialize_with = "constants::serialize")]
     #[schemars(with = "BTreeMap<String, ConstantText>")]
     Constant(Vec<(String, Literal)>),
-    /// A query of the table `input`: its columns projected, its rows optionally filtered.
+    /// A query of one table, `input`, which holds what the step before it leaves, the stream's
+    /// rows at the first step: its columns projected, its rows optionally filtered.
     Sql(String),
     /// The code transform the host registered by this name.
     Code(String),

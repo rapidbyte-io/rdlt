@@ -98,6 +98,16 @@ pub(crate) fn shape(what: &str) -> SqlError {
     )
 }
 
+/// The refusal of a query that reads anything but the table `input`, saying what to write and
+/// why.
+fn not_input() -> SqlError {
+    SqlError::new(
+        SqlErrorKind::Shape,
+        "a SQL transform reads one table, `input`: what the step before it leaves; write \
+         `FROM input`",
+    )
+}
+
 fn selected(query: &Query) -> Result<&Select, SqlError> {
     let held = [
         (query.with.is_some(), "a `WITH` clause"),
@@ -125,7 +135,7 @@ fn selected(query: &Query) -> Result<&Select, SqlError> {
     held_by(select)?;
     match select.from.as_slice() {
         [from] if from.joins.is_empty() && plain(&from.relation) => Ok(select),
-        _ => Err(shape("a query reading other than `FROM input`")),
+        _ => Err(not_input()),
     }
 }
 
@@ -353,7 +363,7 @@ impl Visitor for Checking {
         if relation.to_string() == "input" {
             return ControlFlow::Continue(());
         }
-        ControlFlow::Break(shape("a table other than input"))
+        ControlFlow::Break(not_input())
     }
 
     fn pre_visit_value(&mut self, value: &ValueWithSpan) -> ControlFlow<SqlError> {
