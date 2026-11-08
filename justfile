@@ -271,9 +271,7 @@ mutants-diff base="origin/main" jobs="4":
     exit "$failed"
 
 # Fuzz one target for a number of seconds, for example `just fuzz state_record 60`, from its
-# corpus, which keeps what it finds, and the seeds `fuzz/seeds/<target>` holds for it, if any.
-# `sql_plan` is handed inputs as long as a query's text may be, 64 KiB, and an input it takes two
-# seconds over is a finding
+# corpus, which keeps what it finds, and the seeds `fuzz/seeds/<target>` holds for it, if any
 fuzz target seconds="60":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -282,9 +280,7 @@ fuzz target seconds="60":
     mkdir -p "${corpora[0]}"
     seeds="{{ justfile_directory() }}/fuzz/seeds/{{ target }}"
     if [[ -d "$seeds" ]]; then corpora+=("$seeds"); fi
-    options=(-max_total_time={{ seconds }})
-    if [[ "{{ target }}" == sql_plan ]]; then options+=(-max_len=65536 -timeout=2); fi
-    cargo +{{ nightly }} fuzz run {{ target }} --target "$(rustc -vV | sed -n 's/host: //p')" "${corpora[@]}" -- "${options[@]}"
+    cargo +{{ nightly }} fuzz run {{ target }} --target "$(rustc -vV | sed -n 's/host: //p')" "${corpora[@]}" -- -max_total_time={{ seconds }}
 
 # Prove the Kani harnesses of `crate`, or of every crate that holds any, or only those of the
 # proofs of `crate`'s `module`, a path such as `budget::admits`, with Kani's release bundle as
