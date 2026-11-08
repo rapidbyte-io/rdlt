@@ -15,7 +15,11 @@ fn write(root: &Path, relative: &str) {
 }
 
 fn git(root: &Path, args: &[&str]) {
+    // `git rebase --exec` exports these, which would send this at the repository being rebased.
     let status = Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .arg("-C")
         .arg(root)
         .args(args)
