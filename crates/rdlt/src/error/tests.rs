@@ -2,7 +2,7 @@ use std::error::Error as _;
 use std::fmt;
 
 use rdlt_connector::StreamName;
-use rdlt_connector::limits::MAX_ERROR_CAUSES;
+use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_CODE_BYTES};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, ConnectorId, PipelineId, ReadMode, Role};
 use rdlt_engine::{Code, EngineConfig, ErrorKind, Origin, PipelinePlan, StreamPlan, WriteMode};
 use rdlt_host::ProviderError;
@@ -81,6 +81,38 @@ fn a_connector_that_cannot_start_or_be_reached_fails_its_side() {
         source: Box::new(broken),
     };
     placed(Role::Destination, handshake, destination);
+}
+
+#[test]
+fn a_handshake_s_failure_keeps_whether_to_retry_and_the_connector_s_bounded_code() {
+    let answered = |error: ConnectorError| {
+        let handshake = ProviderError::HandshakeFailed {
+            id: id(),
+            source: Box::new(error),
+        };
+        Error::placement(Role::Source, handshake)
+    };
+    let long = "c".repeat(MAX_ERROR_CODE_BYTES + 8);
+    let busy =
+        answered(ConnectorError::new(ConnectorErrorKind::RateLimited, "busy").with_code(long));
+    assert!(busy.is_retryable());
+    let code = busy
+        .connector_code()
+        .expect("the connector's code")
+        .to_owned();
+    assert!(
+        code.starts_with('c') && code.len() <= MAX_ERROR_CODE_BYTES,
+        "{code}"
+    );
+    assert_eq!(busy.report().connector_code.as_deref(), Some(code.as_str()));
+    let refused = answered(ConnectorError::config("no such table"));
+    assert!(!refused.is_retryable());
+    assert_eq!(refused.connector_code(), None);
+    let unstarted = ProviderError::NotFound {
+        id: id(),
+        source: None,
+    };
+    assert!(!Error::placement(Role::Source, unstarted).is_retryable());
 }
 
 #[test]
