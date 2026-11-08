@@ -12,6 +12,7 @@ repository = "https://github.com/rapidbyte-io/rdlt"
 
 [workspace.dependencies]
 # Workspace crates
+rdlt = { path = "crates/rdlt", version = "0.0.0" }                                         # the facade, which the Python extension binds
 rdlt-adopt = { path = "crates/rdlt-adopt", version = "0.0.0" }                             # the audited unsafe code: adopting a host's socket, and a child's inherited descriptors
 rdlt-certify = { path = "crates/rdlt-certify", version = "0.0.0" }                         # certification as a library, whose T clauses rdlt-sql's tests run
 rdlt-connector = { path = "crates/rdlt-connector", version = "0.0.0" }                     # the connector contract

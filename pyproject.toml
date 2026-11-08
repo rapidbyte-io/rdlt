@@ -45,7 +45,8 @@ python-packages = ["rdlt"]
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
 timeout = 120
-addopts = ["--strict-markers", "--strict-config", "-ra"]
+# The installed package is the one tested: pytest puts no source directory before it on the path.
+addopts = ["--strict-markers", "--strict-config", "--import-mode=importlib", "-ra"]
 markers = ["network: installs from PyPI, with a wheel of this tree built"]
 xfail_strict = true
 
@@ -92,6 +93,7 @@ convention = "google"
 
 [tool.pyright]
 include = ["python"]
+extraPaths = ["python"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
 venvPath = "."

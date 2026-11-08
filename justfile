@@ -47,14 +47,19 @@ python-checks: python-develop
     pyright
     .venv/bin/python -m mypy.stubtest rdlt._native
 
+# Build the reference connectors' binaries the Python package's tests place: the shipped ones and
+# the test connectors
+connectors-build:
+    cargo build --package rdlt-connector-reference --features test-connectors --bins
+
 # The Python package's tests, against the editable install; extra arguments go to pytest
-python-test *args: python-develop
+python-test *args: python-develop connectors-build
     .venv/bin/python -m pytest {{ args }}
 
 # Build the release wheel and test it as it ships: installed with the test dependencies into an
 # environment of its own on CPython `version`, which uv installs from the downloads its release
 # names, never the editable package
-python-wheel version:
+python-wheel version: connectors-build
     #!/usr/bin/env bash
     set -euo pipefail
     rm -rf target/wheels target/wheel-env
@@ -65,6 +70,8 @@ python-wheel version:
     uv venv --python "{{ version }}" target/wheel-env
     VIRTUAL_ENV=target/wheel-env uv sync --locked --active --only-group dev
     uv pip install --python target/wheel-env/bin/python target/wheels/*.whl
+    # The tests must read the wheel, not the source tree beside it
+    target/wheel-env/bin/python -c 'import pathlib, rdlt; assert "site-packages" in pathlib.Path(rdlt.__file__).parts'
     target/wheel-env/bin/python -m pytest -p no:cacheprovider
 
 # Run every static check CI runs
