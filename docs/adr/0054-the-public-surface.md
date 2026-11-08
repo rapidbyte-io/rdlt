@@ -52,6 +52,8 @@ operates its host.
   name holding `*` or `?` selects each stream of the catalog it matches, a stream named outright
   wins over a pattern, and a pattern that matches no stream of the catalog is refused
   (`pattern_unmatched`).
+  A reset names a stream the same way, against the catalog as it is then, or by its identity
+  (`StreamSelector`), for a namespaced stream neither the plan nor the catalog holds any more.
 - **`build` checks everything that needs no data, in two passes.** Before a connector is placed:
   the document's version and names, its connectors' references, its commit, resources and retry,
   and each stream entry's modes, keys, columns, hints and transforms, with mask keys resolved,
