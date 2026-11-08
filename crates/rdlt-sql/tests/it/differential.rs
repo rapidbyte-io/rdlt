@@ -1,6 +1,7 @@
 //! rdlt-sql's per-batch evaluation against DataFusion's own executor over a memory table: the
-//! values, the types and the nullability of what each gives, for the listed expressions and for
-//! drawn queries, on each batch whole and cut as the stage cuts it.
+//! values and the types of what each gives, and that a column rdlt-sql says holds no null holds
+//! none, for the listed expressions and for drawn queries, on each batch whole and cut as the
+//! stage cuts it.
 
 use arrow_array::{Array as _, RecordBatch};
 use arrow_schema::{DataType, Fields};
@@ -67,17 +68,37 @@ async fn executed(context: &SessionContext, text: &str) -> Result<(String, Typed
     Ok((shown(&batches), types))
 }
 
-/// `ours` with each column's nulls allowed only where DataFusion's executor allows them too.
+/// What rdlt-sql gives: its rows as [`shown`] prints them, each column's type and whether its
+/// schema allows nulls, and whether each column holds one.
+#[derive(Debug)]
+struct Evaluated {
+    shown: String,
+    types: Typed,
+    nulls: Vec<bool>,
+}
+
+/// Why `ours` differs from what DataFusion's executor gives: other rows, other column types, or
+/// a column rdlt-sql says holds no null that holds one.
 ///
-/// Its optimizer folds constants, so it may know a column holds no null where the plan as
-/// written, which rdlt-sql runs, does not: a column rdlt-sql says holds none, DataFusion's must
-/// not allow either, and every other difference stays.
-fn narrowed(ours: (String, Typed), theirs: &(String, Typed)) -> (String, Typed) {
-    let (shown, types) = ours;
-    let allowed = theirs.1.iter().map(|(_, nullable)| *nullable);
-    let types = types.into_iter().zip(allowed);
-    let types = types.map(|((data_type, nullable), allowed)| (data_type, nullable && allowed));
-    (shown, types.collect())
+/// Either planner may prove a column holds no null where the other does not, so neither's
+/// nullability binds the other's: rdlt-sql's need only be true of what it gives.
+fn differs(ours: &Evaluated, theirs: &(String, Typed)) -> Option<String> {
+    let (shown, types) = theirs;
+    if ours.shown != *shown {
+        return Some(format!("rows: ours\n{}\nDataFusion's\n{shown}", ours.shown));
+    }
+    let ours_types = ours.types.iter().map(|(data_type, _)| data_type);
+    if !ours_types.eq(types.iter().map(|(data_type, _)| data_type)) {
+        return Some(format!(
+            "types: ours {:?}, DataFusion's {types:?}",
+            ours.types
+        ));
+    }
+    let said = ours.types.iter().map(|(_, nullable)| *nullable);
+    let unsound = said
+        .zip(&ours.nulls)
+        .position(|(nullable, held)| !nullable && *held);
+    unsound.map(|column| format!("column {column} is said to hold no null and holds one"))
 }
 
 /// `batch` whole, in halves, in quarters, and as its first row and the rest: parts as the stage
@@ -99,8 +120,8 @@ fn cuts(batch: &RecordBatch) -> Vec<Vec<RecordBatch>> {
 }
 
 /// What `text` gives over `parts`, evaluated a part at a time as the stage does, the rows its
-/// filter drops taken out only where it drops one, and its columns' types, or why it refused it.
-fn evaluated(parts: &[RecordBatch], text: &str) -> Result<(String, Typed), String> {
+/// filter drops taken out only where it drops one, or why it refused it.
+fn evaluated(parts: &[RecordBatch], text: &str) -> Result<Evaluated, String> {
     let sql = Sql::parse(text).map_err(|error| error.to_string())?;
     let output = sql
         .output(parts[0].schema_ref())
@@ -119,7 +140,16 @@ fn evaluated(parts: &[RecordBatch], text: &str) -> Result<(String, Typed), Strin
         };
         outputs.push(sql.apply(kept).map_err(|error| error.to_string())?);
     }
-    Ok((shown(&outputs), typed(output.fields())))
+    let columns = 0..output.fields().len();
+    let nulls = columns.map(|column| {
+        let mut columns = outputs.iter().map(|output| output.column(column));
+        columns.any(|column| column.null_count() > 0)
+    });
+    Ok(Evaluated {
+        shown: shown(&outputs),
+        types: typed(output.fields()),
+        nulls: nulls.collect(),
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -136,8 +166,9 @@ async fn per_batch_evaluation_gives_what_datafusions_executor_gives() {
                     let ours = evaluated(&parts, &text);
                     let ours = ours.unwrap_or_else(|error| panic!("{text}: {error}"));
                     let cut = parts.len();
-                    let ours = narrowed(ours, &expected);
-                    assert_eq!(ours, expected, "seed {seed}: {text} in {cut} parts");
+                    if let Some(difference) = differs(&ours, &expected) {
+                        panic!("seed {seed}: {text} in {cut} parts: {difference}");
+                    }
                 }
             }
         }
@@ -161,8 +192,8 @@ proptest! {
             let cut = parts.len();
             match (evaluated(&parts, &text), &expected) {
                 (Ok(ours), Ok(expected)) => {
-                    let ours = narrowed(ours, expected);
-                    prop_assert_eq!(&ours, expected, "{} in {} parts", text, cut);
+                    let difference = differs(&ours, expected);
+                    prop_assert!(difference.is_none(), "{} in {} parts: {:?}", text, cut, difference);
                 }
                 (ours, expected) => prop_assert!(
                     false,
