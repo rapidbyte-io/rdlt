@@ -23,9 +23,7 @@ use tokio::sync::broadcast;
 use crate::limits::{EVENT_BUFFER, EVENT_BUFFER_MAX};
 use crate::lower::{self, Lowered};
 use crate::run::{Observed, Run};
-use crate::{
-    Commit, Defaults, Document, Error, Host, Resources, Retry, Side, Stream, Until, codes,
-};
+use crate::{Commit, Defaults, Document, Error, Host, Resources, Retry, Side, Stream, Until};
 
 /// A pipeline described in code: a builder of its [`Document`].
 ///
@@ -342,10 +340,7 @@ impl Pipeline {
         if let Some(stream) = shown {
             return Ok(stream);
         }
-        StreamName::new(name).map_err(|error| {
-            let message = format!("a stream's name is not one: {error}");
-            Error::config_caused(codes::STREAM_INVALID, message, error)
-        })
+        lower::written(name)
     }
 }
 

@@ -24,10 +24,7 @@ impl Entry {
     /// `stream` lowered: its name checked, its hints' types and its transforms, which `host`'s
     /// secrets and code complete.
     pub(super) async fn lowered(stream: &Stream, host: &Host) -> Result<Self, Error> {
-        let name = StreamName::new(&stream.name).map_err(|error| {
-            let message = format!("a stream's name is not one: {error}");
-            Error::config_caused(codes::STREAM_INVALID, message, error)
-        })?;
+        let name = written(&stream.name)?;
         let mut hints = Vec::new();
         for (column, entry) in &stream.columns {
             if let Some(hint) = entry.hint {
@@ -100,6 +97,25 @@ impl Entry {
         }
         Ok(plan)
     }
+}
+
+/// The stream `shown` names where no catalog says more: a name alone, or, past one name's limit,
+/// a namespace and a name, each held to its own limit.
+///
+/// # Errors
+///
+/// `stream_invalid` for text that is neither.
+pub(crate) fn written(shown: &str) -> Result<StreamName, Error> {
+    let parted = |refused| {
+        let mut splits = shown.match_indices('.');
+        splits
+            .find_map(|(dot, _)| StreamName::with_namespace(&shown[..dot], &shown[dot + 1..]).ok())
+            .ok_or(refused)
+    };
+    StreamName::new(shown).or_else(parted).map_err(|error| {
+        let message = format!("a stream's name is not one: {error}");
+        Error::config_caused(codes::STREAM_INVALID, message, error)
+    })
 }
 
 /// `plan`, matching rows by `key` where the document names one, and by the source's primary key
