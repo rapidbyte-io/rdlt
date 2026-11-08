@@ -16,7 +16,8 @@ use super::read::{self, Mapped, Text, refuse};
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum TransformStep {
-    /// Renames top-level columns, each from its first name to its second, in the order written.
+    /// Renames top-level columns, each from its first name to its second, held sorted by first
+    /// name: no column may take a name another gives up, so their order means nothing.
     #[serde(serialize_with = "renames::serialize")]
     #[schemars(with = "BTreeMap<String, String>")]
     Rename(Vec<(String, String)>),
@@ -107,12 +108,12 @@ impl<'de> Deserialize<'de> for Constants {
 impl TransformStep {
     /// Renames each column from its first name to its second.
     pub fn rename(pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>) -> Self {
-        Self::Rename(
-            pairs
-                .into_iter()
-                .map(|(from, to)| (from.into(), to.into()))
-                .collect(),
-        )
+        let mut pairs: Vec<(String, String)> = pairs
+            .into_iter()
+            .map(|(from, to)| (from.into(), to.into()))
+            .collect();
+        pairs.sort();
+        Self::Rename(pairs)
     }
 
     /// Adds each column, holding its value.
@@ -271,7 +272,8 @@ impl JsonSchema for ConstantText {
     }
 }
 
-/// Renames, as a document writes them: a mapping of each column to its new name, in order.
+/// Renames, as a document writes them: a mapping of each column to its new name, held sorted so
+/// a document reads the same however its mapping's keys were ordered on the way.
 mod renames {
     use std::fmt;
 
@@ -309,6 +311,7 @@ mod renames {
                 while let Some((Text(from), Text(to))) = map.next_entry::<Text, Text>()? {
                     pairs.push((from, to));
                 }
+                pairs.sort();
                 Ok(pairs)
             }
 
