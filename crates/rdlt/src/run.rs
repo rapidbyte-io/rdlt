@@ -42,6 +42,9 @@ pub struct Run {
     handle: RunHandle,
     events: broadcast::Sender<Event>,
     ended: Arc<AtomicBool>,
+    metered: broadcast::Receiver<Event>,
+    sampling: Option<tokio::time::Interval>,
+    pipeline: String,
 }
 
 impl Run {
@@ -49,11 +52,15 @@ impl Run {
         handle: RunHandle,
         events: broadcast::Sender<Event>,
         ended: Arc<AtomicBool>,
+        pipeline: String,
     ) -> Self {
         Self {
             handle,
+            metered: events.subscribe(),
             events,
             ended,
+            sampling: None,
+            pipeline,
         }
     }
 
@@ -87,7 +94,8 @@ impl fmt::Debug for Run {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Run")
-            .field("subscribers", &self.events.receiver_count())
+            // The run's own metering receiver is no subscriber.
+            .field("subscribers", &(self.events.receiver_count() - 1))
             .finish_non_exhaustive()
     }
 }
@@ -96,7 +104,21 @@ impl Future for Run {
     type Output = Outcome;
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Outcome> {
-        Pin::new(&mut self.handle).poll(context).map(Outcome::of)
+        let this = &mut *self;
+        crate::metrics::drained(&this.pipeline, &mut this.metered);
+        let sampling = this.sampling.get_or_insert_with(|| {
+            let mut sampling = tokio::time::interval(crate::limits::SAMPLED_EVERY);
+            sampling.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            sampling
+        });
+        while sampling.poll_tick(context).is_ready() {
+            crate::metrics::sampled(&this.pipeline, &this.handle.status());
+        }
+        let outcome = std::task::ready!(Pin::new(&mut this.handle).poll(context));
+        crate::metrics::drained(&this.pipeline, &mut this.metered);
+        // The last sample, so no gauge keeps the value of a run that is over.
+        crate::metrics::sampled(&this.pipeline, &this.handle.status());
+        Poll::Ready(Outcome::of(outcome))
     }
 }
 

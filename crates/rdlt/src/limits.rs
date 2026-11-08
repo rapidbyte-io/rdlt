@@ -12,6 +12,9 @@ pub const EVENT_BUFFER: usize = 4_096;
 /// Events: the most a run keeps for its subscribers, however many a pipeline asks for.
 pub const EVENT_BUFFER_MAX: usize = 65_536;
 
+/// How often a run's status is sampled for its gauges.
+pub const SAMPLED_EVERY: Duration = Duration::from_secs(1);
+
 /// Bytes: the largest document read.
 pub const DOCUMENT_BYTES: usize = 1_048_576;
 

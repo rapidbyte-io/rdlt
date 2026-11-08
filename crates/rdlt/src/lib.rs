@@ -54,6 +54,7 @@ mod events;
 mod host;
 pub mod limits;
 mod lower;
+mod metrics;
 mod pipeline;
 mod run;
 

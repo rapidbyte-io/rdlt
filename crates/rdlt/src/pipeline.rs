@@ -277,6 +277,7 @@ impl Pipeline {
             engine.run(self.plan.clone(), source, destination),
             events,
             ended,
+            self.document.pipeline.clone(),
         )
     }
 

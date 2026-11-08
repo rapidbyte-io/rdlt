@@ -81,7 +81,7 @@ async fn a_run_s_status_says_what_it_is_doing_and_a_failed_run_its_error() {
 
 /// A pipeline following one stream of `rows` forever, a page of one row at a time, committing
 /// after every row, into memory store `store`.
-async fn following(name: &str, store: &str) -> Pipeline {
+pub(crate) async fn following(name: &str, store: &str) -> Pipeline {
     let rows: Vec<serde_json::Value> = (0..1_000)
         .map(|id| serde_json::json!({ "id": id }))
         .collect();
@@ -99,7 +99,7 @@ async fn following(name: &str, store: &str) -> Pipeline {
 }
 
 /// Polls `run` until a commit lands, reading `events`; the run has not ended by then.
-async fn committed(run: &mut Run, events: &mut Events) {
+pub(crate) async fn committed(run: &mut Run, events: &mut Events) {
     let commit = async {
         loop {
             let told = events
