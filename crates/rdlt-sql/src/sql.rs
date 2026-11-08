@@ -27,7 +27,7 @@ use crate::{depth, shape, stack};
 pub struct Sql {
     statement: Statement,
     filters: bool,
-    /// The plans for the input schemas met last, the newest last.
+    /// The plans for the input schemas asked for most recently, the latest last.
     plans: Mutex<Vec<Kept>>,
 }
 
@@ -104,19 +104,26 @@ impl Sql {
 
     /// The place of the plan for batches of `input`, and the schema it is planned for: one kept,
     /// found by the very schema `asked` or by an equal one, which becomes its key, or one added,
-    /// the oldest given up where [`PLANS`] are kept.
+    /// the plan asked for least recently given up where [`PLANS`] are kept.
+    ///
+    /// The place found or added becomes the latest.
     fn place(&self, input: &Schema, asked: Option<&SchemaRef>) -> (SchemaRef, Arc<OnceLock<Plan>>) {
         let mut plans = self.plans.lock();
-        if let Some(asked) = asked
-            && let Some(kept) = plans.iter().find(|kept| Arc::ptr_eq(&kept.input, asked))
-        {
-            return (Arc::clone(&kept.input), Arc::clone(&kept.plan));
-        }
-        if let Some(kept) = plans.iter_mut().rev().find(|kept| *kept.input == *input) {
+        let found = asked
+            .and_then(|asked| {
+                plans
+                    .iter()
+                    .position(|kept| Arc::ptr_eq(&kept.input, asked))
+            })
+            .or_else(|| plans.iter().rposition(|kept| *kept.input == *input));
+        if let Some(place) = found {
+            let mut kept = plans.remove(place);
             if let Some(asked) = asked {
                 kept.input = Arc::clone(asked);
             }
-            return (Arc::clone(&kept.input), Arc::clone(&kept.plan));
+            let found = (Arc::clone(&kept.input), Arc::clone(&kept.plan));
+            plans.push(kept);
+            return found;
         }
         let schema = asked.map_or_else(|| Arc::new(input.clone()), Arc::clone);
         if plans.len() == PLANS {
