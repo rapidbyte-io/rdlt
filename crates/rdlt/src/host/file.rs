@@ -27,19 +27,35 @@ use crate::{Error, Host, codes};
 #[non_exhaustive]
 pub struct HostFile {
     /// Directories local connectors are found in.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::document::paths"
+    )]
     pub connectors: Vec<PathBuf>,
     /// Whether local connectors run with the host's own access, in no sandbox.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub trust_binaries: bool,
     /// Roots a pipeline may let its connectors write beneath.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::document::paths"
+    )]
     pub writable: Vec<PathBuf>,
     /// Roots a pipeline may let its connectors read beneath.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::document::paths"
+    )]
     pub readable: Vec<PathBuf>,
     /// Paths every sandboxed connector reads.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::document::paths"
+    )]
     pub always_readable: Vec<PathBuf>,
     /// Environment variables a configuration's `${env:NAME}` reaches.
     #[serde(
@@ -49,7 +65,11 @@ pub struct HostFile {
     )]
     pub allow_env: Vec<String>,
     /// Directories a configuration's `${file:/path}` reaches beneath.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::document::paths"
+    )]
     pub allow_files: Vec<PathBuf>,
     /// Whether a pipeline may let its connectors share the host's network, in the sandbox too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

@@ -119,6 +119,31 @@ fn a_host_file_s_environment_names_are_text_and_nothing_else() {
 }
 
 #[test]
+fn a_host_file_s_paths_are_text_and_nothing_else() {
+    for field in [
+        "connectors",
+        "writable",
+        "readable",
+        "always_readable",
+        "allow_files",
+    ] {
+        let text = format!("{field}: [31337424]\n");
+        let refused = HostFile::parse(&text).expect_err(&text);
+        assert_eq!(
+            refused.code().map(rdlt_engine::Code::as_str),
+            Some("document_invalid"),
+            "{refused}"
+        );
+        assert!(!refused.to_string().contains("31337424"), "{refused}");
+    }
+    let parsed = HostFile::parse("writable: [\"31337424\", /tmp/out]\n").unwrap();
+    assert_eq!(
+        parsed.writable,
+        ["31337424", "/tmp/out"].map(std::path::PathBuf::from)
+    );
+}
+
+#[test]
 fn a_host_file_left_empty_or_commented_out_allows_nothing() {
     for text in ["", "\n", "# nothing allowed yet\n", "  # a\n  # b"] {
         assert_eq!(
