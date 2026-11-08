@@ -281,7 +281,8 @@ impl Pipeline {
     ///
     /// The reset opens the destination, which fences every run of the pipeline in progress: a
     /// reset is a write. A stream the pipeline no longer selects is named as the source's catalog
-    /// shows it too.
+    /// shows it too, and a name two of the catalog's streams show as now is refused, so a reset
+    /// never drops the tables of a stream it did not mean.
     ///
     /// # Errors
     ///
@@ -305,9 +306,15 @@ impl Pipeline {
         resetting.await.map_err(Error::engine)
     }
 
-    /// The stream `name` names: the pipeline's stream that shows as it, else the stream of the
-    /// source's catalog that does, discovered once into `catalog`, else a stream of that name.
+    /// The stream `name` names, against the source's catalog, discovered once into `catalog`: a
+    /// name two of its streams show as is refused, whatever the pipeline plans; else the
+    /// pipeline's stream that shows as it, else the catalog's, else a stream of that name.
     async fn stream(&self, name: &str, catalog: &mut Option<Catalog>) -> Result<StreamName, Error> {
+        let offered = match catalog {
+            Some(offered) => offered,
+            None => catalog.insert(self.discover().await?),
+        };
+        let shown = lower::resolved(name, offered)?;
         let mut planned = self
             .plan
             .streams()
@@ -316,11 +323,7 @@ impl Pipeline {
         if let Some(stream) = planned.find(|stream| stream.to_string() == name) {
             return Ok(stream.clone());
         }
-        let offered = match catalog {
-            Some(offered) => offered,
-            None => catalog.insert(self.discover().await?),
-        };
-        if let Some(stream) = lower::resolved(name, offered)? {
+        if let Some(stream) = shown {
             return Ok(stream);
         }
         StreamName::new(name).map_err(|error| {
