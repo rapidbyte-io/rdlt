@@ -1,6 +1,6 @@
 //! Reading any text as a pipeline's document never panics, holds a bounded heap and, refusing
-//! it, quotes none of its values; what it reads writes back to an equal document, where a
-//! written document stays within the limit.
+//! it, quotes none of its values; what it reads writes back, if it can be written, to an equal
+//! document.
 
 #![forbid(unsafe_code)]
 #![no_main]
@@ -81,9 +81,7 @@ fuzz_target!(|text: &str| {
     PEAK.reset_peak_usage();
     match rdlt::Document::parse(text) {
         Ok(document) => {
-            if let Ok(written) = document.to_yaml()
-                && written.len() <= rdlt::limits::DOCUMENT_BYTES
-            {
+            if let Ok(written) = document.to_yaml() {
                 let again = rdlt::Document::parse(&written).expect("a written document reads");
                 assert_eq!(again, document);
             }
