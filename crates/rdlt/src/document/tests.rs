@@ -790,6 +790,8 @@ fn the_document_s_schema_defines_each_value_written_by_hand() {
     ] {
         assert_eq!(defined[name]["description"], description, "{name}");
     }
+    assert_eq!(defined["Constant"]["minimum"], i64::MIN);
+    assert_eq!(defined["Constant"]["maximum"], i64::MAX);
     let writes = &defined["WriteMode"]["oneOf"];
     let words = serde_json::json!(["append", "replace", "merge", "history"]);
     assert_eq!(writes[0]["enum"], words);
