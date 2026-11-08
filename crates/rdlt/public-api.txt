@@ -1133,7 +1133,7 @@ impl core::panic::unwind_safe::UnwindSafe for rdlt::Side
 pub rdlt::Stream::columns: alloc::collections::btree::map::BTreeMap<alloc::string::String, rdlt::Column>
 pub rdlt::Stream::deletes: core::option::Option<rdlt::DeleteMode>
 pub rdlt::Stream::exclude: alloc::vec::Vec<alloc::string::String>
-pub rdlt::Stream::included: alloc::vec::Vec<alloc::string::String>
+pub rdlt::Stream::included: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub rdlt::Stream::name: alloc::string::String
 pub rdlt::Stream::nested: core::option::Option<rdlt::Nested>
 pub rdlt::Stream::on_retention_loss: core::option::Option<rdlt::RetentionLoss>

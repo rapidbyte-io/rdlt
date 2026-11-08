@@ -49,14 +49,15 @@ pub struct Stream {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub columns: BTreeMap<String, Column>,
-    /// The only top-level columns it loads, beside its keys and change columns.
+    /// The only top-level columns it loads, beside its keys and change columns; none listed is
+    /// a restriction too, which the plan refuses, and unlike this being absent.
     #[serde(
         rename = "include",
         default,
-        deserialize_with = "read::texts",
-        skip_serializing_if = "Vec::is_empty"
+        deserialize_with = "read::optional_texts",
+        skip_serializing_if = "Option::is_none"
     )]
-    pub included: Vec<String>,
+    pub included: Option<Vec<String>>,
     /// Top-level columns it leaves out.
     #[serde(
         default,
@@ -86,7 +87,7 @@ impl Stream {
             schema: None,
             nested: None,
             columns: BTreeMap::new(),
-            included: Vec::new(),
+            included: None,
             exclude: Vec::new(),
             transform: Vec::new(),
         }
@@ -152,7 +153,9 @@ impl Stream {
     /// its keys and its change columns.
     #[must_use]
     pub fn include_only(mut self, columns: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.included.extend(columns.into_iter().map(Into::into));
+        self.included
+            .get_or_insert_default()
+            .extend(columns.into_iter().map(Into::into));
         self
     }
 

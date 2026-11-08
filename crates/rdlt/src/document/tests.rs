@@ -785,6 +785,31 @@ fn no_debug_shows_more_of_an_endpoint_than_where_it_listens() {
 }
 
 #[test]
+fn an_empty_include_is_written_and_an_absent_one_is_not() {
+    let empty = Stream::new("s").include_only(Vec::<String>::new());
+    let written = serde_json::to_value(&empty).expect("it writes");
+    assert_eq!(written, serde_json::json!({ "name": "s", "include": [] }));
+    assert_eq!(
+        serde_json::from_value::<Stream>(written).expect("it reads"),
+        empty
+    );
+    let absent = serde_json::to_value(Stream::new("s")).expect("it writes");
+    assert_eq!(absent, serde_json::json!({ "name": "s" }));
+    let null = serde_json::json!({ "name": "s", "include": null });
+    assert_eq!(
+        serde_json::from_value::<Stream>(null).expect("it reads"),
+        Stream::new("s")
+    );
+    let schema = Document::json_schema();
+    let columns = &schema["$defs"]["Stream"]["properties"]["include"];
+    assert_eq!(
+        columns["type"],
+        serde_json::json!(["array", "null"]),
+        "{columns}"
+    );
+}
+
+#[test]
 fn a_null_size_or_duration_says_nothing() {
     let resources = serde_json::json!({ "memory": null, "writers": 2 });
     let resources = serde_json::from_value::<Resources>(resources).expect("it reads");

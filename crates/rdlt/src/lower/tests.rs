@@ -647,6 +647,20 @@ async fn a_rename_giving_a_column_a_name_another_gives_up_is_refused_however_wri
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_empty_include_is_a_restriction_and_an_absent_one_is_none() {
+    let read = serde_json::json!({ "name": "a", "include": [] });
+    let read = serde_json::from_value::<Stream>(read).expect("it reads");
+    let built = Stream::new("a").include_only(Vec::<String>::new());
+    for empty in [read, built] {
+        refused(&document(vec![empty]), "plan_include_invalid", Some("a")).await;
+    }
+    let absent = serde_json::from_value::<Stream>(serde_json::json!({ "name": "a" }));
+    let absent = document(vec![absent.expect("it reads")]);
+    let lowered = lowered(&absent).await.expect("no restriction");
+    assert!(lowered.plan.streams()[0].included().is_none());
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_shown_name_is_held_to_its_parts_limits() {
     let (namespace, name) = ("n".repeat(200), "t".repeat(200));
     let shown = format!("{namespace}.{name}");
