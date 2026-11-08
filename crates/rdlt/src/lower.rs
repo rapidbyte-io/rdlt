@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use rdlt_connector::{Catalog, ConnectorId, PipelineId, Role};
 use rdlt_engine::{CommitPolicy, EngineConfig, PipelinePlan, RetryPolicy};
-use rdlt_host::{ConnectorRef, Digest};
+use rdlt_host::{ConnectorRef, Digest, Endpoint, ProviderError};
 
 use crate::error::noun;
 use crate::{Connector, Document, Error, Host, Side, codes};
@@ -172,6 +172,10 @@ pub(crate) fn reference(side: &Side, role: Role) -> Result<ConnectorRef, Error> 
             connector = connector.digest(digest);
         }
         if let Some(endpoint) = &reference.endpoint {
+            Endpoint::parse(endpoint).map_err(|source| {
+                let id = connector.id.clone();
+                Error::placement(role, ProviderError::Endpoint { id, source })
+            })?;
             connector = connector.endpoint(endpoint.clone());
         }
     }
