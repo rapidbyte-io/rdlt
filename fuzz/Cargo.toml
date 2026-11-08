@@ -21,6 +21,7 @@ http-body = "1.1.0"
 libfuzzer-sys = "0.4.13"
 peak_alloc = "0.3.0"
 proptest = "1.11.0"
+rdlt = { path = "../crates/rdlt", default-features = false }
 rdlt-connector = { path = "../crates/rdlt-connector", default-features = false, features = [
   "wire",
 ] }
@@ -28,6 +29,7 @@ rdlt-engine = { path = "../crates/rdlt-engine", features = ["bench"] }
 rdlt-sql = { path = "../crates/rdlt-sql", features = ["bench"], optional = true }
 rdlt-testkit = { path = "../crates/rdlt-testkit" }
 rdlt-wire = { path = "../crates/rdlt-wire" }
+serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize"] }
 
 [[bin]]
 name = "state_record"
@@ -96,3 +98,10 @@ test = false
 doc = false
 bench = false
 required-features = ["sql"]
+
+[[bin]]
+name = "document"
+path = "fuzz_targets/document.rs"
+test = false
+doc = false
+bench = false

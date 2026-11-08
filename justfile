@@ -304,6 +304,8 @@ fuzz target seconds="60":
     fi
     options=(-max_total_time={{ seconds }})
     if [[ "{{ target }}" == sql_plan ]]; then options+=(-max_len=65536 -timeout=2); fi
+    # A document may reach 1 MiB, past which it is refused: its target's inputs reach that size at once
+    if [[ "{{ target }}" == document ]]; then options+=(-max_len=1100000 -len_control=0); fi
     cargo +{{ nightly }} fuzz run {{ target }} ${features[@]+"${features[@]}"} --target "$(rustc -vV | sed -n 's/host: //p')" "${corpora[@]}" -- "${options[@]}"
 
 # Prove the Kani harnesses of `crate`, or of every crate that holds any, or only those of the

@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "pipeline": "orders",
+  "source": {
+    "connector": "io.rapidbyte.postgres",
+    "config": {
+      "dsn": "${secret:pg_dsn}"
+    }
+  },
+  "destination": {
+    "connector": "io.rapidbyte.sqlite",
+    "config": {
+      "path": "/data/out.db"
+    },
+    "access": {
+      "write": [
+        "/data"
+      ]
+    }
+  },
+  "defaults": {
+    "write": "append",
+    "schema": {
+      "policy": "evolve"
+    },
+    "nested": "native"
+  },
+  "streams": [
+    {
+      "name": "public.orders",
+      "read": "cdc",
+      "write": {
+        "merge": {
+          "key": [
+            "id"
+          ]
+        }
+      },
+      "include": [
+        "id",
+        "email",
+        "amount",
+        "status"
+      ],
+      "transform": [
+        {
+          "mask": {
+            "columns": [
+              "email"
+            ],
+            "with": "hmac_sha256",
+            "key": "${secret:mask_key}"
+          }
+        },
+        {
+          "sql": "SELECT *, amount * 100 AS cents FROM input WHERE status <> 'test'"
+        }
+      ]
+    },
+    {
+      "name": "public.*"
+    }
+  ],
+  "commit": {
+    "every": "10s",
+    "rows": 1000000
+  },
+  "resources": {
+    "memory": "512MiB",
+    "writers": 8,
+    "partitions": 16
+  },
+  "retry": {
+    "max_attempts": 8
+  }
+}
