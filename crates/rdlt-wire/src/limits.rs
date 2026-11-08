@@ -22,6 +22,9 @@ pub const BATCH_ROWS: u64 = 1024 * 1024;
 /// A frame at [`FRAME_BYTES`] holds this many one-byte values.
 pub const BATCH_VALUES: u64 = 64 * BATCH_ROWS;
 
+/// Bytes: a W3C `traceparent` of version 00, the only form either end reads.
+pub const TRACEPARENT_BYTES: usize = 55;
+
 /// Bytes: the least frame limit a peer may set.
 ///
 /// A sender cuts a batch to its receiver's limits, and every frame costs it each buffer's

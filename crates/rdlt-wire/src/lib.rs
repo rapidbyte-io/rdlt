@@ -22,6 +22,7 @@ pub mod scan;
 mod testing;
 #[cfg(feature = "tls")]
 pub mod tls;
+pub mod trace;
 
 /// The messages of package `rdlt.connector.v1`, and its `Connector` service's client
 /// (`connector_client`) and server (`connector_server`) for every call but the data plane's,
