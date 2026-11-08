@@ -6,8 +6,12 @@ mod tests;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use rdlt_connector::{Catalog, Destination, Role, Source, StreamName};
+use rdlt_connector::{
+    Catalog, ConnectorError, ConnectorErrorKind, DEADLINE_EXCEEDED, Destination, Role, Source,
+    StreamName,
+};
 use rdlt_engine::{Engine, EngineConfig, Env, PipelinePlan, ResetReport, ResetScope, SystemEnv};
 use rdlt_host::{Placed, Provider as _};
 use serde::Serialize;
@@ -115,7 +119,7 @@ impl PipelineBuilder {
             .map_err(|error| Error::placement(Role::Destination, error))?;
         let (source, source_placed) = shared(source);
         let (destination, destination_placed) = shared(destination);
-        let catalog = discovered(source.as_ref()).await?;
+        let catalog = discovered(source.as_ref(), prepared.connector_wait()).await?;
         let Lowered { plan, config } = prepared.bind(&catalog)?;
         let env = host.environment()?;
         Engine::new(config.clone(), Arc::clone(&env) as Arc<dyn Env>)
@@ -151,12 +155,16 @@ fn shared<T: ?Sized>(placed: Placed<Box<T>>) -> (Arc<T>, PlacedConnector) {
     (Arc::from(placed.connector), summary)
 }
 
-/// The catalog `source` offers.
-async fn discovered(source: &dyn Source) -> Result<Catalog, Error> {
-    source
-        .discover()
-        .await
-        .map_err(|error| Error::connector(Role::Source, "discovering the catalog", error))
+/// The catalog `source` offers, answered within `wait`, the engine's wait for a connector's call.
+async fn discovered(source: &dyn Source, wait: Duration) -> Result<Catalog, Error> {
+    let context = "discovering the catalog";
+    let Ok(answered) = tokio::time::timeout(wait, source.discover()).await else {
+        let unanswered = format!("no answer within {wait:?}");
+        let expired = ConnectorError::new(ConnectorErrorKind::Transient, unanswered)
+            .with_code(DEADLINE_EXCEEDED);
+        return Err(Error::connector(Role::Source, context, expired));
+    };
+    answered.map_err(|error| Error::connector(Role::Source, context, error))
 }
 
 /// A built pipeline: its connectors placed and handshaken, its plan checked.
@@ -262,9 +270,10 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// The source's failure to discover it.
+    /// The source's failure to discover it, or to answer within the engine's wait for a
+    /// connector, as a failure coded `deadline_exceeded`.
     pub async fn discover(&self) -> Result<Catalog, Error> {
-        discovered(self.source.as_ref()).await
+        discovered(self.source.as_ref(), self.config.connector_wait()).await
     }
 
     /// Resets `streams`, each by its name as the catalog shows it, as `scope` says, in one

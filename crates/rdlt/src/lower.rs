@@ -13,6 +13,8 @@ mod transforms;
 
 pub(crate) use streams::resolved;
 
+use std::time::Duration;
+
 use rdlt_connector::{Catalog, ConnectorId, PipelineId, Role};
 use rdlt_engine::{CommitPolicy, EngineConfig, PipelinePlan, RetryPolicy};
 use rdlt_host::{ConnectorRef, Digest};
@@ -79,6 +81,11 @@ pub(crate) async fn prepare<'a>(
 }
 
 impl Prepared<'_> {
+    /// How long a call into a connector may take, as the engine's configuration says.
+    pub(crate) fn connector_wait(&self) -> Duration {
+        self.config.connector_wait()
+    }
+
     /// What the engine runs: the streams the document selects from `catalog`, the source's,
     /// each planned from its entry.
     pub(crate) fn bind(self, catalog: &Catalog) -> Result<Lowered, Error> {
