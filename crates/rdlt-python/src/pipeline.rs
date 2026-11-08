@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use pyo3::types::{PyString, PyStringMethods as _};
-use pyo3::{Bound, PyErr, Python, pyclass, pymethods};
+use pyo3::{Bound, FromPyObject, PyErr, Python, pyclass, pymethods};
+use rdlt::{ResetScope, StreamName, StreamSelector};
 
 use crate::host::NativeHost;
 use crate::{errors, runtime};
@@ -19,6 +20,37 @@ const ORIGIN: &str = "<python>";
 #[pyclass(module = "rdlt._native", name = "Pipeline", frozen)]
 pub(crate) struct NativePipeline {
     pipeline: Arc<rdlt::Pipeline>,
+}
+
+/// A stream a reset names: as the source's catalog shows it, or by its identity.
+#[derive(FromPyObject)]
+pub(crate) enum ResetStream {
+    Shown(String),
+    Identity {
+        namespace: Option<String>,
+        name: String,
+    },
+}
+
+impl ResetStream {
+    /// The facade's selector of the stream; a refused identity quotes nothing of what it holds.
+    fn selector(self, py: Python<'_>) -> Result<StreamSelector, PyErr> {
+        let (namespace, name) = match self {
+            Self::Shown(shown) => return Ok(StreamSelector::from(shown)),
+            Self::Identity { namespace, name } => (namespace, name),
+        };
+        let identity = match namespace {
+            Some(namespace) => StreamName::with_namespace(namespace, name),
+            None => StreamName::new(name),
+        };
+        identity.map(StreamSelector::from).map_err(|_| {
+            errors::config(
+                py,
+                rdlt::codes::STREAM_INVALID,
+                "a stream's identity is not valid",
+            )
+        })
+    }
 }
 
 #[pymethods]
@@ -60,6 +92,43 @@ impl NativePipeline {
         checked
             .map(drop)
             .map_err(|error| errors::raised(py, &error))
+    }
+
+    /// The source's catalog, as JSON.
+    pub(crate) fn discover(&self, py: Python<'_>) -> Result<String, PyErr> {
+        let pipeline = Arc::clone(&self.pipeline);
+        let found = runtime::wait(py, async move { pipeline.discover().await })?;
+        let catalog = found.map_err(|error| errors::raised(py, &error))?;
+        Ok(serde_json::to_string(&catalog).expect("a catalog serializes"))
+    }
+
+    /// Resets `streams`' committed state, with `tables` dropping their tables too, in one commit;
+    /// what was reset, as JSON.
+    #[pyo3(signature = (streams, *, tables))]
+    pub(crate) fn reset(
+        &self,
+        py: Python<'_>,
+        streams: Vec<ResetStream>,
+        tables: bool,
+    ) -> Result<String, PyErr> {
+        let scope = if tables {
+            ResetScope::Tables
+        } else {
+            ResetScope::Positions
+        };
+        let streams: Vec<StreamSelector> = streams
+            .into_iter()
+            .map(|stream| stream.selector(py))
+            .collect::<Result<_, _>>()?;
+        let pipeline = Arc::clone(&self.pipeline);
+        let reset = runtime::wait(py, async move { pipeline.reset(streams, scope).await })?;
+        let report = reset.map_err(|error| errors::raised(py, &error))?;
+        let shown = serde_json::json!({
+            "streams": report.streams.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "dropped": report.dropped.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "epoch": report.epoch.0,
+        });
+        Ok(shown.to_string())
     }
 }
 

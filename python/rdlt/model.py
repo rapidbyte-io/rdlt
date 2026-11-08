@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+import enum
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TypeAlias, cast
 
 Json: TypeAlias = "bool | int | float | str | list[Json] | dict[str, Json] | None"
@@ -37,6 +38,13 @@ def _flag(fields: Mapping[str, Json], key: str) -> bool:
     value = fields.get(key)
     if not isinstance(value, bool):
         raise TypeError(f"field {key!r} is not a boolean")
+    return value
+
+
+def _object(fields: Mapping[str, Json], key: str) -> dict[str, Json]:
+    value = fields.get(key)
+    if not isinstance(value, dict):
+        raise TypeError(f"field {key!r} is not an object")
     return value
 
 
@@ -78,3 +86,53 @@ class ErrorReport:
             causes=tuple(cast("list[str]", causes)),
             retryable=_flag(fields, "retryable"),
         )
+
+
+class ReadMode(enum.StrEnum):
+    """How a stream is read."""
+
+    FULL = "full"
+    """Every record, every run."""
+    INCREMENTAL = "incremental"
+    """Records past the cursor last committed."""
+    CDC = "cdc"
+    """A snapshot, then changes."""
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogStream:
+    """One stream a source offers."""
+
+    name: str
+    """The stream's name, `namespace.name` where it has a namespace."""
+    primary_key: tuple[tuple[str, ...], ...] | None
+    """Each key column's path from the table's root, where the source declares a key."""
+    read_modes: tuple[ReadMode, ...]
+    """How it can be read."""
+    raw: Mapping[str, Json] = field(repr=False, hash=False)
+    """The whole spec, as the facade serializes it."""
+
+    @classmethod
+    def from_fields(cls, fields: Mapping[str, Json]) -> CatalogStream:
+        """The stream `fields`, one spec of the facade's catalog, describes."""
+        identity = _object(fields, "name")
+        namespace = _maybe_text(identity, "namespace")
+        name = _text(identity, "name")
+        shown = name if namespace is None else f"{namespace}.{name}"
+        keys = cast("list[list[str]] | None", fields.get("primary_key"))
+        primary_key = None if keys is None else tuple(tuple(key) for key in keys)
+        modes = cast("list[str]", fields.get("read_modes") or [])
+        return cls(shown, primary_key, tuple(ReadMode(mode) for mode in modes), fields)
+
+
+@dataclass(frozen=True, slots=True)
+class Catalog:
+    """The streams a source offers."""
+
+    streams: tuple[CatalogStream, ...]
+
+    @classmethod
+    def from_json(cls, text: str) -> Catalog:
+        """The catalog `text`, the facade's JSON, holds."""
+        specs = cast("list[dict[str, Json]]", json.loads(text))
+        return cls(tuple(CatalogStream.from_fields(spec) for spec in specs))
