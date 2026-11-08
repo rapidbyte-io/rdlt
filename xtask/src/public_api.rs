@@ -39,7 +39,7 @@ pub(crate) fn run(root: &Path, toolchain: &str, update: bool) -> anyhow::Result<
         std::fs::write(&snapshot, listed).context("writing the snapshot")?;
         return Ok(ExitCode::SUCCESS);
     }
-    let committed = std::fs::read_to_string(&snapshot).unwrap_or_default();
+    let committed = committed(&snapshot)?;
     if committed == listed {
         return Ok(ExitCode::SUCCESS);
     }
@@ -50,8 +50,13 @@ pub(crate) fn run(root: &Path, toolchain: &str, update: bool) -> anyhow::Result<
     Ok(ExitCode::FAILURE)
 }
 
+/// The snapshot at `path`: one that cannot be read is an error, not an empty API.
+fn committed(path: &Path) -> anyhow::Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+}
+
 /// Each line `listed` has and `committed` lacks, as `+ line`, then each `committed` has and
-/// `listed` lacks, as `- line`.
+/// `listed` lacks, as `- line`; where they hold the same lines, how they differ all the same.
 fn changed(committed: &str, listed: &str) -> Vec<String> {
     let kept: BTreeSet<&str> = committed.lines().collect();
     let now: BTreeSet<&str> = listed.lines().collect();
@@ -63,5 +68,33 @@ fn changed(committed: &str, listed: &str) -> Vec<String> {
         .lines()
         .filter(|line| !now.contains(line))
         .map(|line| format!("- {line}"));
-    added.chain(removed).collect()
+    let changes: Vec<String> = added.chain(removed).collect();
+    if changes.is_empty() {
+        return reshaped(committed, listed);
+    }
+    changes
+}
+
+/// How `committed` differs from `listed`, which holds the same lines: its line endings, its last
+/// line's end, how often it repeats a line, or the lines' order.
+fn reshaped(committed: &str, listed: &str) -> Vec<String> {
+    let mut differences = Vec::new();
+    if committed.contains('\r') {
+        differences.push("the snapshot has CRLF line endings".to_owned());
+    }
+    if committed.ends_with('\n') != listed.ends_with('\n') {
+        differences.push("the snapshot's last line ends differently".to_owned());
+    }
+    let (mut kept, mut now): (Vec<&str>, Vec<&str>) =
+        (committed.lines().collect(), listed.lines().collect());
+    if kept != now {
+        kept.sort_unstable();
+        now.sort_unstable();
+        differences.push(if kept == now {
+            "the snapshot's lines are in another order".to_owned()
+        } else {
+            "the snapshot repeats a line a different number of times".to_owned()
+        });
+    }
+    differences
 }
