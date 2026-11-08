@@ -8,7 +8,7 @@ mod tls;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use rdlt_connector::{
     ConnectorSpec, DestinationConnector, DestinationFactory, Role, Secret, SourceConnector,
@@ -18,6 +18,7 @@ use rdlt_engine::{SystemEnv, Transform};
 use rdlt_host::{
     Config, Provider as _, Redactions, Registry, SecretError, SecretResolver, Secrets,
 };
+use tokio::sync::OnceCell;
 
 #[cfg(feature = "remote")]
 pub use tls::Tls;
@@ -49,7 +50,7 @@ pub struct Host {
     sources: Vec<Arc<dyn SourceFactory>>,
     destinations: Vec<Arc<dyn DestinationFactory>>,
     transforms: BTreeMap<String, Arc<dyn Transform>>,
-    env: OnceLock<Arc<SystemEnv>>,
+    env: OnceCell<Arc<SystemEnv>>,
 }
 
 /// A mask key's resolved reference, which is the secret alone.
@@ -81,7 +82,7 @@ impl Default for Host {
             sources: Vec::new(),
             destinations: Vec::new(),
             transforms: BTreeMap::new(),
-            env: OnceLock::new(),
+            env: OnceCell::new(),
         }
     }
 }
@@ -316,16 +317,17 @@ impl Host {
     }
 
     /// The environment every pipeline of this host runs on: one compute pool of a thread a core
-    /// the process may run on, started on first use.
-    pub(crate) fn environment(&self) -> Result<Arc<SystemEnv>, Error> {
-        if let Some(env) = self.env.get() {
-            return Ok(Arc::clone(env));
-        }
-        let started = SystemEnv::try_from_host().map_err(|error| {
-            let message = "starting the compute pool";
-            Error::internal(codes::ENVIRONMENT_UNAVAILABLE, message, error)
-        })?;
-        Ok(Arc::clone(self.env.get_or_init(|| Arc::new(started))))
+    /// the process may run on, started on first use by one pipeline however many build at once,
+    /// and tried again by the next where it failed to start.
+    pub(crate) async fn environment(&self) -> Result<Arc<SystemEnv>, Error> {
+        let starting = || async {
+            let started = SystemEnv::try_from_host().map_err(|error| {
+                let message = "starting the compute pool";
+                Error::internal(codes::ENVIRONMENT_UNAVAILABLE, message, error)
+            })?;
+            Ok(Arc::new(started))
+        };
+        self.env.get_or_try_init(starting).await.map(Arc::clone)
     }
 
     /// Local placement as this host allows it: sandboxed, unless the host trusts its binaries.
