@@ -311,7 +311,7 @@ pub(super) fn optional_texts<'de, D: Deserializer<'de>>(
 }
 
 /// A document's list of paths, for `#[serde(deserialize_with)]`.
-pub(super) fn paths<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<PathBuf>, D::Error> {
+pub(crate) fn paths<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<PathBuf>, D::Error> {
     let Listed(texts) = Listed::<Text>::deserialize(deserializer)?;
     Ok(texts
         .into_iter()

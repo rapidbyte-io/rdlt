@@ -32,7 +32,7 @@ pub use modes::{
     WriteMode,
 };
 pub use policies::{Commit, Resources, Retry};
-pub(crate) use read::texts;
+pub(crate) use read::{paths, texts};
 pub use side::{Access, Connector, ConnectorReference, Side};
 pub use stream::{Column, Defaults, SchemaRules, Stream};
 pub(crate) use transform::{KEY_WRITTEN_OUT, refers_to_secret};
