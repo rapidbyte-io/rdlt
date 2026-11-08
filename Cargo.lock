@@ -3762,6 +3762,7 @@ dependencies = [
  "datafusion-optimizer",
  "datafusion-physical-expr",
  "datafusion-sql",
+ "insta",
  "parking_lot",
  "proptest",
  "rdlt-certify",
