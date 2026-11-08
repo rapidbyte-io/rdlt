@@ -88,6 +88,7 @@ pub const rdlt::codes::TLS_UNREADABLE: rdlt_engine::error::codes::Code
 pub const rdlt::codes::TRANSFORM_UNAVAILABLE: rdlt_engine::error::codes::Code
 pub const rdlt::codes::TRANSFORM_UNKNOWN: rdlt_engine::error::codes::Code
 pub mod rdlt::limits
+pub const rdlt::limits::BUILD_WAIT: core::time::Duration
 pub const rdlt::limits::EVENT_BUFFER: usize
 pub const rdlt::limits::EVENT_BUFFER_MAX: usize
 #[non_exhaustive] pub enum rdlt::Connector
@@ -816,6 +817,7 @@ pub fn rdlt::Host::allow_env(self, impl core::iter::traits::collect::IntoIterato
 pub fn rdlt::Host::allow_files(self, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<std::path::PathBuf>>) -> Self
 pub fn rdlt::Host::allow_network(self) -> Self
 pub fn rdlt::Host::always_readable(self, impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn rdlt::Host::build_wait(self, core::time::Duration) -> Self
 pub fn rdlt::Host::connectors(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn rdlt::Host::destination<C: rdlt_connector::destination::DestinationConnector>(self) -> Self
 pub fn rdlt::Host::destination_factory(self, alloc::sync::Arc<dyn rdlt_connector::destination::DestinationFactory>) -> Self

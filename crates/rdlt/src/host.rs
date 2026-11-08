@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rdlt_connector::{
     ConnectorSpec, DestinationConnector, DestinationFactory, Role, Secret, SourceConnector,
@@ -24,6 +25,7 @@ use tokio::sync::OnceCell;
 pub use tls::Tls;
 
 use crate::document::refers_to_secret;
+use crate::limits::BUILD_WAIT;
 use crate::{Connector, Error, Side, codes};
 
 /// What a host's operator allows the pipelines built on it: where local connectors are found and
@@ -53,6 +55,7 @@ pub struct Host {
     destinations: Vec<Arc<dyn DestinationFactory>>,
     transforms: BTreeMap<String, Arc<dyn Transform>>,
     env: OnceCell<Arc<SystemEnv>>,
+    build_wait: Duration,
 }
 
 /// A mask key's resolved reference, which is the secret alone.
@@ -85,6 +88,7 @@ impl Default for Host {
             destinations: Vec::new(),
             transforms: BTreeMap::new(),
             env: OnceCell::new(),
+            build_wait: BUILD_WAIT,
         }
     }
 }
@@ -138,6 +142,13 @@ impl Host {
     #[cfg(feature = "local")]
     pub fn always_readable(mut self, path: impl Into<PathBuf>) -> Self {
         self.local.always_readable.push(path.into());
+        self
+    }
+
+    /// Gives each thing building a pipeline asks of something else, a connector's placement or
+    /// a mask key's secret, `wait` to answer, in place of [`BUILD_WAIT`].
+    pub fn build_wait(mut self, wait: Duration) -> Self {
+        self.build_wait = wait;
         self
     }
 
@@ -255,7 +266,7 @@ impl Host {
     /// references are.
     ///
     /// A key written out is refused, never resolved or shown: a document holding it would hold
-    /// the secret.
+    /// the secret. A store that does not answer within the host's wait fails retryably.
     pub(crate) async fn key(&self, text: &str) -> Result<Secret<String>, Error> {
         if !refers_to_secret(text) {
             let message = "a mask's key is a secret reference, ${env:NAME}, ${file:/path} or \
@@ -267,7 +278,10 @@ impl Host {
         // Nothing shows a mask key, so no text needs the key scrubbed from it.
         let redactions = Redactions::new();
         let resolving = held.resolved(&self.secrets, &redactions);
-        let resolved = resolving.await.map_err(Error::secret)?;
+        let Ok(resolved) = tokio::time::timeout(self.build_wait, resolving).await else {
+            return Err(Error::secret_expired(self.build_wait));
+        };
+        let resolved = resolved.map_err(Error::secret)?;
         let Keyed { key } =
             serde_json::from_str(&resolved).map_err(|_| Error::secret(SecretError::NotJson))?;
         Ok(key)
@@ -382,6 +396,7 @@ impl fmt::Debug for Host {
             .field("sources", &sources)
             .field("destinations", &destinations)
             .field("transforms", &transforms)
+            .field("build_wait", &self.build_wait)
             .finish_non_exhaustive()
     }
 }

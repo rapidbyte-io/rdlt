@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use rdlt_connector::{
-    Catalog, ColumnPath, ConnectorId, DecimalType, LogicalType, Role, StreamName,
+    BoxFuture, Catalog, ColumnPath, ConnectorId, DecimalType, LogicalType, Role, StreamName,
 };
 use rdlt_connector::{ReadMode as Read, Secret, StreamSpec, TimeUnit};
 use rdlt_engine::{Code, ErrorKind, Mask, Op, Origin, SchemaSettings};
-use rdlt_host::{ConnectorRef, Digest};
+use rdlt_host::{ConnectorRef, Digest, SecretFault, SecretReference, SecretResolver};
 
 use super::{Lowered, prepare, reference};
 use crate::{
@@ -551,11 +551,11 @@ async fn a_sql_step_lowers_to_a_planned_query_or_is_refused_as_the_engine_codes_
 #[derive(Debug, Default)]
 struct Counted(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
-impl rdlt_host::SecretResolver for Counted {
+impl SecretResolver for Counted {
     fn resolve<'a>(
         &'a self,
-        _: &'a rdlt_host::SecretReference,
-    ) -> rdlt_connector::BoxFuture<'a, Result<Secret<String>, rdlt_host::SecretFault>> {
+        _: &'a SecretReference,
+    ) -> BoxFuture<'a, Result<Secret<String>, SecretFault>> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Box::pin(async { Ok(Secret::new("CANARY-mask".to_owned())) })
     }
@@ -644,6 +644,35 @@ async fn a_rename_giving_a_column_a_name_another_gives_up_is_refused_however_wri
         let renames = Stream::new("a").transform(TransformStep::rename(pairs));
         refused(&document(vec![renames]), "transform_invalid", Some("a")).await;
     }
+}
+
+/// A secret store that never answers.
+#[derive(Debug)]
+struct Stalled;
+
+impl SecretResolver for Stalled {
+    fn resolve<'a>(
+        &'a self,
+        _: &'a SecretReference,
+    ) -> BoxFuture<'a, Result<Secret<String>, SecretFault>> {
+        Box::pin(std::future::pending())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_mask_key_s_secret_that_never_resolves_fails_at_the_host_s_wait() {
+    let wait = Duration::from_secs(90);
+    let host = Host::new().secret_store(Stalled).build_wait(wait);
+    let mask = MaskStep::new(["email"], MaskWith::HmacSha256).key("${secret:mask_key}");
+    let stream = Stream::new("a").transform(TransformStep::Mask(mask));
+    let asking = document(vec![stream]);
+    let began = tokio::time::Instant::now();
+    let prepared = tokio::time::timeout(Duration::from_hours(1), prepare(&asking, &host)).await;
+    let refused = prepared.expect("bounded").err().expect("refused");
+    assert_eq!(began.elapsed(), wait);
+    assert_eq!(refused.code(), Some(rdlt_engine::codes::DEADLINE_EXCEEDED));
+    assert!(refused.is_retryable());
+    assert_eq!(refused.stream(), Some("a"));
 }
 
 #[tokio::test(start_paused = true)]
