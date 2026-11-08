@@ -3563,6 +3563,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tower",
+ "tracing",
  "unicase",
  "zeroize",
 ]

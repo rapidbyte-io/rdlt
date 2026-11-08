@@ -57,8 +57,9 @@ impl Checked {
     /// of any call made where the caller is.
     pub(crate) async fn data(
         &mut self,
-        request: http::Request<tonic::body::Body>,
+        mut request: http::Request<tonic::body::Body>,
     ) -> Result<http::Response<Bounded>, tonic::Status> {
+        crate::trace::stamp(request.headers_mut());
         let bounds = self.bounds(request.uri().path());
         let charge = rdlt_wire::bounded::current();
         let ready = tower::ServiceExt::ready(&mut self.channel).await;
@@ -90,7 +91,8 @@ impl tower::Service<http::Request<tonic::body::Body>> for Checked {
         self.channel.poll_ready(context)
     }
 
-    fn call(&mut self, request: http::Request<tonic::body::Body>) -> Self::Future {
+    fn call(&mut self, mut request: http::Request<tonic::body::Body>) -> Self::Future {
+        crate::trace::stamp(request.headers_mut());
         let bounds = self.bounds(request.uri().path());
         // Made in the caller's task: what the call is charged to is the caller's.
         let charge = rdlt_wire::bounded::current();

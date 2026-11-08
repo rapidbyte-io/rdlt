@@ -17,6 +17,7 @@ pub mod secrets;
 #[cfg(test)]
 mod sink;
 mod supervise;
+pub mod trace;
 mod wire;
 
 pub use connect::{Connect, Open};
@@ -40,4 +41,5 @@ pub use secrets::{
     SecretReference, SecretResolver, Secrets,
 };
 pub use supervise::TLS;
+pub use trace::TraceParent;
 pub use wire::Wire;
