@@ -856,6 +856,45 @@ impl core::marker::Unpin for rdlt::Host
 impl core::marker::UnsafeUnpin for rdlt::Host
 impl !core::panic::unwind_safe::RefUnwindSafe for rdlt::Host
 impl !core::panic::unwind_safe::UnwindSafe for rdlt::Host
+#[non_exhaustive] pub struct rdlt::HostFile
+pub rdlt::HostFile::allow_env: alloc::vec::Vec<alloc::string::String>
+pub rdlt::HostFile::allow_files: alloc::vec::Vec<std::path::PathBuf>
+pub rdlt::HostFile::allow_network: bool
+pub rdlt::HostFile::always_readable: alloc::vec::Vec<std::path::PathBuf>
+pub rdlt::HostFile::connectors: alloc::vec::Vec<std::path::PathBuf>
+pub rdlt::HostFile::readable: alloc::vec::Vec<std::path::PathBuf>
+pub rdlt::HostFile::remote: core::option::Option<rdlt::RemoteFiles>
+pub rdlt::HostFile::trust_binaries: bool
+pub rdlt::HostFile::writable: alloc::vec::Vec<std::path::PathBuf>
+impl rdlt::HostFile
+pub async fn rdlt::HostFile::host(&self) -> core::result::Result<rdlt::Host, rdlt::Error>
+pub fn rdlt::HostFile::parse(&str) -> core::result::Result<Self, rdlt::Error>
+impl core::clone::Clone for rdlt::HostFile
+pub fn rdlt::HostFile::clone(&self) -> rdlt::HostFile
+impl core::cmp::Eq for rdlt::HostFile
+impl core::cmp::PartialEq for rdlt::HostFile
+pub fn rdlt::HostFile::eq(&self, &rdlt::HostFile) -> bool
+impl core::default::Default for rdlt::HostFile
+pub fn rdlt::HostFile::default() -> rdlt::HostFile
+impl core::fmt::Debug for rdlt::HostFile
+pub fn rdlt::HostFile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::HostFile
+impl schemars::JsonSchema for rdlt::HostFile
+pub fn rdlt::HostFile::inline_schema() -> bool
+pub fn rdlt::HostFile::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::HostFile::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::HostFile::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::HostFile
+pub fn rdlt::HostFile::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::HostFile
+pub fn rdlt::HostFile::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::HostFile
+impl core::marker::Send for rdlt::HostFile
+impl core::marker::Sync for rdlt::HostFile
+impl core::marker::Unpin for rdlt::HostFile
+impl core::marker::UnsafeUnpin for rdlt::HostFile
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::HostFile
+impl core::panic::unwind_safe::UnwindSafe for rdlt::HostFile
 #[non_exhaustive] pub struct rdlt::Lagged
 pub rdlt::Lagged::dropped: u64
 impl core::clone::Clone for rdlt::Lagged
@@ -991,6 +1030,36 @@ impl core::marker::Unpin for rdlt::PlacedConnector
 impl core::marker::UnsafeUnpin for rdlt::PlacedConnector
 impl core::panic::unwind_safe::RefUnwindSafe for rdlt::PlacedConnector
 impl core::panic::unwind_safe::UnwindSafe for rdlt::PlacedConnector
+#[non_exhaustive] pub struct rdlt::RemoteFiles
+pub rdlt::RemoteFiles::ca: std::path::PathBuf
+pub rdlt::RemoteFiles::cert: std::path::PathBuf
+pub rdlt::RemoteFiles::key: std::path::PathBuf
+impl rdlt::RemoteFiles
+pub fn rdlt::RemoteFiles::new(impl core::convert::Into<std::path::PathBuf>, impl core::convert::Into<std::path::PathBuf>, impl core::convert::Into<std::path::PathBuf>) -> Self
+impl core::clone::Clone for rdlt::RemoteFiles
+pub fn rdlt::RemoteFiles::clone(&self) -> rdlt::RemoteFiles
+impl core::cmp::Eq for rdlt::RemoteFiles
+impl core::cmp::PartialEq for rdlt::RemoteFiles
+pub fn rdlt::RemoteFiles::eq(&self, &rdlt::RemoteFiles) -> bool
+impl core::fmt::Debug for rdlt::RemoteFiles
+pub fn rdlt::RemoteFiles::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for rdlt::RemoteFiles
+impl schemars::JsonSchema for rdlt::RemoteFiles
+pub fn rdlt::RemoteFiles::inline_schema() -> bool
+pub fn rdlt::RemoteFiles::json_schema(&mut schemars::generate::SchemaGenerator) -> schemars::schema::Schema
+pub fn rdlt::RemoteFiles::schema_id() -> alloc::borrow::Cow<'static, str>
+pub fn rdlt::RemoteFiles::schema_name() -> alloc::borrow::Cow<'static, str>
+impl serde_core::ser::Serialize for rdlt::RemoteFiles
+pub fn rdlt::RemoteFiles::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for rdlt::RemoteFiles
+pub fn rdlt::RemoteFiles::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for rdlt::RemoteFiles
+impl core::marker::Send for rdlt::RemoteFiles
+impl core::marker::Sync for rdlt::RemoteFiles
+impl core::marker::Unpin for rdlt::RemoteFiles
+impl core::marker::UnsafeUnpin for rdlt::RemoteFiles
+impl core::panic::unwind_safe::RefUnwindSafe for rdlt::RemoteFiles
+impl core::panic::unwind_safe::UnwindSafe for rdlt::RemoteFiles
 #[non_exhaustive] pub struct rdlt::Resources
 pub rdlt::Resources::memory: core::option::Option<u64>
 pub rdlt::Resources::partitions: core::option::Option<usize>

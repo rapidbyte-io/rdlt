@@ -61,8 +61,8 @@ impl Fault {
         }
     }
 
-    pub(crate) fn too_large() -> Self {
-        let said = format!("the document is larger than {DOCUMENT_BYTES} bytes");
+    pub(crate) fn too_large(noun: &str) -> Self {
+        let said = format!("{noun} is larger than {DOCUMENT_BYTES} bytes");
         Self::new(codes::DOCUMENT_TOO_LARGE, said)
     }
 
@@ -73,17 +73,17 @@ impl Fault {
         }
     }
 
-    pub(crate) fn too_deep(at: Place) -> Self {
+    pub(crate) fn too_deep(noun: &str, at: Place) -> Self {
         Self {
             at: Some(at),
-            ..Self::new(codes::DOCUMENT_TOO_DEEP, TOO_DEEP)
+            ..Self::new(codes::DOCUMENT_TOO_DEEP, too_deep(noun))
         }
     }
 
     pub(crate) fn refused(refused: Refused, at: Place) -> Self {
         let said = match refused {
-            Refused::Anchor => "an anchor is refused: a document repeats nothing by reference",
-            Refused::Alias => "an alias is refused: a document repeats nothing by reference",
+            Refused::Anchor => "an anchor is refused: nothing is repeated by reference",
+            Refused::Alias => "an alias is refused: nothing is repeated by reference",
             Refused::Tag => "a tag is refused: write the value without it",
             Refused::Document => "a second document is refused: a file holds one",
         };
@@ -93,11 +93,11 @@ impl Fault {
         }
     }
 
-    /// The fault the reader's `error` says, at the key `path`: classed by the error's kind, its
-    /// words of the document's own kept and the refused value never read.
-    pub(crate) fn of(error: &serde_saphyr::Error, path: Option<String>) -> Self {
+    /// The fault the reader's `error` says, at the key `path`, of what `noun` names: classed by
+    /// the error's kind, its words of the document's own kept and the refused value never read.
+    pub(crate) fn of(error: &serde_saphyr::Error, path: Option<String>, noun: &str) -> Self {
         let error = error.without_snippet();
-        let (code, said, nearest) = classified(error);
+        let (code, said, nearest) = classified(error, noun);
         // An unknown key's path ends with the key, which its fault names itself.
         let path = match error {
             serde_saphyr::Error::SerdeUnknownField { field, .. } => {
@@ -145,13 +145,15 @@ impl Fault {
     }
 }
 
-const SYNTAX: &str = "the document is not YAML or JSON this reader takes";
-
-const TOO_DEEP: &str = "the document nests deeper, or holds more nodes, than a document may";
+/// What `noun`, past the limits of depth or nodes, is told.
+fn too_deep(noun: &str) -> String {
+    format!("{noun} nests deeper, or holds more nodes, than it may")
+}
 
 /// The code of the reader's `error`, what to say of it and the nearest known key for an unknown
-/// one: its kind and the words of the document's own, never its text, which may quote a value.
-fn classified(error: &serde_saphyr::Error) -> (Code, String, Option<&'static str>) {
+/// one, of what `noun` names: its kind and the words of the document's own, never its text,
+/// which may quote a value.
+fn classified(error: &serde_saphyr::Error, noun: &str) -> (Code, String, Option<&'static str>) {
     use serde_saphyr::Error as Read;
     match error {
         Read::SerdeUnknownField {
@@ -193,30 +195,34 @@ fn classified(error: &serde_saphyr::Error) -> (Code, String, Option<&'static str
         ),
         Read::MergeKeyNotAllowed { .. } => (
             codes::DOCUMENT_REFUSED,
-            "a merge key is refused: a document repeats nothing by reference".to_owned(),
+            "a merge key is refused: nothing is repeated by reference".to_owned(),
             None,
         ),
         Read::Budget { breach, .. } => {
-            let (code, said) = breached(breach);
+            let (code, said) = breached(breach, noun);
             (code, said, None)
         }
-        _ => (codes::DOCUMENT_SYNTAX, SYNTAX.to_owned(), None),
+        _ => (
+            codes::DOCUMENT_SYNTAX,
+            format!("{noun} is not YAML or JSON this reader takes"),
+            None,
+        ),
     }
 }
 
-/// The code of the reader's limit `breach`, and what to say of it.
-fn breached(breach: &BudgetBreach) -> (Code, String) {
+/// The code of the reader's limit `breach`, and what to say of it, of what `noun` names.
+fn breached(breach: &BudgetBreach, noun: &str) -> (Code, String) {
     match breach {
         BudgetBreach::Depth { .. } | BudgetBreach::Nodes { .. } => {
-            (codes::DOCUMENT_TOO_DEEP, TOO_DEEP.to_owned())
+            (codes::DOCUMENT_TOO_DEEP, too_deep(noun))
         }
         BudgetBreach::ScalarBytes { .. } => (
             codes::DOCUMENT_TOO_LARGE,
-            format!("the document's text, unescaped, is larger than {DOCUMENT_BYTES} bytes"),
+            format!("{noun}'s text, unescaped, is larger than {DOCUMENT_BYTES} bytes"),
         ),
         _ => (
             codes::DOCUMENT_REFUSED,
-            "the document repeats something by reference, which is refused".to_owned(),
+            format!("{noun} repeats something by reference, which is refused"),
         ),
     }
 }

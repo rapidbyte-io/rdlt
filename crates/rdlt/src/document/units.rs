@@ -91,7 +91,7 @@ impl JsonSchema for SizeText {
             "description": "Bytes: a whole number, or digits and one of B, KiB, MiB, GiB, TiB.",
             "anyOf": [
                 { "type": "integer", "minimum": 0 },
-                { "type": "string", "pattern": "^[0-9]+(B|KiB|MiB|GiB|TiB)?$" }
+                { "type": "string", "pattern": "^[0-9]{1,20}(B|KiB|MiB|GiB|TiB)?$" }
             ]
         })
     }
@@ -109,7 +109,7 @@ impl JsonSchema for SpanText {
         json_schema!({
             "description": "A duration: digits and one of ns, us, ms, s, m, h.",
             "type": "string",
-            "pattern": "^[0-9]+(ns|us|ms|s|m|h)$"
+            "pattern": "^[0-9]{1,29}(ns|us|ms|s|m|h)$"
         })
     }
 }

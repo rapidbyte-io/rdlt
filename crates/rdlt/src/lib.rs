@@ -65,9 +65,9 @@ pub use document::{
 };
 pub use error::Error;
 pub use events::{Events, Lagged};
-pub use host::Host;
 #[cfg(feature = "remote")]
 pub use host::Tls;
+pub use host::{Host, HostFile, RemoteFiles};
 pub use pipeline::{
     Checked, Pipeline, PipelineBuilder, PlacedConnector, Placement, StreamSelector,
 };

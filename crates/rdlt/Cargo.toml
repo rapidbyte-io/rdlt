@@ -37,6 +37,7 @@ wildmatch.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+jsonschema.workspace = true
 proptest.workspace = true
 rdlt-connector-reference.workspace = true
 rdlt-testkit.workspace = true

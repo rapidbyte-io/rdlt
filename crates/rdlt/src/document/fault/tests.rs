@@ -275,7 +275,7 @@ fn each_of_the_reader_s_refusals_carries_its_code() {
         ),
         (Read::Eof { location: unknown }, "document_syntax"),
     ] {
-        let fault = super::Fault::of(&error, None);
+        let fault = super::Fault::of(&error, None, "the document");
         assert_eq!(fault.code().as_str(), expected, "{error:?}");
     }
 }
