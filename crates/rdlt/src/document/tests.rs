@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use proptest::prelude::*;
@@ -992,45 +991,47 @@ proptest! {
     }
 }
 
-#[test]
-fn a_document_reads_from_its_file_and_errors_name_the_file() {
+#[tokio::test]
+async fn a_document_reads_from_its_file_and_errors_name_the_file() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("orders.yaml");
     std::fs::write(&path, example().to_yaml().unwrap()).unwrap();
-    assert_eq!(Document::from_path(&path).unwrap(), example());
+    assert_eq!(Document::from_path(&path).await.unwrap(), example());
     std::fs::write(&path, "version: 1\nwhat: 1\n").unwrap();
-    let error = Document::from_path(&path).unwrap_err();
+    let error = Document::from_path(&path).await.unwrap_err();
     assert!(
         error
             .to_string()
             .starts_with(&format!("{}:2:1:", path.display())),
         "{error}"
     );
-    let missing = Document::from_path(directory.path().join("absent.yaml")).unwrap_err();
+    let missing = Document::from_path(directory.path().join("absent.yaml"))
+        .await
+        .unwrap_err();
     assert_eq!(
         missing.code().map(rdlt_engine::Code::as_str),
         Some("document_unreadable")
     );
     assert!(missing.to_string().contains("absent.yaml"), "{missing}");
     assert!(std::error::Error::source(&missing).is_some());
-    let directory_is_no_file = Document::from_path(directory.path()).unwrap_err();
+    let directory_is_no_file = Document::from_path(directory.path()).await.unwrap_err();
     assert_eq!(
         directory_is_no_file.code().map(rdlt_engine::Code::as_str),
         Some("document_unreadable")
     );
 }
 
-#[test]
-fn a_file_past_the_limit_is_refused_at_any_byte_and_one_at_it_reads() {
+#[tokio::test]
+async fn a_file_past_the_limit_is_refused_at_any_byte_and_one_at_it_reads() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("large.yaml");
     let text = example().to_yaml().unwrap();
     let limit = crate::limits::DOCUMENT_BYTES;
     let padded = |bytes: usize| format!("{text}# {}\n", "x".repeat(bytes - text.len() - 3));
     std::fs::write(&path, padded(limit)).unwrap();
-    assert_eq!(Document::from_path(&path).unwrap(), example());
+    assert_eq!(Document::from_path(&path).await.unwrap(), example());
     std::fs::write(&path, padded(limit + 1)).unwrap();
-    let error = Document::from_path(&path).unwrap_err();
+    let error = Document::from_path(&path).await.unwrap_err();
     assert_eq!(
         error.code().map(rdlt_engine::Code::as_str),
         Some("document_too_large")
@@ -1040,36 +1041,32 @@ fn a_file_past_the_limit_is_refused_at_any_byte_and_one_at_it_reads() {
     let mut bytes = padded(limit).into_bytes();
     bytes.extend_from_slice(&[0xe2, 0x82]);
     std::fs::write(&path, bytes).unwrap();
-    let error = Document::from_path(&path).unwrap_err();
+    let error = Document::from_path(&path).await.unwrap_err();
     assert_eq!(
         error.code().map(rdlt_engine::Code::as_str),
         Some("document_too_large")
     );
     std::fs::write(&path, [b'v', 0xff]).unwrap();
-    let unreadable = Document::from_path(&path).unwrap_err();
+    let unreadable = Document::from_path(&path).await.unwrap_err();
     assert_eq!(
         unreadable.code().map(rdlt_engine::Code::as_str),
         Some("document_unreadable")
     );
 }
 
-#[test]
-fn a_path_that_is_no_regular_file_is_refused_without_waiting_on_it() {
+#[tokio::test]
+async fn a_path_that_is_no_regular_file_is_refused_without_waiting_on_it() {
     let directory = tempfile::tempdir().unwrap();
     let fifo = directory.path().join("a fifo");
     let made = std::process::Command::new("mkfifo").arg(&fifo).status();
     assert!(made.unwrap().success(), "mkfifo makes a pipe");
     for path in [fifo, directory.path().to_owned()] {
         let shown = path.display().to_string();
-        let (done, read) = mpsc::channel();
-        std::thread::Builder::new()
-            .name("reading what is no regular file".to_owned())
-            .spawn(move || done.send(Document::from_path(path)).ok())
-            .unwrap();
-        let read = read
-            .recv_timeout(Duration::from_secs(30))
-            .unwrap_or_else(|_| panic!("reading {shown} must not wait on it"));
-        let error = read.expect_err("no regular file reads");
+        let reading = tokio::time::timeout(Duration::from_secs(30), Document::from_path(path));
+        let error = reading
+            .await
+            .unwrap_or_else(|_| panic!("reading {shown} must not wait on it"))
+            .expect_err("no regular file reads");
         assert_eq!(
             error.code().map(rdlt_engine::Code::as_str),
             Some("document_unreadable"),
@@ -1079,12 +1076,12 @@ fn a_path_that_is_no_regular_file_is_refused_without_waiting_on_it() {
     }
 }
 
-#[test]
-fn a_file_of_no_text_is_refused_holding_none_of_its_bytes() {
+#[tokio::test]
+async fn a_file_of_no_text_is_refused_holding_none_of_its_bytes() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("document.yaml");
     std::fs::write(&path, b"CANARY-value-9f3\xff").unwrap();
-    let error = Document::from_path(&path).unwrap_err();
+    let error = Document::from_path(&path).await.unwrap_err();
     assert_eq!(
         error.code().map(rdlt_engine::Code::as_str),
         Some("document_unreadable")
@@ -1108,14 +1105,16 @@ fn a_document_read_from_text_names_its_origin_where_a_file_would_stand() {
     );
 }
 
-#[test]
-fn a_pipeline_reads_from_its_file() {
+#[tokio::test]
+async fn a_pipeline_reads_from_its_file() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("orders.yaml");
     std::fs::write(&path, example().to_yaml().unwrap()).unwrap();
-    let read = crate::Pipeline::from_path(&path).expect("it reads");
+    let read = crate::Pipeline::from_path(&path).await.expect("it reads");
     assert_eq!(read.document(), &example());
-    let refused = crate::Pipeline::from_path(directory.path().join("absent.yaml")).unwrap_err();
+    let refused = crate::Pipeline::from_path(directory.path().join("absent.yaml"))
+        .await
+        .unwrap_err();
     assert_eq!(
         refused.code().map(rdlt_engine::Code::as_str),
         Some("document_unreadable")

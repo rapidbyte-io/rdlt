@@ -24,7 +24,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use self::fault::Fault;
-use crate::limits::DOCUMENT_BYTES;
+use crate::limits::{BUILD_WAIT, DOCUMENT_BYTES};
 use crate::{Error, codes};
 
 pub use modes::{
@@ -159,23 +159,37 @@ impl Document {
         hostile::read(text, DOCUMENT).map_err(|fault| refused(&fault, Some(origin)))
     }
 
-    /// The document in the file at `path`, read as [`parse`](Self::parse) reads text; its errors
-    /// start with the file's name.
+    /// The document in the file at `path`, read as [`parse`](Self::parse) reads text and on a
+    /// blocking task, so a stalled path holds up no runtime worker; its errors start with the
+    /// file's name.
     ///
     /// # Errors
     ///
-    /// `document_unreadable` where the path names no regular file, or the file cannot be read or
-    /// is no UTF-8; `document_too_large` past [`DOCUMENT_BYTES`], else as `parse`.
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let path = path.as_ref();
-        let bytes = regular_file_bytes(path).map_err(|error| Error::unreadable(path, error))?;
+    /// `document_unreadable` where the path names no regular file, the file cannot be read or is
+    /// no UTF-8, or reading it takes past [`BUILD_WAIT`]; `document_too_large` past
+    /// [`DOCUMENT_BYTES`], else as `parse`.
+    pub async fn from_path(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let path = path.as_ref().to_owned();
+        let reading = {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || regular_file_bytes(&path))
+        };
+        let unread = |cause: io::Error| Error::unreadable(&path, cause);
+        let bytes = match tokio::time::timeout(BUILD_WAIT, reading).await {
+            Ok(Ok(bytes)) => bytes.map_err(&unread)?,
+            Ok(Err(joined)) => return Err(unread(io::Error::other(joined))),
+            Err(_) => {
+                let late = format!("not read within {BUILD_WAIT:?}");
+                return Err(unread(io::Error::new(io::ErrorKind::TimedOut, late)));
+            }
+        };
         let origin = path.display().to_string();
         if bytes.len() > DOCUMENT_BYTES {
             return Err(refused(&Fault::too_large(DOCUMENT), Some(&origin)));
         }
         // The error holds the file's bytes; its position alone is kept.
         let text = String::from_utf8(bytes)
-            .map_err(|error| Error::unreadable(path, error.utf8_error()))?;
+            .map_err(|error| Error::unreadable(&path, error.utf8_error()))?;
         Self::from_text(&text, &origin)
     }
 

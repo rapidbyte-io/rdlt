@@ -759,7 +759,7 @@ pub rdlt::Document::streams: alloc::vec::Vec<rdlt::Stream>
 pub rdlt::Document::until: rdlt::Until
 pub rdlt::Document::version: u8
 impl rdlt::Document
-pub fn rdlt::Document::from_path(impl core::convert::AsRef<std::path::Path>) -> core::result::Result<Self, rdlt::Error>
+pub async fn rdlt::Document::from_path(impl core::convert::AsRef<std::path::Path>) -> core::result::Result<Self, rdlt::Error>
 pub fn rdlt::Document::from_text(&str, &str) -> core::result::Result<Self, rdlt::Error>
 pub fn rdlt::Document::json_schema() -> serde_json::value::Value
 pub fn rdlt::Document::new(impl core::convert::Into<alloc::string::String>, rdlt::Side, rdlt::Side) -> Self
@@ -973,7 +973,7 @@ pub fn rdlt::Pipeline::destination(&self) -> &rdlt::PlacedConnector
 pub async fn rdlt::Pipeline::discover(&self) -> core::result::Result<rdlt_connector::catalog::Catalog, rdlt::Error>
 pub fn rdlt::Pipeline::document(&self) -> &rdlt::Document
 pub fn rdlt::Pipeline::from_document(rdlt::Document) -> rdlt::PipelineBuilder
-pub fn rdlt::Pipeline::from_path(impl core::convert::AsRef<std::path::Path>) -> core::result::Result<rdlt::PipelineBuilder, rdlt::Error>
+pub async fn rdlt::Pipeline::from_path(impl core::convert::AsRef<std::path::Path>) -> core::result::Result<rdlt::PipelineBuilder, rdlt::Error>
 pub fn rdlt::Pipeline::from_text(&str, &str) -> core::result::Result<rdlt::PipelineBuilder, rdlt::Error>
 pub async fn rdlt::Pipeline::reset(&self, impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<rdlt::StreamSelector>>, rdlt_engine::run::reset::ResetScope) -> core::result::Result<rdlt_engine::run::reset::ResetReport, rdlt::Error>
 pub fn rdlt::Pipeline::source(&self) -> &rdlt::PlacedConnector

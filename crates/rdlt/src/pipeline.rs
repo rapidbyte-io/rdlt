@@ -208,7 +208,8 @@ impl Pipeline {
     ///
     /// ```no_run
     /// # async fn example(host: &rdlt::Host) -> Result<(), rdlt::Error> {
-    /// let pipeline = rdlt::Pipeline::from_path("orders.yaml")?.build(host).await?;
+    /// let builder = rdlt::Pipeline::from_path("orders.yaml").await?;
+    /// let pipeline = builder.build(host).await?;
     /// # drop(pipeline);
     /// # Ok(())
     /// # }
@@ -217,8 +218,8 @@ impl Pipeline {
     /// # Errors
     ///
     /// As [`Document::from_path`].
-    pub fn from_path(path: impl AsRef<Path>) -> Result<PipelineBuilder, Error> {
-        Document::from_path(path).map(Self::from_document)
+    pub async fn from_path(path: impl AsRef<Path>) -> Result<PipelineBuilder, Error> {
+        Document::from_path(path).await.map(Self::from_document)
     }
 
     /// The pipeline the document `text` describes, its errors starting with `origin`.
