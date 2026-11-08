@@ -172,13 +172,24 @@ impl Error {
     /// `deadline_exceeded`, and retryable.
     pub(crate) fn expired(role: Role, context: &str, wait: Duration) -> Self {
         let (_, kind) = side(role);
+        Self::waited(kind, context, wait)
+    }
+
+    /// A mask key's secret its store did not answer for within `wait`: no connector's failure,
+    /// and retryable as any wait that ends is.
+    pub(crate) fn secret_expired(wait: Duration) -> Self {
+        Self::waited(ErrorKind::Internal, "resolving a mask key", wait)
+    }
+
+    /// `context`, of `kind`, which took longer than `wait`.
+    fn waited(kind: ErrorKind, context: &str, wait: Duration) -> Self {
         Self(Box::new(Inner::Built(Built {
             kind,
             origin: Origin::Engine,
             code: Some(rdlt_engine::codes::DEADLINE_EXCEEDED),
             connector_code: None,
             stream: None,
-            message: format!("{context} took longer than the engine's wait of {wait:?}"),
+            message: format!("{context} took longer than the wait of {wait:?}"),
             retryable: true,
             source: None,
         })))
