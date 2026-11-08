@@ -20,6 +20,7 @@ use rdlt_connector::{
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::budget::MemoryBudget;
 use crate::compute::Pool;
@@ -322,7 +323,7 @@ async fn launch(
         live: Arc::clone(&context.live),
         announcer: announcer.clone(),
     });
-    scope.spawn(coordinator.run());
+    scope.spawn(coordinator.run().in_current_span());
     scope.join_spawning(spawned).await
 }
 

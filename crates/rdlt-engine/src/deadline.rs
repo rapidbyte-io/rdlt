@@ -24,6 +24,7 @@ use rdlt_connector::{
     StreamState, TableChange, TableRef, WriteStats,
 };
 use rdlt_wire::bounded::{Charge, charging};
+use tracing::Instrument as _;
 
 use crate::budget::{Decoding, MemoryBudget};
 use crate::env::Env;
@@ -80,6 +81,13 @@ impl Waits {
     /// What `call`, the connector's `what`, answers, unless the wait passes first: then a
     /// transient error whose cause is the [`Expired`] wait.
     async fn within<T>(&self, what: &'static str, call: BoxFuture<'_, Result<T>>) -> Result<T> {
+        self.waited(what, call)
+            .instrument(tracing::info_span!("rdlt.call", call = what))
+            .await
+    }
+
+    /// As [`within`](Self::within), in no span: a write is made per batch.
+    async fn waited<T>(&self, what: &'static str, call: BoxFuture<'_, Result<T>>) -> Result<T> {
         let wait = self.wait;
         tokio::select! {
             biased;
@@ -235,7 +243,7 @@ impl DestinationWriter for WaitedWriter {
     fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> BoxFuture<'_, Result<()>> {
         Box::pin(
             self.waits
-                .within("the write", self.inner.write(segment, batch)),
+                .waited("the write", self.inner.write(segment, batch)),
         )
     }
 

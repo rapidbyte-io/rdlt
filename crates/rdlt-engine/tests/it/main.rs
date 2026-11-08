@@ -51,6 +51,7 @@ mod status;
 mod stored;
 mod support;
 mod told;
+mod traced;
 mod transformed;
 mod unbounded;
 mod unheld;

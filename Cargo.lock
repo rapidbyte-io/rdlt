@@ -3655,6 +3655,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "tracing",
  "xxhash-rust",
 ]
 
@@ -3804,6 +3805,8 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
+ "tracing",
+ "tracing-core",
 ]
 
 [[package]]

@@ -7,6 +7,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use rdlt_connector::Destination;
+use tracing::Instrument as _;
 
 use super::RunContext;
 use crate::config::EngineConfig;
@@ -42,7 +43,7 @@ pub(super) fn start_writers(
     // A change of a table's schema reserves what its commit records, until the attempt ends.
     tables.charge(context.budget.clone(), cancel.clone());
     for writer in tasks {
-        scope.spawn(writer.run(cancel.clone()));
+        scope.spawn(writer.run(cancel.clone()).in_current_span());
     }
     writers
 }

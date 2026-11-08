@@ -43,6 +43,8 @@ tempfile.workspace = true
 tokio-stream = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "test-util", "time"] }
 tower = { workspace = true, optional = true, features = ["util"] }
+tracing.workspace = true
+tracing-core.workspace = true
 
 [dev-dependencies]
 hyper = { workspace = true, features = ["client", "http2"] }

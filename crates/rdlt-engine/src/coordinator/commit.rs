@@ -9,6 +9,7 @@ use rdlt_connector::{
     CommitMeta, Cursor, GenerationId, PartitionState, Receipt, SegmentSet, StateChange, StreamName,
     TablePath,
 };
+use tracing::Instrument as _;
 
 use super::Coordinator;
 use crate::crash::crash_point;
@@ -46,6 +47,7 @@ impl Coordinator {
             self.step(Some(Step::Ack), self.parts.env.instant());
             let (_, acknowledged) = self
                 .acknowledge(collected.reported, &collected.positions, turn)
+                .instrument(tracing::info_span!("rdlt.commit.ack"))
                 .await;
             self.step(None, self.parts.env.instant());
             return acknowledged;
@@ -57,7 +59,7 @@ impl Coordinator {
         let (mut laps, mut phases) = (Laps::new(env.as_ref()), CommitPhases::default());
         self.step(Some(Step::Flush), laps.last);
         crash_point!("engine.flush.before");
-        self.parts.writers.flush().await?;
+        self.flushed().await?;
         crash_point!("engine.flush.after");
         phases.flush = laps.lap();
         self.step(Some(Step::Commit), laps.last);
@@ -90,6 +92,19 @@ impl Coordinator {
         self.report(reported, trigger, &mut laps).await
     }
 
+    /// Flushes the table writers, so the destination holds every write the commit publishes.
+    ///
+    /// # Errors
+    ///
+    /// The destination's error where a flush fails.
+    async fn flushed(&self) -> Result<(), Error> {
+        self.parts
+            .writers
+            .flush()
+            .instrument(tracing::info_span!("rdlt.commit.flush"))
+            .await
+    }
+
     /// Reports the cursors `reported` of the commit that landed with `positions`, which `trigger`
     /// made due, timed by `laps`, then tells of the commit with what became of its report.
     ///
@@ -105,7 +120,10 @@ impl Coordinator {
         self.parts.live.reporting(laps.last);
         crash_point!("engine.ack.before");
         let turn = self.turn(trigger);
-        let (acks, acknowledged) = self.acknowledge(reported, positions, turn).await;
+        let (acks, acknowledged) = self
+            .acknowledge(reported, positions, turn)
+            .instrument(tracing::info_span!("rdlt.commit.ack"))
+            .await;
         let ack = CommitPhases {
             ack: laps.lap(),
             ..CommitPhases::default()

@@ -34,6 +34,7 @@ pub mod held;
 pub mod nested;
 pub mod process;
 pub mod required;
+pub mod spans;
 pub mod tls;
 
 /// Cases a property test runs: `PROPTEST_CASES` where set, for long local runs, else `default`.
