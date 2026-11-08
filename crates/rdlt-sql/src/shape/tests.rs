@@ -32,8 +32,14 @@ const LISTED: &[&str] = &[
     "STRING",
     "DATE",
     "TIME",
+    "TIME WITHOUT TIME ZONE",
     "TIMESTAMP",
+    "TIMESTAMP(0)",
     "TIMESTAMP(3)",
+    "TIMESTAMP(6)",
+    "TIMESTAMP(9)",
+    "TIMESTAMP WITH TIME ZONE",
+    "TIMESTAMP(3) WITHOUT TIME ZONE",
 ];
 
 /// Other names of listed types, which DataFusion does not plan as they are written.
@@ -101,6 +107,12 @@ fn a_cast_to_any_other_type_is_refused_naming_no_type() {
         "UUID",
         "DATETIME(5)",
         "DATETIME64(3, 'UTC')",
+        "TIMESTAMP(5)",
+        "TIMESTAMP(1) WITH TIME ZONE",
+        "TIME(2)",
+        "TIME(0)",
+        "TIME WITH TIME ZONE",
+        "TIMETZ",
         "BIGNUMERIC",
         "MEDIUMINT",
         "BYTEA",

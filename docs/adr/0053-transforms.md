@@ -169,11 +169,12 @@ determinism under simulation whatever the configuration says.
     other names rdlt-sql lists for them (`CHARACTER VARYING`, `DEC`, `DATETIME`, `INT64` and the
     like), which a query is planned with as DataFusion names it. `INT8` is Postgres's name, 64
     bits, as DataFusion reads it, while `UINT8`, `INT16`, `INT32` and `INT64` count their bits.
-    `INTERVAL`, binary, `MEDIUMINT`, `BIGNUMERIC`, a `DATETIME` at a precision DataFusion does
-    not plan, and every nested type are refused. A column sharing its name with a type that
-    holds others, such as `map`, `table` or `tuple`, is quoted where `(` or `<` follows it, as
-    in `"map" < 5`; one named `interval`, or as a keyword whose syntax holds expressions, such
-    as `cast`, is quoted anywhere.
+    `INTERVAL`, binary, `MEDIUMINT`, `BIGNUMERIC`, a timestamp or a `DATETIME` at a precision
+    DataFusion does not plan (`TIMESTAMP(5)`), a time with a precision or a time zone
+    (`TIME(2)`), and every nested type are refused when the query is parsed. A column sharing
+    its name with a type that holds others, such as `map`, `table` or `tuple`, is quoted where
+    `(` or `<` follows it, as in `"map" < 5`; one named `interval`, or as a keyword whose syntax
+    holds expressions, such as `cast`, is quoted anywhere.
     The parser builds a chain such as `a + b + c` in a loop, as deep as it is long, which its
     recursion limit does not bound, so the depth is measured on the parsed tree: each expression
     lies within as many as lie above it, and a chain of operators is as deep as it has
