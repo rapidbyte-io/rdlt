@@ -393,16 +393,17 @@ async fn a_source_that_never_answers_discovery_fails_the_build_after_the_connect
     let said = refused.to_string();
     assert_eq!(
         refused.code().map(Code::as_str),
-        Some("connector_failed"),
-        "{said}"
-    );
-    assert_eq!(
-        refused.connector_code(),
         Some("deadline_exceeded"),
         "{said}"
     );
-    assert_eq!(refused.origin(), Origin::Source, "{said}");
+    assert_eq!(refused.connector_code(), None, "{said}");
+    assert_eq!(
+        (refused.kind(), refused.origin()),
+        (ErrorKind::Source, Origin::Engine),
+        "{said}"
+    );
     assert!(refused.is_retryable(), "{said}");
+    assert!(said.contains("discovering the catalog"), "{said}");
 }
 
 #[tokio::test(start_paused = true)]
