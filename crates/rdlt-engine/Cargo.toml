@@ -45,6 +45,7 @@ stats_alloc = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
+tracing.workspace = true
 xxhash-rust.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]

@@ -2444,6 +2444,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "tracing",
  "xxhash-rust",
 ]
 
@@ -2539,6 +2540,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-core",
 ]
 
 [[package]]

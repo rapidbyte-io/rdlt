@@ -35,6 +35,7 @@ use rdlt_connector::{
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::attempt::Keying;
 use crate::budget::MemoryBudget;
@@ -288,7 +289,9 @@ impl Coordinator {
         loop {
             self.load().await?;
             let began = self.parts.env.instant();
-            self.commit(Trigger::End, began).await?;
+            self.commit(Trigger::End, began)
+                .instrument(tracing::info_span!("rdlt.commit", trigger = ?Trigger::End))
+                .await?;
             self.advance_phases().await?;
             if self.done() {
                 break;
@@ -322,7 +325,9 @@ impl Coordinator {
                 // A stop request comes before more data, so reading stops promptly.
                 () = self.parts.stop.cancelled(), if !self.stopping => {
                     self.stopping = true;
-                    self.raise_barrier().await?;
+                    self.raise_barrier()
+                        .instrument(tracing::info_span!("rdlt.commit.barrier"))
+                        .await?;
                     self.step(None, self.parts.env.instant());
                     self.parts.stop_reads.cancel();
                 }
@@ -356,8 +361,12 @@ impl Coordinator {
     /// the timer of the commit after it.
     async fn commit_now(&mut self, trigger: Trigger) -> Result<Sleep, Error> {
         let began = self.parts.env.instant();
-        self.raise_barrier().await?;
-        self.commit(trigger, began).await?;
+        self.raise_barrier()
+            .instrument(tracing::info_span!("rdlt.commit.barrier"))
+            .await?;
+        self.commit(trigger, began)
+            .instrument(tracing::info_span!("rdlt.commit", trigger = ?trigger))
+            .await?;
         self.advance_phases().await?;
         self.cursors_may_free = false;
         Ok(self.timer())
@@ -484,7 +493,10 @@ impl Coordinator {
         positions: &BTreeMap<usize, PartitionState>,
     ) -> Result<Receipt, Error> {
         crash_point!("engine.commit.before");
-        let receipt = self.tried(meta).await?;
+        let receipt = self
+            .tried(meta)
+            .instrument(tracing::info_span!("rdlt.commit.publish"))
+            .await?;
         crash_point!("engine.commit.after");
         self.parts.stored.apply(measured);
         let states: BTreeMap<(StreamName, PartitionId), PartitionState> = positions

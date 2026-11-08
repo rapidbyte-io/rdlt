@@ -14,6 +14,7 @@ mod slots;
 mod tests;
 mod write;
 
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,6 +26,7 @@ use rdlt_connector::{
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::budget::MemoryBudget;
 use crate::compute::Pool;
@@ -107,8 +109,18 @@ impl PartitionContext {
     }
 }
 
-/// Reads `job` to its end, or until the attempt stops or is cancelled.
-pub(crate) async fn run(job: PartitionJob, context: Arc<PartitionContext>) -> Result<(), Error> {
+/// Reads `job` to its end, or until the attempt stops or is cancelled, in a span that descends
+/// from the span current where this is called.
+pub(crate) fn run(
+    job: PartitionJob,
+    context: Arc<PartitionContext>,
+) -> impl Future<Output = Result<(), Error>> + Send {
+    let span =
+        tracing::info_span!("rdlt.stream", stream = %job.stream, partition = %job.partition.id());
+    reading(job, context).instrument(span)
+}
+
+async fn reading(job: PartitionJob, context: Arc<PartitionContext>) -> Result<(), Error> {
     // Every read holds a slot, and one that is not followed a part of what reads keep. A followed
     // unbounded read holds a slot for as long as the run; fewer of them than slots run at once,
     // so the other reads always have a slot to take in turn.

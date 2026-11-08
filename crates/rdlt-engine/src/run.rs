@@ -18,6 +18,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use rdlt_connector::{Destination, Source};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::attempt::{self, RunContext};
 use crate::budget::MemoryBudget;
@@ -290,7 +291,8 @@ async fn attempted(
 /// carries, and the event that tells it ended.
 async fn ran(context: RunContext, control: RunControl) -> RunOutcome {
     context.live.begin();
-    let (status, error) = deadlined(&context, control).await;
+    let span = tracing::info_span!("rdlt.run", pipeline = %context.plan.pipeline());
+    let (status, error) = deadlined(&context, control).instrument(span).await;
     // A task the attempt's end left running may still run: from here on it changes nothing a
     // status shows and tells nothing.
     let report = context.live.end(status);
@@ -357,7 +359,9 @@ async fn drive(context: &RunContext, control: RunControl) -> (RunStatus, Option<
         let announcer = Announcer::new(Arc::clone(&context.env), pipeline, attempt, telling);
         let log = Arc::new(Mutex::new(AttemptLog::default()));
         context.live.started(Arc::clone(&log), context.env.now());
-        let result = attempted(context, &control, log, &announcer).await;
+        let result = attempted(context, &control, log, &announcer)
+            .instrument(tracing::info_span!("rdlt.attempt", attempt))
+            .await;
         let ended = context
             .live
             .ended(result.as_ref().err().map(Error::report), result.is_err());
