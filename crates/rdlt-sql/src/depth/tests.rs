@@ -33,16 +33,20 @@ fn an_expression_lies_as_deep_as_the_expressions_above_it() {
     }
 }
 
-/// `head`, as many of `unit` as fit in [`SQL_BYTES`] beside `tail`, and `tail`.
-fn filled(head: &str, unit: &str, tail: &str) -> String {
-    let room = SQL_BYTES - head.len() - tail.len();
+/// Lengths of text the deepest forms are built at: a short query's, a long one's, and the most a
+/// query's text may take.
+const LENGTHS: [usize; 3] = [1 << 10, 8 << 10, SQL_BYTES];
+
+/// `head`, as many of `unit` as fit in `bytes` beside `tail`, and `tail`.
+fn filled(bytes: usize, head: &str, unit: &str, tail: &str) -> String {
+    let room = bytes - head.len() - tail.len();
     format!("{head}{}{tail}", unit.repeat(room / unit.len()))
 }
 
-/// `head`, `open` nested as many times as fits in [`SQL_BYTES`] around `core`, each closed by
-/// `close`, and `tail`.
-fn nested(head: &str, (open, core, close): (&str, &str, &str), tail: &str) -> String {
-    let room = SQL_BYTES - head.len() - core.len() - tail.len();
+/// `head`, `open` nested as many times as fits in `bytes` around `core`, each closed by `close`,
+/// and `tail`.
+fn nested(bytes: usize, head: &str, (open, core, close): (&str, &str, &str), tail: &str) -> String {
+    let room = bytes - head.len() - core.len() - tail.len();
     let times = room / (open.len() + close.len());
     format!(
         "{head}{}{core}{}{tail}",
@@ -64,9 +68,17 @@ fn on_a_small_stack<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static
 
 #[test]
 fn a_tree_deeper_than_the_limit_is_refused_on_a_small_stack_however_its_text_reads() {
+    for bytes in LENGTHS {
+        deeper_refused(bytes);
+    }
+}
+
+/// Each form of a tree deeper than the limit, at `bytes` of text, refused from a 2 MiB thread.
+fn deeper_refused(bytes: usize) {
     let deeper = format!("nests deeper than {SQL_DEPTH}");
     let (deeper, broken) = (deeper.as_str(), "the text is not one query");
     let then = format!("{} + then", " + n".repeat(49));
+    let filled = |head: &str, unit: &str, tail: &str| filled(bytes, head, unit, tail);
     let cases = [
         // `then` read as a name in a chain inside a `CASE`, every 50 operators.
         (
@@ -110,8 +122,8 @@ fn a_tree_deeper_than_the_limit_is_refused_on_a_small_stack_however_its_text_rea
     for (text, kind, said) in cases {
         let refused = on_a_small_stack(move || Sql::parse(&text).map(|_| ()));
         let refused = refused.unwrap_err();
-        assert_eq!(refused.kind(), kind, "{refused}");
-        assert!(refused.to_string().contains(said), "{refused}");
+        assert_eq!(refused.kind(), kind, "{bytes}: {refused}");
+        assert!(refused.to_string().contains(said), "{bytes}: {refused}");
     }
 }
 
@@ -129,23 +141,38 @@ const NESTING: [(&str, &str, &str); 10] = [
     ("TABLE(a ", "INT", ")"),
 ];
 
-#[test]
-fn a_type_nested_as_deep_as_the_text_allows_is_refused_on_a_small_stack() {
+/// Each type nested as deep as `bytes` of text allow: in a cast, as a typed string's type, and
+/// each type of [`NESTING`] as a cast's.
+fn types_nested(bytes: usize) -> Vec<String> {
     let cases = [
-        filled("SELECT CAST(n AS INT", "[]", ") AS x FROM input"),
+        filled(bytes, "SELECT CAST(n AS INT", "[]", ") AS x FROM input"),
         nested(
+            bytes,
             "SELECT n FROM input WHERE ",
             ("ARRAY<", "INT", ">"),
             " '1' IS NULL",
         ),
     ];
-    let cast = |opened| nested("SELECT CAST(n AS ", opened, ") AS x FROM input");
-    let cases = cases.into_iter().chain(NESTING.into_iter().map(cast));
-    for text in cases {
-        let shown: String = text.chars().take(40).collect();
-        let refused = on_a_small_stack(move || Sql::parse(&text).map(|_| ()));
-        let refused = refused.expect_err(&shown);
-        assert_eq!(refused.kind(), SqlErrorKind::Shape, "{shown}: {refused}");
+    let cast = |opened| nested(bytes, "SELECT CAST(n AS ", opened, ") AS x FROM input");
+    cases
+        .into_iter()
+        .chain(NESTING.into_iter().map(cast))
+        .collect()
+}
+
+#[test]
+fn a_type_nested_as_deep_as_the_text_allows_is_refused_on_a_small_stack() {
+    for bytes in LENGTHS {
+        for text in types_nested(bytes) {
+            let shown: String = text.chars().take(40).collect();
+            let refused = on_a_small_stack(move || Sql::parse(&text).map(|_| ()));
+            let refused = refused.expect_err(&shown);
+            assert_eq!(
+                refused.kind(),
+                SqlErrorKind::Shape,
+                "{bytes} {shown}: {refused}"
+            );
+        }
     }
 }
 
