@@ -639,6 +639,30 @@ async fn each_stream_a_pattern_selects_plans_its_sql_once_for_its_own_schema() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_shown_name_is_held_to_its_parts_limits() {
+    let (namespace, name) = ("n".repeat(200), "t".repeat(200));
+    let shown = format!("{namespace}.{name}");
+    let offered = catalog(&[&[namespace.as_str(), name.as_str()]]);
+    let entry = document(vec![Stream::new(shown.clone())]);
+    let lowered = lower(&entry, &Host::new(), &offered)
+        .await
+        .expect("lowered");
+    let parted = (Some(namespace.as_str()), name.as_str());
+    let stream = lowered.plan.streams()[0].name();
+    assert_eq!((stream.namespace(), stream.name()), parted);
+    let unlisted = super::written(&shown).expect("a namespace and a name");
+    assert_eq!((unlisted.namespace(), unlisted.name()), parted);
+    for unnamed in ["n".repeat(300), format!("{}.t", "n".repeat(300))] {
+        refused(
+            &document(vec![Stream::new(unnamed)]),
+            "stream_invalid",
+            None,
+        )
+        .await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_name_two_catalog_streams_show_as_is_ambiguous_and_a_pattern_matching_none_is_refused() {
     let alike = catalog(&[&["a.b", "c"], &["a", "b.c"]]);
     let named = lower(&document(vec![Stream::new("a.b.c")]), &Host::new(), &alike).await;
