@@ -200,9 +200,9 @@ impl Document {
     /// # Errors
     ///
     /// `mask_key_literal` where a mask's key is written out: a document holds a secret reference,
-    /// never the key, so such a document is never written. `document_too_large` where its YAML,
-    /// indented by its nesting, is past [`DOCUMENT_BYTES`]: nothing could read it back.
-    /// `document_invalid` should anything else in it have no form in YAML.
+    /// never the key, so such a document is never written. `document_too_large` or
+    /// `document_too_deep` where its YAML is past what the reader takes, which nothing could then
+    /// read back. `document_invalid` should anything else in it have no form in YAML.
     pub fn to_yaml(&self) -> Result<String, Error> {
         let written_out = |step: &TransformStep| {
             matches!(step, TransformStep::Mask(mask)
@@ -216,9 +216,7 @@ impl Document {
             let message = "the document cannot be written as YAML";
             Error::config_caused(codes::DOCUMENT_INVALID, message, cause)
         })?;
-        if !hostile::within_size(written.len()) {
-            return Err(refused(&Fault::too_large("the document's YAML"), None));
-        }
+        hostile::screen(&written, "the document's YAML").map_err(|fault| refused(&fault, None))?;
         Ok(written)
     }
 

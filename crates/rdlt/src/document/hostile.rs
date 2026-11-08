@@ -30,16 +30,17 @@ pub(crate) fn read_or_default<T: DeserializeOwned + Default>(
     reading(text, noun, Some(T::default()))
 }
 
-/// Whether a text of `bytes` is within what a reader takes.
-pub(crate) fn within_size(bytes: usize) -> bool {
-    bytes <= DOCUMENT_BYTES
+/// Refuses `text` for what a reader holds against it before serde sees any of it, its faults
+/// saying `noun`: its size, and what [`screened`] finds; whether it holds nothing.
+pub(crate) fn screen(text: &str, noun: &str) -> Result<bool, Fault> {
+    if text.len() > DOCUMENT_BYTES {
+        return Err(Fault::too_large(noun));
+    }
+    screened(text, noun)
 }
 
 fn reading<T: DeserializeOwned>(text: &str, noun: &str, default: Option<T>) -> Result<T, Fault> {
-    if !within_size(text.len()) {
-        return Err(Fault::too_large(noun));
-    }
-    if screened(text, noun)?
+    if screen(text, noun)?
         && let Some(default) = default
     {
         return Ok(default);
