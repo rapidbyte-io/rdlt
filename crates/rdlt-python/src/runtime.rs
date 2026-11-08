@@ -55,6 +55,9 @@ pub(crate) fn get(py: Python<'_>) -> Result<&'static Runtime, PyErr> {
                     // Lives as long as the process: its threads end with it, and nothing waits
                     // for them.
                     let runtime: &'static Runtime = Box::leak(Box::new(runtime));
+                    // asyncio's awaitables run their futures here; nothing gave the bridge a
+                    // runtime before.
+                    pyo3_async_runtimes::tokio::init_with_runtime(runtime).ok();
                     *held = Some((runtime, pid));
                     Ok(runtime)
                 }
@@ -74,26 +77,51 @@ pub(crate) fn get(py: Python<'_>) -> Result<&'static Runtime, PyErr> {
     })
 }
 
+/// What a wait does with the exception a signal's handler raised.
+pub(crate) enum Interrupted {
+    /// Waits on: the handler's exception was answered otherwise, as a first Ctrl-C stops a run.
+    Continue,
+    /// Drops the future, cancelling what it started, and raises this.
+    Raise(PyErr),
+}
+
 /// Runs `future` to its end on the runtime with the GIL released; a signal's exception, as
 /// Ctrl-C's, drops the future and is raised.
 pub(crate) fn wait<T: Send + 'static>(
     py: Python<'_>,
     future: impl Future<Output = T> + Send + 'static,
 ) -> Result<T, PyErr> {
-    let runtime = get(py)?;
-    waited(py, runtime, runtime.spawn(future), SIGNALS, || {
-        py.check_signals()
-    })
+    wait_interrupted(py, future, Interrupted::Raise)
 }
 
-/// Waits for `task` on `runtime` in slices of `every`, calling `signals` between them and raising
-/// what a signal raised.
+/// Runs `future` to its end on the runtime with the GIL released, letting Python's handlers run
+/// every [`SIGNALS`]: `interrupted` decides what an exception one raises does.
+pub(crate) fn wait_interrupted<T: Send + 'static>(
+    py: Python<'_>,
+    future: impl Future<Output = T> + Send + 'static,
+    interrupted: impl FnMut(PyErr) -> Interrupted,
+) -> Result<T, PyErr> {
+    let runtime = get(py)?;
+    let task = runtime.spawn(future);
+    waited(
+        py,
+        runtime,
+        task,
+        SIGNALS,
+        || py.check_signals(),
+        interrupted,
+    )
+}
+
+/// Waits for `task` on `runtime` in slices of `every`, calling `signals` between them and
+/// `interrupted` with what a signal raised.
 fn waited<T: Send + 'static>(
     py: Python<'_>,
     runtime: &Runtime,
     mut task: JoinHandle<T>,
     every: Duration,
     mut signals: impl FnMut() -> Result<(), PyErr>,
+    mut interrupted: impl FnMut(PyErr) -> Interrupted,
 ) -> Result<T, PyErr> {
     loop {
         let ended = py.detach(|| {
@@ -108,7 +136,9 @@ fn waited<T: Send + 'static>(
                 return Err(errors::internal(py, &message));
             }
             Err(_) => {
-                if let Err(raised) = signals() {
+                if let Err(raised) = signals()
+                    && let Interrupted::Raise(raised) = interrupted(raised)
+                {
                     task.abort();
                     return Err(raised);
                 }

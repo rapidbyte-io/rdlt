@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -168,5 +169,47 @@ fn a_reset_refuses_an_identity_that_is_no_stream_and_quotes_nothing() {
         assert!(!said.contains("hunter2"), "{said}");
         let code = raised.value(py).getattr("code").unwrap();
         assert_eq!(code.extract::<String>().unwrap(), "stream_invalid");
+    });
+}
+
+#[test]
+fn a_run_ends_with_its_rows() {
+    embedded::with(|py| {
+        let builder = rdlt::Pipeline::from_text(&memory_document("ran", 25), "test").unwrap();
+        let pipeline = NativePipeline::built(py, builder, memory_host()).unwrap();
+        let (outcome, error) = pipeline.run(py).expect("it ends");
+        assert_eq!(error, None);
+        let outcome: serde_json::Value = serde_json::from_str(&outcome).unwrap();
+        assert_eq!(outcome["report"]["rows"], 25);
+    });
+}
+
+#[test]
+fn a_subscriber_that_falls_behind_is_told_how_many_it_missed() {
+    embedded::with(|py| {
+        let mut document: serde_json::Value =
+            serde_json::from_str(&memory_document("behind", 40)).unwrap();
+        document["source"]["config"]["page_size"] = 5.into();
+        document["commit"] = serde_json::json!({ "rows": 5 });
+        let builder = rdlt::Pipeline::from_text(&document.to_string(), "test").unwrap();
+        let host = memory_host();
+        let built = runtime::wait(py, async move { builder.build(&host).await })
+            .unwrap()
+            .unwrap();
+        let pipeline = NativePipeline {
+            pipeline: Arc::new(built.with_event_buffer(NonZeroUsize::new(2).unwrap())),
+        };
+        let run = pipeline.start(py).unwrap();
+        let events = run.events(py).unwrap();
+        run.wait(py).unwrap();
+        let mut dropped = Vec::new();
+        while let Some(item) = events.__next__(py).unwrap() {
+            let item: serde_json::Value = serde_json::from_str(&item).unwrap();
+            dropped.extend(item["lagged"]["dropped"].as_u64());
+        }
+        assert!(
+            !dropped.is_empty() && dropped.iter().all(|&count| count > 0),
+            "{dropped:?}"
+        );
     });
 }

@@ -34,6 +34,16 @@ pub(crate) fn config(py: Python<'_>, code: rdlt::Code, message: &str) -> PyErr {
     own(py, "config", Some(code.as_str()), message)
 }
 
+/// The `rdlt.StoppedError` a run cancelled before its end answers.
+pub(crate) fn stopped(py: Python<'_>) -> PyErr {
+    own(
+        py,
+        "cancelled",
+        None,
+        "the run was cancelled before it ended",
+    )
+}
+
 /// The exception of `kind` for a failure of this module's own.
 fn own(py: Python<'_>, kind: &str, code: Option<&str>, message: &str) -> PyErr {
     let report = serde_json::json!({

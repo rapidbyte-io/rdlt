@@ -7,6 +7,7 @@ import enum
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import TypeAlias, cast
 
 Json: TypeAlias = "bool | int | float | str | list[Json] | dict[str, Json] | None"
@@ -34,6 +35,13 @@ def _maybe_text(fields: Mapping[str, Json], key: str) -> str | None:
     return value
 
 
+def _count(fields: Mapping[str, Json], key: str) -> int:
+    value = fields.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"field {key!r} is not a whole number")
+    return value
+
+
 def _flag(fields: Mapping[str, Json], key: str) -> bool:
     value = fields.get(key)
     if not isinstance(value, bool):
@@ -46,6 +54,30 @@ def _object(fields: Mapping[str, Json], key: str) -> dict[str, Json]:
     if not isinstance(value, dict):
         raise TypeError(f"field {key!r} is not an object")
     return value
+
+
+def _instant(value: Json) -> datetime:
+    if not isinstance(value, dict):
+        raise TypeError("an instant is not seconds since the epoch")
+    seconds = _count(value, "secs_since_epoch")
+    nanos = _count(value, "nanos_since_epoch")
+    return datetime.fromtimestamp(seconds, UTC) + timedelta(microseconds=nanos // 1000)
+
+
+def _span(value: Json) -> timedelta:
+    if not isinstance(value, dict):
+        raise TypeError("a duration is not seconds and nanoseconds")
+    return timedelta(seconds=_count(value, "secs"), microseconds=_count(value, "nanos") // 1000)
+
+
+def _variant(value: Json) -> tuple[str, dict[str, Json]]:
+    """A variant the facade writes, as its name and its fields, the name alone having none."""
+    if isinstance(value, str):
+        return value, {}
+    if isinstance(value, dict) and len(value) == 1:
+        ((name, inner),) = value.items()
+        return name, inner if isinstance(inner, dict) else {}
+    raise TypeError("neither a name nor one variant")
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,3 +168,145 @@ class Catalog:
         """The catalog `text`, the facade's JSON, holds."""
         specs = cast("list[dict[str, Json]]", json.loads(text))
         return cls(tuple(CatalogStream.from_fields(spec) for spec in specs))
+
+
+class RunStatus(enum.Enum):
+    """How a run ended, or that it has not."""
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    STOPPED = "stopped"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True, slots=True)
+class StreamReport:
+    """What one stream committed."""
+
+    rows: int
+    committed_bytes: int
+    commits: int
+    raw: Mapping[str, Json] = field(repr=False, hash=False)
+    """The whole stream report, as the facade serializes it."""
+
+    @classmethod
+    def from_fields(cls, fields: Mapping[str, Json]) -> StreamReport:
+        """The stream's report `fields` hold."""
+        return cls(
+            _count(fields, "rows"), _count(fields, "bytes"), _count(fields, "commits"), fields
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Report:
+    """What a run committed, attempt by attempt."""
+
+    pipeline: str
+    status: RunStatus
+    attempted: int
+    elapsed: timedelta
+    rows: int
+    committed_bytes: int
+    commits: int
+    peak_memory: int
+    streams: Mapping[str, StreamReport] = field(hash=False)
+    raw: Mapping[str, Json] = field(repr=False, hash=False)
+    """The whole report, as the facade serializes it."""
+
+    @classmethod
+    def from_fields(cls, fields: Mapping[str, Json]) -> Report:
+        """The report `fields`, the facade's JSON, hold."""
+        streams = _object(fields, "streams")
+        return cls(
+            pipeline=_text(fields, "pipeline"),
+            status=RunStatus(_text(fields, "status")),
+            attempted=_count(fields, "attempted"),
+            elapsed=_span(fields.get("elapsed")),
+            rows=_count(fields, "rows"),
+            committed_bytes=_count(fields, "bytes"),
+            commits=_count(fields, "commits"),
+            peak_memory=_count(fields, "peak_memory"),
+            streams={
+                name: StreamReport.from_fields(cast("dict[str, Json]", report))
+                for name, report in streams.items()
+            },
+            raw=fields,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """How a run ended: what it committed, and the error that ended it, if one did."""
+
+    report: Report
+    error: ErrorReport | None
+
+    @classmethod
+    def from_fields(cls, fields: Mapping[str, Json]) -> Outcome:
+        """The outcome `fields` hold."""
+        error = fields.get("error")
+        return cls(
+            Report.from_fields(_object(fields, "report")),
+            None if error is None else ErrorReport.from_fields(cast("dict[str, Json]", error)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Status:
+    """Where a run stands now."""
+
+    phase: str
+    """What the run is in the middle of: `opening`, `reading`, `committing`, `stopping`, …"""
+    since: datetime
+    streams: Mapping[str, Json] = field(hash=False)
+    report: Report = field(hash=False)
+    """The run so far, the attempt in progress listed as ending now."""
+    raw: Mapping[str, Json] = field(repr=False, hash=False)
+    """The whole status, as the facade serializes it."""
+
+    @classmethod
+    def from_fields(cls, fields: Mapping[str, Json]) -> Status:
+        """The status `fields` hold."""
+        phase, _ = _variant(fields.get("phase"))
+        return cls(
+            phase=phase,
+            since=_instant(fields.get("since")),
+            streams=_object(fields, "streams"),
+            report=Report.from_fields(_object(fields, "report")),
+            raw=fields,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    """Something a run did; `seq` is gap-free within a run."""
+
+    seq: int
+    at: datetime
+    pipeline: str
+    attempt: int
+    kind: str
+    """What happened: `attempt_started`, `committed`, `retrying`, `run_ended`, …"""
+    detail: Mapping[str, Json] = field(hash=False)
+    """The kind's own fields."""
+
+    @classmethod
+    def from_fields(cls, fields: Mapping[str, Json]) -> Event:
+        """The event `fields` hold."""
+        kind, detail = _variant(fields.get("kind"))
+        return cls(
+            seq=_count(fields, "seq"),
+            at=_instant(fields.get("at")),
+            pipeline=_text(fields, "pipeline"),
+            attempt=_count(fields, "attempt"),
+            kind=kind,
+            detail=detail,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Lagged:
+    """A subscriber fell behind: `dropped` events were lost to it, and it carries on."""
+
+    dropped: int

@@ -3,18 +3,24 @@
 
 from __future__ import annotations
 
-from rdlt.model import ErrorReport, _parse
+from rdlt.model import ErrorReport, Outcome, _parse
 
 
 class Error(Exception):
     """A failure building, checking or running a pipeline, as the facade reports it."""
 
-    def __init__(self, report: ErrorReport) -> None:
+    def __init__(self, report: ErrorReport, outcome: Outcome | None = None) -> None:
         super().__init__(report.message)
         self._report = report
+        self._outcome = outcome
 
-    def __reduce__(self) -> tuple[type[Error], tuple[ErrorReport]]:
-        return type(self), (self._report,)
+    def __reduce__(self) -> tuple[type[Error], tuple[ErrorReport, Outcome | None]]:
+        return type(self), (self._report, self._outcome)
+
+    @property
+    def outcome(self) -> Outcome | None:
+        """What the run committed before the error ended it; `None` outside a run."""
+        return self._outcome
 
     @property
     def kind(self) -> str:
@@ -90,7 +96,8 @@ _CLASSES: dict[str, type[Error]] = {
 }
 
 
-def _from_report(report: str) -> Error:
-    """The exception `report`, an `ErrorReport` as JSON, describes; the native layer raises it."""
+def _from_report(report: str, outcome: str | None = None) -> Error:
+    """The exception `report`, an `ErrorReport` as JSON, describes, with the run's outcome."""
     parsed = ErrorReport.from_fields(_parse(report))
-    return _CLASSES.get(parsed.kind, Error)(parsed)
+    ended = None if outcome is None else Outcome.from_fields(_parse(outcome))
+    return _CLASSES.get(parsed.kind, Error)(parsed, ended)

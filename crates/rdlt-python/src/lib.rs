@@ -18,6 +18,7 @@ mod embedded;
 mod errors;
 mod host;
 mod pipeline;
+mod run;
 mod runtime;
 mod secrets;
 #[cfg(test)]
@@ -38,5 +39,7 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_class::<host::NativeHost>()?;
     module.add_class::<pipeline::NativePipeline>()?;
+    module.add_class::<run::NativeRun>()?;
+    module.add_class::<run::NativeEvents>()?;
     Ok(())
 }
