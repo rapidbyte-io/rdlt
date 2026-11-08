@@ -11,7 +11,7 @@ mod streams;
 mod tests;
 mod transforms;
 
-pub(crate) use streams::{resolved, written};
+pub(crate) use streams::{resolved, unlisted};
 
 use std::time::Duration;
 
