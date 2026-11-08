@@ -676,6 +676,23 @@ async fn a_mask_key_s_secret_that_never_resolves_fails_at_the_host_s_wait() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_malformed_endpoint_is_refused_before_either_connector_is_placed() {
+    let unusable = || Side::new(Connector::new("io.rapidbyte.memory").endpoint("no endpoint"));
+    let mut sourced = document(vec![Stream::new("a")]);
+    sourced.source = unusable();
+    let mut written = document(vec![Stream::new("a")]);
+    written.destination = unusable();
+    for (asking, origin) in [(sourced, Origin::Source), (written, Origin::Destination)] {
+        let refused = prepare(&asking, &Host::new()).await.err().expect("refused");
+        assert_eq!(refused.code().map(Code::as_str), Some("endpoint_invalid"));
+        assert_eq!(
+            (refused.kind(), refused.origin()),
+            (ErrorKind::Config, origin)
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_empty_include_is_a_restriction_and_an_absent_one_is_none() {
     let read = serde_json::json!({ "name": "a", "include": [] });
     let read = serde_json::from_value::<Stream>(read).expect("it reads");
