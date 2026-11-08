@@ -199,6 +199,36 @@ async fn a_run_s_events_end_with_its_end_though_the_run_is_kept() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subscriber_come_after_the_run_ended_ends_and_takes_nothing_from_another() {
+    let rows = serde_json::json!([{ "id": 1 }]);
+    let pipeline = memory_pipeline("late", "events-late", &rows)
+        .build(&memory_host())
+        .await
+        .expect("built");
+    let mut run = pipeline.start();
+    let mut early = run.events();
+    let outcome = within(&mut run).await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    let mut late = run.events();
+    assert!(
+        within(late.next()).await.is_none(),
+        "nothing more will come"
+    );
+    let mut read = Vec::new();
+    while let Some(told) = within(early.next()).await {
+        read.push(told.expect("nothing fell behind"));
+    }
+    assert_eq!(
+        read.first().map(|event| event.seq),
+        Some(1),
+        "from the first event"
+    );
+    let last = read.last().map(|event| &event.kind);
+    assert!(matches!(last, Some(EventKind::RunEnded { .. })), "{last:?}");
+    drop(run);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_buffer_asked_beyond_the_most_a_ring_keeps_is_held_to_it() {
     let rows = serde_json::json!([{ "id": 1 }]);
     let pipeline = memory_pipeline("held", "events-held", &rows)
