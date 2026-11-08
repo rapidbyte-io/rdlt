@@ -1,0 +1,1022 @@
+---
+source: crates/rdlt/src/document/tests.rs
+expression: schema
+---
+{
+  "$defs": {
+    "Access": {
+      "additionalProperties": false,
+      "description": "What a connector's sandbox may reach beyond what the host gives every connector.",
+      "properties": {
+        "network": {
+          "description": "Whether it shares the host's network, which a sandboxed connector does only where its\nhost allows it (`Host::allow_network`).",
+          "type": "boolean"
+        },
+        "read": {
+          "description": "Paths it may read, each absolute and within a root the host made readable or writable.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "write": {
+          "description": "Paths it may read and write, each absolute and within a root the host made writable.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Column": {
+      "additionalProperties": false,
+      "description": "A column's own settings, over its stream's and the defaults.",
+      "properties": {
+        "hint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Hint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its fixed type: values that do not fit it are changes its policy handles."
+        },
+        "nested": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nested"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How its nested values are stored."
+        },
+        "on_unsupported": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnUnsupported"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What happens to a change of it the destination cannot apply in place."
+        },
+        "policy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What happens to a value that would change its table, or that it cannot hold."
+        }
+      },
+      "type": "object"
+    },
+    "Commit": {
+      "additionalProperties": false,
+      "description": "When a run commits: whichever threshold it reaches first.",
+      "properties": {
+        "bytes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Size"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bytes after which a commit is due."
+        },
+        "every": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How long after the last commit the next is due."
+        },
+        "rows": {
+          "description": "Rows after which a commit is due.",
+          "format": "uint64",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Connector": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/ConnectorReference"
+        }
+      ],
+      "description": "A connector's id, or its id with what its placement must honour."
+    },
+    "ConnectorReference": {
+      "additionalProperties": false,
+      "description": "A connector's id with what its placement must honour: the versions it accepts, the binary it\nmust be, or where it listens.",
+      "properties": {
+        "digest": {
+          "description": "The SHA-256 of the binary that must run, in hex, for a local process.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint": {
+          "description": "Where it listens, `grpcs://host:port`, for a remote connector.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The connector's id.",
+          "type": "string"
+        },
+        "version": {
+          "description": "The versions accepted, a semver requirement such as `^1.2`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "Constant": {
+      "description": "A constant: text, an integer or a boolean.",
+      "maximum": 9223372036854775807,
+      "minimum": -9223372036854775808,
+      "type": [
+        "string",
+        "integer",
+        "boolean"
+      ]
+    },
+    "Defaults": {
+      "additionalProperties": false,
+      "description": "What every stream takes where it says nothing.",
+      "properties": {
+        "nested": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nested"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How nested values are stored."
+        },
+        "read": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReadMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How streams are read."
+        },
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaRules"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What schemas do."
+        },
+        "write": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WriteMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How streams' rows reach their tables."
+        }
+      },
+      "type": "object"
+    },
+    "DeleteMode": {
+      "description": "What a change stream's deletes do to its table.",
+      "oneOf": [
+        {
+          "const": "hard",
+          "description": "Remove the row.",
+          "type": "string"
+        },
+        {
+          "const": "soft",
+          "description": "Keep the row, and record when it was deleted.",
+          "type": "string"
+        },
+        {
+          "const": "ignore",
+          "description": "Drop delete rows, and count them.",
+          "type": "string"
+        }
+      ]
+    },
+    "Duration": {
+      "description": "A duration: digits and one of ns, us, ms, s, m, h.",
+      "pattern": "^[0-9]{1,29}(ns|us|ms|s|m|h)$",
+      "type": "string"
+    },
+    "Hint": {
+      "description": "A column's fixed type: a word, or `{ decimal: { precision, scale } }`.",
+      "oneOf": [
+        {
+          "const": "bool",
+          "description": "`true` or `false`.",
+          "type": "string"
+        },
+        {
+          "const": "int8",
+          "description": "A signed 8-bit integer.",
+          "type": "string"
+        },
+        {
+          "const": "int16",
+          "description": "A signed 16-bit integer.",
+          "type": "string"
+        },
+        {
+          "const": "int32",
+          "description": "A signed 32-bit integer.",
+          "type": "string"
+        },
+        {
+          "const": "int64",
+          "description": "A signed 64-bit integer.",
+          "type": "string"
+        },
+        {
+          "const": "float32",
+          "description": "A 32-bit float.",
+          "type": "string"
+        },
+        {
+          "const": "float64",
+          "description": "A 64-bit float.",
+          "type": "string"
+        },
+        {
+          "const": "utf8",
+          "description": "UTF-8 text.",
+          "type": "string"
+        },
+        {
+          "const": "binary",
+          "description": "Bytes.",
+          "type": "string"
+        },
+        {
+          "const": "date",
+          "description": "A calendar date.",
+          "type": "string"
+        },
+        {
+          "const": "uuid",
+          "description": "A 16-byte UUID.",
+          "type": "string"
+        },
+        {
+          "const": "json",
+          "description": "Any JSON value.",
+          "type": "string"
+        },
+        {
+          "const": "timestamp",
+          "description": "An instant, in microseconds, shown in UTC.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "An exact decimal.",
+          "properties": {
+            "decimal": {
+              "additionalProperties": false,
+              "properties": {
+                "precision": {
+                  "description": "Its digits.",
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "scale": {
+                  "description": "Its digits after the point.",
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "precision",
+                "scale"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "decimal"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MaskStep": {
+      "additionalProperties": false,
+      "description": "A mask of columns' values.",
+      "properties": {
+        "columns": {
+          "description": "The columns: top-level names, or paths through structs, a dot parting each field.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "key": {
+          "description": "The key of an `hmac_sha256` mask: a secret reference, `${env:NAME}`, `${file:/path}` or\n`${secret:name}`, which the host resolves; never the key itself.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "The text a `redact` mask writes for each value; `***` where it says none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "with": {
+          "$ref": "#/$defs/MaskWith",
+          "description": "How each value is masked."
+        }
+      },
+      "required": [
+        "columns",
+        "with"
+      ],
+      "type": "object"
+    },
+    "MaskWith": {
+      "description": "How a mask replaces each value.",
+      "oneOf": [
+        {
+          "const": "hmac_sha256",
+          "description": "Its `HMAC-SHA256` under the mask's key, as 64 lower-case hex digits.",
+          "type": "string"
+        },
+        {
+          "const": "redact",
+          "description": "The mask's text, for every value that is not null.",
+          "type": "string"
+        },
+        {
+          "const": "null",
+          "description": "Null.",
+          "type": "string"
+        }
+      ]
+    },
+    "Nested": {
+      "description": "How nested values are stored.",
+      "oneOf": [
+        {
+          "enum": [
+            "native",
+            "json",
+            "normalize"
+          ]
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "normalize": {
+              "additionalProperties": false,
+              "properties": {
+                "max_depth": {
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "max_depth"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "normalize"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "OnTruncate": {
+      "description": "What a change stream's truncates do to its table.",
+      "oneOf": [
+        {
+          "const": "apply",
+          "description": "Remove every row the source truncated.",
+          "type": "string"
+        },
+        {
+          "const": "ignore",
+          "description": "Drop truncates, and count them.",
+          "type": "string"
+        }
+      ]
+    },
+    "OnUnsupported": {
+      "description": "What happens to a change the destination cannot apply in place.",
+      "oneOf": [
+        {
+          "const": "variant_column",
+          "description": "Add a sibling column for the values of the new type.",
+          "type": "string"
+        },
+        {
+          "const": "refuse",
+          "description": "Fail with a schema error.",
+          "type": "string"
+        }
+      ]
+    },
+    "ReadMode": {
+      "description": "How a stream is read.",
+      "oneOf": [
+        {
+          "const": "full",
+          "description": "Every row, each time.",
+          "type": "string"
+        },
+        {
+          "const": "incremental",
+          "description": "The rows after where the last run stopped, by the source's cursor.",
+          "type": "string"
+        },
+        {
+          "const": "cdc",
+          "description": "The source's changes: inserts, updates and deletes.",
+          "type": "string"
+        }
+      ]
+    },
+    "Resources": {
+      "additionalProperties": false,
+      "description": "What a run may use; the engine's default for each it does not say.",
+      "properties": {
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Size"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bytes: the memory budget."
+        },
+        "partitions": {
+          "description": "Partitions read at once.",
+          "format": "uint",
+          "maximum": 18446744073709551615,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "writers": {
+          "description": "Concurrent destination writers.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RetentionLoss": {
+      "description": "What a stream does when its source no longer holds where a read would resume.",
+      "oneOf": [
+        {
+          "const": "fail",
+          "description": "Fail the run: data is never skipped silently.",
+          "type": "string"
+        },
+        {
+          "const": "reset",
+          "description": "Read again from the source's earliest, skipping what it dropped, and count it.",
+          "type": "string"
+        }
+      ]
+    },
+    "Retry": {
+      "additionalProperties": false,
+      "description": "How a run retries a failed attempt; the engine's default for each it does not say.",
+      "properties": {
+        "initial": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The longest delay after the first failure."
+        },
+        "max_attempts": {
+          "description": "Attempts, the first included, and tries of a commit.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_delay": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The longest delay after any failure."
+        }
+      },
+      "type": "object"
+    },
+    "SchemaPolicy": {
+      "description": "What the schema does with a value that would change its table, or that its column cannot\nhold.",
+      "oneOf": [
+        {
+          "const": "evolve",
+          "description": "Change the schema.",
+          "type": "string"
+        },
+        {
+          "const": "freeze",
+          "description": "Fail with a schema error.",
+          "type": "string"
+        },
+        {
+          "const": "discard_row",
+          "description": "Drop the row, and count it.",
+          "type": "string"
+        },
+        {
+          "const": "discard_value",
+          "description": "Load the row with the value nulled, and count it.",
+          "type": "string"
+        }
+      ]
+    },
+    "SchemaRules": {
+      "additionalProperties": false,
+      "description": "What a schema does with a value that would change its table, and with a change its\ndestination cannot apply.",
+      "properties": {
+        "on_unsupported": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnUnsupported"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What happens to a change the destination cannot apply in place."
+        },
+        "policy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What happens to a value that would change its table, or that its column cannot hold."
+        }
+      },
+      "type": "object"
+    },
+    "Side": {
+      "additionalProperties": false,
+      "description": "A connector as one side of a pipeline: which one, its configuration, and what its placement\nlets it reach.",
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/Access",
+          "description": "What its sandbox may reach, within the roots the host allows."
+        },
+        "config": {
+          "description": "Its configuration, inline; text values may refer to secrets the host allows."
+        },
+        "connector": {
+          "$ref": "#/$defs/Connector",
+          "description": "The connector: `connector: <id>` or `{ id, version, digest, endpoint }`."
+        }
+      },
+      "required": [
+        "connector"
+      ],
+      "type": "object"
+    },
+    "Size": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "pattern": "^[0-9]{1,20}(B|KiB|MiB|GiB|TiB)?$",
+          "type": "string"
+        }
+      ],
+      "description": "Bytes: a whole number, or digits and one of B, KiB, MiB, GiB, TiB."
+    },
+    "Stream": {
+      "additionalProperties": false,
+      "description": "A stream the pipeline loads, or every stream of the source's catalog its name matches where\nthe name holds `*` or `?`.",
+      "properties": {
+        "columns": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Column"
+          },
+          "description": "Each top-level column's own settings, by name.",
+          "type": "object"
+        },
+        "deletes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeleteMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What its deletes do, for a change stream merged by key; hard by default."
+        },
+        "exclude": {
+          "description": "Top-level columns it leaves out.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "description": "The only top-level columns it loads, beside its keys and change columns; none listed is\na restriction too, which the plan refuses, and unlike this being absent.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The stream's name, as the source's catalog shows it, or a pattern of `*` and `?`.",
+          "type": "string"
+        },
+        "nested": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nested"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How its nested values are stored, where it differs from the default's."
+        },
+        "on_retention_loss": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetentionLoss"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What it does when its source no longer holds where a read would resume; fails by default."
+        },
+        "on_truncate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnTruncate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What its truncates do, for a change stream merged by key; applied by default."
+        },
+        "read": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReadMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How it is read; the default's, else in full."
+        },
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaRules"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What its schema does, where it differs from the default's."
+        },
+        "transform": {
+          "description": "What reshapes its rows, in order, before they reach its table.",
+          "items": {
+            "$ref": "#/$defs/TransformStep"
+          },
+          "type": "array"
+        },
+        "write": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WriteMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How its rows reach its table; the default's, else appended."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "TransformStep": {
+      "description": "One step of a stream's transforms, run on every batch after the steps before it.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Renames top-level columns, each from its first name to its second, held sorted by first\nname: no column may take a name another gives up, so their order means nothing.",
+          "properties": {
+            "rename": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "rename"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Masks the values of columns.",
+          "properties": {
+            "mask": {
+              "$ref": "#/$defs/MaskStep"
+            }
+          },
+          "required": [
+            "mask"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Adds top-level columns, in the order written, each holding its value in every row: text,\nan integer or a boolean.",
+          "properties": {
+            "constant": {
+              "additionalProperties": {
+                "$ref": "#/$defs/Constant"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "constant"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A query of the table `input`: its columns projected, its rows optionally filtered.",
+          "properties": {
+            "sql": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sql"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The code transform the host registered by this name.",
+          "properties": {
+            "code": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Until": {
+      "anyOf": [
+        {
+          "enum": [
+            "exhausted",
+            "forever"
+          ]
+        },
+        {
+          "$ref": "#/$defs/Duration"
+        }
+      ],
+      "description": "How long a run reads."
+    },
+    "WriteMode": {
+      "description": "How a stream's rows reach its table.",
+      "oneOf": [
+        {
+          "enum": [
+            "append",
+            "replace",
+            "merge",
+            "history"
+          ]
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "merge": {
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "merge"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "history": {
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "history"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A pipeline as its author describes it: one source, one destination, the streams it selects,\nand how a run commits, uses resources, retries and reads.\n\n```\nuse rdlt::{Connector, Document, Side, Stream};\n\nlet source = Side::new(Connector::new(\"io.rapidbyte.memory\"))\n    .config(rdlt::json!({ \"streams\": { \"users\": [{ \"id\": 1 }] } }));\nlet destination = Side::new(Connector::new(\"io.rapidbyte.memory\"))\n    .config(rdlt::json!({ \"store\": \"users\" }));\nlet mut document = Document::new(\"users\", source, destination);\ndocument.streams.push(Stream::new(\"users\"));\nlet written = serde_json::to_value(&document)?;\nassert_eq!(serde_json::from_value::<Document>(written)?, document);\n# Ok::<(), serde_json::Error>(())\n```",
+  "properties": {
+    "commit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Commit"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "When a run commits; the engine's default where it says nothing."
+    },
+    "defaults": {
+      "$ref": "#/$defs/Defaults",
+      "description": "What every stream takes where it says nothing."
+    },
+    "destination": {
+      "$ref": "#/$defs/Side",
+      "description": "Where rows go."
+    },
+    "pipeline": {
+      "description": "The pipeline's name.",
+      "type": "string"
+    },
+    "resources": {
+      "$ref": "#/$defs/Resources",
+      "description": "What a run may use."
+    },
+    "retry": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Retry"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "How a run retries; the engine's default where it says nothing."
+    },
+    "source": {
+      "$ref": "#/$defs/Side",
+      "description": "Where rows come from."
+    },
+    "streams": {
+      "description": "The streams loaded; a name holding `*` or `?` selects each stream of the source's catalog\nit matches, and a stream named outright wins over a pattern that matches it too.",
+      "items": {
+        "$ref": "#/$defs/Stream"
+      },
+      "type": "array"
+    },
+    "until": {
+      "$ref": "#/$defs/Until",
+      "description": "How long a run reads."
+    },
+    "version": {
+      "const": 1,
+      "description": "The document's format: 1, the only one.",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "pipeline",
+    "source",
+    "destination",
+    "streams"
+  ],
+  "title": "Document",
+  "type": "object"
+}

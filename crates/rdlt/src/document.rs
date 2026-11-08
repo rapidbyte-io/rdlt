@@ -60,6 +60,7 @@ pub use until::Until;
 pub struct Document {
     /// The document's format: 1, the only one.
     #[serde(deserialize_with = "read::count")]
+    #[schemars(extend("const" = 1))]
     pub version: u8,
     /// The pipeline's name.
     #[serde(deserialize_with = "read::text")]
@@ -145,7 +146,7 @@ impl Document {
     /// # Ok::<(), rdlt::Error>(())
     /// ```
     pub fn parse(text: &str) -> Result<Self, Error> {
-        hostile::read(text).map_err(|fault| refused(&fault, None))
+        hostile_read(text, DOCUMENT)
     }
 
     /// The document `text` holds, read as [`parse`](Self::parse) reads it; its errors start with
@@ -155,7 +156,7 @@ impl Document {
     ///
     /// As `parse`.
     pub fn from_text(text: &str, origin: &str) -> Result<Self, Error> {
-        hostile::read(text).map_err(|fault| refused(&fault, Some(origin)))
+        hostile::read(text, DOCUMENT).map_err(|fault| refused(&fault, Some(origin)))
     }
 
     /// The document in the file at `path`, read as [`parse`](Self::parse) reads text; its errors
@@ -170,7 +171,7 @@ impl Document {
         let bytes = regular_file_bytes(path).map_err(|error| Error::unreadable(path, error))?;
         let origin = path.display().to_string();
         if bytes.len() > DOCUMENT_BYTES {
-            return Err(refused(&Fault::too_large(), Some(&origin)));
+            return Err(refused(&Fault::too_large(DOCUMENT), Some(&origin)));
         }
         // The error holds the file's bytes; its position alone is kept.
         let text = String::from_utf8(bytes)
@@ -204,6 +205,25 @@ impl Document {
     pub fn json_schema() -> serde_json::Value {
         schemars::schema_for!(Self).to_value()
     }
+}
+
+/// What a document's refusals call it.
+const DOCUMENT: &str = "the document";
+
+/// `text` as a `T`, a mapping, read as a document is, its faults as errors saying `noun`.
+pub(crate) fn hostile_read<T: serde::de::DeserializeOwned>(
+    text: &str,
+    noun: &str,
+) -> Result<T, Error> {
+    hostile::read(text, noun).map_err(|fault| refused(&fault, None))
+}
+
+/// As [`hostile_read`], a text holding nothing being `T::default()`.
+pub(crate) fn hostile_read_or_default<T: serde::de::DeserializeOwned + Default>(
+    text: &str,
+    noun: &str,
+) -> Result<T, Error> {
+    hostile::read_or_default(text, noun).map_err(|fault| refused(&fault, None))
 }
 
 /// The error `fault` is, its text naming `origin`.

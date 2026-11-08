@@ -15,13 +15,30 @@ use super::fault::{Fault, Place, Refused};
 use super::read::Mapped;
 use crate::limits::{DOCUMENT_BYTES, DOCUMENT_DEPTH, DOCUMENT_NODES};
 
-/// `text` as a `T`, a mapping, read under the document's limits: a fault is placed and named by
-/// its key path, never by a value.
-pub(crate) fn read<T: DeserializeOwned>(text: &str) -> Result<T, Fault> {
+/// `text` as a `T`, a mapping, read under the document's limits, its faults saying `noun`: a
+/// fault is placed and named by its key path, never by a value.
+pub(crate) fn read<T: DeserializeOwned>(text: &str, noun: &str) -> Result<T, Fault> {
+    reading(text, noun, None)
+}
+
+/// As [`read`], a text holding no node at all, as one left empty or commented out, being
+/// `T::default()`.
+pub(crate) fn read_or_default<T: DeserializeOwned + Default>(
+    text: &str,
+    noun: &str,
+) -> Result<T, Fault> {
+    reading(text, noun, Some(T::default()))
+}
+
+fn reading<T: DeserializeOwned>(text: &str, noun: &str, default: Option<T>) -> Result<T, Fault> {
     if text.len() > DOCUMENT_BYTES {
-        return Err(Fault::too_large());
+        return Err(Fault::too_large(noun));
     }
-    screened(text)?;
+    if screened(text, noun)?
+        && let Some(default) = default
+    {
+        return Ok(default);
+    }
     let mut path = None;
     let read =
         serde_saphyr::with_deserializer_from_str_with_options(text, options(), |deserializer| {
@@ -32,7 +49,7 @@ pub(crate) fn read<T: DeserializeOwned>(text: &str) -> Result<T, Fault> {
             })
         });
     read.map(|Mapped(value)| value)
-        .map_err(|error| Fault::of(&error, path))
+        .map_err(|error| Fault::of(&error, path, noun))
 }
 
 /// What the screen is inside: a list, or a mapping, the keys it holds and whether a key is next.
@@ -69,8 +86,9 @@ fn opening<'a>(open: &mut Vec<Open<'a>>, new: Open<'a>) {
 /// tag on any node, an anchor, an alias, a key a mapping already holds, a second document, and
 /// nesting or nodes past the limits.
 ///
-/// A syntax error is left for the reader to report.
-fn screened(text: &str) -> Result<(), Fault> {
+/// Whether `text` holds nothing, scanning to its end with no node: a syntax error is no empty
+/// text, and is left for the reader to report.
+fn screened(text: &str, noun: &str) -> Result<bool, Fault> {
     let events = serde_saphyr::granit_parser::options! {
         emit_unresolved_aliases: true,
         emit_anchor_events: true,
@@ -82,9 +100,9 @@ fn screened(text: &str) -> Result<(), Fault> {
             Ok(parsed) => parsed,
             // Scanning ahead met nesting past the parser's own limit before an event for it.
             Err(error) if matches!(error.kind(), ErrorKind::RecursionLimitExceeded) => {
-                return Err(Fault::too_deep(place(error.marker())));
+                return Err(Fault::too_deep(noun, place(error.marker())));
             }
-            Err(_) => return Ok(()),
+            Err(_) => return Ok(false),
         };
         let at = place(&span.start);
         let refused = match &event {
@@ -124,11 +142,14 @@ fn screened(text: &str) -> Result<(), Fault> {
             }
             _ => {}
         }
-        if open.len() > DOCUMENT_DEPTH || nodes > DOCUMENT_NODES {
-            return Err(Fault::too_deep(at));
+        if open.len() > DOCUMENT_DEPTH {
+            return Err(Fault::too_deep(noun, at));
+        }
+        if nodes > DOCUMENT_NODES {
+            return Err(Fault::too_deep(noun, at));
         }
     }
-    Ok(())
+    Ok(nodes == 0)
 }
 
 /// The place `marker` stands at; a parser's column counts from 0.

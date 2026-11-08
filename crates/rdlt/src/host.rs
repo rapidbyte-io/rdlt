@@ -1,5 +1,6 @@
 //! The host: what its operator allows the pipelines built on it.
 
+mod file;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg(feature = "remote")]
@@ -21,6 +22,7 @@ use rdlt_host::{
 };
 use tokio::sync::OnceCell;
 
+pub use file::{HostFile, RemoteFiles};
 #[cfg(feature = "remote")]
 pub use tls::Tls;
 

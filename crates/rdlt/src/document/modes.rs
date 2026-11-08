@@ -126,7 +126,7 @@ pub enum RetentionLoss {
 
 /// A column's fixed type: a word, or `{ decimal: { precision, scale } }`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum Hint {
     /// `true` or `false`.

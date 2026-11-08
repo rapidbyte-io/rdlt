@@ -27,6 +27,7 @@ pub struct Commit {
         deserialize_with = "read::optional_count",
         skip_serializing_if = "Option::is_none"
     )]
+    #[schemars(extend("maximum" = u64::MAX))]
     pub rows: Option<u64>,
     /// Bytes after which a commit is due.
     #[serde(
@@ -92,6 +93,7 @@ pub struct Resources {
         deserialize_with = "read::optional_count",
         skip_serializing_if = "Option::is_none"
     )]
+    #[schemars(extend("maximum" = u64::MAX))]
     pub partitions: Option<usize>,
 }
 
@@ -139,6 +141,7 @@ pub struct Retry {
         deserialize_with = "read::optional_count",
         skip_serializing_if = "Option::is_none"
     )]
+    #[schemars(extend("maximum" = u32::MAX))]
     pub max_attempts: Option<u32>,
     /// The longest delay after the first failure.
     #[serde(

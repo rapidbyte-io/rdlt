@@ -6,6 +6,7 @@ use proptest::prelude::*;
 use rdlt_connector::{Catalog, StreamName, StreamSpec};
 
 use super::Document;
+pub(crate) use super::fault::tests::{holds, said};
 use crate::{
     Access, Column, Commit, Connector, Defaults, DeleteMode, Hint, Literal, MaskStep, MaskWith,
     Nested, OnTruncate, OnUnsupported, ReadMode, Resources, RetentionLoss, Retry, SchemaPolicy,
@@ -1088,11 +1089,8 @@ fn a_file_of_no_text_is_refused_holding_none_of_its_bytes() {
         error.code().map(rdlt_engine::Code::as_str),
         Some("document_unreadable")
     );
-    let said = super::fault::tests::said(&error);
-    assert!(
-        !super::fault::tests::holds(&said, "CANARY-value-9f3"),
-        "{said}"
-    );
+    let said = said(&error);
+    assert!(!holds(&said, "CANARY-value-9f3"), "{said}");
     assert!(error.to_string().contains("utf-8"), "{error}");
 }
 
@@ -1158,4 +1156,57 @@ fn a_document_with_a_key_written_out_is_never_written() {
         serde_json::to_string(&refused.report()).unwrap()
     );
     assert!(!said.contains("CANARY"), "{said}");
+}
+
+#[test]
+fn the_document_s_json_schema_is_as_recorded() {
+    let schema = serde_json::to_string_pretty(&Document::json_schema()).unwrap();
+    insta::assert_snapshot!("document_schema", schema);
+}
+
+/// A check of documents against the document's schema.
+fn validator() -> jsonschema::Validator {
+    jsonschema::validator_for(&Document::json_schema()).expect("the schema compiles")
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(128)))]
+
+    /// What the reader takes, the schema takes.
+    #[test]
+    fn a_drawn_document_meets_the_schema(document in super::drawn::documents()) {
+        let written = serde_json::to_value(&document).expect("a document writes");
+        prop_assert!(validator().is_valid(&written), "{}", written);
+    }
+}
+
+#[test]
+fn the_schema_refuses_what_the_reader_refuses_of_a_key_or_a_number() {
+    let validator = validator();
+    let document = serde_json::json!({
+        "version": 1, "pipeline": "p", "source": { "connector": "a.b" },
+        "destination": { "connector": "c.d" }, "streams": []
+    });
+    let changed = |key: &str, value: serde_json::Value| {
+        let mut changed = document.clone();
+        changed[key] = value;
+        changed
+    };
+    assert!(validator.is_valid(&document));
+    let decimal = serde_json::json!([{
+        "name": "s",
+        "columns": { "c": { "hint": { "decimal": { "precision": 1, "scale": 1, "other": 1 } } } }
+    }]);
+    for refused in [
+        changed("version", serde_json::json!(2)),
+        changed("streams", decimal),
+        changed(
+            "retry",
+            serde_json::json!({ "max_attempts": u64::from(u32::MAX) + 1 }),
+        ),
+    ] {
+        assert!(!validator.is_valid(&refused), "{refused}");
+    }
+    let held = serde_json::json!({ "max_attempts": u32::MAX });
+    assert!(validator.is_valid(&changed("retry", held)));
 }
