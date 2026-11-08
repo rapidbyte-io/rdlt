@@ -241,6 +241,11 @@ impl Host {
             .map_err(|error| Error::placement(role, error))
     }
 
+    /// How long building a pipeline waits for each thing it asks of something else.
+    pub(crate) fn wait(&self) -> Duration {
+        self.build_wait
+    }
+
     /// The registry a pipeline is placed by: the compiled-in connectors, then remote and local
     /// placement as this host allows them.
     pub(crate) fn provider(&self) -> Registry {

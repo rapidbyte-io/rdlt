@@ -281,6 +281,21 @@ async fn a_destination_refusing_its_configuration_fails_the_build_as_the_destina
 /// runs in a process of its own, so the test that sets this reaches no other.
 static GROWN: AtomicBool = AtomicBool::new(false);
 
+/// Whether a [`Cataloged`] source given up while connecting let go of what it held.
+static RELEASED: AtomicBool = AtomicBool::new(false);
+
+/// What a [`Cataloged`] source holds while it connects.
+struct Held;
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        RELEASED.store(true, Ordering::SeqCst);
+    }
+}
+
+/// What a [`Cataloged`] source's configuration lists to have it never finish connecting.
+const NEVER_CONNECTS: &str = "never connects";
+
 /// What a [`Cataloged`] source's configuration lists to have it never answer.
 const STALLS: &str = "stalls";
 
@@ -295,6 +310,10 @@ impl SourceConnector for Cataloged {
     type Config = Vec<Vec<String>>;
 
     async fn connect(streams: Vec<Vec<String>>, _: &ConnectContext) -> connector::Result<Self> {
+        if streams.iter().flatten().any(|part| part == NEVER_CONNECTS) {
+            let _held = Held;
+            std::future::pending::<()>().await;
+        }
         Ok(Self(streams))
     }
 
@@ -373,6 +392,32 @@ async fn a_reset_refuses_a_planned_name_another_stream_of_the_catalog_has_come_t
         refused.to_string().contains("the source's catalog"),
         "{refused}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_source_that_never_connects_fails_the_build_at_the_host_s_wait_and_is_let_go() {
+    let source =
+        Side::new(Connector::new(Cataloged::ID)).config(serde_json::json!([[NEVER_CONNECTS]]));
+    let destination = Side::new(Connector::new("io.rapidbyte.memory"))
+        .config(serde_json::json!({ "store": "facade-unconnected" }));
+    let wait = Duration::from_secs(90);
+    let host = memory_host().source::<Cataloged>().build_wait(wait);
+    let building = Pipeline::builder("unconnected", source, destination)
+        .stream(Stream::new("users"))
+        .build(&host);
+    let began = tokio::time::Instant::now();
+    let built = tokio::time::timeout(Duration::from_hours(1), building).await;
+    let refused = built
+        .expect("bounded by the host's wait")
+        .expect_err("refused");
+    assert_eq!(began.elapsed(), wait);
+    assert_eq!(refused.code().map(Code::as_str), Some("deadline_exceeded"));
+    assert_eq!(
+        (refused.kind(), refused.origin()),
+        (ErrorKind::Source, Origin::Engine)
+    );
+    assert!(refused.is_retryable());
+    assert!(RELEASED.load(Ordering::SeqCst), "what it held was dropped");
 }
 
 #[tokio::test(start_paused = true)]
