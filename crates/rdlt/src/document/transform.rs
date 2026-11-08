@@ -199,6 +199,11 @@ impl fmt::Debug for MaskStep {
     }
 }
 
+/// What a mask's key written out is told: a document holds a secret reference, never the key.
+pub(crate) const KEY_WRITTEN_OUT: &str = "a mask's key is a secret reference, ${env:NAME}, \
+     ${file:/path} or ${secret:name}, never the key itself: keep the key where the host resolves \
+     secrets";
+
 /// Writes a mask's `key`, which a document holds only as a secret reference: a key written out
 /// is refused, never written.
 #[expect(
@@ -207,10 +212,7 @@ impl fmt::Debug for MaskStep {
 )]
 fn referred<S: Serializer>(key: &Option<String>, serializer: S) -> Result<S::Ok, S::Error> {
     match key.as_deref() {
-        Some(key) if !refers_to_secret(key) => Err(ser::Error::custom(
-            "a mask's key is written out: a document holds a secret reference, ${env:NAME}, \
-             ${file:/path} or ${secret:name}, never the key itself",
-        )),
+        Some(key) if !refers_to_secret(key) => Err(ser::Error::custom(KEY_WRITTEN_OUT)),
         key => key.serialize(serializer),
     }
 }

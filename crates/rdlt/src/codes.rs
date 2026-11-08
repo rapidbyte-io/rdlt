@@ -17,6 +17,8 @@ pub const DOCUMENT_SYNTAX: Code = Code::new("document_syntax");
 pub const DOCUMENT_MISSING_KEY: Code = Code::new("document_missing_key");
 /// A key is given twice in one mapping.
 pub const DOCUMENT_DUPLICATE_KEY: Code = Code::new("document_duplicate_key");
+/// The document's file cannot be read.
+pub const DOCUMENT_UNREADABLE: Code = Code::new("document_unreadable");
 /// A value of the document is of the wrong kind, or names no choice.
 pub const DOCUMENT_INVALID: Code = Code::new("document_invalid");
 /// A key of the document is not one its place takes.

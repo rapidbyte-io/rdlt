@@ -24,7 +24,7 @@ use tokio::sync::OnceCell;
 #[cfg(feature = "remote")]
 pub use tls::Tls;
 
-use crate::document::refers_to_secret;
+use crate::document::{KEY_WRITTEN_OUT, refers_to_secret};
 use crate::limits::BUILD_WAIT;
 use crate::{Connector, Error, Side, codes};
 
@@ -274,10 +274,7 @@ impl Host {
     /// the secret. A store that does not answer within the host's wait fails retryably.
     pub(crate) async fn key(&self, text: &str) -> Result<Secret<String>, Error> {
         if !refers_to_secret(text) {
-            let message = "a mask's key is a secret reference, ${env:NAME}, ${file:/path} or \
-                           ${secret:name}, never the key itself: keep the key where the host \
-                           resolves secrets";
-            return Err(Error::config(codes::MASK_KEY_LITERAL, message));
+            return Err(Error::config(codes::MASK_KEY_LITERAL, KEY_WRITTEN_OUT));
         }
         let held = Config::from(&serde_json::json!({ "key": text }));
         // Nothing shows a mask key, so no text needs the key scrubbed from it.

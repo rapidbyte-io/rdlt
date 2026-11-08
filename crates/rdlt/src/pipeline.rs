@@ -7,7 +7,7 @@ mod tests;
 pub use selector::StreamSelector;
 
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -202,6 +202,32 @@ impl Pipeline {
         PipelineBuilder {
             document: Document::new(name, source, destination),
         }
+    }
+
+    /// The pipeline the document at `path` describes.
+    ///
+    /// ```no_run
+    /// # async fn example(host: &rdlt::Host) -> Result<(), rdlt::Error> {
+    /// let pipeline = rdlt::Pipeline::from_path("orders.yaml")?.build(host).await?;
+    /// # drop(pipeline);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// As [`Document::from_path`].
+    pub fn from_path(path: impl AsRef<Path>) -> Result<PipelineBuilder, Error> {
+        Document::from_path(path).map(Self::from_document)
+    }
+
+    /// The pipeline the document `text` describes, its errors starting with `origin`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Document::from_text`].
+    pub fn from_text(text: &str, origin: &str) -> Result<PipelineBuilder, Error> {
+        Document::from_text(text, origin).map(Self::from_document)
     }
 
     /// The pipeline `document` describes.
