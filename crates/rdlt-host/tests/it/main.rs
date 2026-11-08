@@ -39,6 +39,7 @@ mod soak;
 mod staging;
 mod started;
 mod support;
+mod traced;
 mod transport;
 mod wires;
 
