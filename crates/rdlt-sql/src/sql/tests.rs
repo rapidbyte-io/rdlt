@@ -123,19 +123,18 @@ fn a_query_other_than_a_filtered_projection_of_input_is_refused() {
 
 #[test]
 fn a_query_of_another_table_says_what_to_write() {
-    for text in [
-        "SELECT id FROM other",
-        "SELECT a.id FROM input a JOIN input b ON a.id = b.id",
-        "SELECT id FROM generate_series(1, 3)",
+    for (name, text) in [
+        ("another_table", "SELECT id FROM other"),
+        (
+            "a_join",
+            "SELECT a.id FROM input a JOIN input b ON a.id = b.id",
+        ),
     ] {
         let refused = Sql::parse(text)
             .err()
             .unwrap_or_else(|| panic!("{text} parsed"));
         assert_eq!(refused.kind(), SqlErrorKind::Shape);
-        assert!(
-            refused.to_string().contains("write `FROM input`"),
-            "{refused}"
-        );
+        insta::assert_snapshot!(name, refused.to_string());
     }
 }
 

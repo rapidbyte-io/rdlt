@@ -32,6 +32,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 datafusion.workspace = true
+insta.workspace = true
 proptest.workspace = true
 rdlt-certify.workspace = true
 rdlt-connector-reference.workspace = true
