@@ -15,6 +15,10 @@ use rdlt_sql::Sql;
 use crate::composed;
 use crate::queries::{EXPRESSIONS, PREDICATES, batches, query};
 
+/// What DataFusion says of a `concat` its constant folding emptied: the plan as written runs, and
+/// a SQL transform, which folds nothing, runs it.
+const EMPTIED_CONCAT: &str = "concat does not support zero arguments";
+
 /// `batches`' rows as a table prints them, or how many there are where there are none.
 fn shown(batches: &[RecordBatch]) -> String {
     let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
@@ -175,6 +179,27 @@ async fn per_batch_evaluation_gives_what_datafusions_executor_gives() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_concat_datafusion_folds_to_no_arguments_gives_what_the_query_folded_by_hand_gives() {
+    let text = "SELECT n, replace(concat('', CASE WHEN TRUE THEN '' ELSE t END), 'a', 'xy') AS y, \
+                strpos(coalesce(t, right(t, 1)), 'a') AS z FROM input";
+    let folded = "SELECT n, '' AS y, strpos(coalesce(t, right(t, 1)), 'a') AS z FROM input";
+    for seed in 0..u64::from(rdlt_testkit::cases(12)) {
+        let batch = rdlt_testkit::draw::draw(&composed::batch(), seed);
+        let context = session(&batch);
+        let refused = executed(&context, text).await;
+        let refused = refused.expect_err("DataFusion folds the call empty");
+        assert!(refused.contains(EMPTIED_CONCAT), "{refused}");
+        let (expected, _) = executed(&context, folded)
+            .await
+            .expect("the query as folded runs");
+        for parts in cuts(&batch) {
+            let ours = evaluated(&parts, text).expect("the query as written runs");
+            assert_eq!(ours.shown, expected, "seed {seed}, {} parts", parts.len());
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(96)))]
 
@@ -188,6 +213,7 @@ proptest! {
             .expect("a runtime starts");
         let context = session(&batch);
         let expected = runtime.block_on(executed(&context, &text));
+        prop_assume!(!matches!(&expected, Err(error) if error.contains(EMPTIED_CONCAT)));
         for parts in cuts(&batch) {
             let cut = parts.len();
             match (evaluated(&parts, &text), &expected) {
