@@ -326,6 +326,17 @@ not block, panic or call into the run, so it hands each event on, to a channel f
 - Cargo applies only the root package's profiles, so a binary that wants the measured
   [performance](#performance) sets `lto = "fat"` and `codegen-units = 1` in its own
   `[profile.release]`.
+- A binary that uses `rdlt-sql` builds sqlparser optimised in its dev profile too, as releases
+  build it and as this workspace's dev profile does:
+
+  ```toml
+  [profile.dev.package.sqlparser]
+  opt-level = 3
+  ```
+
+  A query's text is parsed on a stack sized for an optimised parser, 4 KiB a byte of it.
+  Unoptimised, a nested type takes all of that, and a nest of 1 KiB outgrows it and ends the
+  process.
 - The quick start's `#[tokio::main]` starts a worker per core. `rdlt-engine`'s crate documentation
   builds its tokio runtime with `Cores::try_from_host()?.runtime_workers().get()` workers instead.
   That is half the cores, rounded down, and at least two on a machine with two or more, since more

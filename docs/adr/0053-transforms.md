@@ -135,8 +135,10 @@ determinism under simulation whatever the configuration says.
     against one table with the batch's schema. sqlparser reads such a keyword, where its own
     syntax fails, again as a function's name, so text failing inside a nest of them is read
     twice a level, time exponential in the nest: 22 nested `CAST`s broken at the innermost took
-    five seconds. The 19 keywords that do so are read as their own syntax alone, a name only
-    quoted, and a test nests every keyword sqlparser knows to hold every parse to linear time. A
+    five seconds. The 18 keywords that do so are read as their own syntax alone, a name only
+    quoted. `POSITION(` is read as a call alone, which sqlparser tries as `POSITION(a IN b)`
+    first and then as a call, and `position` stays a name unquoted. A test nests every keyword
+    sqlparser knows and holds every parse within its budget. A
     type that holds other types is read first as a typed string's and again as its own syntax, a
     call or a comparison, and can hold expressions, so where an operand stands one is refused at
     once, as shape refuses it anyway. `INTERVAL` is read as a typed string's type, its operand
