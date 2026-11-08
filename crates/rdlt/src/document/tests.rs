@@ -1240,3 +1240,28 @@ fn the_schema_refuses_what_the_reader_refuses_of_a_key_or_a_number() {
     let held = serde_json::json!({ "max_attempts": u32::MAX });
     assert!(validator.is_valid(&changed("retry", held)));
 }
+
+/// A document's indentation can outgrow what the reader takes: a compact document nested deep
+/// around many short entries reads, and its YAML would not.
+#[test]
+fn a_document_whose_yaml_would_not_read_back_is_refused_at_writing() {
+    let entries: serde_json::Map<String, serde_json::Value> = (0..18_000)
+        .map(|index| (format!("k{index:05}"), serde_json::json!(1)))
+        .collect();
+    let mut config = serde_json::Value::Object(entries);
+    for _ in 0..27 {
+        config = serde_json::json!({ "a": config });
+    }
+    let source = Side::new(Connector::new("a.b")).config(config);
+    let mut document = Document::new("p", source, Side::new(Connector::new("c.d")));
+    document.streams = vec![Stream::new("s")];
+    let compact = serde_json::to_string(&document).expect("a document writes");
+    let read = Document::parse(&compact).expect("the compact document reads");
+    let refused = read
+        .to_yaml()
+        .expect_err("its YAML would be past the limit");
+    assert_eq!(
+        refused.code().map(rdlt_engine::Code::as_str),
+        Some("document_too_large")
+    );
+}
