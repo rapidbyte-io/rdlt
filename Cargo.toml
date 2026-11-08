@@ -129,6 +129,33 @@ sha2 = { version = "0.10.9", default-features = false, features = [
   "std",
 ] } # the digest of a connector's binary, and of a tool's package lockfile
 hmac = "0.12.1" # the keyed digest a mask hashes each value with, over sha2's
+opentelemetry = { version = "0.33.1", default-features = false, features = [
+  "trace",
+  "metrics",
+  "internal-logs",
+] } # the facade's OTLP export: the API its spans and metrics go through
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = [
+  "trace",
+  "metrics",
+  "internal-logs",
+] } # the facade's OTLP export: providers, batching and readers
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = [
+  "grpc-tonic",
+  "trace",
+  "metrics",
+  "tls-aws-lc",
+  "tls-roots",
+  "internal-logs",
+] } # the facade's OTLP export over gRPC, on the workspace's tonic and AWS-LC, verifying a collector against the system's roots, and logging a failed export
+tracing-opentelemetry = { version = "0.34.0", default-features = false } # the facade's spans as OpenTelemetry spans
+tracing-subscriber = { version = "0.3.23", default-features = false, features = [
+  "fmt",
+  "env-filter",
+  "registry",
+  "std",
+  "ansi",
+] } # the facade's and the CLI's subscriber: filtered by RUST_LOG, to stderr
+metrics-exporter-opentelemetry = "0.2.2" # the facade's `metrics` recorded as OpenTelemetry metrics
 metrics = "0.24.6" # the facade's counters, histograms and gauges of a run, for whichever recorder an embedder installs
 metrics-util = { version = "0.20.4", default-features = false, features = [
   "debugging",

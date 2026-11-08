@@ -43,6 +43,7 @@
 //!   directories, in the sandbox unless the host trusts their binaries.
 //! - `remote`: connectors reached over mutual TLS, as `Host::remote` and `Tls` set up.
 //! - `sql`: SQL transforms, planned by `rdlt-sql`.
+//! - `otel`: [`telemetry::otlp`], which exports traces and metrics to a collector.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -57,6 +58,8 @@ mod lower;
 mod metrics;
 mod pipeline;
 mod run;
+#[cfg(feature = "otel")]
+pub mod telemetry;
 
 pub use arrow;
 pub use document::{

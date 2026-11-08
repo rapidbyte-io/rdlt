@@ -15,10 +15,23 @@ local = []
 remote = []
 # SQL transforms, planned by rdlt-sql.
 sql = ["dep:rdlt-sql"]
+# Export of traces and metrics over OTLP, set by the OTEL_* variables.
+otel = [
+  "dep:opentelemetry",
+  "dep:opentelemetry_sdk",
+  "dep:opentelemetry-otlp",
+  "dep:tracing-opentelemetry",
+  "dep:tracing-subscriber",
+  "dep:metrics-exporter-opentelemetry",
+]
 
 [dependencies]
 arrow.workspace = true
 metrics.workspace = true
+metrics-exporter-opentelemetry = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
 rdlt-connector.workspace = true
 rdlt-engine.workspace = true
 rdlt-host.workspace = true
@@ -34,6 +47,9 @@ strsim.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tokio-stream = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+tracing-opentelemetry = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 wildmatch.workspace = true
 
 [dev-dependencies]
