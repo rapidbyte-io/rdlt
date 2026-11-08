@@ -79,8 +79,9 @@ determinism under simulation whatever the configuration says.
   the bytes it keeps, so no transform could declare a bound on computing from one.
   - The stage decodes a transformed stream's dictionary and run-end encoded columns before its
     first transform, with lowering's decoder, and asks for the room the decoded rows take, as
-    lowering measures a decode, before it does. Lowering decodes them anyway, so the work moves
-    earlier rather than grows.
+    lowering measures a decode, before it does. Decoded text keeps 32-bit offsets, as its
+    values do, so a part an encoded column of which would decode beyond 2 GiB is cut as a part
+    over its room is. Lowering decodes them anyway, so the work moves earlier rather than grows.
   - Transforms, ops and SQL alike, then see every column flat: a filter on a categorical or a
     Parquet dictionary string is computed like any other. A stage that only includes columns
     decodes nothing and shares every array.

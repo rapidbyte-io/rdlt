@@ -222,7 +222,8 @@ impl Stage {
     }
 
     /// `batch`, of the chain's input schema, through the stage, its transforms holding at most
-    /// `free` bytes beyond it: a part whose bound passes what is left is cut in halves first.
+    /// `free` bytes beyond it: a part whose bound passes what is left, or an encoded column of
+    /// which would decode beyond [`decoding::OFFSETS`], is cut in halves first.
     ///
     /// A batch of no rows leaves one of no rows, of the stage's output schema; a batch whose rows
     /// a filter drops every one of leaves none.
@@ -292,9 +293,12 @@ impl Stage {
         let (mut data, mut changes) = changes::split(part, chain)?;
         let mut held = changes.as_ref().map_or(0, |changes| changes.beyond(part));
         if !chain.encoded.is_empty() {
-            let room = decoding::room(&data, &chain.encoded, free.saturating_sub(held))?;
+            let (room, beyond) = decoding::room(&data, &chain.encoded, free.saturating_sub(held))?;
             if held.saturating_add(room) > free {
                 return too_large(None, part, held.saturating_add(room), free);
+            }
+            if let Some(widest) = beyond {
+                return too_large(None, part, widest, decoding::OFFSETS);
             }
             data = decoding::decode(&data, &chain.encoded, &chain.schemas[0])?;
             held = room::held(part, &data, changes.as_ref());

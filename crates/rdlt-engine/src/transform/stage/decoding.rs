@@ -56,14 +56,27 @@ pub(super) fn decoded_schema(arrived: &SchemaRef) -> Result<(SchemaRef, Encoded)
     Ok((Arc::new(schema), Encoded { places, arrays }))
 }
 
+/// Bytes a column decoded may take: lowering's decoder keeps a dictionary's or a run-end
+/// encoding's text in an array of its values' own type, whose 32-bit offsets name no more than
+/// 2 GiB less a byte.
+pub(super) const OFFSETS: u64 = 0x7fff_ffff;
+
 /// Bytes: what decoding `data`'s encoded columns takes, as lowering measures a decode, no
-/// further than `limit`.
-pub(super) fn room(data: &RecordBatch, encoded: &Encoded, limit: u64) -> Result<u64, Refusal> {
-    let columns = data
-        .project(&encoded.places)
-        .map_err(|error| failed(&error))?;
-    let measured = Rendering::native().expanded(&columns, 0..data.num_rows(), limit);
-    Ok(measured.saturating_add(encoded.arrays))
+/// further than `limit`, and what the widest of them takes where that is beyond [`OFFSETS`].
+pub(super) fn room(
+    data: &RecordBatch,
+    encoded: &Encoded,
+    limit: u64,
+) -> Result<(u64, Option<u64>), Refusal> {
+    let mut room = encoded.arrays;
+    let mut widest = 0;
+    for place in &encoded.places {
+        let column = data.project(&[*place]).map_err(|error| failed(&error))?;
+        let measured = Rendering::native().expanded(&column, 0..data.num_rows(), limit);
+        room = room.saturating_add(measured);
+        widest = widest.max(measured);
+    }
+    Ok((room, (widest > OFFSETS).then_some(widest)))
 }
 
 /// `data` with its encoded columns decoded, as `schema` says they decode.
