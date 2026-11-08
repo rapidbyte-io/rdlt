@@ -111,19 +111,33 @@ impl Error {
     ///
     /// A connector that could not be started or reached fails its side; one that refused its
     /// configuration, credentials or capabilities as it connected, and every placement the host
-    /// refused, is a configuration error.
+    /// refused, is a configuration error. A connector's answer to its handshake keeps whether
+    /// to try again and its own code.
     pub(crate) fn placement(role: Role, error: ProviderError) -> Self {
         let (origin, failed) = side(role);
-        let kind = match &error {
+        let (kind, answer) = match &error {
             ProviderError::SpawnFailed { .. }
             | ProviderError::Unreachable { .. }
-            | ProviderError::Tls { .. } => failed,
-            ProviderError::HandshakeFailed { source, .. } => classed(source.kind(), failed),
-            _ => ErrorKind::Config,
+            | ProviderError::Tls { .. } => (failed, None),
+            ProviderError::HandshakeFailed { source, .. } => {
+                (classed(source.kind(), failed), Some(source))
+            }
+            _ => (ErrorKind::Config, None),
         };
-        let message = format!("placing the {}: {error}", noun(role));
-        let code = Code::new(error.code());
-        Self::built(kind, origin, code, message, Some(Box::new(error)))
+        let retryable = answer.is_some_and(|source| source.is_retryable());
+        let connector_code = answer
+            .and_then(|source| source.code())
+            .map(|code| text::shown(code, MAX_ERROR_CODE_BYTES));
+        Self(Box::new(Inner::Built(Built {
+            kind,
+            origin,
+            code: Some(Code::new(error.code())),
+            connector_code,
+            stream: None,
+            message: format!("placing the {}: {error}", noun(role)),
+            retryable,
+            source: Some(Box::new(error)),
+        })))
     }
 
     /// A placement of the connector of `role` its host refuses: the connector `says` what.
