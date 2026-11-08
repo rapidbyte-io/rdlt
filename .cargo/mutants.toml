@@ -63,6 +63,10 @@ all_features = true
 # is one that joins a byte to the bits of base 32 held before it, shifted left eight bits first, or
 # a count to a process's id in a staging's token, shifted above it.
 #
+# DataFusion reads the names of a context's functions only to suggest one for a function it does not
+# know, and the planner of a SQL transform meets none: the text is admitted only calling listed
+# functions, and a planning refusal never quotes a name, so a mutant of the names finds the same.
+#
 # The facade's refusal of a SQL transform is built only without its `sql` feature, which a
 # mutant's build never lacks, so a mutant of it is the code as it is there; `just test` tests it.
 exclude_re = [
@@ -100,6 +104,7 @@ exclude_re = [
   "crates/rdlt-host/src/secrets/resolve/file\\.rs:.*replace \\| with \\^ in read_private$",
   "crates/rdlt-host/src/secrets/resolve\\.rs:.*replace SecretResolver::directories -> Vec<PathBuf> with vec!\\[\\]$",
   "crates/rdlt-sql/src/dialect\\.rs:.*replace <impl Dialect for Guarded>::(supports|support|allow)_([^f]\\w*|filter_during_aggregation) -> bool with true$",
+  "crates/rdlt-sql/src/provider\\.rs:.*replace <impl ContextProvider for Provider>::(udf_names|higher_order_function_names|udaf_names|udwf_names) -> Vec<String> with ",
   "crates/rdlt/src/lower\\.rs:.*replace \\| with \\^ in digest_of$",
   "crates/rdlt/src/lower/transforms\\.rs:.*replace sql_refused -> Result<Step, Error> with ",
 ]

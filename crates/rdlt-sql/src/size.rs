@@ -13,6 +13,9 @@ use rdlt_engine::{Bound, TransformError};
 use crate::functions::{ARRAY, Call, TEXT, TEXT_ARRAY, listed};
 use crate::stack;
 
+#[cfg(test)]
+mod tests;
+
 /// Builders that grow by doubling hold up to twice what they keep.
 const SLACK: u64 = 2;
 

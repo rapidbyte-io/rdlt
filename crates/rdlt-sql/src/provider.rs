@@ -13,6 +13,9 @@ use datafusion_functions::unicode::planner::UnicodeFunctionPlanner;
 
 use crate::functions::{LISTED, listed};
 
+#[cfg(test)]
+mod tests;
+
 /// The options every plan is made and evaluated under: identifiers as written, text as `Utf8`,
 /// and time in UTC.
 ///

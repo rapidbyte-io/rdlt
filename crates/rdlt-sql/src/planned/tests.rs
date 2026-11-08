@@ -3,8 +3,9 @@ use std::sync::Arc;
 use arrow_array::cast::AsArray as _;
 use arrow_array::types::{Int32Type, Int64Type};
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, Date64Array, Decimal256Array, DictionaryArray, Int32Array,
-    Int64Array, NullArray, RecordBatch, RunArray, StringArray,
+    Array, ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Date64Array, Decimal256Array,
+    DictionaryArray, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray, NullArray,
+    RecordBatch, RunArray, StringArray, StringViewArray,
 };
 use arrow_buffer::i256;
 use arrow_schema::{DataType, Field, Schema};
@@ -14,7 +15,9 @@ use datafusion_sql::sqlparser::dialect::GenericDialect;
 use datafusion_sql::sqlparser::parser::Parser;
 use rdlt_engine::{Bound, NAMED_COLUMNS, Transform, allocated_beyond};
 
+use super::compact::compacted;
 use super::{logical, within};
+use crate::functions::{ARRAY, TEXT, TEXT_ARRAY};
 use crate::{SQL_DEPTH, Sql, SqlErrorKind, depth};
 
 fn people() -> RecordBatch {
@@ -314,6 +317,74 @@ fn a_failure_names_its_column_and_function_and_never_a_value() {
     assert_eq!(failed.column(), Some("n"));
     for value in ["A@X", "b@y", "C@z"] {
         assert!(!failed.to_string().contains(value), "{failed}");
+    }
+    assert_eq!(
+        failed.to_string(),
+        "column n: evaluating the expression failed"
+    );
+    let wrapped =
+        RecordBatch::try_from_iter([("n", Arc::new(Int64Array::from(vec![i64::MIN])) as ArrayRef)])
+            .unwrap();
+    let sql = Sql::parse("SELECT abs(n) AS a FROM input").unwrap();
+    let failed = sql.apply(wrapped).unwrap_err();
+    assert_eq!(failed.to_string(), "column a: evaluating abs failed");
+}
+
+#[test]
+fn a_bound_is_what_the_types_it_outputs_take() {
+    let bound = |column: DataType, query: &str| {
+        let schema = Schema::new(vec![Field::new("c", column, true)]);
+        Sql::parse(query).unwrap().bound(&schema)
+    };
+    // An output and its builder's slack, twice what the output takes.
+    let twice = |bound: Bound| bound.times(2);
+    // A negation takes a row of its type: the value and its validity.
+    let negated = bound(DataType::Int64, "SELECT -c AS x FROM input");
+    assert_eq!(negated, Some(twice(Bound::new(ARRAY).with_rows(9))));
+    // A cast to text takes the most text a value of its type has, beside a row of text.
+    let text = |longest: u64| Bound::new(TEXT_ARRAY).with_rows(TEXT + longest);
+    let cast = "SELECT CAST(c AS VARCHAR) AS x FROM input";
+    for (column, longest) in [
+        (DataType::Boolean, 5),
+        (DataType::Int32, 20),
+        (DataType::Float32, 32),
+        (DataType::Date64, 32),
+        (DataType::Null, 0),
+        (DataType::Decimal128(10, -3), 16),
+        (DataType::Decimal128(10, 4), 17),
+        (
+            DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, None),
+            48,
+        ),
+        (DataType::Time32(arrow_schema::TimeUnit::Second), 48),
+        (DataType::Time64(arrow_schema::TimeUnit::Nanosecond), 48),
+    ] {
+        let shown = format!("{column}");
+        assert_eq!(bound(column, cast), Some(twice(text(longest))), "{shown}");
+    }
+}
+
+#[test]
+fn text_cut_from_a_larger_buffer_is_copied_and_text_held_whole_is_not() {
+    let long = ["a value longer than a view holds inline"; 4];
+    let arrays: [ArrayRef; 6] = [
+        Arc::new(StringViewArray::from_iter_values(long)),
+        Arc::new(BinaryViewArray::from_iter_values(long.map(str::as_bytes))),
+        Arc::new(StringArray::from_iter_values(long)),
+        Arc::new(LargeStringArray::from_iter_values(long)),
+        Arc::new(BinaryArray::from_iter_values(long.map(str::as_bytes))),
+        Arc::new(LargeBinaryArray::from_iter_values(long.map(str::as_bytes))),
+    ];
+    for whole in arrays {
+        assert!(
+            compacted(&whole).unwrap().is_none(),
+            "{}",
+            whole.data_type()
+        );
+        let cut = whole.slice(1, 1);
+        let copied = compacted(&cut).unwrap().unwrap();
+        assert_eq!(copied.len(), 1);
+        assert!(copied.get_array_memory_size() < cut.get_array_memory_size());
     }
 }
 

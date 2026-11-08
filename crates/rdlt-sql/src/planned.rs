@@ -25,7 +25,7 @@ use datafusion_expr::{Expr, LogicalPlan};
 use datafusion_optimizer::analyzer::AnalyzerRule as _;
 use datafusion_optimizer::analyzer::type_coercion::TypeCoercion;
 use datafusion_physical_expr::{PhysicalExpr, create_physical_expr};
-use datafusion_sql::planner::{ParserOptions, SqlToRel};
+use datafusion_sql::planner::SqlToRel;
 use datafusion_sql::sqlparser::ast::Statement;
 use rdlt_connector::META_PREFIX;
 use rdlt_engine::{Bound, NAMED_COLUMNS, TransformError};
@@ -286,12 +286,7 @@ pub(crate) fn analyzed(
     input: &SchemaRef,
 ) -> Result<LogicalPlan, TransformError> {
     let provider = Provider::new(Arc::clone(input));
-    let options = ParserOptions {
-        enable_ident_normalization: false,
-        map_string_types_to_utf8view: false,
-        ..ParserOptions::new()
-    };
-    let planner = SqlToRel::new_with_options(&provider, options);
+    let planner = SqlToRel::new(&provider);
     let plan = planner
         .sql_statement_to_plan(statement.clone())
         .map_err(|error| planning(&error))?;
@@ -304,7 +299,7 @@ pub(crate) fn analyzed(
 /// optional filter over all of `input`, perhaps under another name.
 fn logical(plan: &LogicalPlan) -> Result<Logical<'_>, TransformError> {
     let LogicalPlan::Projection(projection) = plan else {
-        return Err(node(plan));
+        return Err(node());
     };
     let (predicate, scanned) = match projection.input.as_ref() {
         LogicalPlan::Filter(filter) => (Some(&filter.predicate), filter.input.as_ref()),
@@ -315,11 +310,11 @@ fn logical(plan: &LogicalPlan) -> Result<Logical<'_>, TransformError> {
         other => other,
     };
     let LogicalPlan::TableScan(scan) = scanned else {
-        return Err(node(scanned));
+        return Err(node());
     };
     let whole = scan.projection.is_none() && scan.filters.is_empty() && scan.fetch.is_none();
     if scan.table_name.table() != "input" || !whole {
-        return Err(node(scanned));
+        return Err(node());
     }
     Ok(Logical {
         projection,
@@ -379,21 +374,9 @@ fn named(error: TransformError, column: &str) -> TransformError {
     }
 }
 
-/// The refusal of a plan node a SQL transform may not hold.
-fn node(plan: &LogicalPlan) -> TransformError {
-    let what = match plan {
-        LogicalPlan::Aggregate(_) => "an aggregate",
-        LogicalPlan::Sort(_) => "a sort",
-        LogicalPlan::Join(_) => "a join",
-        LogicalPlan::Window(_) => "a window",
-        LogicalPlan::Limit(_) => "a limit",
-        LogicalPlan::Distinct(_) => "a distinct",
-        LogicalPlan::Union(_) => "a union",
-        LogicalPlan::Subquery(_) => "a subquery",
-        LogicalPlan::Unnest(_) => "an unnest",
-        _ => "a plan node",
-    };
-    TransformError::new(format!("{what} is not a projection of input"))
+/// The refusal of a plan that is not a projection of `input` alone.
+fn node() -> TransformError {
+    TransformError::new("the plan is not a projection of input")
 }
 
 /// A planner's `error`, as a refusal naming the column it is about and never its text, which
