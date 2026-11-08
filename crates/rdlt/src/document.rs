@@ -1,5 +1,7 @@
 //! A pipeline's document: one model, which a builder builds and a file holds.
 
+mod fault;
+mod hostile;
 mod modes;
 mod policies;
 mod read;
@@ -13,6 +15,8 @@ mod until;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::Error;
 
 pub use modes::{
     DeleteMode, Hint, Nested, OnTruncate, OnUnsupported, ReadMode, RetentionLoss, SchemaPolicy,
@@ -109,6 +113,30 @@ impl Document {
             retry: None,
             until: Until::default(),
         }
+    }
+
+    /// The document `text` holds, YAML or JSON, read as hostile input: at most
+    /// [`DOCUMENT_BYTES`](crate::limits::DOCUMENT_BYTES), nesting and nodes bounded, and no
+    /// anchor, alias, tag, merge key, repeated key or second document.
+    ///
+    /// # Errors
+    ///
+    /// A `Config` error coded `document_*`, placed at `line:col` and named by its key path; it
+    /// never quotes a value.
+    ///
+    /// ```
+    /// let document = rdlt::Document::parse(
+    ///     "version: 1\n\
+    ///      pipeline: users\n\
+    ///      source: { connector: io.rapidbyte.memory }\n\
+    ///      destination: { connector: io.rapidbyte.memory }\n\
+    ///      streams: [{ name: users }]\n",
+    /// )?;
+    /// assert_eq!(document.pipeline, "users");
+    /// # Ok::<(), rdlt::Error>(())
+    /// ```
+    pub fn parse(text: &str) -> Result<Self, Error> {
+        hostile::read(text).map_err(|fault| Error::config(fault.code(), fault.render(None)))
     }
 
     /// The JSON Schema every document satisfies, for editors and tools that check one.

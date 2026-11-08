@@ -11,3 +11,18 @@ pub const EVENT_BUFFER: usize = 4_096;
 
 /// Events: the most a run keeps for its subscribers, however many a pipeline asks for.
 pub const EVENT_BUFFER_MAX: usize = 65_536;
+
+/// Bytes: the largest document read.
+pub const DOCUMENT_BYTES: usize = 1_048_576;
+
+/// Levels: how deep a document's mappings and lists may nest.
+pub const DOCUMENT_DEPTH: usize = 32;
+
+/// Nodes: the most mappings, lists and scalars a document may hold.
+pub const DOCUMENT_NODES: usize = 100_000;
+
+/// Bytes: how much of the name of a document's origin its errors show.
+pub(crate) const ORIGIN_BYTES: usize = 1_024;
+
+/// Bytes: how much of a key path a document's error shows.
+pub(crate) const PATH_BYTES: usize = 256;

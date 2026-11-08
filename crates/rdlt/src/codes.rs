@@ -5,6 +5,14 @@
 
 use rdlt_engine::Code;
 
+/// The document is larger than [`DOCUMENT_BYTES`](crate::limits::DOCUMENT_BYTES).
+pub const DOCUMENT_TOO_LARGE: Code = Code::new("document_too_large");
+/// The document nests deeper, or holds more nodes, than its limits.
+pub const DOCUMENT_TOO_DEEP: Code = Code::new("document_too_deep");
+/// The document holds an anchor, an alias, a tag, a merge key or a second document.
+pub const DOCUMENT_REFUSED: Code = Code::new("document_refused");
+/// The document is not YAML or JSON.
+pub const DOCUMENT_SYNTAX: Code = Code::new("document_syntax");
 /// A value of the document is of the wrong kind, or names no choice.
 pub const DOCUMENT_INVALID: Code = Code::new("document_invalid");
 /// A key of the document is not one its place takes.
