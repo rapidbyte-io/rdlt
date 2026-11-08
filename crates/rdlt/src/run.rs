@@ -8,12 +8,13 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime};
 
 use rdlt_engine::{
-    ComputePool, Env, Event, Report, RunControl, RunHandle, RunOutcome, RunStatus, Sleep, Status,
-    StopMode, SystemEnv,
+    ComputePool, Env, Event, EventKind, Report, RunControl, RunHandle, RunOutcome, RunStatus,
+    Sleep, Status, StopMode, SystemEnv,
 };
 use tokio::sync::broadcast;
 
@@ -40,16 +41,29 @@ use crate::{Error, Events};
 pub struct Run {
     handle: RunHandle,
     events: broadcast::Sender<Event>,
+    ended: Arc<AtomicBool>,
 }
 
 impl Run {
-    pub(crate) fn new(handle: RunHandle, events: broadcast::Sender<Event>) -> Self {
-        Self { handle, events }
+    pub(crate) fn new(
+        handle: RunHandle,
+        events: broadcast::Sender<Event>,
+        ended: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            handle,
+            events,
+            ended,
+        }
     }
 
-    /// A new subscriber of the run's events, from the next one on.
+    /// A new subscriber of the run's events, from the next one on; of a run that has ended, one
+    /// that reads what is left and ends, however long the run is kept.
     pub fn events(&self) -> Events {
-        Events::new(self.events.subscribe())
+        // Subscribed before asking, as the end is marked before it is told: a subscriber misses
+        // being told of the end only where it finds it marked.
+        let receiver = self.events.subscribe();
+        Events::new(receiver, self.ended.load(Ordering::SeqCst))
     }
 
     /// What the run is doing now, and its report so far; it never waits.
@@ -126,6 +140,7 @@ impl Outcome {
 pub(crate) struct Observed {
     pub(crate) base: Arc<SystemEnv>,
     pub(crate) events: broadcast::Sender<Event>,
+    pub(crate) ended: Arc<AtomicBool>,
 }
 
 impl Env for Observed {
@@ -154,6 +169,9 @@ impl Env for Observed {
     }
 
     fn observe(&self, event: &Event) {
+        if matches!(event.kind, EventKind::RunEnded { .. }) {
+            self.ended.store(true, Ordering::SeqCst);
+        }
         // A run with no subscriber left is no failure of the run.
         self.events.send(event.clone()).ok();
     }

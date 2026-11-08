@@ -9,6 +9,7 @@ pub use selector::StreamSelector;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use rdlt_connector::{Catalog, Destination, Role, Source, StreamName};
@@ -225,13 +226,19 @@ impl Pipeline {
     /// runs begun before it.
     pub fn start(&self) -> Run {
         let (events, _) = broadcast::channel(self.event_buffer.get());
+        let ended = Arc::new(AtomicBool::new(false));
         let env = Observed {
             base: Arc::clone(&self.env),
             events: events.clone(),
+            ended: Arc::clone(&ended),
         };
         let engine = Engine::new(self.config.clone(), Arc::new(env));
         let (source, destination) = (Arc::clone(&self.source), Arc::clone(&self.destination));
-        Run::new(engine.run(self.plan.clone(), source, destination), events)
+        Run::new(
+            engine.run(self.plan.clone(), source, destination),
+            events,
+            ended,
+        )
     }
 
     fn engine(&self) -> Engine {

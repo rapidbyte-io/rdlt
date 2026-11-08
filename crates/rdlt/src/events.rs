@@ -48,13 +48,17 @@ pub struct Lagged {
 pub struct Events {
     inner: BroadcastStream<Event>,
     ended: bool,
+    late: bool,
 }
 
 impl Events {
-    pub(crate) fn new(receiver: broadcast::Receiver<Event>) -> Self {
+    /// A subscriber reading `receiver`; one come `late`, once the run has ended, is told nothing
+    /// more than `receiver` holds.
+    pub(crate) fn new(receiver: broadcast::Receiver<Event>, late: bool) -> Self {
         Self {
             inner: BroadcastStream::new(receiver),
             ended: false,
+            late,
         }
     }
 
@@ -73,7 +77,12 @@ impl Stream for Events {
         if self.ended {
             return Poll::Ready(None);
         }
-        Pin::new(&mut self.inner).poll_next(context).map(|item| {
+        let polled = Pin::new(&mut self.inner).poll_next(context);
+        if polled.is_pending() && self.late {
+            self.ended = true;
+            return Poll::Ready(None);
+        }
+        polled.map(|item| {
             let read = item?.map_err(|error| match error {
                 BroadcastStreamRecvError::Lagged(dropped) => Lagged { dropped },
             });
