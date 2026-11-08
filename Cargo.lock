@@ -3239,6 +3239,7 @@ dependencies = [
  "rdlt-host",
  "rdlt-sql",
  "rdlt-testkit",
+ "rustix",
  "schemars",
  "semver",
  "serde",

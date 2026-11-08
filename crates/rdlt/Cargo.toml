@@ -22,12 +22,13 @@ rdlt-connector.workspace = true
 rdlt-engine.workspace = true
 rdlt-host.workspace = true
 rdlt-sql = { workspace = true, optional = true }
+rustix = { workspace = true, features = ["fs"] }
 schemars.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 wildmatch.workspace = true
 
