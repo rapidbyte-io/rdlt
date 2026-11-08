@@ -5,6 +5,7 @@
 //! ```no_run
 //! use rdlt::{Access, Connector, Host, Pipeline, Side, Stream};
 //!
+//! # #[cfg(feature = "local")]
 //! # async fn example() -> Result<(), rdlt::Error> {
 //! let host = Host::new().connectors("/opt/rdlt/bin").writable("/data");
 //! let source = Side::new(Connector::new("io.rapidbyte.generator"))
