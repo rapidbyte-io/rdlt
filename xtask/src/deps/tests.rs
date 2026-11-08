@@ -93,8 +93,9 @@ fn only_the_connector_and_host_crates_use_the_audited_crate() {
 }
 
 #[test]
-fn the_python_extension_uses_the_sdk_and_certification_and_nothing_uses_it() {
+fn the_python_extension_uses_the_facade_the_sdk_and_certification_and_nothing_uses_it() {
     let crates = crates(&[
+        "rdlt",
         "rdlt-certify",
         "rdlt-connector",
         "rdlt-engine",
@@ -102,6 +103,7 @@ fn the_python_extension_uses_the_sdk_and_certification_and_nothing_uses_it() {
         "rdlt-python",
     ]);
     for allowed in [
+        edge("rdlt-python", "rdlt", false),
         edge("rdlt-python", "rdlt-certify", false),
         edge("rdlt-python", "rdlt-connector", false),
         edge("rdlt-python", "rdlt-engine", true),

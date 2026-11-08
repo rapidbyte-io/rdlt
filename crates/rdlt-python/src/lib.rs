@@ -12,8 +12,14 @@
 
 #![forbid(unsafe_code)]
 
+mod calls;
 #[cfg(test)]
 mod embedded;
+mod errors;
+mod host;
+mod pipeline;
+mod runtime;
+mod secrets;
 #[cfg(test)]
 mod tests;
 
@@ -30,5 +36,7 @@ fn native(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
 /// Adds the extension's classes and functions to `module`.
 fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    module.add_class::<host::NativeHost>()?;
+    module.add_class::<pipeline::NativePipeline>()?;
     Ok(())
 }

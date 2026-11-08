@@ -3920,8 +3920,17 @@ dependencies = [
 name = "rdlt-python"
 version = "0.0.0"
 dependencies = [
+ "parking_lot",
  "pyo3",
  "pyo3-build-config",
+ "rdlt",
+ "rdlt-connector",
+ "rdlt-connector-reference",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

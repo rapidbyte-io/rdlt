@@ -36,7 +36,7 @@ const RULES: &[(&str, &[&str])] = &[
         ],
     ),
     ("rdlt-connector-reference", &["rdlt-connector", "rdlt-wire"]),
-    ("rdlt-python", &["rdlt-certify", "rdlt-connector"]),
+    ("rdlt-python", &["rdlt", "rdlt-certify", "rdlt-connector"]),
     (
         "rdlt-sim",
         &[

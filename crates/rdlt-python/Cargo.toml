@@ -13,10 +13,21 @@ name = "rdlt_python"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+parking_lot.workspace = true
 pyo3.workspace = true
+rdlt = { workspace = true, features = ["remote"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
 [build-dependencies]
 pyo3-build-config.workspace = true
+
+[dev-dependencies]
+rdlt-connector.workspace = true
+rdlt-connector-reference.workspace = true
+schemars.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true
