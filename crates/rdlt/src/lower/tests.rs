@@ -639,6 +639,14 @@ async fn each_stream_a_pattern_selects_plans_its_sql_once_for_its_own_schema() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_rename_giving_a_column_a_name_another_gives_up_is_refused_however_written() {
+    for pairs in [[("a", "b"), ("b", "c")], [("b", "c"), ("a", "b")]] {
+        let renames = Stream::new("a").transform(TransformStep::rename(pairs));
+        refused(&document(vec![renames]), "transform_invalid", Some("a")).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_shown_name_is_held_to_its_parts_limits() {
     let (namespace, name) = ("n".repeat(200), "t".repeat(200));
     let shown = format!("{namespace}.{name}");
