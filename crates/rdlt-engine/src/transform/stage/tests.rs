@@ -13,7 +13,7 @@ use rdlt_connector::{
     ChangeOp, ColumnPath, OP_COLUMN, ReadMode, SEQ_COLUMN, StreamName, UNCHANGED_COLUMN,
 };
 
-use super::{Breach, Ran, Refusal, Stage, decoding};
+use super::{Breach, Part, Ran, Refusal, Stage, decoding};
 use crate::error::{ErrorKind, codes};
 use crate::plan::{StreamPlan, WriteMode};
 use crate::transform::op::ARRAY_ROOM;
@@ -1633,6 +1633,75 @@ fn decoding_asks_for_the_decoded_size_as_lowering_measures_it() {
         "{at_room:?}"
     );
     assert!(ran(&plan, &["id"], input, u64::MAX).is_ok());
+}
+
+/// `rows` ids beside a column of `rows` rows naming `values`: each but the last naming the first
+/// value, the last naming the last, as a dictionary and as runs.
+fn naming(rows: usize, values: &[&str]) -> [RecordBatch; 2] {
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(
+        0..i64::try_from(rows).unwrap(),
+    ));
+    let last = i32::try_from(values.len() - 1).unwrap();
+    let mut keys = vec![0; rows - 1];
+    keys.push(last);
+    let keys = Int32Array::from(keys);
+    let tags = DictionaryArray::try_new(keys, Arc::new(StringArray::from(values.to_vec())));
+    let ends: Vec<i32> = (0..values.len())
+        .map(|value| i32::try_from(rows - values.len() + 1 + value).unwrap())
+        .collect();
+    let runs = RunArray::<Int32Type>::try_new(
+        &Int32Array::from(ends),
+        &StringArray::from(values.to_vec()),
+    );
+    let tags: [ArrayRef; 2] = [Arc::new(tags.unwrap()), Arc::new(runs.unwrap())];
+    tags.map(|tags| RecordBatch::try_from_iter([("id", Arc::clone(&ids)), ("tag", tags)]).unwrap())
+}
+
+#[test]
+fn a_part_whose_text_would_decode_beyond_32_bit_offsets_is_cut_before_it_is_decoded() {
+    // A value of 1 MiB named by 2048 rows decodes to 2 GiB, a byte beyond what the offsets of
+    // its decoded text name; 2047 fit. Neither is decoded here.
+    let value = "x".repeat(1 << 20);
+    let key = [ColumnPath::from("id")];
+    let plan = stream().transform(code(Unlined));
+    let stage = Stage::new(&plan, &key, None).unwrap();
+    for (rows, cut) in [(2047, false), (2048, true)] {
+        for batch in naming(rows, &[&value]) {
+            let chain = stage.chain(batch.schema_ref()).unwrap();
+            let (_, beyond) = decoding::room(&batch, &chain.encoded, u64::MAX).unwrap();
+            assert_eq!(beyond.is_some(), cut, "{rows}");
+        }
+    }
+    for batch in naming(2048, &[&value]) {
+        let chain = stage.chain(batch.schema_ref()).unwrap();
+        let part = stage.part(&chain, &batch, u64::MAX);
+        assert!(matches!(part, Ok(Part::Split)), "{:?}", part.err());
+    }
+}
+
+#[test]
+fn a_column_measuring_exactly_what_32_bit_offsets_name_is_decoded_whole() {
+    let value = "x".repeat(1 << 20);
+    let measured = |last: &str| {
+        let [batch, _] = naming(2048, &[&value, last]);
+        let column = batch.project(&[1]).unwrap();
+        Rendering::native().expanded(&column, 0..2048, u64::MAX)
+    };
+    let short = decoding::OFFSETS - measured("");
+    let filled = "y".repeat(usize::try_from(short).unwrap());
+    assert_eq!(measured(&filled), decoding::OFFSETS);
+    let key = [ColumnPath::from("id")];
+    let plan = stream().transform(code(Unlined));
+    let stage = Stage::new(&plan, &key, None).unwrap();
+    for (last, beyond) in [
+        (filled.clone(), None),
+        (filled + "y", Some(decoding::OFFSETS + 1)),
+    ] {
+        let [batch, _] = naming(2048, &[&value, &last]);
+        let chain = stage.chain(batch.schema_ref()).unwrap();
+        let (_, measured) = decoding::room(&batch, &chain.encoded, u64::MAX).unwrap();
+        assert_eq!(measured, beyond);
+    }
 }
 
 #[test]
