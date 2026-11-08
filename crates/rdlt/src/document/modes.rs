@@ -248,42 +248,49 @@ impl<'de> Deserialize<'de> for RetentionLoss {
     }
 }
 
-/// A value written as a word, or as a mapping of one word to its settings.
-enum Worded<T> {
+/// A value written as a word, or as a mapping of one of the words that take settings, `K`, to
+/// its settings.
+enum Worded<K, T> {
     Word(String),
-    Keyed(String, T),
+    Keyed(K, T),
 }
 
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for Worded<T> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Reading<T>(PhantomData<T>);
+impl<'de, K: Copy, T: Deserialize<'de>> Worded<K, T> {
+    /// Reads a word, or a mapping of one of `keyed` to its settings, a refused word refused
+    /// before its settings are read: only then is the path to them no word of the author's.
+    fn read<D: Deserializer<'de>>(
+        deserializer: D,
+        keyed: &[(&'static str, K)],
+    ) -> Result<Self, D::Error> {
+        struct Reading<'k, K, T>(&'k [(&'static str, K)], PhantomData<T>);
 
-        impl<'de, T: Deserialize<'de>> Visitor<'de> for Reading<T> {
-            type Value = Worded<T>;
+        impl<'de, K: Copy, T: Deserialize<'de>> Visitor<'de> for Reading<'_, K, T> {
+            type Value = Worded<K, T>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("a word, or a mapping of one word to its settings")
             }
 
-            fn visit_str<E: de::Error>(self, word: &str) -> Result<Worded<T>, E> {
+            fn visit_str<E: de::Error>(self, word: &str) -> Result<Worded<K, T>, E> {
                 Ok(Worded::Word(word.to_owned()))
             }
 
-            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Worded<T>, M::Error> {
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Worded<K, T>, M::Error> {
                 let Some(Text(word)) = map.next_key::<Text>()? else {
                     return Err(de::Error::invalid_length(0, &self));
                 };
+                let key = read::chosen(&word, self.0)?;
                 let Mapped(settings) = map.next_value::<Mapped<T>>()?;
                 if map.next_key::<IgnoredAny>()?.is_some() {
                     return Err(de::Error::invalid_length(2, &self));
                 }
-                Ok(Worded::Keyed(word, settings))
+                Ok(Worded::Keyed(key, settings))
             }
 
             refuse!(bool int fraction);
         }
 
-        deserializer.deserialize_any(Reading(PhantomData))
+        deserializer.deserialize_any(Reading(keyed, PhantomData))
     }
 }
 
@@ -360,11 +367,9 @@ impl WriteMode {
 
 impl<'de> Deserialize<'de> for WriteMode {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let (writing, key) = match Worded::<Keyed>::deserialize(deserializer)? {
+        let (writing, key) = match Worded::<Writing, Keyed>::read(deserializer, KEYED_WRITES)? {
             Worded::Word(word) => (read::chosen::<_, D::Error>(&word, WRITES)?, Vec::new()),
-            Worded::Keyed(word, Keyed { key }) => {
-                (read::chosen::<_, D::Error>(&word, KEYED_WRITES)?, key)
-            }
+            Worded::Keyed(writing, Keyed { key }) => (writing, key),
         };
         Ok(match writing {
             Writing::Append => Self::Append,
@@ -431,12 +436,9 @@ const NESTINGS: &[(&str, Nested)] = &[
 
 impl<'de> Deserialize<'de> for Nested {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match Worded::<Depth>::deserialize(deserializer)? {
+        match Worded::<(), Depth>::read(deserializer, &[("normalize", ())])? {
             Worded::Word(word) => read::chosen(&word, NESTINGS),
-            Worded::Keyed(word, Depth { max_depth }) => {
-                let normalized = [("normalize", Self::Normalize { max_depth })];
-                read::chosen(&word, &normalized)
-            }
+            Worded::Keyed((), Depth { max_depth }) => Ok(Self::Normalize { max_depth }),
         }
     }
 }
@@ -489,11 +491,10 @@ struct Digits {
 
 impl<'de> Deserialize<'de> for Hint {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match Worded::<Digits>::deserialize(deserializer)? {
+        match Worded::<(), Digits>::read(deserializer, &[("decimal", ())])? {
             Worded::Word(word) => read::chosen(&word, HINTS),
-            Worded::Keyed(word, Digits { precision, scale }) => {
-                let decimal = [("decimal", Self::Decimal { precision, scale })];
-                read::chosen(&word, &decimal)
+            Worded::Keyed((), Digits { precision, scale }) => {
+                Ok(Self::Decimal { precision, scale })
             }
         }
     }

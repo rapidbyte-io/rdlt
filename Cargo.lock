@@ -3300,6 +3300,7 @@ name = "rdlt"
 version = "0.0.0"
 dependencies = [
  "arrow",
+ "insta",
  "proptest",
  "rdlt-connector",
  "rdlt-connector-reference",
@@ -3314,6 +3315,7 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "serde_path_to_error",
+ "strsim",
  "tempfile",
  "thiserror",
  "tokio",

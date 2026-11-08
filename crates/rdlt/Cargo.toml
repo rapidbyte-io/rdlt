@@ -29,12 +29,14 @@ serde.workspace = true
 serde-saphyr.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true
+strsim.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tokio-stream = { workspace = true, features = ["sync"] }
 wildmatch.workspace = true
 
 [dev-dependencies]
+insta.workspace = true
 proptest.workspace = true
 rdlt-connector-reference.workspace = true
 rdlt-testkit.workspace = true

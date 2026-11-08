@@ -1,0 +1,5 @@
+---
+source: crates/rdlt/src/document/fault/tests.rs
+expression: refused(&text).to_string()
+---
+4:1: the key `destination` is missing

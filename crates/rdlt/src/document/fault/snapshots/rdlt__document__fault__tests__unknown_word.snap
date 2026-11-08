@@ -1,0 +1,5 @@
+---
+source: crates/rdlt/src/document/fault/tests.rs
+expression: refused(&text).to_string()
+---
+7:5: streams[0].write: its value is not one this place takes: expected one of append, replace, merge, history; did you mean `append`?

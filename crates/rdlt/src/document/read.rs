@@ -12,10 +12,12 @@ use std::path::PathBuf;
 use serde::de::{self, Expected, MapAccess, SeqAccess, Unexpected, Visitor};
 use serde::{Deserialize, Deserializer};
 
-/// Visitor methods refusing a scalar of each kind named (`bool`, `int`, `fraction`, `text`) by
-/// its kind alone.
+use crate::limits::KEY_BYTES;
+
+/// Visitor methods refusing a scalar of each kind named (`bool`, `int`, `wide`, `fraction`,
+/// `text`) by its kind alone, and bytes, which no document holds, always.
 macro_rules! refuse {
-    ($($kind:ident)*) => { $(refuse!(@ $kind);)* };
+    ($($kind:ident)*) => { $(refuse!(@ $kind);)* refuse!(@ bytes); };
     (@ bool) => {
         fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
             Err(E::invalid_type(serde::de::Unexpected::Other("a boolean"), &self))
@@ -55,6 +57,15 @@ macro_rules! refuse {
     (@ text) => {
         fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
             Err(E::invalid_type(serde::de::Unexpected::Other("text"), &self))
+        }
+
+        fn visit_char<E: serde::de::Error>(self, _: char) -> Result<Self::Value, E> {
+            Err(E::invalid_type(serde::de::Unexpected::Other("text"), &self))
+        }
+    };
+    (@ bytes) => {
+        fn visit_bytes<E: serde::de::Error>(self, _: &[u8]) -> Result<Self::Value, E> {
+            Err(E::invalid_type(serde::de::Unexpected::Other("bytes"), &self))
         }
     };
 }
@@ -335,28 +346,53 @@ pub(super) fn word<'de, D: Deserializer<'de>, T: Copy>(
     chosen(&word, choices)
 }
 
-/// The choice of `choices` `word` names, or a refusal naming the choices and never `word`.
+/// The choice of `choices` `word` names, or a refusal naming the choices, the nearest of them
+/// where one is near, and never `word`.
 pub(super) fn chosen<T: Copy, E: de::Error>(
     word: &str,
     choices: &[(&'static str, T)],
 ) -> Result<T, E> {
     let found = choices.iter().find(|(name, _)| *name == word);
-    found
-        .map(|(_, choice)| *choice)
-        .ok_or_else(|| E::invalid_value(Unexpected::Other("a word"), &Choices(choices)))
+    found.map(|(_, choice)| *choice).ok_or_else(|| {
+        let near = nearest(word, choices.iter().map(|(name, _)| *name));
+        E::invalid_value(Unexpected::Other("a word"), &Choices { choices, near })
+    })
+}
+
+/// The word of `known` nearest `word`, where one lies within two edits of it; a key or word too
+/// long to name is near none.
+pub(super) fn nearest(
+    word: &str,
+    known: impl IntoIterator<Item = &'static str>,
+) -> Option<&'static str> {
+    if word.len() > KEY_BYTES {
+        return None;
+    }
+    known
+        .into_iter()
+        .map(|candidate| (strsim::levenshtein(word, candidate), candidate))
+        .filter(|(edits, _)| *edits <= 2)
+        .min()
+        .map(|(_, candidate)| candidate)
 }
 
 /// What a refused word could have been.
-struct Choices<'a, T>(&'a [(&'static str, T)]);
+struct Choices<'a, T> {
+    choices: &'a [(&'static str, T)],
+    near: Option<&'static str>,
+}
 
 impl<T> Expected for Choices<'_, T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("one of ")?;
-        for (index, (name, _)) in self.0.iter().enumerate() {
+        for (index, (name, _)) in self.choices.iter().enumerate() {
             if index > 0 {
                 formatter.write_str(", ")?;
             }
             formatter.write_str(name)?;
+        }
+        if let Some(near) = self.near {
+            write!(formatter, "; did you mean `{near}`?")?;
         }
         Ok(())
     }

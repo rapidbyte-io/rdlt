@@ -78,6 +78,7 @@ serde-saphyr = { version = "2.1.1", default-features = false, features = [
   "deserialize",
   "serialize",
 ] } # a pipeline's document, YAML or JSON, read as hostile input under limits
+strsim = "0.11.1" # the nearest known key to an unknown one in a document's errors
 syn = { version = "2", features = ["full"] } # parsing impl blocks in rdlt-connector-macros
 getrandom = "0.4.3" # the operating system random source behind SystemEnv, and the names of the reference connectors' temporary files
 memchr = "2.8.3" # finding the lines of JSON pushes
