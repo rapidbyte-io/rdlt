@@ -102,6 +102,21 @@ fn a_setting_of_a_feature_this_build_lacks_is_refused_by_name_and_never_ignored(
 }
 
 #[test]
+fn a_host_file_s_environment_names_are_text_and_nothing_else() {
+    for text in ["allow_env: [31337424]\n", "allow_env: [true]\n"] {
+        let refused = HostFile::parse(text).expect_err(text);
+        assert_eq!(
+            refused.code().map(rdlt_engine::Code::as_str),
+            Some("document_invalid"),
+            "{refused}"
+        );
+        assert!(!refused.to_string().contains("31337424"), "{refused}");
+    }
+    let names = HostFile::parse("allow_env: [\"31337424\", DB_PASSWORD]\n").unwrap();
+    assert_eq!(names.allow_env, ["31337424", "DB_PASSWORD"]);
+}
+
+#[test]
 fn a_host_file_left_empty_or_commented_out_allows_nothing() {
     for text in ["", "\n", "# nothing allowed yet\n", "  # a\n  # b"] {
         assert_eq!(
