@@ -10,7 +10,7 @@ use rdlt_connector::text;
 use rdlt_engine::Code;
 use serde_saphyr::budget::BudgetBreach;
 
-use super::read::nearest;
+use super::read::{ONLY_VERSION, nearest};
 use crate::codes;
 use crate::limits::{DOCUMENT_BYTES, KEY_BYTES, ORIGIN_BYTES, PATH_BYTES};
 
@@ -174,7 +174,11 @@ fn classified(error: &serde_saphyr::Error, noun: &str) -> (Code, String, Option<
             None,
         ),
         Read::SerdeInvalidValue { expected, .. } => (
-            codes::DOCUMENT_INVALID,
+            if expected == ONLY_VERSION {
+                codes::DOCUMENT_VERSION
+            } else {
+                codes::DOCUMENT_INVALID
+            },
             format!("its value is not one this place takes: expected {expected}"),
             None,
         ),
