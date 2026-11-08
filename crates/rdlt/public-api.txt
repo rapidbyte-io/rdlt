@@ -102,6 +102,7 @@ pub const rdlt::limits::DOCUMENT_DEPTH: usize
 pub const rdlt::limits::DOCUMENT_NODES: usize
 pub const rdlt::limits::EVENT_BUFFER: usize
 pub const rdlt::limits::EVENT_BUFFER_MAX: usize
+pub const rdlt::limits::SAMPLED_EVERY: core::time::Duration
 #[non_exhaustive] pub enum rdlt::Connector
 pub rdlt::Connector::Id(alloc::string::String)
 pub rdlt::Connector::Reference(rdlt::ConnectorReference)

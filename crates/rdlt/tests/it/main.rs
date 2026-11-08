@@ -5,4 +5,5 @@
 mod events;
 mod facade;
 mod ledger;
+mod metered;
 mod support;

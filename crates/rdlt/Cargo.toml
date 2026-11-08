@@ -18,6 +18,7 @@ sql = ["dep:rdlt-sql"]
 
 [dependencies]
 arrow.workspace = true
+metrics.workspace = true
 rdlt-connector.workspace = true
 rdlt-engine.workspace = true
 rdlt-host.workspace = true
@@ -38,6 +39,8 @@ wildmatch.workspace = true
 [dev-dependencies]
 insta.workspace = true
 jsonschema.workspace = true
+metrics-util.workspace = true
+parking_lot.workspace = true
 proptest.workspace = true
 rdlt-connector-reference.workspace = true
 rdlt-testkit.workspace = true
