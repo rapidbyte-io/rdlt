@@ -11,10 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::{
-    Catalog, ConnectorError, ConnectorErrorKind, DEADLINE_EXCEEDED, Destination, Role, Source,
-    StreamName,
-};
+use rdlt_connector::{Catalog, Destination, Role, Source, StreamName};
 use rdlt_engine::{Engine, EngineConfig, Env, PipelinePlan, ResetReport, ResetScope, SystemEnv};
 use rdlt_host::{Placed, Provider as _};
 use serde::Serialize;
@@ -160,10 +157,7 @@ fn shared<T: ?Sized>(placed: Placed<Box<T>>) -> (Arc<T>, PlacedConnector) {
 async fn discovered(source: &dyn Source, wait: Duration) -> Result<Catalog, Error> {
     let context = "discovering the catalog";
     let Ok(answered) = tokio::time::timeout(wait, source.discover()).await else {
-        let unanswered = format!("no answer within {wait:?}");
-        let expired = ConnectorError::new(ConnectorErrorKind::Transient, unanswered)
-            .with_code(DEADLINE_EXCEEDED);
-        return Err(Error::connector(Role::Source, context, expired));
+        return Err(Error::expired(Role::Source, context, wait));
     };
     answered.map_err(|error| Error::connector(Role::Source, context, error))
 }
@@ -271,8 +265,8 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// The source's failure to discover it, or to answer within the engine's wait for a
-    /// connector, as a failure coded `deadline_exceeded`.
+    /// The source's failure to discover it, or `deadline_exceeded`, retryable, where it does
+    /// not answer within the engine's wait for a connector.
     pub async fn discover(&self) -> Result<Catalog, Error> {
         discovered(self.source.as_ref(), self.config.connector_wait()).await
     }

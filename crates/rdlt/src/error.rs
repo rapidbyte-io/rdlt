@@ -5,6 +5,7 @@ mod tests;
 
 use std::error::Error as StdError;
 use std::fmt;
+use std::time::Duration;
 
 use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_CODE_BYTES, MAX_ERROR_TEXT_BYTES};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Role, text};
@@ -163,6 +164,23 @@ impl Error {
             message: format!("{context}: the {} failed", noun(role)),
             retryable: error.is_retryable(),
             source: Some(Box::new(error)),
+        })))
+    }
+
+    /// A call of the connector of `role`, for `context`, that outlasted `wait`, as the engine
+    /// reports one of its own calls that does: of the side's kind, the engine's, coded
+    /// `deadline_exceeded`, and retryable.
+    pub(crate) fn expired(role: Role, context: &str, wait: Duration) -> Self {
+        let (_, kind) = side(role);
+        Self(Box::new(Inner::Built(Built {
+            kind,
+            origin: Origin::Engine,
+            code: Some(rdlt_engine::codes::DEADLINE_EXCEEDED),
+            connector_code: None,
+            stream: None,
+            message: format!("{context} took longer than the engine's wait of {wait:?}"),
+            retryable: true,
+            source: None,
         })))
     }
 
