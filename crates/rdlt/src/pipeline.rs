@@ -124,7 +124,7 @@ impl PipelineBuilder {
         let (destination, destination_placed) = shared(destination);
         let catalog = discovered(source.as_ref(), prepared.connector_wait()).await?;
         let Lowered { plan, config } = prepared.bind(&catalog)?;
-        let env = host.environment()?;
+        let env = host.environment().await?;
         Engine::new(config.clone(), Arc::clone(&env) as Arc<dyn Env>)
             .check(&plan, Arc::clone(&source), Arc::clone(&destination))
             .await
