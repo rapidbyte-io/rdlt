@@ -374,10 +374,7 @@ async fn a_reset_resolves_a_name_against_the_source_s_catalog() {
     let reset = pipeline.reset(["a.b.c"], ResetScope::Positions).await;
     let refused = reset.expect_err("two streams of the catalog show as a.b.c");
     assert_eq!(refused.code().map(Code::as_str), Some("stream_ambiguous"));
-    assert!(
-        refused.to_string().contains("the source's catalog"),
-        "{refused}"
-    );
+    assert_eq!(refused.stream(), Some("a.b.c"));
 }
 
 #[tokio::test(start_paused = true)]
@@ -396,10 +393,7 @@ async fn a_reset_refuses_a_planned_name_another_stream_of_the_catalog_has_come_t
     let reset = pipeline.reset(["a.b.c"], ResetScope::Tables).await;
     let refused = reset.expect_err("two streams of the catalog show as a.b.c now");
     assert_eq!(refused.code().map(Code::as_str), Some("stream_ambiguous"));
-    assert!(
-        refused.to_string().contains("the source's catalog"),
-        "{refused}"
-    );
+    assert_eq!(refused.stream(), Some("a.b.c"));
 }
 
 #[tokio::test(start_paused = true)]
