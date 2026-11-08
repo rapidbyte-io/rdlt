@@ -264,7 +264,9 @@ impl JsonSchema for ConstantText {
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
             "description": "A constant: text, an integer or a boolean.",
-            "type": ["string", "integer", "boolean"]
+            "type": ["string", "integer", "boolean"],
+            "minimum": i64::MIN,
+            "maximum": i64::MAX
         })
     }
 }
