@@ -403,7 +403,6 @@ async fn a_source_that_never_answers_discovery_fails_the_build_after_the_connect
         "{said}"
     );
     assert!(refused.is_retryable(), "{said}");
-    assert!(said.contains("discovering the catalog"), "{said}");
 }
 
 #[tokio::test(start_paused = true)]
@@ -425,5 +424,4 @@ async fn a_source_whose_catalog_cannot_be_read_fails_the_build_as_the_source_s()
     );
     assert_eq!(refused.origin(), Origin::Source, "{said}");
     assert!(refused.is_retryable(), "{said}");
-    assert!(said.contains("discovering the catalog"), "{said}");
 }

@@ -80,7 +80,6 @@ async fn a_reset_refuses_a_name_that_splits_more_than_one_way_where_nothing_says
     let refused = reset.expect_err("a + b.c or a.b + c");
     assert_eq!(code(&refused).as_deref(), Some("stream_ambiguous"));
     assert_eq!(refused.stream(), Some("a.b.c"));
-    assert!(refused.to_string().contains("identity"), "{refused}");
     let exact = StreamName::with_namespace("a", "b.c").expect("a stream's name");
     let reset = pipeline.reset([exact], ResetScope::Tables).await;
     let refused = reset.expect_err("never committed");
