@@ -23,7 +23,8 @@ all_features = true
 # otherwise; one that names an empty path for a sandbox is the code as it is too, as the guard on
 # roots passes over a path that is not absolute. The dialect a SQL transform's text is read in
 # forwards each rule of sqlparser's generic dialect, every one of which but the identifiers'
-# characters answers true: a mutant that answers true there is the rule as it is.
+# characters answers true: a mutant that answers true there is the rule as it is. Its own answer
+# to a query read with its table first, false, is no forward.
 # So is one that joins open flags, or the options of a wait for a child, each a bit of its own
 # (read-only is none, on Linux and macOS alike), with `^` for `|`; and one that takes every widen a
 # destination refuses for a column not yet kept from widening: the resolver widens no column kept
@@ -95,7 +96,7 @@ exclude_re = [
   "crates/rdlt-host/src/secrets/resolve/env\\.rs:.*replace <impl fmt::Debug for EnvSecrets>::fmt -> fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-host/src/secrets/resolve/file\\.rs:.*replace \\| with \\^ in read_private$",
   "crates/rdlt-host/src/secrets/resolve\\.rs:.*replace SecretResolver::directories -> Vec<PathBuf> with vec!\\[\\]$",
-  "crates/rdlt-sql/src/dialect\\.rs:.*replace <impl Dialect for Guarded>::(supports|support|allow)_\\w+ -> bool with true$",
+  "crates/rdlt-sql/src/dialect\\.rs:.*replace <impl Dialect for Guarded>::(supports|support|allow)_([^f]\\w*|filter_during_aggregation) -> bool with true$",
 ]
 # A mutant that hangs a test is caught when nextest terminates the test, which it does well within
 # this; cargo-mutants' own timeout would count it as a timeout instead. It is above what a mutant

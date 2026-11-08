@@ -1,6 +1,6 @@
 //! The dialect a SQL transform's text is read in: sqlparser's generic dialect, but for the
-//! keywords whose own syntax holds expressions, which it reads one way alone, and a bound on the
-//! reading itself.
+//! keywords whose own syntax holds expressions, which it reads one way alone, queries naming their
+//! table first, and a bound on the reading itself.
 
 mod reach;
 #[cfg(test)]
@@ -18,7 +18,8 @@ use datafusion_sql::sqlparser::tokenizer::{Token, TokenWithSpan};
 use self::reach::{charges, spaced};
 
 /// sqlparser's generic dialect, every rule of it forwarded, but for [`NESTING`], `POSITION(`,
-/// [`NESTED`] types and `INTERVAL` where an operand stands, and a budget of work.
+/// [`NESTED`] types and `INTERVAL` where an operand stands, a query read with its table first,
+/// and a budget of work.
 #[derive(Debug)]
 pub(crate) struct Guarded {
     /// Tokens the parser may spend, spent again where it backtracks, before the text is refused.
@@ -180,6 +181,13 @@ impl Dialect for Guarded {
         Some(parser.parse_function(ObjectName::from(vec![word.into_ident(span)])))
     }
 
+    /// No query is read with its table first, as `FROM input SELECT n`: sqlparser reads each
+    /// parenthesised table as such a query first and then as a join, so a nest of `FROM (`
+    /// was read again a level, its work growing as the square of the nest's depth.
+    fn supports_from_first_select(&self) -> bool {
+        false
+    }
+
     fn is_delimited_identifier_start(&self, ch: char) -> bool {
         GenericDialect.is_delimited_identifier_start(ch)
     }
@@ -294,10 +302,6 @@ impl Dialect for Guarded {
 
     fn supports_update_order_by(&self) -> bool {
         GenericDialect.supports_update_order_by()
-    }
-
-    fn supports_from_first_select(&self) -> bool {
-        GenericDialect.supports_from_first_select()
     }
 
     fn supports_projection_trailing_commas(&self) -> bool {
