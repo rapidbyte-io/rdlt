@@ -240,7 +240,7 @@ fn every_transform_step_reads_as_it_writes() {
 }
 
 #[test]
-fn renames_and_constants_keep_the_order_they_are_written_in() {
+fn constants_keep_the_order_they_are_written_in() {
     let read = |text: &str| serde_json::from_str::<TransformStep>(text).expect("it reads");
     let constants = read(r#"{ "constant": { "tier": 2, "source": "pg" } }"#);
     let ordered = [
@@ -248,10 +248,19 @@ fn renames_and_constants_keep_the_order_they_are_written_in() {
         ("source", Literal::Text("pg".to_owned())),
     ];
     assert_eq!(constants, TransformStep::constant(ordered));
+}
+
+#[test]
+fn a_rename_reads_the_same_however_its_keys_were_ordered() {
+    let read = |text: &str| serde_json::from_str::<TransformStep>(text).expect("it reads");
     let renames = read(r#"{ "rename": { "b": "c", "a": "b" } }"#);
+    assert_eq!(renames, read(r#"{ "rename": { "a": "b", "b": "c" } }"#));
     assert_eq!(renames, TransformStep::rename([("b", "c"), ("a", "b")]));
+    let value = serde_json::to_value(&renames).expect("it writes");
+    let again = serde_json::from_value::<TransformStep>(value).expect("it reads");
+    assert_eq!(again, renames);
     let written = serde_json::to_string(&renames).expect("it writes");
-    assert_eq!(written, r#"{"rename":{"b":"c","a":"b"}}"#);
+    assert_eq!(written, r#"{"rename":{"a":"b","b":"c"}}"#);
 }
 
 #[test]
