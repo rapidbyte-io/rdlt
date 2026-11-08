@@ -184,19 +184,17 @@ fn a_literal_of_the_limit_is_read_and_one_byte_beyond_it_is_not() {
 
 #[test]
 fn a_refusal_names_what_it_refuses() {
-    let cases = [
+    for (name, text) in [
         (
+            "a_literal_argument",
             "SELECT replace(name, name, 'x') AS r FROM input",
-            "takes a literal there",
         ),
-        (
-            "SELECT id FROM (SELECT id FROM input)",
-            "other than `FROM input`",
-        ),
-    ];
-    for (text, what) in cases {
-        let refused = Sql::parse(text).unwrap_err();
-        assert!(refused.to_string().contains(what), "{text}: {refused}");
+        ("a_derived_table", "SELECT id FROM (SELECT id FROM input)"),
+    ] {
+        let refused = Sql::parse(text)
+            .err()
+            .unwrap_or_else(|| panic!("{text} parsed"));
+        insta::assert_snapshot!(name, refused.to_string());
     }
 }
 

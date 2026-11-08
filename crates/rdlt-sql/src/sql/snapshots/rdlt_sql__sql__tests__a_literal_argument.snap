@@ -1,0 +1,5 @@
+---
+source: crates/rdlt-sql/src/sql/tests.rs
+expression: refused.to_string()
+---
+function replace takes a literal there
