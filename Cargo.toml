@@ -100,6 +100,9 @@ pyo3 = { version = "0.29.3", default-features = false, features = [
   "macros",
 ] } # rdlt._native: the Python extension's classes, functions and calls into the interpreter; abi3 for CPython 3.11 and later
 pyo3-build-config = "0.29.3" # the interpreter rdlt-python links its tests against, for their run-time library path
+pyo3-async-runtimes = { version = "0.29.0", default-features = false, features = [
+  "tokio-runtime",
+] } # awaitables for asyncio, completed on the event loop's thread, over rdlt._native's runtime
 tonic = { version = "0.14.6", default-features = false } # gRPC: the wire protocol's service stubs, server and client
 tonic-prost = "0.14.6" # the protobuf codec of the wire protocol's gRPC service
 http = "1.5.0" # the requests a served connection's gRPC service takes

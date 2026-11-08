@@ -11,6 +11,7 @@ use pyo3::{Bound, FromPyObject, PyErr, Python, pyclass, pymethods};
 use rdlt::{ResetScope, StreamName, StreamSelector};
 
 use crate::host::NativeHost;
+use crate::run::NativeRun;
 use crate::{errors, runtime};
 
 /// What a document's errors name it as where it came from no file.
@@ -129,6 +130,18 @@ impl NativePipeline {
             "epoch": report.epoch.0,
         });
         Ok(shown.to_string())
+    }
+
+    /// Starts a run; it is cancelled once every handle to it is dropped.
+    pub(crate) fn start(&self, py: Python<'_>) -> Result<NativeRun, PyErr> {
+        runtime::get(py)?;
+        NativeRun::started(py, self.pipeline.start())
+    }
+
+    /// Runs to the end, the GIL released; a first Ctrl-C stops after the next commit, a second
+    /// cancels the run and raises.
+    pub(crate) fn run(&self, py: Python<'_>) -> Result<(String, Option<String>), PyErr> {
+        self.start(py)?.wait(py)
     }
 }
 

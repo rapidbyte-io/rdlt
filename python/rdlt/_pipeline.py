@@ -13,7 +13,8 @@ from typing import Literal, TypeAlias, cast
 
 from rdlt import _native
 from rdlt.host import Host, StrPath, _names, _paths
-from rdlt.model import Catalog, Json, ReadMode, _parse
+from rdlt.model import Catalog, Json, Outcome, ReadMode, _parse
+from rdlt.run import Run, _ended
 
 _ReadWord: TypeAlias = Literal["full", "incremental", "cdc"]
 _WriteWord: TypeAlias = Literal["append", "replace", "merge", "history"]
@@ -482,3 +483,30 @@ class Pipeline:
         """
         selected = [streams] if isinstance(streams, (str, StreamName)) else list(streams)
         return _parse(self._native.reset(selected, tables=tables))
+
+    def start(self) -> Run:
+        """Starts a run; it is cancelled once every reference to it and to its events is dropped."""
+        return Run(self._native.start(), self._name)
+
+    def run(self) -> Outcome:
+        """Runs to the end, the GIL released.
+
+        As the CLI does, a first Ctrl-C asks the run to stop after its next commit and answers
+        its outcome; a second cancels the run now and raises `KeyboardInterrupt`.
+
+        Raises:
+            rdlt.Error: the subclass for the error that ended the run, its `outcome` set.
+        """
+        return _ended(self._native.run())
+
+    async def run_async(self) -> Outcome:
+        """Runs to the end in asyncio.
+
+        A cancellation of the awaiting task, as `asyncio.timeout` and `asyncio.wait_for` deliver,
+        asks the run to stop after its next commit, raises `CancelledError` at once, and leaves
+        the run to finish in the background.
+
+        Raises:
+            rdlt.Error: the subclass for the error that ended the run, its `outcome` set.
+        """
+        return await self.start().wait_async()
