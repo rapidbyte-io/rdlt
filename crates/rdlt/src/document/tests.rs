@@ -1169,6 +1169,42 @@ fn a_version_other_than_1_is_refused_by_the_reader_and_the_schema_alike() {
 }
 
 #[test]
+fn a_document_past_the_reader_s_limits_is_refused_at_writing_and_the_rest_read_back() {
+    use crate::limits::{DOCUMENT_DEPTH, DOCUMENT_NODES};
+    let holding = |config: serde_json::Value| {
+        let source = Side::new(Connector::new("a.b")).config(config);
+        let mut document = Document::new("p", source, Side::new(Connector::new("c.d")));
+        document.streams = vec![Stream::new("s")];
+        document
+    };
+    let nested = |levels: usize| {
+        (0..levels).fold(
+            serde_json::json!({ "b": 1 }),
+            |within, _| serde_json::json!({ "a": within }),
+        )
+    };
+    let entries: serde_json::Map<String, serde_json::Value> = (0..DOCUMENT_NODES / 2)
+        .map(|index| (format!("k{index}"), serde_json::json!(1)))
+        .collect();
+    let wide = serde_json::Value::Object(entries);
+    for past in [holding(nested(DOCUMENT_DEPTH)), holding(wide)] {
+        let refused = past.to_yaml().expect_err("the reader would refuse it");
+        assert_eq!(
+            refused.code().map(rdlt_engine::Code::as_str),
+            Some("document_too_deep")
+        );
+    }
+    for levels in 0..=DOCUMENT_DEPTH {
+        let document = holding(nested(levels));
+        if let Ok(written) = document.to_yaml() {
+            let read = Document::parse(&written).expect("what is written reads back");
+            assert_eq!(read, document);
+        }
+    }
+    assert!(holding(nested(1)).to_yaml().is_ok());
+}
+
+#[test]
 fn a_document_with_a_key_written_out_is_never_written() {
     let literal = MaskStep::new(["email"], MaskWith::HmacSha256).key("CANARY-key");
     let mut document = example();
