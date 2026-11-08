@@ -133,7 +133,10 @@ fn sql(text: &str) -> Result<Step, Error> {
 
 /// Refuses the SQL `text`: this build runs none.
 #[cfg(not(feature = "sql"))]
-fn sql(_text: &str) -> Result<Step, Error> {
+fn sql_refused(_text: &str) -> Result<Step, Error> {
     let message = "a sql transform needs the facade's `sql` feature, which this build lacks";
     Err(Error::config(codes::TRANSFORM_UNAVAILABLE, message))
 }
+
+#[cfg(not(feature = "sql"))]
+use sql_refused as sql;
