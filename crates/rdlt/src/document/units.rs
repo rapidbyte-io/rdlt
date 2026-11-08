@@ -149,9 +149,18 @@ fn spanned_text<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Dur
 
 /// An optional size, as a document writes it.
 pub(crate) mod bytes {
-    use serde::{Deserializer, Serialize as _, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize as _, Serializer};
 
     use super::{Sized, sized};
+
+    /// A size a document holds.
+    struct Size(u64);
+
+    impl<'de> Deserialize<'de> for Size {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer.deserialize_any(Sized).map(Self)
+        }
+    }
 
     #[expect(
         clippy::ref_option,
@@ -167,7 +176,8 @@ pub(crate) mod bytes {
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<u64>, D::Error> {
-        deserializer.deserialize_any(Sized).map(Some)
+        let size = Option::<Size>::deserialize(deserializer)?;
+        Ok(size.map(|Size(bytes)| bytes))
     }
 }
 
@@ -175,9 +185,18 @@ pub(crate) mod bytes {
 pub(crate) mod duration {
     use std::time::Duration;
 
-    use serde::{Deserializer, Serialize as _, Serializer};
+    use serde::{Deserialize, Deserializer, Serialize as _, Serializer};
 
     use super::{spanned, spanned_text};
+
+    /// A duration a document holds.
+    struct Span(Duration);
+
+    impl<'de> Deserialize<'de> for Span {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            spanned_text(deserializer).map(Self)
+        }
+    }
 
     #[expect(
         clippy::ref_option,
@@ -193,6 +212,7 @@ pub(crate) mod duration {
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<Duration>, D::Error> {
-        spanned_text(deserializer).map(Some)
+        let span = Option::<Span>::deserialize(deserializer)?;
+        Ok(span.map(|Span(duration)| duration))
     }
 }
