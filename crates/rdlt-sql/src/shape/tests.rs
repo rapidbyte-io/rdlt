@@ -106,6 +106,8 @@ fn a_cast_to_any_other_type_is_refused_naming_no_type() {
         "JSON",
         "UUID",
         "DATETIME(5)",
+        "DATETIME64(5)",
+        "TIMESTAMP_NTZ(5)",
         "DATETIME64(3, 'UTC')",
         "TIMESTAMP(5)",
         "TIMESTAMP(1) WITH TIME ZONE",
@@ -124,4 +126,29 @@ fn a_cast_to_any_other_type_is_refused_naming_no_type() {
         assert_eq!(refused.kind(), SqlErrorKind::Shape, "{text}: {refused}");
         assert!(!refused.to_string().contains("secret"), "{refused}");
     }
+}
+
+#[test]
+fn a_second_query_in_the_text_is_refused_wherever_it_is_found() {
+    use std::ops::ControlFlow;
+
+    use datafusion_sql::sqlparser::ast::{Statement, Visitor as _};
+    use datafusion_sql::sqlparser::dialect::GenericDialect;
+    use datafusion_sql::sqlparser::parser::Parser;
+
+    use super::Checking;
+
+    let parsed = Parser::parse_sql(&GenericDialect {}, "SELECT 1").unwrap();
+    let Some(Statement::Query(query)) = parsed.into_iter().next() else {
+        panic!("a query");
+    };
+    let mut checking = Checking::default();
+    assert!(matches!(
+        checking.pre_visit_query(&query),
+        ControlFlow::Continue(())
+    ));
+    let ControlFlow::Break(refused) = checking.pre_visit_query(&query) else {
+        panic!("a second query was admitted");
+    };
+    assert_eq!(refused.kind(), SqlErrorKind::Shape);
 }

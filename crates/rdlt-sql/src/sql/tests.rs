@@ -92,6 +92,23 @@ fn a_query_other_than_a_filtered_projection_of_input_is_refused() {
             "SELECT (SELECT 1) AS x FROM input",
             "SELECT id FROM input WHERE id IN (SELECT id FROM input)",
             "SELECT id FROM input TABLESAMPLE (10 PERCENT)",
+            "SELECT id FROM input FOR UPDATE",
+            "SELECT id FROM input FOR XML AUTO",
+            "SELECT id FROM input SETTINGS x = 1",
+            "SELECT id FROM input FORMAT JSON",
+            "SELECT id FROM input PREWHERE id > 1",
+            "SELECT id FROM input CONNECT BY PRIOR id = id",
+            "SELECT id FROM input CLUSTER BY id",
+            "SELECT id FROM input DISTRIBUTE BY id",
+            "SELECT id FROM input SORT BY id",
+            "SELECT id FROM input WINDOW w AS (PARTITION BY id)",
+            "SELECT id FROM input QUALIFY id > 1",
+            "SELECT id FROM input PARTITION (p)",
+            "SELECT id FROM input WITH (NOLOCK)",
+            "SELECT id FROM (SELECT id FROM input)",
+            "SELECT id INTO x FROM input",
+            "SELECT /*+ hint */ id FROM input",
+            "SELECT id FROM input LATERAL VIEW explode(a) t AS b",
             "SELECT id FROM generate_series(1, 3)",
             "SELECT EXTRACT(year FROM t) AS y FROM input",
             "SELECT id FROM input WHERE id = $1",
@@ -128,6 +145,45 @@ fn a_function_off_the_list_or_called_beyond_its_bound_is_refused() {
 }
 
 #[test]
+fn a_call_missing_its_pattern_is_left_to_the_planner() {
+    assert!(Sql::parse("SELECT regexp_like(name) AS m FROM input").is_ok());
+}
+
+#[test]
+fn a_pattern_in_parentheses_and_flags_beside_g_are_read_as_written() {
+    for text in [
+        "SELECT regexp_like(name, ('a'), 'i') AS m FROM input",
+        "SELECT regexp_replace(name, 'a', 'b', 'ig') AS m FROM input",
+    ] {
+        assert!(Sql::parse(text).is_ok(), "{text}");
+    }
+}
+
+#[test]
+fn a_literal_of_the_limit_is_read_and_one_byte_beyond_it_is_not() {
+    let at = format!("SELECT '{}' AS x FROM input", "a".repeat(4096));
+    assert!(Sql::parse(&at).is_ok());
+}
+
+#[test]
+fn a_refusal_names_what_it_refuses() {
+    let cases = [
+        (
+            "SELECT replace(name, name, 'x') AS r FROM input",
+            "takes a literal there",
+        ),
+        (
+            "SELECT id FROM (SELECT id FROM input)",
+            "other than `FROM input`",
+        ),
+    ];
+    for (text, what) in cases {
+        let refused = Sql::parse(text).unwrap_err();
+        assert!(refused.to_string().contains(what), "{text}: {refused}");
+    }
+}
+
+#[test]
 fn a_pattern_that_is_no_literal_or_compiles_too_large_is_refused() {
     refused_as(
         SqlErrorKind::Regex,
@@ -139,6 +195,8 @@ fn a_pattern_that_is_no_literal_or_compiles_too_large_is_refused() {
             "SELECT regexp_like(name, '(') AS m FROM input",
             "SELECT regexp_like(name, 'a', 'q') AS m FROM input",
             "SELECT regexp_replace(name, 'a', 'b', 'gg') AS m FROM input",
+            "SELECT regexp_like(name, 'a', 'g') AS m FROM input",
+            "SELECT regexp_like(name, 'a', 'ig') AS m FROM input",
         ],
     );
 }
@@ -173,6 +231,14 @@ fn a_refusal_shows_a_long_function_name_cut_short() {
         "{}",
         refused.to_string().len()
     );
+    let shown = format!("function {}...", "f".repeat(64));
+    assert!(refused.to_string().starts_with(&shown), "{refused}");
+}
+
+#[test]
+fn a_query_shows_whether_it_filters_and_never_its_text() {
+    let sql = Sql::parse("SELECT id FROM input WHERE token <> 'hunter2'").unwrap();
+    assert_eq!(format!("{sql:?}"), "Sql { filters: true, .. }");
 }
 
 #[test]
