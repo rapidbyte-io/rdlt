@@ -127,6 +127,10 @@ fn engine_config(document: &Document) -> Result<EngineConfig, Error> {
     if let Some(retry) = &document.retry {
         let mut policy = RetryPolicy::default();
         if let Some(attempts) = retry.max_attempts {
+            if attempts == 0 {
+                let message = "a retry's max_attempts is at least 1, the run's first attempt";
+                return Err(Error::config(rdlt_engine::codes::CONFIG_INVALID, message));
+            }
             policy = policy.max_attempts(attempts);
         }
         if let Some(initial) = retry.initial {
