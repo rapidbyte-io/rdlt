@@ -179,6 +179,26 @@ async fn a_dropped_run_is_cancelled_and_its_events_end() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_s_events_end_with_its_end_though_the_run_is_kept() {
+    let rows = serde_json::json!([{ "id": 1 }]);
+    let pipeline = memory_pipeline("kept", "events-kept", &rows)
+        .build(&memory_host())
+        .await
+        .expect("built");
+    let mut run = pipeline.start();
+    let mut events = run.events();
+    let outcome = within(&mut run).await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    let mut last = None;
+    while let Some(told) = within(events.next()).await {
+        last = Some(told.expect("nothing fell behind").kind);
+    }
+    assert!(matches!(last, Some(EventKind::RunEnded { .. })), "{last:?}");
+    assert!(events.next().await.is_none(), "it stays ended");
+    drop(run);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_buffer_asked_beyond_the_most_a_ring_keeps_is_held_to_it() {
     let rows = serde_json::json!([{ "id": 1 }]);
     let pipeline = memory_pipeline("held", "events-held", &rows)
