@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Host};
+use crate::{Error, Host, codes};
 
 /// What an operator allows a host, as a file says it: `connectors`, `trust_binaries`,
 /// `writable`, `readable`, `always_readable`, `allow_env`, `allow_files`, `allow_network` and
@@ -94,9 +94,11 @@ impl HostFile {
     ///
     /// # Errors
     ///
+    /// `host_setting_unavailable` for a setting of a feature this build lacks, never ignored;
     /// `tls_unreadable` for a TLS file that cannot be opened, is no regular file, or takes past
     /// [`BUILD_WAIT`](crate::limits::BUILD_WAIT) to open.
     pub async fn host(&self) -> Result<Host, Error> {
+        self.refuse_unbuilt(cfg!(feature = "local"), cfg!(feature = "remote"))?;
         let host = Host::new()
             .allow_env(self.allow_env.iter().cloned())
             .allow_files(self.allow_files.iter().cloned());
@@ -110,6 +112,35 @@ impl HostFile {
             None => host,
         };
         Ok(host)
+    }
+
+    /// Refuses what the file sets that a build without `local` or `remote`, as these flags say
+    /// this one is, cannot do: a setting is never silently ignored.
+    fn refuse_unbuilt(&self, local: bool, remote: bool) -> Result<(), Error> {
+        let needs = |setting: &str, feature: &str| {
+            let message = format!(
+                "the host file sets `{setting}`, which needs the facade's `{feature}` feature, \
+                 which this build lacks"
+            );
+            Err(Error::config(codes::HOST_SETTING_UNAVAILABLE, message))
+        };
+        if !remote && self.remote.is_some() {
+            return needs("remote", "remote");
+        }
+        if !local {
+            let set = [
+                ("connectors", !self.connectors.is_empty()),
+                ("trust_binaries", self.trust_binaries),
+                ("writable", !self.writable.is_empty()),
+                ("readable", !self.readable.is_empty()),
+                ("always_readable", !self.always_readable.is_empty()),
+                ("allow_network", self.allow_network),
+            ];
+            if let Some((setting, _)) = set.into_iter().find(|(_, set)| *set) {
+                return needs(setting, "local");
+            }
+        }
+        Ok(())
     }
 
     /// `host`, placing local connectors as the file says.

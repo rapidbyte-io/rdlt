@@ -33,6 +33,8 @@ pub const STREAM_INVALID: Code = Code::new("stream_invalid");
 pub const PATTERN_UNMATCHED: Code = Code::new("pattern_unmatched");
 /// A `code` transform names nothing the host registered.
 pub const TRANSFORM_UNKNOWN: Code = Code::new("transform_unknown");
+/// A host file sets something that needs a feature this build of the facade lacks.
+pub const HOST_SETTING_UNAVAILABLE: Code = Code::new("host_setting_unavailable");
 /// A transform needs a feature this build of the facade lacks.
 pub const TRANSFORM_UNAVAILABLE: Code = Code::new("transform_unavailable");
 /// An `hmac_sha256` mask has no key.

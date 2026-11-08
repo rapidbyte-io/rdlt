@@ -86,6 +86,7 @@ pub const rdlt::codes::DOCUMENT_UNKNOWN_KEY: rdlt_engine::error::codes::Code
 pub const rdlt::codes::DOCUMENT_UNREADABLE: rdlt_engine::error::codes::Code
 pub const rdlt::codes::DOCUMENT_VERSION: rdlt_engine::error::codes::Code
 pub const rdlt::codes::ENVIRONMENT_UNAVAILABLE: rdlt_engine::error::codes::Code
+pub const rdlt::codes::HOST_SETTING_UNAVAILABLE: rdlt_engine::error::codes::Code
 pub const rdlt::codes::MASK_KEY_LITERAL: rdlt_engine::error::codes::Code
 pub const rdlt::codes::MASK_KEY_MISSING: rdlt_engine::error::codes::Code
 pub const rdlt::codes::PATTERN_UNMATCHED: rdlt_engine::error::codes::Code
