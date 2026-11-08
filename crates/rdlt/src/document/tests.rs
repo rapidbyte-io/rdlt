@@ -745,6 +745,19 @@ fn no_debug_shows_a_side_s_configuration() {
 }
 
 #[test]
+fn a_null_size_or_duration_says_nothing() {
+    let resources = serde_json::json!({ "memory": null, "writers": 2 });
+    let resources = serde_json::from_value::<Resources>(resources).expect("it reads");
+    assert_eq!(resources, Resources::new().writers(2));
+    let retry = serde_json::json!({ "initial": null, "max_delay": null, "max_attempts": 3 });
+    let retry = serde_json::from_value::<Retry>(retry).expect("it reads");
+    assert_eq!(retry, Retry::new().max_attempts(3));
+    let commit = serde_json::json!({ "every": null, "bytes": null, "rows": 5 });
+    let commit = serde_json::from_value::<Commit>(commit).expect("it reads");
+    assert_eq!(commit, Commit::new().rows(5));
+}
+
+#[test]
 fn a_side_shares_the_network_only_where_it_says_so() {
     for shared in [true, false] {
         let access = serde_json::json!({ "network": shared });
