@@ -1,7 +1,7 @@
 //! Building pipelines, and asking them what they are.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rdlt::{
@@ -277,6 +277,10 @@ async fn a_destination_refusing_its_configuration_fails_the_build_as_the_destina
     );
 }
 
+/// Whether a [`Cataloged`] source's catalog has since gained a stream shown as `a.b.c`: each test
+/// runs in a process of its own, so the test that sets this reaches no other.
+static GROWN: AtomicBool = AtomicBool::new(false);
+
 /// What a [`Cataloged`] source's configuration lists to have it never answer.
 const STALLS: &str = "stalls";
 
@@ -318,7 +322,12 @@ impl SourceConnector for Cataloged {
             [name] => StreamName::new(name),
             _ => panic!("a stream is named by one part or two"),
         });
-        let specs = named.map(|name| StreamSpec::new(name.expect("a stream's name")));
+        let grown = GROWN
+            .load(Ordering::SeqCst)
+            .then(|| StreamName::with_namespace("a.b", "c"));
+        let specs = named
+            .chain(grown)
+            .map(|name| StreamSpec::new(name.expect("a stream's name")));
         Ok(Catalog::new(specs.collect()).expect("a catalog"))
     }
 }
@@ -337,6 +346,28 @@ async fn a_reset_resolves_a_name_against_the_source_s_catalog() {
         .expect("built");
     let reset = pipeline.reset(["a.b.c"], ResetScope::Positions).await;
     let refused = reset.expect_err("two streams of the catalog show as a.b.c");
+    assert_eq!(refused.code().map(Code::as_str), Some("stream_ambiguous"));
+    assert!(
+        refused.to_string().contains("the source's catalog"),
+        "{refused}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reset_refuses_a_planned_name_another_stream_of_the_catalog_has_come_to_show_as() {
+    let listed = serde_json::json!([["a", "b.c"]]);
+    let source = Side::new(Connector::new(Cataloged::ID)).config(listed);
+    let destination = Side::new(Connector::new("io.rapidbyte.memory"))
+        .config(serde_json::json!({ "store": "facade-grown" }));
+    let host = memory_host().source::<Cataloged>();
+    let pipeline = Pipeline::builder("grown", source, destination)
+        .stream(Stream::new("a.b.c"))
+        .build(&host)
+        .await
+        .expect("one stream shows as a.b.c when built");
+    GROWN.store(true, Ordering::SeqCst);
+    let reset = pipeline.reset(["a.b.c"], ResetScope::Tables).await;
+    let refused = reset.expect_err("two streams of the catalog show as a.b.c now");
     assert_eq!(refused.code().map(Code::as_str), Some("stream_ambiguous"));
     assert!(
         refused.to_string().contains("the source's catalog"),
