@@ -6,6 +6,8 @@ use rdlt_engine::{Transform, codes};
 
 use super::Sql;
 use crate::contain::PANICS;
+use crate::limits::PLANS;
+use crate::planned::Planned;
 use crate::{SQL_BYTES, SqlErrorKind, function_names};
 
 #[test]
@@ -198,6 +200,37 @@ fn a_schema_is_planned_once_however_many_ask_for_it_at_once_and_found_by_the_one
     let found = sql.planned(&again, Some(&again)).unwrap();
     assert!(Arc::ptr_eq(&found, &planned[0]));
     assert!(Arc::ptr_eq(&sql.plans.lock()[0].input, &again));
+}
+
+#[test]
+fn a_schema_asked_for_again_outlasts_those_asked_for_since_it_was_planned() {
+    // Nine schemas, each with a column of its own.
+    let schemas: Vec<SchemaRef> = (0..=PLANS)
+        .map(|place| {
+            let own = Field::new(format!("c{place}"), DataType::Int64, true);
+            Arc::new(Schema::new(vec![
+                Field::new("n", DataType::Int64, true),
+                own,
+            ]))
+        })
+        .collect();
+    // Found by the very schema a batch holds, and by an equal one, as a schema's output is.
+    let lookups: [fn(&Sql, &SchemaRef) -> Arc<Planned>; 2] = [
+        |sql, schema| sql.planned(schema, Some(schema)).unwrap(),
+        |sql, schema| sql.planned(&Schema::clone(schema), None).unwrap(),
+    ];
+    for planned in lookups {
+        let sql = Sql::parse("SELECT n FROM input").unwrap();
+        let first: Vec<Arc<Planned>> = schemas[..PLANS]
+            .iter()
+            .map(|schema| planned(&sql, schema))
+            .collect();
+        assert!(Arc::ptr_eq(&planned(&sql, &schemas[0]), &first[0]));
+        planned(&sql, &schemas[PLANS]);
+        assert!(Arc::ptr_eq(&planned(&sql, &schemas[0]), &first[0]));
+        assert!(!Arc::ptr_eq(&planned(&sql, &schemas[1]), &first[1]));
+        assert_eq!(sql.plans.lock().len(), PLANS);
+    }
 }
 
 #[test]

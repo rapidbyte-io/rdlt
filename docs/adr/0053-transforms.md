@@ -158,7 +158,8 @@ determinism under simulation whatever the configuration says.
     evaluates batch by batch on its pool. No session executes them, so DataFusion starts no
     task or thread and keeps no memory pool. A bare column is passed on without a copy.
   - A query is planned once for each input schema it meets, however many batches ask at once,
-    and keeps the plans of the last eight; planning one schema holds up no other's. Identifiers
+    and keeps the plans of the eight it was asked for most recently; planning one schema holds
+    up no other's. Identifiers
     are matched as written, time is in UTC, and an output expression other than a bare column is
     named.
   - SQL is hostile input: text of at most 64 KiB, expressions nested at most 64 deep, literals
