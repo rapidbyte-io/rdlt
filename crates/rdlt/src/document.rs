@@ -1,5 +1,7 @@
 //! A pipeline's document: one model, which a builder builds and a file holds.
 
+#[cfg(test)]
+pub(crate) mod drawn;
 mod fault;
 mod hostile;
 mod modes;
@@ -13,10 +15,17 @@ mod transform;
 mod units;
 mod until;
 
+use std::fs::File;
+use std::io;
+use std::path::Path;
+
+use rustix::fs::{Mode, OFlags};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::Error;
+use self::fault::Fault;
+use crate::limits::DOCUMENT_BYTES;
+use crate::{Error, codes};
 
 pub use modes::{
     DeleteMode, Hint, Nested, OnTruncate, OnUnsupported, ReadMode, RetentionLoss, SchemaPolicy,
@@ -25,7 +34,7 @@ pub use modes::{
 pub use policies::{Commit, Resources, Retry};
 pub use side::{Access, Connector, ConnectorReference, Side};
 pub use stream::{Column, Defaults, SchemaRules, Stream};
-pub(crate) use transform::refers_to_secret;
+pub(crate) use transform::{KEY_WRITTEN_OUT, refers_to_secret};
 pub use transform::{MaskStep, MaskWith, TransformStep};
 pub use until::Until;
 
@@ -136,11 +145,93 @@ impl Document {
     /// # Ok::<(), rdlt::Error>(())
     /// ```
     pub fn parse(text: &str) -> Result<Self, Error> {
-        hostile::read(text).map_err(|fault| Error::config(fault.code(), fault.render(None)))
+        hostile::read(text).map_err(|fault| refused(&fault, None))
+    }
+
+    /// The document `text` holds, read as [`parse`](Self::parse) reads it; its errors start with
+    /// `origin`, where a file's path would stand.
+    ///
+    /// # Errors
+    ///
+    /// As `parse`.
+    pub fn from_text(text: &str, origin: &str) -> Result<Self, Error> {
+        hostile::read(text).map_err(|fault| refused(&fault, Some(origin)))
+    }
+
+    /// The document in the file at `path`, read as [`parse`](Self::parse) reads text; its errors
+    /// start with the file's name.
+    ///
+    /// # Errors
+    ///
+    /// `document_unreadable` where the path names no regular file, or the file cannot be read or
+    /// is no UTF-8; `document_too_large` past [`DOCUMENT_BYTES`], else as `parse`.
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let bytes = regular_file_bytes(path).map_err(|error| Error::unreadable(path, error))?;
+        let origin = path.display().to_string();
+        if bytes.len() > DOCUMENT_BYTES {
+            return Err(refused(&Fault::too_large(), Some(&origin)));
+        }
+        // The error holds the file's bytes; its position alone is kept.
+        let text = String::from_utf8(bytes)
+            .map_err(|error| Error::unreadable(path, error.utf8_error()))?;
+        Self::from_text(&text, &origin)
+    }
+
+    /// The document as YAML, every secret still a reference.
+    ///
+    /// # Errors
+    ///
+    /// `mask_key_literal` where a mask's key is written out: a document holds a secret reference,
+    /// never the key, so such a document is never written. `document_invalid` should anything
+    /// else in it have no form in YAML.
+    pub fn to_yaml(&self) -> Result<String, Error> {
+        let written_out = |step: &TransformStep| {
+            matches!(step, TransformStep::Mask(mask)
+                if mask.key.as_deref().is_some_and(|key| !refers_to_secret(key)))
+        };
+        let steps = self.streams.iter().flat_map(|stream| &stream.transform);
+        if steps.into_iter().any(written_out) {
+            return Err(Error::config(codes::MASK_KEY_LITERAL, KEY_WRITTEN_OUT));
+        }
+        serde_saphyr::to_string(self).map_err(|cause| {
+            let message = "the document cannot be written as YAML";
+            Error::config_caused(codes::DOCUMENT_INVALID, message, cause)
+        })
     }
 
     /// The JSON Schema every document satisfies, for editors and tools that check one.
     pub fn json_schema() -> serde_json::Value {
         schemars::schema_for!(Self).to_value()
     }
+}
+
+/// The error `fault` is, its text naming `origin`.
+fn refused(fault: &Fault, origin: Option<&str>) -> Error {
+    Error::config(fault.code(), fault.render(origin))
+}
+
+/// The bytes of the regular file at `path`, at most one past a document's limit.
+///
+/// A pipe or a terminal is opened without waiting and refused on what was opened, so nothing can
+/// hold the caller and no name is checked apart from the file it names.
+fn regular_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let flags = OFlags::RDONLY
+        .union(OFlags::NONBLOCK)
+        .union(OFlags::NOCTTY)
+        .union(OFlags::CLOEXEC);
+    let file = File::from(rustix::fs::open(path, flags, Mode::empty())?);
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "it is no regular file",
+        ));
+    }
+    let limit = u64::try_from(DOCUMENT_BYTES)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut bytes = Vec::new();
+    file.take(limit).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }

@@ -1,4 +1,9 @@
+use std::collections::BTreeSet;
+use std::sync::mpsc;
 use std::time::Duration;
+
+use proptest::prelude::*;
+use rdlt_connector::{Catalog, StreamName, StreamSpec};
 
 use super::Document;
 use crate::{
@@ -946,4 +951,211 @@ fn the_document_s_json_schema_is_what_tools_check_one_against() {
     for key in ["version", "pipeline", "source", "destination", "streams"] {
         assert!(required.contains(&serde_json::json!(key)), "{key}");
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
+
+    /// A built document written as YAML reads back equal, and lowers to an equal plan.
+    #[test]
+    fn a_document_written_reads_back_to_the_same_plan(document in super::drawn::documents()) {
+        let written = document.to_yaml().expect("a built document writes");
+        let read = Document::parse(&written).expect("a written document reads");
+        prop_assert_eq!(&read, &document);
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let lowered = |document: &Document| {
+            let named = document.streams.iter().filter_map(|s| StreamName::new(&s.name).ok());
+            let names: BTreeSet<StreamName> = named.collect();
+            let offered = Catalog::new(names.into_iter().map(StreamSpec::new).collect()).unwrap();
+            runtime.block_on(async {
+                let prepared = crate::lower::prepare(document, &crate::Host::new()).await;
+                prepared
+                    .and_then(|prepared| prepared.bind(&offered))
+                    .map(|lowered| (lowered.plan, lowered.config))
+                    .map_err(|error| error.code())
+            })
+        };
+        prop_assert_eq!(lowered(&read), lowered(&document));
+    }
+
+    /// Any text a document holds, however hostile to YAML's syntax, is written so it reads back:
+    /// quoted where it would otherwise be a tag, an alias, a number, a boolean or a comment.
+    #[test]
+    fn any_text_reads_back_as_it_was_written(text in any::<String>(), key in any::<String>()) {
+        let mut document = example();
+        document.pipeline = text.clone();
+        document.streams[1].name = text.clone();
+        document.source.config = serde_json::json!({ key.clone(): text.clone(), "t": [text.clone()] });
+        let written = document.to_yaml().expect("it writes");
+        prop_assert_eq!(Document::parse(&written).expect("it reads"), document);
+    }
+}
+
+#[test]
+fn a_document_reads_from_its_file_and_errors_name_the_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("orders.yaml");
+    std::fs::write(&path, example().to_yaml().unwrap()).unwrap();
+    assert_eq!(Document::from_path(&path).unwrap(), example());
+    std::fs::write(&path, "version: 1\nwhat: 1\n").unwrap();
+    let error = Document::from_path(&path).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .starts_with(&format!("{}:2:1:", path.display())),
+        "{error}"
+    );
+    let missing = Document::from_path(directory.path().join("absent.yaml")).unwrap_err();
+    assert_eq!(
+        missing.code().map(rdlt_engine::Code::as_str),
+        Some("document_unreadable")
+    );
+    assert!(missing.to_string().contains("absent.yaml"), "{missing}");
+    assert!(std::error::Error::source(&missing).is_some());
+    let directory_is_no_file = Document::from_path(directory.path()).unwrap_err();
+    assert_eq!(
+        directory_is_no_file.code().map(rdlt_engine::Code::as_str),
+        Some("document_unreadable")
+    );
+}
+
+#[test]
+fn a_file_past_the_limit_is_refused_at_any_byte_and_one_at_it_reads() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("large.yaml");
+    let text = example().to_yaml().unwrap();
+    let limit = crate::limits::DOCUMENT_BYTES;
+    let padded = |bytes: usize| format!("{text}# {}\n", "x".repeat(bytes - text.len() - 3));
+    std::fs::write(&path, padded(limit)).unwrap();
+    assert_eq!(Document::from_path(&path).unwrap(), example());
+    std::fs::write(&path, padded(limit + 1)).unwrap();
+    let error = Document::from_path(&path).unwrap_err();
+    assert_eq!(
+        error.code().map(rdlt_engine::Code::as_str),
+        Some("document_too_large")
+    );
+    assert!(error.to_string().contains("large.yaml"), "{error}");
+    // A byte after the limit that splits a character is still a file too large, not text unread.
+    let mut bytes = padded(limit).into_bytes();
+    bytes.extend_from_slice(&[0xe2, 0x82]);
+    std::fs::write(&path, bytes).unwrap();
+    let error = Document::from_path(&path).unwrap_err();
+    assert_eq!(
+        error.code().map(rdlt_engine::Code::as_str),
+        Some("document_too_large")
+    );
+    std::fs::write(&path, [b'v', 0xff]).unwrap();
+    let unreadable = Document::from_path(&path).unwrap_err();
+    assert_eq!(
+        unreadable.code().map(rdlt_engine::Code::as_str),
+        Some("document_unreadable")
+    );
+}
+
+#[test]
+fn a_path_that_is_no_regular_file_is_refused_without_waiting_on_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let fifo = directory.path().join("a fifo");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+    assert!(made.unwrap().success(), "mkfifo makes a pipe");
+    for path in [fifo, directory.path().to_owned()] {
+        let shown = path.display().to_string();
+        let (done, read) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("reading what is no regular file".to_owned())
+            .spawn(move || done.send(Document::from_path(path)).ok())
+            .unwrap();
+        let read = read
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|_| panic!("reading {shown} must not wait on it"));
+        let error = read.expect_err("no regular file reads");
+        assert_eq!(
+            error.code().map(rdlt_engine::Code::as_str),
+            Some("document_unreadable"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("regular file"), "{error}");
+    }
+}
+
+#[test]
+fn a_file_of_no_text_is_refused_holding_none_of_its_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("document.yaml");
+    std::fs::write(&path, b"CANARY-value-9f3\xff").unwrap();
+    let error = Document::from_path(&path).unwrap_err();
+    assert_eq!(
+        error.code().map(rdlt_engine::Code::as_str),
+        Some("document_unreadable")
+    );
+    let said = super::fault::tests::said(&error);
+    assert!(
+        !super::fault::tests::holds(&said, "CANARY-value-9f3"),
+        "{said}"
+    );
+    assert!(error.to_string().contains("utf-8"), "{error}");
+}
+
+#[test]
+fn a_document_read_from_text_names_its_origin_where_a_file_would_stand() {
+    let written = example().to_yaml().unwrap();
+    let read = crate::Pipeline::from_text(&written, "<python>").expect("read");
+    assert_eq!(read.document(), &example());
+    let error = Document::from_text("version: 1\nwhat: 1\n", "<python>").unwrap_err();
+    assert!(error.to_string().starts_with("<python>:2:1:"), "{error}");
+    let refused = crate::Pipeline::from_text("version: 1\nwhat: 1\n", "<python>").unwrap_err();
+    assert!(
+        refused.to_string().starts_with("<python>:2:1:"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_pipeline_reads_from_its_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("orders.yaml");
+    std::fs::write(&path, example().to_yaml().unwrap()).unwrap();
+    let read = crate::Pipeline::from_path(&path).expect("it reads");
+    assert_eq!(read.document(), &example());
+    let refused = crate::Pipeline::from_path(directory.path().join("absent.yaml")).unwrap_err();
+    assert_eq!(
+        refused.code().map(rdlt_engine::Code::as_str),
+        Some("document_unreadable")
+    );
+}
+
+/// An `include` naming no column stays apart from none at all: the plan refuses the first and
+/// takes the second, so the reader and the writer must not merge them.
+#[test]
+fn an_include_of_no_columns_reads_and_writes_apart_from_no_include() {
+    let head =
+        "version: 1\npipeline: p\nsource: { connector: a.b }\ndestination: { connector: c.d }\n";
+    let listed = Document::parse(&format!("{head}streams: [{{ name: s, include: [] }}]\n"))
+        .expect("an empty include reads");
+    assert_eq!(listed.streams[0].included, Some(Vec::new()));
+    let written = listed.to_yaml().expect("it writes");
+    assert_eq!(Document::parse(&written).expect("it reads back"), listed);
+    let bare =
+        Document::parse(&format!("{head}streams: [{{ name: s }}]\n")).expect("no include reads");
+    assert_eq!(bare.streams[0].included, None);
+    assert!(!bare.to_yaml().expect("it writes").contains("include"));
+}
+
+#[test]
+fn a_document_with_a_key_written_out_is_never_written() {
+    let literal = MaskStep::new(["email"], MaskWith::HmacSha256).key("CANARY-key");
+    let mut document = example();
+    document.streams[0].transform[0] = TransformStep::Mask(literal);
+    let refused = document
+        .to_yaml()
+        .expect_err("a key written out is refused");
+    assert_eq!(
+        refused.code().map(rdlt_engine::Code::as_str),
+        Some("mask_key_literal")
+    );
+    let said = format!(
+        "{refused} {refused:?} {}",
+        serde_json::to_string(&refused.report()).unwrap()
+    );
+    assert!(!said.contains("CANARY"), "{said}");
 }
