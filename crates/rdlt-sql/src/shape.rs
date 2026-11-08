@@ -108,6 +108,15 @@ fn not_input() -> SqlError {
     )
 }
 
+/// The refusal of a query that joins tables, for which naming `input` is no help.
+fn joined() -> SqlError {
+    SqlError::new(
+        SqlErrorKind::Shape,
+        "joins are not supported: a SQL transform reads the one table `input`, what the step \
+         before it leaves",
+    )
+}
+
 fn selected(query: &Query) -> Result<&Select, SqlError> {
     let held = [
         (query.with.is_some(), "a `WITH` clause"),
@@ -133,8 +142,11 @@ fn selected(query: &Query) -> Result<&Select, SqlError> {
         return Err(shape("a set operation or a `VALUES` list"));
     };
     held_by(select)?;
+    if select.from.len() > 1 || select.from.iter().any(|from| !from.joins.is_empty()) {
+        return Err(joined());
+    }
     match select.from.as_slice() {
-        [from] if from.joins.is_empty() && plain(&from.relation) => Ok(select),
+        [from] if plain(&from.relation) => Ok(select),
         _ => Err(not_input()),
     }
 }

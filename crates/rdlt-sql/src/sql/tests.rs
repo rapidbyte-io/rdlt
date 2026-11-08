@@ -122,13 +122,14 @@ fn a_query_other_than_a_filtered_projection_of_input_is_refused() {
 }
 
 #[test]
-fn a_query_of_another_table_says_what_to_write() {
+fn a_query_of_anything_but_input_is_told_why() {
     for (name, text) in [
         ("another_table", "SELECT id FROM other"),
         (
             "a_join",
             "SELECT a.id FROM input a JOIN input b ON a.id = b.id",
         ),
+        ("a_comma_join", "SELECT a.id FROM input a, input b"),
     ] {
         let refused = Sql::parse(text)
             .err()

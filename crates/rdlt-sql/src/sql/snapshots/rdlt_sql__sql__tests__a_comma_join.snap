@@ -1,0 +1,5 @@
+---
+source: crates/rdlt-sql/src/sql/tests.rs
+expression: refused.to_string()
+---
+joins are not supported: a SQL transform reads the one table `input`, what the step before it leaves
