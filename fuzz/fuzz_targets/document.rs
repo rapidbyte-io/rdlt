@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
+use std::ops::Range;
 
 use libfuzzer_sys::fuzz_target;
 use peak_alloc::PeakAlloc;
@@ -28,11 +29,17 @@ enum Open {
     Mapping { key_next: bool },
 }
 
+/// A scalar at a value's place, and the bytes of the text that write it.
+struct Value {
+    text: String,
+    written: Range<usize>,
+}
+
 /// The scalars of `text` at a value's place, each of at least `LONG` bytes, and every key.
-fn values_and_keys(text: &str) -> (BTreeSet<String>, BTreeSet<String>) {
-    let (mut values, mut keys, mut open) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
+fn values_and_keys(text: &str) -> (Vec<Value>, BTreeSet<String>) {
+    let (mut values, mut keys, mut open) = (Vec::new(), BTreeSet::new(), Vec::new());
     for parsed in Parser::new_from_str(text) {
-        let Ok((event, _)) = parsed else {
+        let Ok((event, span)) = parsed else {
             break;
         };
         match event {
@@ -44,7 +51,9 @@ fn values_and_keys(text: &str) -> (BTreeSet<String>, BTreeSet<String>) {
                 if key {
                     keys.insert(value.into_owned());
                 } else if value.len() >= LONG {
-                    values.insert(value.into_owned());
+                    let written = span.byte_range().expect("a text's parser counts its bytes");
+                    let text = value.into_owned();
+                    values.push(Value { text, written });
                 }
             }
             Event::SequenceStart(..) | Event::MappingStart(..) => {
@@ -64,6 +73,21 @@ fn values_and_keys(text: &str) -> (BTreeSet<String>, BTreeSet<String>) {
         }
     }
     (values, keys)
+}
+
+/// `text` with each of `values` written over by letters that differ from it at every one, so
+/// that what refuses it can hold a value's text only in the reader's own words.
+fn overwritten(text: &str, values: &[Value]) -> String {
+    let (mut over, mut kept) = (String::with_capacity(text.len()), 0);
+    for value in values {
+        over.push_str(&text[kept..value.written.start]);
+        let other = |letter| if letter == 'x' { 'y' } else { 'x' };
+        over.extend(value.text.chars().map(other));
+        // A block scalar's bytes run through its last line break, which the next line needs.
+        kept = value.written.start + text[value.written.clone()].trim_end().len();
+    }
+    over.push_str(&text[kept..]);
+    over
 }
 
 /// The text of `refusal`, its `Debug`, its report, and each cause's text and `Debug`.
@@ -87,12 +111,25 @@ fuzz_target!(|text: &str| {
             }
         }
         Err(refusal) => {
-            let said = said(&refusal);
+            let told = said(&refusal);
             let (values, keys) = values_and_keys(text);
-            for value in &values {
-                // A key is shown, and a key may hold a value's text.
-                if !keys.iter().any(|key| key.contains(value.as_str())) {
-                    assert!(!said.contains(value.as_str()), "{said} quotes {value:?}");
+            // A key is shown, and a key may hold a value's text.
+            let quoted: Vec<&Value> = values
+                .iter()
+                .filter(|value| told.contains(&value.text))
+                .filter(|value| !keys.iter().any(|key| key.contains(&value.text)))
+                .collect();
+            if !quoted.is_empty() {
+                // The reader's own words may hold a value's text, and do still with it gone.
+                let fixed = rdlt::Document::parse(&overwritten(text, &values))
+                    .err()
+                    .map_or_else(String::new, |refusal| said(&refusal));
+                for value in quoted {
+                    assert!(
+                        fixed.contains(&value.text),
+                        "{told} quotes {:?}",
+                        value.text
+                    );
                 }
             }
         }
