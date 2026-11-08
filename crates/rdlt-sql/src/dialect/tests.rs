@@ -9,14 +9,16 @@ use datafusion_sql::sqlparser::tokenizer::Tokenizer;
 
 use super::reach::charges;
 use super::{Guarded, READS, Refused};
-use crate::{SQL_BYTES, Sql, SqlErrorKind};
+use crate::limits::PARSER_DEPTH;
+use crate::{SQL_BYTES, Sql, SqlErrorKind, stack};
 
-/// Each rule of the generic dialect that takes no character, by name.
+/// Each rule of the generic dialect that takes no character, by name, but whether a query may
+/// name its table first, which the guarded dialect refuses.
 #[expect(
     clippy::type_complexity,
     reason = "a rule is a name and the call that asks a dialect it"
 )]
-const RULES: [(&str, fn(&dyn Dialect) -> bool); 68] = [
+const RULES: [(&str, fn(&dyn Dialect) -> bool); 67] = [
     ("supports_unicode_string_literal", |dialect| {
         dialect.supports_unicode_string_literal()
     }),
@@ -95,9 +97,6 @@ const RULES: [(&str, fn(&dyn Dialect) -> bool); 68] = [
     }),
     ("supports_update_order_by", |dialect| {
         dialect.supports_update_order_by()
-    }),
-    ("supports_from_first_select", |dialect| {
-        dialect.supports_from_first_select()
     }),
     ("supports_projection_trailing_commas", |dialect| {
         dialect.supports_projection_trailing_commas()
@@ -236,6 +235,36 @@ fn the_dialect_keeps_every_rule_of_the_generic_one() {
         assert_eq!(asked(guarded), asked(generic), "{rule}");
     }
     assert_eq!(guarded.dialect(), generic.dialect());
+}
+
+/// What reading `text` spends and what its budget allows, read as [`Sql::parse`] reads it, and
+/// whether the reading fails.
+fn spending(text: &str) -> (usize, usize, bool) {
+    let tokens = Tokenizer::new(&Guarded::reading(&[]), text)
+        .tokenize_with_location()
+        .unwrap();
+    stack::text(text.len(), || {
+        let dialect = Guarded::reading(&tokens);
+        let parsed = Parser::new(&dialect)
+            .with_recursion_limit(PARSER_DEPTH)
+            .with_tokens_with_locations(tokens)
+            .parse_statements();
+        (dialect.spent.get(), dialect.reads, parsed.is_err())
+    })
+}
+
+#[test]
+fn a_query_read_with_its_table_first_is_refused() {
+    assert!(GenericDialect.supports_from_first_select());
+    assert!(!Guarded::reading(&[]).supports_from_first_select());
+    let refused = Sql::parse("FROM input SELECT n").unwrap_err();
+    assert_eq!(refused.kind(), SqlErrorKind::Syntax);
+    // Read as a query and again as a join a level, 24 levels spent all their budget.
+    let nest = "FROM(".repeat(24);
+    let text = format!("SELECT {nest}1 +{} AS x FROM input", ")".repeat(24));
+    let (spent, budget, refused) = spending(&text);
+    assert!(refused, "{text}");
+    assert!(spent < budget, "spent {spent} of {budget}");
 }
 
 #[test]

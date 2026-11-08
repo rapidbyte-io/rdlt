@@ -142,7 +142,10 @@ determinism under simulation whatever the configuration says.
     once, as shape refuses it anyway. `INTERVAL` is read as a typed string's type, its operand
     with it, and again as its own syntax, so it is refused where an operand stands too: twenty
     before a 16 KiB list took sixteen seconds. A sweep of every keyword sqlparser knows, each
-    repeated before an operand that fails, finds no other read so. Past every path found, the
+    repeated before an operand that fails, finds no other read so. Nor is a query read with its
+    table first, `FROM input SELECT n`: sqlparser reads each parenthesised table first as such a
+    query and then as a join, so a nest of `FROM (` was read again a level, its work growing as
+    the square of its depth. Past every path found, the
     parser's work is held to 16 a token of the text, backtracks included, and the text is
     refused beyond it: a read costs one and every token a typed string's type tried there may
     take, up to the first bracket within its parentheses, which tables built once for the text
