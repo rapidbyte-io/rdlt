@@ -724,6 +724,27 @@ fn every_refusal_says_what_it_expected() {
 }
 
 #[test]
+fn no_debug_shows_a_side_s_configuration() {
+    let inline = serde_json::json!({ "password": "CANARY", "dsn": "pg://user:CANARY@db/x" });
+    let side = Side::new(Connector::new("io.rapidbyte.postgres"))
+        .config(inline)
+        .access(Access::new().read("/in"));
+    let document = Document::new("p", side.clone(), side.clone());
+    let builder = crate::Pipeline::builder("p", side.clone(), side.clone());
+    for shown in [
+        format!("{side:?}"),
+        format!("{side:#?}"),
+        format!("{document:?}"),
+        format!("{builder:?}"),
+    ] {
+        assert!(!shown.contains("CANARY"), "{shown}");
+        for part in ["io.rapidbyte.postgres", "config", "/in"] {
+            assert!(shown.contains(part), "{shown}");
+        }
+    }
+}
+
+#[test]
 fn a_side_shares_the_network_only_where_it_says_so() {
     for shared in [true, false] {
         let access = serde_json::json!({ "network": shared });

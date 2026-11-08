@@ -12,7 +12,7 @@ use super::read::{self, refuse};
 
 /// A connector as one side of a pipeline: which one, its configuration, and what its placement
 /// lets it reach.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct Side {
@@ -28,6 +28,19 @@ pub struct Side {
         skip_serializing_if = "Access::is_empty"
     )]
     pub access: Access,
+}
+
+/// Shows its connector and access, and of its configuration only that it has one: a
+/// configuration may hold a credential written inline.
+impl fmt::Debug for Side {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Side")
+            .field("connector", &self.connector)
+            .field("config", &format_args!("***"))
+            .field("access", &self.access)
+            .finish()
+    }
 }
 
 fn no_config() -> serde_json::Value {
