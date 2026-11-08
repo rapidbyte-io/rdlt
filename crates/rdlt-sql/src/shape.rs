@@ -211,8 +211,28 @@ fn scalar(data_type: &DataType) -> Option<DataType> {
     }
 }
 
-/// Whether `data_type` is a listed scalar type as DataFusion plans it.
+/// Whether `data_type` is a listed scalar type as DataFusion plans it: a timestamp only at a
+/// precision it plans, and a time only of none and no time zone.
 fn as_planned(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Timestamp(precision, _) => planned(*precision),
+        DataType::Time(precision, zone) => {
+            precision.is_none()
+                && matches!(zone, TimezoneInfo::None | TimezoneInfo::WithoutTimeZone)
+        }
+        other => timeless(other),
+    }
+}
+
+/// Whether a timestamp of `precision` digits is one DataFusion plans: seconds, milliseconds,
+/// microseconds or nanoseconds.
+fn planned(precision: Option<u64>) -> bool {
+    matches!(precision, None | Some(0 | 3 | 6 | 9))
+}
+
+/// Whether `data_type` is a listed scalar type other than a time or a timestamp, as DataFusion
+/// plans it.
+fn timeless(data_type: &DataType) -> bool {
     matches!(
         data_type,
         DataType::Boolean
@@ -246,15 +266,12 @@ fn as_planned(data_type: &DataType) -> bool {
             | DataType::Text
             | DataType::String(_)
             | DataType::Date
-            | DataType::Time(..)
-            | DataType::Timestamp(..)
     )
 }
 
 /// The listed scalar type `data_type` spells otherwise, as DataFusion plans it, where it is one:
 /// a timestamp only at a precision DataFusion plans.
 fn respelled(data_type: &DataType) -> Option<DataType> {
-    let planned = |precision: Option<u64>| matches!(precision, None | Some(0 | 3 | 6 | 9));
     let listed = match data_type {
         DataType::Character(length) => DataType::Char(*length),
         DataType::CharacterVarying(length)
