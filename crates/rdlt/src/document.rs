@@ -160,8 +160,10 @@ impl Document {
     }
 
     /// The document in the file at `path`, read as [`parse`](Self::parse) reads text and on a
-    /// blocking task, so a stalled path holds up no runtime worker; its errors start with the
-    /// file's name.
+    /// blocking task, so a stalled path holds up no runtime worker.
+    ///
+    /// A fault in its text starts with the file's name, and a file that cannot be read is named
+    /// in its error.
     ///
     /// # Errors
     ///
