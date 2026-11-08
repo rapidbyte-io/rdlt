@@ -24,7 +24,9 @@ async fn a_host_file_reads_in_the_operator_s_words() {
     );
     assert!(file.trust_binaries);
     assert_eq!(file.remote, None);
-    drop(file.host().await.expect("a host"));
+    // Its placement settings need `local`, and a build without it refuses them.
+    let built = file.host().await;
+    assert_eq!(built.is_ok(), cfg!(feature = "local"), "{:?}", built.err());
     let unknown = HostFile::parse("conectors: [/opt]\n").unwrap_err();
     assert!(
         unknown.to_string().contains("did you mean `connectors`?"),
