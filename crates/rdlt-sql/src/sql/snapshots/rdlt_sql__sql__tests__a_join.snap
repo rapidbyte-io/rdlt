@@ -2,4 +2,4 @@
 source: crates/rdlt-sql/src/sql/tests.rs
 expression: refused.to_string()
 ---
-a SQL transform reads one table, `input`: what the step before it leaves; write `FROM input`
+joins are not supported: a SQL transform reads the one table `input`, what the step before it leaves
