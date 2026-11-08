@@ -297,7 +297,7 @@ pub(super) fn optional_text<'de, D: Deserializer<'de>>(
 }
 
 /// A document's list of texts, for `#[serde(deserialize_with)]`.
-pub(super) fn texts<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+pub(crate) fn texts<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
     let Listed(texts) = Listed::<Text>::deserialize(deserializer)?;
     Ok(texts.into_iter().map(|Text(text)| text).collect())
 }

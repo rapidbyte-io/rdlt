@@ -42,7 +42,11 @@ pub struct HostFile {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub always_readable: Vec<PathBuf>,
     /// Environment variables a configuration's `${env:NAME}` reaches.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::document::texts"
+    )]
     pub allow_env: Vec<String>,
     /// Directories a configuration's `${file:/path}` reaches beneath.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
