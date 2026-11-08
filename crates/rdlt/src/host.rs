@@ -34,11 +34,13 @@ use crate::{Connector, Error, Side, codes};
 /// sandbox, finds them nowhere, lets a pipeline grant nothing and resolves no secret.
 ///
 /// ```
+/// # #[cfg(feature = "local")] {
 /// let host = rdlt::Host::new()
 ///     .connectors("/opt/rdlt/bin")
 ///     .writable("/data")
 ///     .allow_env(["DB_PASSWORD"]);
 /// # drop(host);
+/// # }
 /// ```
 #[must_use]
 pub struct Host {

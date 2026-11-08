@@ -217,8 +217,8 @@ impl Pipeline {
         &self.placed.1
     }
 
-    /// The pipeline, each of its runs keeping its last `events` events for subscribers that
-    /// fall behind: [`EVENT_BUFFER`] unless set, and at most [`EVENT_BUFFER_MAX`].
+    /// The pipeline, each of its runs keeping at least its last `events` events for subscribers
+    /// that fall behind: [`EVENT_BUFFER`] unless set, and at most [`EVENT_BUFFER_MAX`] asked for.
     #[must_use]
     pub fn with_event_buffer(mut self, events: NonZeroUsize) -> Self {
         self.event_buffer = events.min(MOST_EVENTS);
