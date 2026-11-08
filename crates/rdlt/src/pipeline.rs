@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use rdlt_connector::{Catalog, Destination, Role, Source, StreamName};
 use rdlt_engine::{Engine, EngineConfig, Env, PipelinePlan, ResetReport, ResetScope, SystemEnv};
-use rdlt_host::{Placed, Provider as _};
+use rdlt_host::{Placed, Provider as _, ProviderError};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
@@ -95,6 +95,8 @@ impl PipelineBuilder {
     /// and each checked against the catalog and the destination's capabilities, as a run's
     /// start checks it.
     ///
+    /// A connector not placed within the host's wait fails as `deadline_exceeded`, retryable.
+    ///
     /// Nothing is read and no session opens. A run of the built pipeline can still refuse its
     /// configuration against what earlier runs committed, as a stream whose key differs from
     /// the key its table was created with.
@@ -108,14 +110,11 @@ impl PipelineBuilder {
         let source = lower::reference(&document.source, Role::Source)?;
         let destination = lower::reference(&document.destination, Role::Destination)?;
         let provider = host.provider();
-        let source = provider
-            .source(&source, &document.source.config)
-            .await
-            .map_err(|error| Error::placement(Role::Source, error))?;
-        let destination = provider
-            .destination(&destination, &document.destination.config)
-            .await
-            .map_err(|error| Error::placement(Role::Destination, error))?;
+        let wait = host.wait();
+        let placing_source = provider.source(&source, &document.source.config);
+        let source = placed(Role::Source, wait, placing_source).await?;
+        let placing_destination = provider.destination(&destination, &document.destination.config);
+        let destination = placed(Role::Destination, wait, placing_destination).await?;
         let (source, source_placed) = shared(source);
         let (destination, destination_placed) = shared(destination);
         let catalog = discovered(source.as_ref(), prepared.connector_wait()).await?;
@@ -152,6 +151,19 @@ fn shared<T: ?Sized>(placed: Placed<Box<T>>) -> (Arc<T>, PlacedConnector) {
         placement: Placement::of(placed.placement),
     };
     (Arc::from(placed.connector), summary)
+}
+
+/// What `placing` places as `role`, within `wait`; given up at the wait, which drops all it had
+/// begun.
+async fn placed<T>(
+    role: Role,
+    wait: Duration,
+    placing: impl Future<Output = Result<T, ProviderError>>,
+) -> Result<T, Error> {
+    let Ok(answered) = tokio::time::timeout(wait, placing).await else {
+        return Err(Error::expired(role, "placing the connector", wait));
+    };
+    answered.map_err(|error| Error::placement(role, error))
 }
 
 /// The catalog `source` offers, answered within `wait`, the engine's wait for a connector's call.
