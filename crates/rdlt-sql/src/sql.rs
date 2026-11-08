@@ -71,7 +71,7 @@ impl Sql {
         let tokens = Tokenizer::new(&Guarded::reading(&[]), text)
             .tokenize_with_location()
             .map_err(|error| shape::broken(error.location))?;
-        let (statement, filters) = stack::text(|| read(tokens))?;
+        let (statement, filters) = stack::text(text.len(), || read(tokens))?;
         Ok(Self {
             statement,
             filters,

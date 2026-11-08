@@ -234,8 +234,8 @@ opt-level = 3
 opt-level = 3
 
 # sqlparser is built optimised, as releases build it: a nested type is parsed a frame a level,
-# and the stack SQL text is parsed on is sized for optimised frames; unoptimised, 64 KiB of nested
-# `ARRAY<` takes sixteen times the stack.
+# and the stack SQL text is parsed on is sized for optimised frames; unoptimised, nested
+# `TABLE(a ` takes 4 KiB of stack a byte of text, all the stack a text is given.
 [profile.dev.package.sqlparser]
 opt-level = 3
 

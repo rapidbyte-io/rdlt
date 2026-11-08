@@ -181,11 +181,14 @@ determinism under simulation whatever the configuration says.
     lies within as many as lie above it, and a chain of operators is as deep as it has
     operators. A tree deeper than the limit is refused before anything else reads it.
   - A query's text is parsed, measured and checked, and what is refused dropped, on a stack of
-    its own, 256 MiB, which only the text's size bounds the use of. The deepest
-    tree 64 KiB of text builds is a nested type, which sqlparser parses and drops a frame a
-    level outside its recursion limit. Of every type the dialect nests, 64 KiB of `TABLE(a `
-    takes the most: 38.1 MiB on the dev profile, 36.1 MiB on the release profile and 45.1 MiB
-    built for coverage, more than five times under the stack. A type is the one part of a query
+    its own, 4 KiB for each byte of the text, at least 1 MiB and at most 256 MiB, so a short
+    query reserves little where a host commits memory strictly. The deepest tree text builds is
+    a nested type, which sqlparser parses and drops a frame a level outside its recursion
+    limit, so the stack it takes grows with the text. Of every type the dialect nests, `TABLE(a `
+    takes the most: at 1 KiB, 8 KiB and 64 KiB, 647 KiB, 4.8 MiB and 38.0 MiB on the dev
+    profile and 751 KiB, 5.6 MiB and 44.5 MiB built for coverage, 0.73 KiB a byte at most, and
+    36.1 MiB at 64 KiB on the release profile: more than five times under the stack at each
+    length. A type is the one part of a query
     its expressions' depth does not bound, so a cast may name only a listed scalar type, and an
     admitted query is flat in its types and at most 64 deep in its expressions before anything
     clones, plans or runs it.
@@ -232,6 +235,6 @@ determinism under simulation whatever the configuration says.
 - SQL handed a dictionary or a run-end encoded column directly, outside a stream's stage, passes
   it on and tests it for null but computes nothing else from it.
 - The stack SQL text is parsed on is sized for sqlparser optimised, as a release builds it, and
-  as this workspace's dev profile builds it too: unoptimised, 64 KiB of nested `ARRAY<` takes
-  more than 128 MiB, sixteen times what it takes optimised, and outgrows the stack. An
-  embedder's own dev profile builds sqlparser optimised alike.
+  as this workspace's dev profile builds it too: unoptimised, nested `TABLE(a ` takes 4 KiB of
+  stack a byte of text, 252 MiB at 64 KiB, all its stack holds, and a nest of 1 KiB outgrows
+  its 4 MiB. An embedder's own dev profile builds sqlparser optimised alike, as README says.
