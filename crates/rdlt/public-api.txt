@@ -1182,7 +1182,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Stream
 impl core::panic::unwind_safe::UnwindSafe for rdlt::Stream
 pub struct rdlt::Tls
 impl rdlt::Tls
-pub fn rdlt::Tls::from_files(impl core::convert::Into<std::path::PathBuf>, impl core::convert::Into<std::path::PathBuf>, impl core::convert::Into<std::path::PathBuf>) -> core::result::Result<Self, rdlt::Error>
+pub async fn rdlt::Tls::from_files(impl core::convert::Into<std::path::PathBuf>, impl core::convert::Into<std::path::PathBuf>, impl core::convert::Into<std::path::PathBuf>) -> core::result::Result<Self, rdlt::Error>
 impl core::clone::Clone for rdlt::Tls
 pub fn rdlt::Tls::clone(&self) -> rdlt::Tls
 impl core::cmp::Eq for rdlt::Tls

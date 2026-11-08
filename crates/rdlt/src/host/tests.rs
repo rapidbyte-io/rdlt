@@ -184,17 +184,40 @@ async fn a_configuration_reaches_a_private_file_only_beneath_a_directory_the_hos
 
 #[cfg(feature = "remote")]
 #[tokio::test]
+async fn a_tls_file_is_a_regular_file_and_a_pipe_holds_nothing_up() {
+    use std::time::Duration;
+
+    let pki = rdlt_testkit::tls::Pki::new("ca");
+    let identity = pki.client("host");
+    let holder = tempfile::tempdir().expect("a directory");
+    let pipe = holder.path().join("ca.pem");
+    let made = std::process::Command::new("mkfifo").arg(&pipe).status();
+    assert!(made.expect("mkfifo runs").success());
+    for unread in [holder.path(), pipe.as_path()] {
+        let reading = super::Tls::from_files(&identity.cert, &identity.key, unread);
+        let bounded = tokio::time::timeout(Duration::from_secs(60), reading);
+        let refused = bounded
+            .await
+            .expect("nothing waits for a writer")
+            .expect_err("no regular file");
+        assert_eq!(refused.code(), Some(Code::new("tls_unreadable")));
+        assert_eq!(refused.kind(), ErrorKind::Config);
+    }
+}
+
+#[cfg(feature = "remote")]
+#[tokio::test]
 async fn a_host_given_tls_dials_a_reference_with_an_endpoint_presenting_its_files() {
     use std::time::Duration;
 
     let pki = rdlt_testkit::tls::Pki::new("ca");
     let identity = pki.client("host");
     let missing = pki.dir().join("absent.pem");
-    let unread = super::Tls::from_files(&identity.cert, &identity.key, &missing);
+    let unread = super::Tls::from_files(&identity.cert, &identity.key, &missing).await;
     let unread = unread.expect_err("a file that is not there");
     assert_eq!(unread.code(), Some(Code::new("tls_unreadable")));
     assert_eq!(unread.kind(), ErrorKind::Config);
-    let tls = super::Tls::from_files(&identity.cert, &identity.key, pki.ca());
+    let tls = super::Tls::from_files(&identity.cert, &identity.key, pki.ca()).await;
     let host = Host::new().remote(tls.expect("the files open"));
     let far = Connector::new("io.example.far").endpoint("grpcs://127.0.0.1:1");
     let placing = tokio::time::timeout(Duration::from_secs(60), host.spec(&far, Role::Source));
