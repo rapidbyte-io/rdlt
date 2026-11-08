@@ -118,7 +118,7 @@ test *args: python-env
     cargo test --workspace --all-features --doc
     cargo nextest run --workspace --all-features --benches -E 'kind(bench)'
     cargo nextest run --package rdlt-connector --features serve -E 'test(serve::probes)'
-    cargo nextest run --package rdlt --no-default-features -E 'test(/sql_step_needs_the_sql_feature/)'
+    cargo nextest run --package rdlt --no-default-features -E 'test(/sql_step_needs_the_sql_feature|setting_of_a_feature_not_built/)'
     just python-test
 
 # Build the simulation's integration tests in the `sim` profile, optimised with its overflow
