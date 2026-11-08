@@ -105,17 +105,37 @@ impl Entry {
 /// # Errors
 ///
 /// `stream_invalid` for text that is neither.
-pub(crate) fn written(shown: &str) -> Result<StreamName, Error> {
-    let parted = |refused| {
-        let mut splits = shown.match_indices('.');
-        splits
-            .find_map(|(dot, _)| StreamName::with_namespace(&shown[..dot], &shown[dot + 1..]).ok())
-            .ok_or(refused)
-    };
+pub(super) fn written(shown: &str) -> Result<StreamName, Error> {
+    let parted = |refused| splits(shown).next().ok_or(refused);
     StreamName::new(shown).or_else(parted).map_err(|error| {
         let message = format!("a stream's name is not one: {error}");
         Error::config_caused(codes::STREAM_INVALID, message, error)
     })
+}
+
+/// The stream a reset names as `shown`, which neither its pipeline nor the catalog shows: read
+/// as [`written`] reads it, where only one namespace and name can be meant.
+///
+/// # Errors
+///
+/// `stream_ambiguous` for text that splits into a namespace and a name more than one way, since
+/// a guess could reset another stream's positions; `stream_invalid` as [`written`] says.
+pub(crate) fn unlisted(shown: &str) -> Result<StreamName, Error> {
+    if splits(shown).nth(1).is_some() {
+        let message = format!(
+            "stream {shown}: it reads as more than one namespace and name, and neither the \
+             pipeline nor the source's catalog says which: name it by its identity, a StreamName"
+        );
+        return Err(Error::config(rdlt_engine::codes::STREAM_AMBIGUOUS, message).in_stream(shown));
+    }
+    written(shown)
+}
+
+/// Each way `shown` reads as a namespace and a name, both valid.
+fn splits(shown: &str) -> impl Iterator<Item = StreamName> + '_ {
+    shown
+        .match_indices('.')
+        .filter_map(|(dot, _)| StreamName::with_namespace(&shown[..dot], &shown[dot + 1..]).ok())
 }
 
 /// `plan`, matching rows by `key` where the document names one, and by the source's primary key

@@ -59,6 +59,38 @@ fn a_builder_sets_each_part_of_its_document() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_reset_refuses_a_name_that_splits_more_than_one_way_where_nothing_says_which() {
+    use rdlt_connector_reference::{MemoryDestination, MemorySource};
+
+    use crate::{Code, Connector, Host, ResetScope, Side, Stream, StreamName};
+
+    let memory = || Connector::new("io.rapidbyte.memory");
+    let source = Side::new(memory()).config(serde_json::json!({ "streams": { "users": [] } }));
+    let destination = Side::new(memory()).config(serde_json::json!({ "store": "splits" }));
+    let host = Host::new()
+        .source::<MemorySource>()
+        .destination::<MemoryDestination>();
+    let pipeline = super::Pipeline::builder("splits", source, destination)
+        .stream(Stream::new("users"))
+        .build(&host)
+        .await
+        .expect("built");
+    let code = |refused: &crate::Error| refused.code().map(Code::as_str).map(str::to_owned);
+    let reset = pipeline.reset(["a.b.c"], ResetScope::Tables).await;
+    let refused = reset.expect_err("a + b.c or a.b + c");
+    assert_eq!(code(&refused).as_deref(), Some("stream_ambiguous"));
+    assert_eq!(refused.stream(), Some("a.b.c"));
+    assert!(refused.to_string().contains("identity"), "{refused}");
+    let exact = StreamName::with_namespace("a", "b.c").expect("a stream's name");
+    let reset = pipeline.reset([exact], ResetScope::Tables).await;
+    let refused = reset.expect_err("never committed");
+    assert_eq!(code(&refused).as_deref(), Some("stream_not_found"));
+    let reset = pipeline.reset(["a.b"], ResetScope::Tables).await;
+    let refused = reset.expect_err("never committed");
+    assert_eq!(code(&refused).as_deref(), Some("stream_not_found"));
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_reset_reaches_a_stream_gone_from_plan_and_catalog_by_its_identity() {
     use rdlt_connector_reference::{MemoryDestination, MemorySource};
 

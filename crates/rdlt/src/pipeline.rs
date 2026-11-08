@@ -283,8 +283,9 @@ impl Pipeline {
     /// # Errors
     ///
     /// `stream_invalid` for a name that is no stream's, `stream_ambiguous` for one two of the
-    /// catalog's streams show as, or the engine's refusal, as `stream_not_found` for a stream the
-    /// pipeline never committed.
+    /// catalog's streams show as or one that splits into a namespace and a name more than one
+    /// way with nothing to say which, or the engine's refusal, as `stream_not_found` for a
+    /// stream the pipeline never committed.
     pub async fn reset(
         &self,
         streams: impl IntoIterator<Item = impl Into<StreamSelector>>,
@@ -316,7 +317,8 @@ impl Pipeline {
 
     /// The stream `name` names, against the source's catalog, discovered once into `catalog`: a
     /// name two of its streams show as is refused, whatever the pipeline plans; else the
-    /// pipeline's stream that shows as it, else the catalog's, else a stream of that name.
+    /// pipeline's stream that shows as it, else the catalog's, else a stream of that name where
+    /// only one can be meant.
     async fn stream(&self, name: &str, catalog: &mut Option<Catalog>) -> Result<StreamName, Error> {
         let offered = match catalog {
             Some(offered) => offered,
@@ -334,7 +336,7 @@ impl Pipeline {
         if let Some(stream) = shown {
             return Ok(stream);
         }
-        lower::written(name)
+        lower::unlisted(name)
     }
 }
 

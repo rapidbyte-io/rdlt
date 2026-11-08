@@ -658,8 +658,14 @@ async fn a_shown_name_is_held_to_its_parts_limits() {
     let parted = (Some(namespace.as_str()), name.as_str());
     let stream = lowered.plan.streams()[0].name();
     assert_eq!((stream.namespace(), stream.name()), parted);
-    let unlisted = super::written(&shown).expect("a namespace and a name");
+    let unlisted = super::unlisted(&shown).expect("one namespace and name");
     assert_eq!((unlisted.namespace(), unlisted.name()), parted);
+    let twice = ["n".repeat(100), "m".repeat(100), "t".repeat(100)].join(".");
+    let refused_twice = super::unlisted(&twice).expect_err("two namespaces it could end at");
+    assert_eq!(
+        refused_twice.code().map(Code::as_str),
+        Some("stream_ambiguous")
+    );
     for unnamed in ["n".repeat(300), format!("{}.t", "n".repeat(300))] {
         refused(
             &document(vec![Stream::new(unnamed)]),
