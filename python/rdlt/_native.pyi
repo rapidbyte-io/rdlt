@@ -3,7 +3,7 @@ from datetime import timedelta
 from os import PathLike
 from typing import Protocol, final
 
-__all__ = ["Events", "Host", "Pipeline", "Run", "__version__"]
+__all__ = ["Checkpoint", "Events", "Host", "Pipeline", "Run", "StreamContext", "__version__"]
 
 __version__: str
 
@@ -61,6 +61,20 @@ class Pipeline:
     def reset(self, streams: Sequence[str | _StreamName], *, tables: bool) -> str: ...
     def start(self) -> Run: ...
     def run(self) -> tuple[str, str | None]: ...
+
+@final
+class Checkpoint:
+    def __new__(cls, cursor: str) -> Checkpoint: ...
+
+@final
+class StreamContext:
+    def checkpoint_due(self) -> bool: ...
+    @property
+    def partition(self) -> str | None: ...
+    @property
+    def follows(self) -> bool: ...
+    @property
+    def resumes(self) -> bool: ...
 
 @final
 class Events:
