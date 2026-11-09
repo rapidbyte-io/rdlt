@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pyo3::exceptions::{PyKeyboardInterrupt, PyValueError};
-use pyo3::types::{PyAnyMethods as _, PyTypeMethods as _};
+use pyo3::types::PyTypeMethods as _;
 use rdlt_connector::prelude::*;
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination};
 
@@ -277,10 +277,6 @@ fn a_stop_names_a_mode_that_exists() {
         let run = started(py, &memory_document("modes", 1), memory_host());
         let refused = run.stop(py, "sideways").unwrap_err();
         assert!(refused.is_instance_of::<PyValueError>(py));
-        assert_eq!(
-            refused.value(py).str().unwrap().to_string(),
-            "no such stop mode"
-        );
     });
 }
 

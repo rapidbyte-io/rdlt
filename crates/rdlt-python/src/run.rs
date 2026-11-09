@@ -176,6 +176,7 @@ impl NativeRun {
     /// A subscription to the run's events; the first sees them from the first, a later one from
     /// now on; one asked after a cancelled run is empty, and it holds the run going, as a handle.
     pub(crate) fn events(&self, py: Python<'_>) -> Result<NativeEvents, PyErr> {
+        runtime::get(py)?;
         let first = self.first.lock().take();
         let stream = match first {
             Some(first) => Some(first),
@@ -324,6 +325,7 @@ impl NativeEvents {
 
     /// The next event, the GIL released while it waits; none once the run ended.
     pub(crate) fn __next__(&self, py: Python<'_>) -> Result<Option<String>, PyErr> {
+        runtime::get(py)?;
         loop {
             if let Some(item) = self.reader.take() {
                 return Ok(Some(item));

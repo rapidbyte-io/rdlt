@@ -17,8 +17,17 @@ from rdlt import _native
 StrPath: TypeAlias = "str | os.PathLike[str]"
 """A path, as text or as a `pathlib.Path`."""
 
-_FIRST_BUILD = threading.Lock()
+_first_build = threading.Lock()
 """Held while a host publishes its native handle, so its first builds all share one."""
+
+
+def _first_build_unheld() -> None:
+    """Gives a forked child a lock of its own: one held at the fork is held for ever there."""
+    global _first_build  # noqa: PLW0603
+    _first_build = threading.Lock()
+
+
+os.register_at_fork(after_in_child=_first_build_unheld)
 
 
 def _paths(value: StrPath | Sequence[StrPath]) -> tuple[StrPath, ...]:
@@ -137,7 +146,7 @@ class Host:
             origin = None if self._origin is None else self._origin._native()
             # Made outside the lock, since reading the settings can run a caller's `__fspath__`.
             made = _native.Host(cast("_native._HostSettings", self), origin)
-            with _FIRST_BUILD:
+            with _first_build:
                 if self._handle is None:
                     object.__setattr__(self, "_handle", made)
         return cast("_native.Host", self._handle)
