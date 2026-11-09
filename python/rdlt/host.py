@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -13,6 +14,9 @@ from rdlt import _native
 
 StrPath: TypeAlias = "str | os.PathLike[str]"
 """A path, as text or as a `pathlib.Path`."""
+
+_FIRST_BUILD = threading.Lock()
+"""Held while a host publishes its native handle, so its first builds all share one."""
 
 
 def _paths(value: StrPath | Sequence[StrPath]) -> tuple[StrPath, ...]:
@@ -87,5 +91,9 @@ class Host:
 
     def _native(self) -> _native.Host:
         if self._handle is None:
-            object.__setattr__(self, "_handle", _native.Host(cast("_native._HostSettings", self)))
+            # Made outside the lock, since reading the settings can run a caller's `__fspath__`.
+            made = _native.Host(cast("_native._HostSettings", self))
+            with _FIRST_BUILD:
+                if self._handle is None:
+                    object.__setattr__(self, "_handle", made)
         return cast("_native.Host", self._handle)
