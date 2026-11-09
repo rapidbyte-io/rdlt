@@ -25,6 +25,11 @@ mod pipeline;
 mod run;
 mod runtime;
 mod secrets;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "a source reads partitions next")
+)]
+mod source;
 #[cfg(test)]
 mod tests;
 
@@ -45,5 +50,7 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     module.add_class::<pipeline::NativePipeline>()?;
     module.add_class::<run::NativeRun>()?;
     module.add_class::<run::NativeEvents>()?;
+    module.add_class::<source::context::NativeStreamContext>()?;
+    module.add_class::<source::context::NativeCheckpoint>()?;
     Ok(())
 }

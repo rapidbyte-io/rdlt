@@ -22,7 +22,7 @@ pyo3-async-runtimes.workspace = true
 rdlt = { workspace = true, features = ["remote"] }
 rdlt-connector.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 

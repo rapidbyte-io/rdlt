@@ -1,5 +1,7 @@
 """Move data exactly once from Python with rdlt."""
 
+# Loaded here, so a read's thread imports nothing under Rust.
+from rdlt import _reading  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from rdlt._native import __version__
 from rdlt._pipeline import (
     Access,

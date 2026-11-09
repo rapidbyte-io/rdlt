@@ -4,8 +4,10 @@
 #[cfg(test)]
 mod tests;
 
+use pyo3::exceptions::{PyConnectionError, PyTimeoutError};
 use pyo3::types::{PyAnyMethods as _, PyTypeMethods as _};
 use pyo3::{PyErr, Python};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 
 /// The `rdlt.errors` exception for `error`.
 pub(crate) fn raised(py: Python<'_>, error: &rdlt::Error) -> PyErr {
@@ -64,3 +66,59 @@ pub(crate) fn type_name(py: Python<'_>, error: &PyErr) -> String {
         _ => name,
     }
 }
+
+/// A Python exception as a connector's error says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Failure {
+    /// The exception's type, with its module where that is not `builtins`: `tickets.ApiError`.
+    pub(crate) type_name: String,
+    /// What `str()` of the exception says.
+    pub(crate) message: String,
+    /// The traceback as `traceback.format_exception` writes it, its last line the type and
+    /// message.
+    pub(crate) traceback: String,
+    /// The kind of connector error it is: `Transient` for a `TimeoutError` or a
+    /// `ConnectionError`, `Internal` for any other.
+    pub(crate) kind: ConnectorErrorKind,
+}
+
+impl Failure {
+    /// What `error` says.
+    pub(crate) fn of(py: Python<'_>, error: &PyErr) -> Self {
+        let value = error.value(py);
+        let message = value.str().map(|text| text.to_string()).unwrap_or_default();
+        let traceback = py
+            .import("traceback")
+            .and_then(|traceback| traceback.call_method1("format_exception", (value,)))
+            .and_then(|lines| lines.extract::<Vec<String>>())
+            .map(|lines| lines.concat())
+            .unwrap_or_default();
+        let transient = error.is_instance_of::<PyTimeoutError>(py)
+            || error.is_instance_of::<PyConnectionError>(py);
+        let kind = if transient {
+            ConnectorErrorKind::Transient
+        } else {
+            ConnectorErrorKind::Internal
+        };
+        Self {
+            type_name: type_name(py, error),
+            message,
+            traceback,
+            kind,
+        }
+    }
+
+    /// The connector error the failure is, of its kind, its code the exception's type and its
+    /// traceback its cause; the host shows and bounds each as connector text.
+    pub(crate) fn connector_error(&self) -> ConnectorError {
+        let message = format!("{}: {}", self.type_name, self.message);
+        ConnectorError::new(self.kind, message)
+            .with_code(self.type_name.clone())
+            .with_source(Traceback(self.traceback.clone()))
+    }
+}
+
+/// A Python traceback, as the cause of the error it explains.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct Traceback(pub(crate) String);
