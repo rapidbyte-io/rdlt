@@ -6,6 +6,7 @@ use tokio::io::AsyncWriteExt as _;
 
 use crate::Exit;
 use crate::output::{self, Failure, Mode};
+use crate::ui::{self, Ui};
 
 const MANIFEST: &str = include_str!("../templates/rust/Cargo.toml.template");
 const LIBRARY: &str = include_str!("../templates/rust/src/lib.rs");
@@ -66,7 +67,7 @@ async fn written(project: &Path, name: &str, camel: &str) -> Result<(), Failure>
 }
 
 /// Writes project `rdlt-connector-<name>` beneath `into`.
-pub(crate) async fn new(name: &str, into: &Path, mode: Mode) -> Result<Exit, Failure> {
+pub(crate) async fn new(name: &str, into: &Path, mode: Mode, ui: &Ui) -> Result<Exit, Failure> {
     let lower = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_';
     if !name.starts_with(|c: char| c.is_ascii_lowercase()) || !name.chars().all(lower) {
         return Err(Failure::usage(
@@ -95,6 +96,11 @@ pub(crate) async fn new(name: &str, into: &Path, mode: Mode) -> Result<Exit, Fai
         )]
     };
     let wrote = project.display().to_string();
-    output::result(mode, plain, &serde_json::json!({ "wrote": wrote })).await?;
+    let rich = || {
+        let next = [format!("cd {} && cargo test", project.display())];
+        ui::created(&project, &next, ui)
+    };
+    let json = serde_json::json!({ "wrote": wrote });
+    output::result(ui, mode, None, plain, rich, &json).await?;
     Ok(Exit::Success)
 }

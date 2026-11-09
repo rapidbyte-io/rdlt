@@ -2,11 +2,50 @@
 
 use std::path::PathBuf;
 
+use clap::builder::styling::{AnsiColor, Effects, Style, Styles};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+
+/// The look of `--help` and of a usage error, in the palette of the rest of the command line.
+const STYLES: Styles = Styles::styled()
+    .header(Style::new().effects(Effects::BOLD))
+    .usage(Style::new().effects(Effects::BOLD))
+    .literal(AnsiColor::Cyan.on_default())
+    .placeholder(Style::new().effects(Effects::DIMMED))
+    .valid(AnsiColor::Green.on_default())
+    .invalid(AnsiColor::Yellow.on_default())
+    .error(AnsiColor::Red.on_default());
+
+const EXAMPLES: &str = "  rdlt init                  Writes a starter document, rdlt.yaml
+  rdlt check rdlt.yaml       Builds the pipeline it describes, moving no data
+  rdlt run rdlt.yaml         Loads it
+  rdlt certify ./connector   Certifies a connector against the protocol's clauses
+";
+
+const EXAMPLES_INIT: &str = "  rdlt init
+  rdlt init pipelines/orders.yaml
+";
+
+const EXAMPLES_CHECK: &str = "  rdlt check rdlt.yaml
+  rdlt check rdlt.yaml --trust-binaries
+";
+
+const EXAMPLES_RUN: &str = "  rdlt run rdlt.yaml
+  rdlt run rdlt.yaml --events events.ndjson --report report.json
+";
+
+const EXAMPLES_CERTIFY: &str = "  rdlt certify ./target/release/rdlt-connector-tickets
+  rdlt certify ./connector --role source --trust-binaries
+";
+
+/// `lines` under an `Examples:` heading in the look of the help's other headings.
+fn examples(lines: &str) -> String {
+    let heading = Style::new().effects(Effects::BOLD);
+    format!("{heading}Examples:{heading:#}\n{lines}")
+}
 
 /// Write, check, run, inspect and certify rdlt pipelines and connectors.
 #[derive(Debug, Parser)]
-#[command(name = "rdlt", version)]
+#[command(name = "rdlt", version, styles = STYLES, after_help = examples(EXAMPLES))]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) verb: Verb,
@@ -24,6 +63,12 @@ pub(crate) struct Cli {
         global = true
     )]
     pub(crate) log_level: String,
+    /// When output is coloured: where it is written to a terminal, always, or never.
+    #[arg(long, value_enum, value_name = "WHEN", default_value_t = Color::Auto, global = true)]
+    pub(crate) color: Color,
+    /// Prints only results and failures: no progress, notes or event lines.
+    #[arg(short, long, global = true)]
+    pub(crate) quiet: bool,
 }
 
 /// The host's policy: the operator's file, then these flags over it, a flag given standing in
@@ -76,9 +121,18 @@ pub(crate) enum Output {
     Json,
 }
 
+/// When output is coloured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Color {
+    Auto,
+    Always,
+    Never,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum Verb {
     /// Writes a starter document.
+    #[command(after_help = examples(EXAMPLES_INIT))]
     Init {
         /// Where the document is written; it must not exist.
         #[arg(default_value = "rdlt.yaml")]
@@ -86,6 +140,7 @@ pub(crate) enum Verb {
     },
     /// Builds the pipeline a document describes: validates it, places and handshakes its
     /// connectors, checks its streams, modes and transforms; no data moves.
+    #[command(after_help = examples(EXAMPLES_CHECK))]
     Check {
         /// The pipeline's document.
         document: PathBuf,
@@ -97,6 +152,7 @@ pub(crate) enum Verb {
     },
     /// Runs the pipeline a document describes; the first SIGINT or SIGTERM stops it after its
     /// next commit, a second at once.
+    #[command(after_help = examples(EXAMPLES_RUN))]
     Run {
         /// The pipeline's document.
         document: PathBuf,
@@ -128,6 +184,7 @@ pub(crate) enum Verb {
     /// Lists what the host can place.
     Connectors,
     /// Certifies a connector, from its binary or at its endpoint, against the protocol's clauses.
+    #[command(after_help = examples(EXAMPLES_CERTIFY))]
     Certify(crate::certify::CertifyArgs),
     /// Makes connector projects.
     Connector {

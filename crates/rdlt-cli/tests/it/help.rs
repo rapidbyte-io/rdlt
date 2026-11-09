@@ -19,6 +19,10 @@ async fn each_verb_s_help_is_as_recorded() {
     ] {
         let output = scratch.rdlt(&[verb, "--help"]).await;
         assert_eq!(output.status.code(), Some(0), "{verb}");
+        assert!(
+            !output.stdout.contains(&0x1b),
+            "{verb}: help off a terminal"
+        );
         insta::assert_snapshot!(
             format!("help_{verb}"),
             String::from_utf8_lossy(&output.stdout)
@@ -65,6 +69,29 @@ async fn a_usage_error_under_an_explicit_output_json_is_json_on_standard_output(
     assert!(!message.contains("Usage:"), "{message}");
     let banana = scratch.rdlt(&["connectors", "--log-level", "banana"]).await;
     assert_eq!(banana.status.code(), Some(64), "a level that is none");
+}
+
+#[tokio::test]
+async fn help_is_coloured_as_the_flag_and_the_environment_ask() {
+    let scratch = Scratch::new();
+    let always = scratch.rdlt(&["--help", "--color", "always"]).await;
+    let help = String::from_utf8_lossy(&always.stdout);
+    assert!(
+        help.contains("\u{1b}[1mExamples:\u{1b}[0m"),
+        "`Examples:` looks like the help's other headings: {help:?}"
+    );
+    let joined = scratch.rdlt(&["--help", "--color=always"]).await;
+    assert!(joined.stdout.contains(&0x1b), "the flag's other form");
+    let never = scratch.rdlt(&["run", "--help", "--color", "never"]).await;
+    assert!(!never.stdout.contains(&0x1b));
+    let mut forced = scratch.command(&["--help"]);
+    forced.env("CLICOLOR_FORCE", "1");
+    let forced = crate::support::output_of(&mut forced).await;
+    assert!(forced.stdout.contains(&0x1b));
+    let mut unwanted = scratch.command(&["--help"]);
+    unwanted.env("NO_COLOR", "1");
+    let unwanted = crate::support::output_of(&mut unwanted).await;
+    assert!(!unwanted.stdout.contains(&0x1b));
 }
 
 #[test]

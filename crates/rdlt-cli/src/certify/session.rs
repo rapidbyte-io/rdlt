@@ -5,18 +5,23 @@
 mod tests;
 
 use std::future::Future;
-use std::time::Instant;
+use std::pin::pin;
+use std::time::{Duration, Instant};
 
 use rdlt_certify::{Observed, Report, Target, unfinished};
 use rdlt_host::{Interrupts, Lingering, StopsSpawned};
 use tokio::runtime::Runtime;
 
-use super::Ended;
+use super::{Ended, Watch};
 use crate::Exit;
 use crate::stopping::STOPPING;
+use crate::ui::Ui;
 
 /// Why a role's clauses fail when the certification's timeout ends it.
 const OVERDUE: &str = "the certification took longer than its timeout: see --timeout";
+
+/// How often the clauses a role has finished are shown on a terminal.
+const SHOWN_EVERY: Duration = Duration::from_millis(250);
 
 /// A role's certification, as the command line runs it.
 pub(super) type Certifying<'a> = std::pin::Pin<&'a mut dyn Future<Output = Report>>;
@@ -66,27 +71,42 @@ impl Session {
     }
 
     /// The report of `target` certified as `role` by `certifying`, which tells `observed` what
-    /// it finds: cut where the bound passed, and no connector started once it has.
+    /// it finds, shown on the way through `watch`: cut where the bound passed, and no connector
+    /// started once it has; what a signal cuts short has already said what it found.
     pub(super) fn ran_to(
         &mut self,
         target: &Target,
         role: rdlt_connector::Role,
         observed: &Observed,
         certifying: Certifying<'_>,
+        watch: &mut Watch<'_>,
     ) -> Result<Report, Ended> {
         let until = self.until;
         if until.is_some_and(|until| Instant::now() >= until) {
             return Ok(unfinished(target, role, observed, OVERDUE));
         }
         let interrupts = &mut self.interrupts;
-        let report = self.runtime.block_on(async {
-            tokio::select! {
-                biased;
-                status = interrupts.heard() => Err(interrupted(status)),
-                report = within(until, certifying) => Ok(report),
+        let ran = self.runtime.block_on(async {
+            let mut certifying = pin!(within(until, certifying));
+            let mut showing = tokio::time::interval(SHOWN_EVERY);
+            loop {
+                tokio::select! {
+                    biased;
+                    status = interrupts.heard() => return Err(interrupted(status)),
+                    report = &mut certifying => return Ok(report),
+                    _ = showing.tick() => watch.tick(observed),
+                }
             }
-        })?;
-        Ok(report.unwrap_or_else(|| unfinished(target, role, observed, OVERDUE)))
+        });
+        if ran.is_err() {
+            watch.drained(observed);
+        }
+        Ok(ran?.unwrap_or_else(|| unfinished(target, role, observed, OVERDUE)))
+    }
+
+    /// Waits for what is animated to be cleared, within its bound.
+    pub(super) fn cleared(&self, ui: &Ui) {
+        self.runtime.block_on(ui.cleared());
     }
 
     /// Stops what the certification spawned, through `stops`, and answers what lingers, and

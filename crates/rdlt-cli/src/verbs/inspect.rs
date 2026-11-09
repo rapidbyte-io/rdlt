@@ -5,11 +5,19 @@ use std::path::Path;
 use crate::Exit;
 use crate::args::{HostArgs, Side};
 use crate::output::{self, Failure, Mode};
+use crate::ui::{self, Tone, Ui};
 
 /// Builds and checks the pipeline `document` describes, moving no data.
-pub(crate) async fn check(document: &Path, host: &HostArgs, mode: Mode) -> Result<Exit, Failure> {
+pub(crate) async fn check(
+    document: &Path,
+    host: &HostArgs,
+    mode: Mode,
+    ui: &Ui,
+) -> Result<Exit, Failure> {
+    ui.task("Placing connectors");
     let builder = crate::host::document(document).await?;
     let pipeline = builder.build(&crate::host::host(host).await?).await?;
+    ui.task("Checking");
     let checked = pipeline.check().await?;
     let json = serde_json::to_value(&checked).expect("a check's report serializes");
     let plain = || {
@@ -21,7 +29,8 @@ pub(crate) async fn check(document: &Path, host: &HostArgs, mode: Mode) -> Resul
             checked.destination.id
         )]
     };
-    output::result(mode, plain, &json).await?;
+    let rich = || ui::check(&checked, ui);
+    output::result(ui, mode, Some(Tone::Good), plain, rich, &json).await?;
     Ok(Exit::Success)
 }
 
@@ -30,7 +39,9 @@ pub(crate) async fn discover(
     document: &Path,
     host: &HostArgs,
     mode: Mode,
+    ui: &Ui,
 ) -> Result<Exit, Failure> {
+    ui.task("Reading the catalog");
     let builder = crate::host::document(document).await?;
     let catalog = builder.discover(&crate::host::host(host).await?).await?;
     let json = serde_json::to_value(&catalog).expect("a catalog serializes");
@@ -40,7 +51,8 @@ pub(crate) async fn discover(
             .map(|stream| stream.name().to_string())
             .collect()
     };
-    output::result(mode, plain, &json).await?;
+    let rich = || ui::catalog(&catalog, ui);
+    output::result(ui, mode, None, plain, rich, &json).await?;
     Ok(Exit::Success)
 }
 
@@ -73,7 +85,7 @@ pub(crate) async fn schema(
 
 /// What the host can place: each connector binary its directories hold, and whether it reaches
 /// remote connectors; compiled-in connectors are an embedder's, and the command line has none.
-pub(crate) async fn connectors(host: &HostArgs, mode: Mode) -> Result<Exit, Failure> {
+pub(crate) async fn connectors(host: &HostArgs, mode: Mode, ui: &Ui) -> Result<Exit, Failure> {
     let policy = crate::host::policy(host).await?;
     let mut local = Vec::new();
     for dir in &policy.connectors {
@@ -113,6 +125,16 @@ pub(crate) async fn connectors(host: &HostArgs, mode: Mode) -> Result<Exit, Fail
         lines.push(format!("remote connectors {remote}"));
         lines
     };
-    output::result(mode, plain, &json).await?;
+    let rich = || {
+        let table: Vec<(String, String)> = local
+            .iter()
+            .map(|entry| {
+                let text = |key: &str| entry[key].as_str().unwrap_or_default().to_owned();
+                (text("name"), text("path"))
+            })
+            .collect();
+        ui::connectors(&table, !policy.trust_binaries, policy.remote.is_some(), ui)
+    };
+    output::result(ui, mode, None, plain, rich, &json).await?;
     Ok(Exit::Success)
 }

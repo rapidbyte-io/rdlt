@@ -66,6 +66,7 @@ async fn certify_exactly(args: &[&str], input: &str, env: &[(&str, &str)]) -> Ou
             "LLVM_PROFILE_FILE",
             std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
         )
+        .env_remove("CLICOLOR_FORCE")
         .envs(env.iter().copied())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

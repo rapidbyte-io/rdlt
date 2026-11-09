@@ -18,6 +18,7 @@ mod host;
 mod output;
 mod reference;
 mod stopping;
+mod ui;
 mod verbs;
 
 pub use exit::Exit;
@@ -31,6 +32,21 @@ fn asked_for_json() -> bool {
         || args
             .windows(2)
             .any(|pair| pair[0] == "--output" && pair[1] == "json")
+}
+
+/// The colour the command line names, which did not parse.
+fn asked_color() -> Option<args::Color> {
+    let args: Vec<String> = std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let value = args.iter().enumerate().find_map(|(index, arg)| {
+        arg.strip_prefix("--color=").map(str::to_owned).or_else(|| {
+            (arg == "--color")
+                .then(|| args.get(index + 1).cloned())
+                .flatten()
+        })
+    })?;
+    <args::Color as clap::ValueEnum>::from_str(&value, true).ok()
 }
 
 /// Runs the command line on the process's arguments, and answers the code it exits with.
@@ -57,7 +73,7 @@ pub fn main() -> std::process::ExitCode {
             } else {
                 Exit::Success
             };
-            error.print().ok();
+            ui::print_error(&error, asked_color());
             return exit.into();
         }
     };

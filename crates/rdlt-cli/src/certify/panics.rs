@@ -3,10 +3,12 @@
 #[cfg(test)]
 mod tests;
 
-use std::io::Write as _;
 use std::panic::PanicHookInfo;
 
 use rdlt_certify::line;
+
+use crate::output::written_within;
+use crate::ui::Std;
 
 /// Prints each panic of this process to standard error through [`said`], scrubbed of any
 /// configuration's secrets, in place of the message as it was raised, which may carry what a
@@ -14,7 +16,7 @@ use rdlt_certify::line;
 pub(crate) fn contain() {
     report(|said| {
         let said = super::redactions().scrubbed(said.to_owned());
-        writeln!(std::io::stderr(), "rdlt: {said}").ok();
+        written_within(Std::Err, format!("rdlt: {said}\n")).ok();
     });
 }
 

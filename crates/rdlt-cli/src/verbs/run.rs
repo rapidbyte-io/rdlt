@@ -2,7 +2,9 @@
 //! and the signals that stop it.
 
 use std::io::IsTerminal as _;
+use std::os::fd::AsFd as _;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt::{Event, EventKind, Events, Interrupts, Lagged, StopMode};
@@ -13,10 +15,15 @@ use tokio::task::JoinHandle;
 use crate::Exit;
 use crate::args::HostArgs;
 use crate::output::{self, FINISHING, Failure, Mode};
+use crate::ui::{self, RunTitle, Stop, Tone, Ui};
 
 /// Lines that may wait for standard error to take them; further ones are dropped, as a run is
 /// never held up by what it says.
 const WAITING: usize = 32;
+
+/// How often a run's status is sampled for the terminal: no more than this, on the loop that
+/// waits for it, so the run's speed does not change.
+const SAMPLED_EVERY: Duration = Duration::from_millis(250);
 
 /// Where a run's events go.
 enum Sink {
@@ -60,10 +67,16 @@ async fn opened(path: &Path, what: &str) -> Result<tokio::fs::File, Failure> {
 struct Written {
     sink: Option<Sink>,
     report: Option<tokio::fs::File>,
+    /// Whether the events go to a terminal, by standard output or by a path that resolves to one.
+    on_a_terminal: bool,
 }
 
 impl Written {
-    async fn opened(events: Option<&Path>, report: Option<&Path>) -> Result<Self, Failure> {
+    async fn opened(
+        events: Option<&Path>,
+        report: Option<&Path>,
+        ui: &Ui,
+    ) -> Result<Self, Failure> {
         let sink = match events {
             Some(path) if path.as_os_str() == "-" => Some(Sink::Stdout),
             Some(path) => Some(Sink::File(opened(path, "events").await?)),
@@ -73,7 +86,16 @@ impl Written {
             Some(path) => Some(opened(path, "report").await?),
             None => None,
         };
-        Ok(Self { sink, report })
+        let on_a_terminal = match &sink {
+            Some(Sink::Stdout) => ui.rich_results(),
+            Some(Sink::File(file)) => file.as_fd().is_terminal(),
+            None => false,
+        };
+        Ok(Self {
+            sink,
+            report,
+            on_a_terminal,
+        })
     }
 
     /// Empties each file written, now the pipeline is built: a build that fails loses no file a
@@ -112,12 +134,17 @@ pub(crate) async fn run(
     report: Option<&Path>,
     host: &HostArgs,
     mode: Mode,
+    ui: &Ui,
     interrupts: &mut Interrupts,
 ) -> Result<Exit, Failure> {
     let placing = async {
         let builder = crate::host::document(document).await?;
         let host = crate::host::host(host).await?;
-        let written = Written::opened(events, report).await?;
+        let written = Written::opened(events, report, ui).await?;
+        if written.on_a_terminal {
+            ui.stop_animating();
+        }
+        ui.task("Placing connectors");
         let pipeline = builder.build(&host).await?;
         Ok::<_, Failure>((pipeline, written))
     };
@@ -130,17 +157,21 @@ pub(crate) async fn run(
     written.emptied().await?;
     let to_stdout = matches!(written.sink, Some(Sink::Stdout));
     let to_file = matches!(written.sink, Some(Sink::File(_)));
-    let terminal = std::io::stderr().is_terminal();
+    let title = RunTitle::of(&pipeline);
     let mut run = pipeline.start();
     let (lines, waiting) = mpsc::channel(WAITING);
     let writer = written
         .sink
         .map(|sink| tokio::spawn(writing(run.events(), sink)));
-    let teller = tokio::spawn(telling(run.events(), terminal, waiting));
-    let (outcome, first) = until_ended(&mut run, interrupts, &lines, terminal).await;
-    if terminal {
-        lines.try_send("\n".to_owned()).ok();
-    }
+    // On a terminal the phase line says what the events do; quiet says none of it. Where the
+    // events go to the terminal, a line for each would only repeat them.
+    let repeated = written.on_a_terminal && ui.rich_failures();
+    let told_events = (!repeated).then(|| run.events());
+    let teller = ui
+        .tells_lines()
+        .then(|| tokio::spawn(telling(told_events, waiting)));
+    let (outcome, first) = until_ended(&mut run, interrupts, &lines, ui, &title).await;
+    ui.cleared().await;
     drop(lines);
     let done = tokio::time::Instant::now() + FINISHING;
     let unwritten = match writer {
@@ -155,8 +186,10 @@ pub(crate) async fn run(
         },
         None => None,
     };
-    told(teller, done).await;
-    let unwritten = reported(&outcome, written.report, unwritten, to_stdout, mode).await;
+    if let Some(teller) = teller {
+        told(teller, done).await;
+    }
+    let unwritten = reported(&outcome, written.report, unwritten, to_stdout, mode, ui).await;
     Ok(match (first, &outcome.error, unwritten) {
         (Some(signal), _, _) => Exit::Signalled(signal),
         (None, Some(error), _) => Exit::of(error.kind()),
@@ -172,11 +205,14 @@ async fn until_ended(
     run: &mut rdlt::Run,
     interrupts: &mut Interrupts,
     lines: &mpsc::Sender<String>,
-    terminal: bool,
+    ui: &Ui,
+    title: &Arc<RunTitle>,
 ) -> (rdlt::Outcome, Option<i32>) {
     let control = run.control();
-    let mut showing = tokio::time::interval(Duration::from_secs(1));
+    let mut sampling = tokio::time::interval(SAMPLED_EVERY);
+    sampling.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut first = None;
+    let mut stop = None;
     loop {
         tokio::select! {
             biased;
@@ -185,16 +221,17 @@ async fn until_ended(
                 if first.is_none() {
                     first = Some(heard);
                     control.stop(StopMode::AfterCommit);
+                    stop = Some(Stop::AfterCommit);
                     let note = "stopping after the next commit; interrupt again to stop now";
-                    lines.try_send(whole_line(terminal, note)).ok();
+                    lines.try_send(format!("{}\n", output::shown(note))).ok();
                 } else {
                     control.stop(StopMode::Now);
+                    stop = Some(Stop::Now);
                 }
+                ui.progress(title, run, stop);
             }
             outcome = &mut *run => return (outcome, first),
-            _ = showing.tick(), if terminal => {
-                lines.try_send(status_line(&run.status())).ok();
-            }
+            _ = sampling.tick(), if ui.animating() => ui.progress(title, run, stop),
         }
     }
 }
@@ -207,6 +244,7 @@ async fn reported(
     mut unwritten: Option<Failure>,
     to_stdout: bool,
     mode: Mode,
+    ui: &Ui,
 ) -> Option<Failure> {
     let report_json = serde_json::to_value(&outcome.report).expect("a report serializes");
     if let Some(mut file) = report {
@@ -224,24 +262,43 @@ async fn reported(
     let shown = match (to_stdout, mode) {
         (true, _) => format!("{}\n", serde_json::json!({ "outcome": ended })),
         (false, Mode::Json) => format!("{ended}\n"),
-        (false, Mode::Plain) => {
-            let report = &outcome.report;
-            format!(
-                "{:?}: committed {} rows in {} commits\n",
-                report.status, report.rows, report.commits
-            )
-        }
+        (false, Mode::Plain) if ui.rich_results() => ui::run_summary(&outcome.report, ui),
+        (false, Mode::Plain) => one_line(&outcome.report, ui),
     };
     let printed = tokio::time::timeout(FINISHING, output::stdout(&shown)).await;
     unwritten = unwritten.or(printed.unwrap_or(Ok(())).err());
     if let (Some(error), Mode::Plain) = (&outcome.error, mode) {
-        let text = output::with_causes(&error.to_string(), &error.report());
-        say(&format!("rdlt: {}\n", output::shown(text))).await;
+        let failure = Failure::of(error);
+        say(&failure_text(&failure, ui)).await;
     }
     if let Some(failure) = &unwritten {
-        say(&format!("rdlt: {}\n", output::shown(&failure.message))).await;
+        say(&failure_text(failure, ui)).await;
     }
     unwritten
+}
+
+/// The run's end as one line, off a terminal.
+fn one_line(report: &rdlt::Report, ui: &Ui) -> String {
+    let tone = match report.status {
+        rdlt::RunStatus::Succeeded => Some(Tone::Good),
+        rdlt::RunStatus::Failed => Some(Tone::Bad),
+        rdlt::RunStatus::Stopped | rdlt::RunStatus::Cancelled => Some(Tone::Warn),
+        rdlt::RunStatus::Running => None,
+    };
+    let line = format!(
+        "{:?}: committed {} rows in {} commits",
+        report.status, report.rows, report.commits
+    );
+    format!("{}\n", ui::plain_line(ui, tone, &line))
+}
+
+/// What `failure` says on standard error: its full layout at a terminal, else one line.
+fn failure_text(failure: &Failure, ui: &Ui) -> String {
+    if ui.rich_failures() {
+        ui::failure(failure, ui)
+    } else {
+        output::failure_line(&failure.message, Some(ui))
+    }
 }
 
 /// Writes `text` to standard error within [`FINISHING`].
@@ -263,10 +320,9 @@ async fn writing(mut events: Events, mut sink: Sink) -> Option<Failure> {
     None
 }
 
-/// Writes the `waiting` lines to standard error, and off a terminal a line for each event, on a
-/// task of its own, so standard error stopping holds up nothing else.
-async fn telling(events: Events, terminal: bool, mut waiting: mpsc::Receiver<String>) {
-    let mut events = Some(events);
+/// Writes the `waiting` lines to standard error, and a line for each of `events`, on a task of
+/// its own, so standard error stopping holds up nothing else.
+async fn telling(mut events: Option<Events>, mut waiting: mpsc::Receiver<String>) {
     let mut saying = true;
     while saying || events.is_some() {
         tokio::select! {
@@ -277,10 +333,9 @@ async fn telling(events: Events, terminal: bool, mut waiting: mpsc::Receiver<Str
                 None => saying = false,
             },
             item = next_of(&mut events), if events.is_some() => match item {
-                Some(item) if !terminal => {
+                Some(item) => {
                     output::stderr(&format!("{}\n", output::shown(line(&item)))).await;
                 }
-                Some(_) => {}
                 None => events = None,
             },
         }
@@ -353,22 +408,4 @@ fn line(item: &Result<Event, Lagged>) -> String {
         EventKind::RunEnded { status } => format!("ended {status:?}"),
     };
     format!("attempt {}: {what}", event.attempt)
-}
-
-/// `text`, shown, as a whole line of its own, past what the terminal's status line shows.
-fn whole_line(terminal: bool, text: &str) -> String {
-    let prefix = if terminal { CLEAR } else { "" };
-    format!("{prefix}{}\n", output::shown(text))
-}
-
-/// The escape that returns to the start of a terminal's line and clears it.
-const CLEAR: &str = "\r\x1b[2K";
-
-/// The run's progress, redrawn on one terminal line.
-fn status_line(status: &rdlt::Status) -> String {
-    let text = format!(
-        "{:?}: {} partitions reading, {} rows committed in {} commits",
-        status.phase, status.partitions.reading, status.report.rows, status.report.commits
-    );
-    format!("{CLEAR}{}", output::shown(text))
 }
