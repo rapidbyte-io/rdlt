@@ -17,6 +17,8 @@ mod calls;
 mod embedded;
 mod errors;
 mod host;
+#[cfg_attr(not(test), expect(dead_code, reason = "partitions read rows next"))]
+mod json;
 mod pipeline;
 mod run;
 mod runtime;
