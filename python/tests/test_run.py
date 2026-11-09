@@ -5,6 +5,7 @@ from __future__ import annotations
 import _thread
 import asyncio
 import contextlib
+import queue
 import sqlite3
 import subprocess
 import sys
@@ -228,15 +229,15 @@ def test_a_first_ctrl_c_stops_a_blocking_run_after_its_commit(
 
 
 class Noted:
-    """A standard error that sets `noted` when the first press's note is written to it."""
+    """A standard error that tells `steps` when the first press's note is written to it."""
 
-    def __init__(self, noted: threading.Event) -> None:
-        self._noted = noted
+    def __init__(self, steps: queue.SimpleQueue[str]) -> None:
+        self._steps = steps
 
     def write(self, text: str) -> int:
-        """Notes the first press's note; nothing is kept."""
+        """Tells of the first press's note; nothing is kept."""
         if "stopping" in text:
-            self._noted.set()
+            self._steps.put("noted")
         return len(text)
 
     def flush(self) -> None:
@@ -249,27 +250,35 @@ def test_a_second_ctrl_c_cancels_a_blocking_run_within_a_second(
     built = rdlt.Pipeline.from_document(endless(tmp_path)).build(host(tmp_path, connectors))
     run = built.start()
     first_commit(run)
-    entered = threading.Event()
+    steps: queue.SimpleQueue[str] = queue.SimpleQueue()
     noted = threading.Event()
     ended = threading.Event()
     second: list[float] = []
-    monkeypatch.setattr(sys, "stderr", Noted(noted))
+    monkeypatch.setattr(sys, "stderr", Noted(steps))
 
     def waiting() -> None:
-        entered.set()
-        run.wait()
+        # A press can land before the native wait began, which raises here with no note written:
+        # the wait is entered again and the press made again, wherever each one lands.
+        while True:
+            try:
+                steps.put("entered")
+                run.wait()
+            except KeyboardInterrupt:
+                if noted.is_set():
+                    raise
+            else:
+                return
 
     with held_back(tmp_path / "out.db") as lock:
         # The run can commit nothing while the lock is held, so it cannot end before the second
-        # press: each press is bound to `wait` being in progress, never to a timing gap.
+        # press: each press follows what the wait has done, never a timing gap.
         def press() -> None:
             try:
-                entered.wait(30)
-                time.sleep(0.2)
-                _thread.interrupt_main()
-                if noted.wait(30):
-                    second.append(time.monotonic())
+                while steps.get(timeout=30) == "entered":
                     _thread.interrupt_main()
+                noted.set()
+                second.append(time.monotonic())
+                _thread.interrupt_main()
                 ended.wait(10)
             finally:
                 # Where the second press cancels nothing, the run commits now, `wait` returns and
