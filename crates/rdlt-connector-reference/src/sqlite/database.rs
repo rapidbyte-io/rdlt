@@ -54,7 +54,10 @@ impl Database {
     #[cfg(test)]
     pub(super) fn trace(&self, traced: Option<fn(rusqlite::trace::TraceEvent<'_>)>) {
         let statements = rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT;
-        self.0.lock().trace_v2(statements, traced);
+        self.0
+            .lock()
+            .trace_v2(statements, traced)
+            .expect("SQLite takes a statement callback");
     }
 }
 
