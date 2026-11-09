@@ -93,7 +93,7 @@ def test_a_run_goes_on_while_only_its_events_are_held(tmp_path: Path, connectors
 
 
 def test_a_lag_is_told_as_how_many_events_were_missed() -> None:
-    events = rdlt.Events(iter(['{"lagged": {"dropped": 3}}']), "t")  # pyright: ignore[reportArgumentType]
+    events = rdlt.Events(iter(['{"lagged": {"dropped": 3}}']), "t", None)  # pyright: ignore[reportArgumentType]
     assert next(events) == rdlt.Lagged(dropped=3)
 
 

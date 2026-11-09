@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 
 from rdlt import _native
 from rdlt.errors import _from_report
+from rdlt.host import _SecretStore
 from rdlt.model import Event, Json, Lagged, Outcome, Status, _parse
 
 
@@ -44,9 +45,10 @@ class Events:
     included, is dropped.
     """
 
-    def __init__(self, native: _native.Events, pipeline: str) -> None:
+    def __init__(self, native: _native.Events, pipeline: str, store: _SecretStore | None) -> None:
         self._native = native
         self._pipeline = pipeline
+        self._store = store
 
     def __repr__(self) -> str:
         return f"Events({self._pipeline!r})"
@@ -85,7 +87,7 @@ class _Waiting(Coroutine[object, None, Outcome]):
         try:
             return self._waiting.throw(*raised)
         except asyncio.CancelledError:
-            self._run._native.detach()
+            self._run._native.detach(self._run._store)
             raise
 
     def close(self) -> None:
@@ -101,9 +103,11 @@ class _Waiting(Coroutine[object, None, Outcome]):
 class Run:
     """A pipeline's run; dropping every reference cancels it, unless a cancelled await left it."""
 
-    def __init__(self, native: _native.Run, pipeline: str) -> None:
+    def __init__(self, native: _native.Run, pipeline: str, store: _SecretStore | None) -> None:
         self._native = native
         self._pipeline = pipeline
+        # What a connector this run starts again is configured through.
+        self._store = store
 
     def __repr__(self) -> str:
         return f"Run({self._pipeline!r})"
@@ -114,7 +118,7 @@ class Run:
         The first subscription sees every event from the run's first; a later one sees them from
         now on, or, having fallen too far behind, a `Lagged` saying how many it missed.
         """
-        return Events(self._native.events(), self._pipeline)
+        return Events(self._native.events(), self._pipeline, self._store)
 
     def status(self) -> Status:
         """Where the run stands now.

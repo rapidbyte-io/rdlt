@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import threading
 import time
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
@@ -181,6 +183,51 @@ def test_concurrent_first_builds_of_a_host_get_one_handle(tmp_path: Path) -> Non
 
 def test_a_host_takes_a_build_wait() -> None:
     assert rdlt.Host(build_wait=timedelta(seconds=30)).build_wait == timedelta(seconds=30)
+
+
+class Holder:
+    """A secret store that holds the pipeline it serves, as a job object's method would."""
+
+    pipeline: rdlt.Pipeline | None = None
+
+    def store(self, name: str) -> str | None:
+        """Answers the one secret it has."""
+        return {"only": "text"}.get(name)
+
+
+def test_a_secret_store_holding_its_own_pipeline_is_collected(
+    tmp_path: Path, connectors: Path
+) -> None:
+    holder = Holder()
+    host = rdlt.Host(
+        connectors=connectors, writable=[tmp_path], trust_binaries=True, secret_store=holder.store
+    )
+    document = generated("cycle", 1, tmp_path / "out.db")
+    holder.pipeline = rdlt.Pipeline.from_document(document).build(host)
+    collected = weakref.ref(holder)
+    del holder, host
+    gc.collect()
+    assert collected() is None
+
+
+def test_a_built_pipeline_and_its_run_keep_the_secret_store(
+    tmp_path: Path, connectors: Path
+) -> None:
+    holder = Holder()
+    host = rdlt.Host(
+        connectors=connectors, writable=[tmp_path], trust_binaries=True, secret_store=holder.store
+    )
+    document = generated("kept", 1, tmp_path / "out.db")
+    pipeline = rdlt.Pipeline.from_document(document).build(host)
+    kept = weakref.ref(holder)
+    del holder, host
+    gc.collect()
+    assert kept() is not None, "a built pipeline restarts its connectors with the store"
+    run = pipeline.start()
+    del pipeline
+    gc.collect()
+    assert kept() is not None, "a run in progress restarts its connectors with the store"
+    run.wait()
 
 
 def test_a_host_shows_nothing_of_its_secret_store() -> None:

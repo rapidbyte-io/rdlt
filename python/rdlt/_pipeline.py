@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal, TypeAlias, cast
 
 from rdlt import _native
-from rdlt.host import Host, StrPath, _names, _paths
+from rdlt.host import Host, StrPath, _names, _paths, _SecretStore
 from rdlt.model import Catalog, Json, Outcome, ReadMode, _parse
 from rdlt.run import Run, _ended
 
@@ -428,16 +428,17 @@ class PipelineBuilder:
         """
         native = host._native()
         if self._path is not None:
-            return Pipeline(_native.Pipeline.build_path(self._path, native))
+            return Pipeline(_native.Pipeline.build_path(self._path, native), host._store)
         text = json.dumps(self._document, ensure_ascii=False)
-        return Pipeline(_native.Pipeline.build(text, native))
+        return Pipeline(_native.Pipeline.build(text, native), host._store)
 
 
 class Pipeline:
     """A built pipeline."""
 
-    def __init__(self, native: _native.Pipeline) -> None:
+    def __init__(self, native: _native.Pipeline, store: _SecretStore | None) -> None:
         self._native = native
+        self._store = store
         self._name = cast("str", _parse(native.document())["pipeline"])
 
     def __repr__(self) -> str:
@@ -486,7 +487,7 @@ class Pipeline:
 
     def start(self) -> Run:
         """Starts a run; it is cancelled once every reference to it and to its events is dropped."""
-        return Run(self._native.start(), self._name)
+        return Run(self._native.start(), self._name, self._store)
 
     def run(self) -> Outcome:
         """Runs to the end, the GIL released.

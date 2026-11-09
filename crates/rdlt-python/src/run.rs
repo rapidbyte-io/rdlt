@@ -9,7 +9,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyValueError};
 use pyo3::types::PyAnyMethods as _;
-use pyo3::{Bound, PyAny, PyErr, PyRef, Python, pyclass, pymethods};
+use pyo3::{Bound, Py, PyAny, PyErr, PyRef, Python, pyclass, pymethods};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -52,8 +52,9 @@ enum Command {
     Events(oneshot::Sender<rdlt::Events>),
     Status(oneshot::Sender<String>),
     Stop(rdlt::StopMode),
-    /// Stops the run after its next commit and lets it finish though every handle is dropped.
-    Detach,
+    /// Stops the run after its next commit and lets it finish though every handle is dropped,
+    /// holding what its connectors' secrets are resolved through until it ends.
+    Detach(Py<PyAny>),
     /// Drops the run now, which cancels it.
     Cancel,
 }
@@ -135,13 +136,14 @@ async fn drive(
     end: watch::Sender<Option<Arc<Ended>>>,
 ) {
     let mut running = true;
-    let mut detached = false;
+    let mut detached = None;
     loop {
         tokio::select! {
             // The run's end wins over a command beside it: a status asked as it ends sees it ended.
             biased;
             outcome = &mut run, if running => {
                 running = false;
+                detached = None;
                 end.send_replace(Some(Arc::new(Ended::of(&outcome))));
             }
             command = asked.recv() => match command {
@@ -151,11 +153,11 @@ async fn drive(
                     drop(reply.send(status));
                 }
                 Some(Command::Stop(mode)) => run.stop(mode),
-                Some(Command::Detach) => {
-                    detached = true;
+                Some(Command::Detach(store)) => {
+                    detached = running.then_some(store);
                     run.stop(rdlt::StopMode::AfterCommit);
                 }
-                None if detached && running => {
+                None if detached.is_some() && running => {
                     // Every handle is gone: the run finishes for what is left awaiting it.
                     let outcome = (&mut run).await;
                     end.send_replace(Some(Arc::new(Ended::of(&outcome))));
@@ -206,9 +208,10 @@ impl NativeRun {
     }
 
     /// Asks the run to stop after its next commit and lets it finish in the background, though
-    /// every handle to it is then dropped: what a cancelled await of it does.
-    fn detach(&self) {
-        drop(self.commands.send(Command::Detach));
+    /// every handle to it is then dropped, as a cancelled await of it does; `store`, what its
+    /// connectors' secrets are resolved through, is held until it ends.
+    fn detach(&self, store: Py<PyAny>) {
+        drop(self.commands.send(Command::Detach(store)));
     }
 
     /// Waits, the GIL released, for the run's end: its outcome, and its error report where it
