@@ -45,6 +45,12 @@ pub trait Env: Send + Sync + 'static {
     /// The cores the engine may use: writers default to one per core.
     fn cores(&self) -> NonZeroUsize;
 
+    /// Runs `wait`, which blocks this thread until a job its caller let go of ends, for as long
+    /// as an embedder's transform takes: an environment on a real runtime leaves that runtime's
+    /// other work to run meanwhile, a wrapper asks what it wraps, and a simulated one just runs
+    /// `wait`, deterministically.
+    fn wait_aside(&self, wait: &mut dyn FnMut());
+
     /// Told each event of the engine's runs, at once, where it becomes true: nothing holds an
     /// event for it, so nothing waits outside the memory budget; by default nothing is told.
     ///

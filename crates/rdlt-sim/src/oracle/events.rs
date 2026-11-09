@@ -225,6 +225,10 @@ impl Env for Telling {
         self.env.cores()
     }
 
+    fn wait_aside(&self, wait: &mut dyn FnMut()) {
+        self.env.wait_aside(wait);
+    }
+
     fn observe(&self, event: &Event) {
         // The simulation's own work: what it keeps is not the engine's to hold.
         aside(|| self.told.lock().tell(event));

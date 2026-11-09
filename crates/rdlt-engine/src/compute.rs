@@ -1,8 +1,8 @@
 //! The pool that runs CPU-bound work off the async runtime.
 //!
-//! The runtime's thread waits on the pool in one place: a caller let go while one of its jobs runs
-//! waits for that job, bounded CPU work, as it is dropped, so no job outlives what its caller
-//! charged for it.
+//! A caller let go while one of its jobs runs waits for that job as it is dropped, so no job
+//! outlives what its caller charged for it. The job may be an embedder's transform, which is not
+//! bounded, so the wait goes through [`Env::wait_aside`], which leaves the runtime its worker.
 
 #[cfg(test)]
 mod tests;
@@ -160,8 +160,8 @@ impl Pool {
     ///
     /// A panic inside a job resumes in the caller once the jobs before it have finished. No job
     /// outlives its caller holding what the caller's charges cover: a caller that stops waiting
-    /// drops its jobs not yet started, and its drop waits, on the thread dropping it, for those
-    /// running to end, bounded CPU work that never waits on the runtime.
+    /// drops its jobs not yet started, and its drop waits for those running to end, through
+    /// [`Env::wait_aside`], since such a job may be an embedder's transform, which is not bounded.
     pub(crate) async fn run_all<T, F>(&self, work: impl IntoIterator<Item = F>) -> Vec<T>
     where
         T: Send + 'static,
@@ -191,7 +191,11 @@ impl Pool {
                 (queued, slot)
             })
             .collect();
-        let mut waited = Waited { slots, taken: 0 };
+        let mut waited = Waited {
+            env: &*self.env,
+            slots,
+            taken: 0,
+        };
         let mut values = Vec::with_capacity(waited.slots.len());
         while let Some((queued, slot)) = waited.slots.get(waited.taken) {
             let (queued, slot) = (*queued, Arc::clone(slot));
@@ -290,8 +294,8 @@ impl<F, T> Slot<F, T> {
     }
 
     /// Lets the job go: dropped unrun where it has not started, and where it runs, waited for and
-    /// what it made dropped.
-    fn abandon(&self) {
+    /// what it made dropped; a wait goes through `env`, as the job may not be bounded.
+    fn abandon(&self, env: &dyn Env) {
         let mut state = self.state.lock();
         if let Stage::Waiting(_) = &state.stage {
             let unrun = std::mem::replace(&mut state.stage, Stage::Ended(None));
@@ -299,8 +303,10 @@ impl<F, T> Slot<F, T> {
             drop(unrun);
             return;
         }
-        while let Stage::Running = &state.stage {
-            self.ended.wait(&mut state);
+        if let Stage::Running = &state.stage {
+            drop(state);
+            env.wait_aside(&mut || self.wait_ended());
+            state = self.state.lock();
         }
         let made = match &mut state.stage {
             Stage::Ended(done) => done.take(),
@@ -308,6 +314,14 @@ impl<F, T> Slot<F, T> {
         };
         drop(state);
         drop(made);
+    }
+
+    /// Waits for the job to end.
+    fn wait_ended(&self) {
+        let mut state = self.state.lock();
+        while let Stage::Running = &state.stage {
+            self.ended.wait(&mut state);
+        }
     }
 }
 
@@ -322,15 +336,16 @@ impl<F, T> Drop for Ending<'_, F, T> {
 
 /// The jobs of a call, the first `taken` of whose results its caller took; dropped, it lets the
 /// rest go.
-struct Waited<F, T> {
+struct Waited<'a, F, T> {
+    env: &'a dyn Env,
     slots: Vec<(Instant, Arc<Slot<F, T>>)>,
     taken: usize,
 }
 
-impl<F, T> Drop for Waited<F, T> {
+impl<F, T> Drop for Waited<'_, F, T> {
     fn drop(&mut self) {
         for (_, slot) in self.slots.iter().skip(self.taken) {
-            slot.abandon();
+            slot.abandon(self.env);
         }
     }
 }

@@ -2,7 +2,8 @@ use std::num::NonZeroUsize;
 use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::SystemTime;
+use std::sync::mpsc;
+use std::time::{Duration, SystemTime};
 
 use rdlt_connector::PipelineId;
 use rdlt_engine::{ComputePool, Cores, Env, Event, EventKind, RunStatus, SystemEnv};
@@ -29,7 +30,7 @@ async fn a_run_s_environment_is_the_host_s_and_tells_each_event_to_its_ring() {
     let before = SystemTime::now();
     assert!(observed.now() >= before);
     let started = observed.instant();
-    observed.sleep(std::time::Duration::from_millis(1)).await;
+    observed.sleep(Duration::from_millis(1)).await;
     assert!(observed.instant() > started);
     let pool = |env: &dyn Env| ptr::from_ref::<dyn ComputePool>(env.compute()).cast::<()>();
     assert_eq!(pool(&observed), pool(base.as_ref()));
@@ -69,4 +70,35 @@ async fn a_subscriber_come_late_reads_what_it_holds_and_ends() {
     assert!(late.next().await.is_none(), "the channel is still open");
     assert!(late.next().await.is_none(), "it stays ended");
     assert_eq!(events.receiver_count(), 1);
+}
+
+#[test]
+fn a_run_s_environment_leaves_the_runtime_its_worker_while_it_waits() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let cores = Cores::new(NonZeroUsize::new(1).unwrap());
+    let base = Arc::new(SystemEnv::try_new(cores).unwrap());
+    let (events, _told) = broadcast::channel(4);
+    let observed = Observed {
+        base,
+        events,
+        ended: Arc::default(),
+    };
+    let handle = runtime.handle().clone();
+    let (answer, answered) = mpsc::channel();
+    drop(runtime.spawn(async move {
+        // On the runtime's one worker: the task spawned here runs only if the wait left it.
+        observed.wait_aside(&mut || {
+            let (ran, has_run) = mpsc::channel();
+            drop(handle.spawn(async move { ran.send(7) }));
+            answer
+                .send(has_run.recv_timeout(Duration::from_secs(30)))
+                .ok();
+        });
+    }));
+    let answer = answered.recv_timeout(Duration::from_secs(60)).unwrap();
+    assert_eq!(answer, Ok(7));
 }

@@ -332,6 +332,10 @@ impl Env for Readings {
     fn cores(&self) -> NonZeroUsize {
         self.1.cores()
     }
+
+    fn wait_aside(&self, wait: &mut dyn FnMut()) {
+        wait();
+    }
 }
 
 #[test]

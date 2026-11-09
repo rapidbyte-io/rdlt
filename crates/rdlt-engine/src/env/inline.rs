@@ -51,4 +51,8 @@ impl Env for InlineEnv {
     fn cores(&self) -> NonZeroUsize {
         NonZeroUsize::MIN
     }
+
+    fn wait_aside(&self, wait: &mut dyn FnMut()) {
+        wait();
+    }
 }
