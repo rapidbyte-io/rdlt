@@ -24,6 +24,9 @@ from rdlt._pipeline import (
     replace,
     stream,
 )
+from rdlt._resource import Resource, resource
+from rdlt.context import StreamContext, checkpoint
+from rdlt.cursor import Cursor
 from rdlt.errors import (
     ConfigError,
     DestinationError,
@@ -61,6 +64,7 @@ __all__ = [
     "Commit",
     "ConfigError",
     "Connector",
+    "Cursor",
     "Defaults",
     "DestinationError",
     "Error",
@@ -78,6 +82,7 @@ __all__ = [
     "PipelineBuilder",
     "ReadMode",
     "Report",
+    "Resource",
     "Resources",
     "Retry",
     "Run",
@@ -90,6 +95,7 @@ __all__ = [
     "StoppedError",
     "StrPath",
     "Stream",
+    "StreamContext",
     "StreamName",
     "StreamReport",
     "Tls",
@@ -97,9 +103,11 @@ __all__ = [
     "WriteMode",
     "__version__",
     "append",
+    "checkpoint",
     "history",
     "merge",
     "pipeline",
     "replace",
+    "resource",
     "stream",
 ]

@@ -7,7 +7,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use pyo3::types::PyAnyMethods as _;
-use pyo3::{Py, PyAny};
+use pyo3::{IntoPyObject as _, Py, PyAny};
 use rdlt::{BoxFuture, Secret, SecretFault, SecretKind, SecretReference, SecretResolver};
 
 use crate::{calls, errors};
@@ -49,19 +49,22 @@ impl SecretResolver for PythonSecrets {
                 return Err(SecretFault::Unsupported);
             }
             let name = reference.name.clone();
-            let answered = calls::blocking(move |py| match store.bind(py).call1((name,)) {
-                Ok(value) if value.is_none() => Err(SecretFault::Missing),
-                Ok(value) => value
-                    .extract::<String>()
-                    .map(Secret::new)
-                    .map_err(|_| SecretFault::NotText),
-                Err(error) => {
-                    let raised = Raised(errors::type_name(py, &error));
-                    Err(SecretFault::Failed(Box::new(raised)))
-                }
-            })
+            let answered = calls::call(
+                move |py| Ok((store.bind(py).clone(), (name,).into_pyobject(py)?)),
+                |py, returned| match returned {
+                    Ok(value) if value.is_none() => Err(SecretFault::Missing),
+                    Ok(value) => value
+                        .extract::<String>()
+                        .map(Secret::new)
+                        .map_err(|_| SecretFault::NotText),
+                    Err(error) => {
+                        let raised = Raised(errors::type_name(py, &error));
+                        Err(SecretFault::Failed(Box::new(raised)))
+                    }
+                },
+            )
             .await;
-            answered.map_err(|joined| SecretFault::Failed(Box::new(joined)))?
+            answered.map_err(|unanswered| SecretFault::Failed(Box::new(unanswered)))?
         })
     }
 }

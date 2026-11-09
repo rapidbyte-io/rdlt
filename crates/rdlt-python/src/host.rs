@@ -11,6 +11,7 @@ use parking_lot::Mutex;
 use pyo3::{FromPyObject, Py, PyAny, PyErr, Python, pyclass, pymethods};
 
 use crate::secrets::PythonSecrets;
+use crate::source::NativeSourceFactory;
 use crate::{errors, runtime};
 
 /// `rdlt.Host`'s attributes, each one of the facade's words for what an operator allows.
@@ -28,6 +29,8 @@ pub(crate) struct Settings {
     secret_store: Option<Py<PyAny>>,
     remote: Option<TlsFiles>,
     trust_binaries: bool,
+    #[pyo3(attribute("_sources"))]
+    sources: Vec<Py<NativeSourceFactory>>,
 }
 
 /// `rdlt.Tls`'s files: the host's certificate and key, and the CA its connectors' certificates
@@ -45,15 +48,19 @@ pub(crate) struct NativeHost {
     settings: Settings,
     /// The facade's host once made: every build of this host shares it, and its compute pool.
     built: Mutex<Option<Arc<rdlt::Host>>>,
+    /// The host this one was derived from, whose compute pool it shares.
+    origin: Option<Py<NativeHost>>,
 }
 
 #[pymethods]
 impl NativeHost {
     #[new]
-    pub(crate) fn new(settings: Settings) -> Self {
+    #[pyo3(signature = (settings, origin = None))]
+    pub(crate) fn new(settings: Settings, origin: Option<Py<NativeHost>>) -> Self {
         Self {
             settings,
             built: Mutex::new(None),
+            origin,
         }
     }
 }
@@ -103,6 +110,12 @@ impl NativeHost {
             let (cert, key, ca) = (tls.cert.clone(), tls.key.clone(), tls.ca.clone());
             let opened = runtime::wait(py, rdlt::Tls::from_files(cert, key, ca))?;
             host = host.remote(opened.map_err(|error| errors::raised(py, &error))?);
+        }
+        for source in &settings.sources {
+            host = host.source_factory(Arc::from(source.get().factory()));
+        }
+        if let Some(origin) = &self.origin {
+            host = host.compute_of(&*origin.get().shared(py)?);
         }
         Ok(host)
     }

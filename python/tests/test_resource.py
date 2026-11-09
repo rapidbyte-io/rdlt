@@ -1,0 +1,464 @@
+"""Python functions as in-process sources."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import subprocess
+import sys
+import textwrap
+import threading
+import time
+from collections.abc import AsyncIterator, Iterator, Sequence
+from pathlib import Path
+from typing import cast
+
+import pyarrow as pa
+import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
+
+import rdlt
+
+
+def host(tmp_path: Path, connectors: Path) -> rdlt.Host:
+    return rdlt.Host(connectors=connectors, writable=[tmp_path], trust_binaries=True)
+
+
+def into_sqlite(tmp_path: Path) -> rdlt.Connector:
+    return rdlt.Connector(
+        "io.rapidbyte.sqlite",
+        config={"path": str(tmp_path / "out.db")},
+        access=rdlt.Access(write=[tmp_path]),
+    )
+
+
+def rows_of(tmp_path: Path, table: str) -> list[tuple[object, ...]]:
+    with sqlite3.connect(tmp_path / "out.db") as database:
+        columns = [
+            row[1]
+            for row in database.execute(f'PRAGMA table_info("{table}")')
+            if not str(row[1]).startswith("_rdlt")
+        ]
+        selected = ", ".join(f'"{column}"' for column in sorted(columns))
+        return sorted(database.execute(f'SELECT {selected} FROM "{table}"').fetchall(), key=repr)
+
+
+def test_yielded_dicts_land_once(tmp_path: Path, connectors: Path) -> None:
+    @rdlt.resource(primary_key="id")
+    def users() -> Iterator[object]:
+        yield [{"id": n, "name": f"user {n}"} for n in range(100)]
+        yield {"id": 100, "name": "the last"}
+
+    built = rdlt.pipeline("users", source=users, destination=into_sqlite(tmp_path))
+    outcome = built.build(host(tmp_path, connectors)).run()
+    assert outcome.report.rows == 101
+    assert len(rows_of(tmp_path, "users")) == 101
+
+
+def test_arrow_batches_and_tables_land(tmp_path: Path, connectors: Path) -> None:
+    @rdlt.resource()
+    def measured() -> Iterator[object]:
+        yield pa.record_batch({"n": pa.array(range(10), pa.int64())})
+        yield pa.table({"n": pa.array(range(10, 25), pa.int64())})
+
+    rdlt.pipeline("measured", source=measured, destination=into_sqlite(tmp_path)).build(
+        host(tmp_path, connectors)
+    ).run()
+    assert len(rows_of(tmp_path, "measured")) == 25
+
+
+@pytest.mark.parametrize("library", ["polars", "duckdb", "pandas"])
+def test_other_libraries_results_land(library: str, tmp_path: Path, connectors: Path) -> None:
+    module = pytest.importorskip(library)
+
+    @rdlt.resource(name="produced")
+    def produced() -> Iterator[object]:
+        if library == "polars":
+            yield module.DataFrame({"n": list(range(7))})
+        elif library == "duckdb":
+            yield module.sql("SELECT * FROM range(7) t(n)")
+        else:
+            yield pa.Table.from_pandas(module.DataFrame({"n": list(range(7))}))
+
+    rdlt.pipeline("produced", source=produced, destination=into_sqlite(tmp_path)).build(
+        host(tmp_path, connectors)
+    ).run()
+    assert len(rows_of(tmp_path, "produced")) == 7
+
+
+def test_a_transient_failure_retries_from_the_last_committed_checkpoint(
+    tmp_path: Path, connectors: Path
+) -> None:
+    class Since(rdlt.Cursor):
+        after: int = -1
+
+    started_from: list[int] = []
+
+    @rdlt.resource(cursor=Since)
+    def numbers(since: Since) -> Iterator[object]:
+        started_from.append(since.after)
+        for n in range(since.after + 1, 100):
+            yield {"id": n}
+            if n % 10 == 9:
+                yield rdlt.checkpoint(Since(after=n))
+            if n == 54 and len(started_from) == 1:
+                raise ConnectionResetError("the API went away")
+
+    built = rdlt.pipeline(
+        "retried",
+        source=numbers,
+        destination=into_sqlite(tmp_path),
+        commit=rdlt.Commit(rows=1),
+        retry=rdlt.Retry(max_attempts=3),
+    )
+    outcome = built.build(host(tmp_path, connectors)).run()
+    assert outcome.report.status is rdlt.RunStatus.SUCCEEDED
+    assert started_from[0] == -1
+    assert started_from[1] in {9, 19, 29, 39, 49}
+    assert len(rows_of(tmp_path, "numbers")) == 100
+
+
+def test_an_exception_fails_the_run_with_its_type_message_and_traceback(
+    tmp_path: Path, connectors: Path
+) -> None:
+    @rdlt.resource()
+    def broken() -> Iterator[object]:
+        yield {"n": 1}
+        raise ValueError("page 2 is malformed")
+
+    built = rdlt.pipeline(
+        "broken", source=broken, destination=into_sqlite(tmp_path), retry=rdlt.Retry(max_attempts=1)
+    )
+    with pytest.raises(rdlt.SourceError) as raised:
+        built.build(host(tmp_path, connectors)).run()
+    report = raised.value.report()
+    assert report.connector_code == "ValueError"
+    assert any("page 2 is malformed" in cause for cause in report.causes)
+    assert any(cause.startswith("Traceback (most recent call last)") for cause in report.causes)
+    assert raised.value.outcome is not None
+    assert raised.value.outcome.report.status is rdlt.RunStatus.FAILED
+
+
+JSON = st.recursive(
+    st.none()
+    | st.booleans()
+    | st.integers(-(2**63), 2**63 - 1)
+    | st.floats(allow_nan=False, allow_infinity=False)
+    | st.text(st.characters(categories=("L", "M", "N", "P", "S", "Zs")), max_size=10),
+    lambda children: (
+        st.lists(children, max_size=3)
+        | st.dictionaries(st.sampled_from(["x", "y"]), children, max_size=2)
+    ),
+    max_leaves=6,
+)
+ROWS = st.lists(
+    st.dictionaries(st.sampled_from(["a", "b", "c"]), JSON, min_size=1), min_size=1, max_size=20
+)
+
+
+@settings(
+    max_examples=20, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+@given(rows=ROWS)
+def test_dicts_load_as_the_rust_source_s_same_json_does(
+    rows: list[dict[str, rdlt.Json]], tmp_path_factory: pytest.TempPathFactory, connectors: Path
+) -> None:
+    ours, theirs = tmp_path_factory.mktemp("ours"), tmp_path_factory.mktemp("theirs")
+
+    @rdlt.resource(name="rows")
+    def drawn() -> Iterator[object]:
+        yield rows
+
+    memory = rdlt.Connector("io.rapidbyte.memory", config={"streams": {"rows": list(rows)}})
+    landed = [
+        loaded("ours", drawn, ours, connectors),
+        loaded("theirs", memory, theirs, connectors, streams=[rdlt.stream("rows")]),
+    ]
+    assert canonical(landed[0]) == canonical(landed[1])
+
+
+def canonical(landed: object) -> object:
+    """`landed` sorted with each JSON text's keys sorted, as a document's reader writes them."""
+    if not isinstance(landed, list):
+        return landed
+
+    def cell_of(cell: object) -> object:
+        return (
+            json.dumps(json.loads(cell), sort_keys=True)
+            if isinstance(cell, str) and cell[:1] in {"{", "["}
+            else cell
+        )
+
+    rows = cast("list[tuple[object, ...]]", landed)
+    return sorted([tuple(cell_of(cell) for cell in row) for row in rows], key=repr)
+
+
+def loaded(
+    name: str,
+    source: rdlt.Resource | rdlt.Connector,
+    into: Path,
+    connectors: Path,
+    *,
+    streams: Sequence[rdlt.Stream] = (),
+) -> object:
+    """What landed from `source`: the rows, or the refusal both sides fail with alike."""
+    built = rdlt.pipeline(name, source=source, destination=into_sqlite(into), streams=streams)
+    try:
+        built.build(rdlt.Host(connectors=connectors, writable=[into], trust_binaries=True)).run()
+    except rdlt.DestinationError as refused:
+        report = refused.report()
+        return (type(refused), report.code, report.connector_code)
+    return rows_of(into, "rows")
+
+
+def test_stop_now_returns_while_a_resource_blocks(tmp_path: Path, connectors: Path) -> None:
+    release = threading.Event()
+    waiting = threading.Event()
+
+    @rdlt.resource()
+    def blocked() -> Iterator[object]:
+        yield {"n": 1}
+        waiting.set()
+        release.wait(60)
+        yield {"n": 2}
+
+    run = (
+        rdlt.pipeline("blocked", source=blocked, destination=into_sqlite(tmp_path))
+        .build(host(tmp_path, connectors))
+        .start()
+    )
+    assert waiting.wait(30)
+    started = time.monotonic()
+    run.stop(rdlt.StopMode.NOW)
+    with pytest.raises(rdlt.StoppedError):
+        run.wait()
+    assert time.monotonic() - started < 10
+    release.set()
+
+
+def exits_with_seven(tmp_path: Path, connectors: Path, resource: str) -> int:
+    """The status of a script that exits, with a run in flight, once `started` is set inside it."""
+    out = str(tmp_path / "out.db")
+    tmp = str(tmp_path)
+    script = "\n".join(
+        [
+            "import itertools, sys, threading, time",
+            "import rdlt",
+            "",
+            "started = threading.Event()",
+            textwrap.dedent(resource),
+            "",
+            f"host = rdlt.Host(connectors={str(connectors)!r}, writable=[{tmp!r}],",
+            "                 trust_binaries=True)",
+            f'sqlite = rdlt.Connector("io.rapidbyte.sqlite", config={{"path": {out!r}}},',
+            f"                        access=rdlt.Access(write=[{tmp!r}]))",
+            'built = rdlt.pipeline("exiting", source=source, destination=sqlite,',
+            "                      commit=rdlt.Commit(rows=100)).build(host)",
+            "run = built.start()",
+            "if not started.wait(30):",
+            "    sys.exit(3)",
+            "sys.exit(7)",
+            "",
+        ]
+    )
+    finished = subprocess.run([sys.executable, "-c", script], timeout=60, check=False)
+    return finished.returncode
+
+
+def test_a_process_exits_while_a_read_is_flowing(tmp_path: Path, connectors: Path) -> None:
+    resource = """
+    class Since(rdlt.Cursor):
+        after: int = -1
+
+    @rdlt.resource(cursor=Since)
+    def source(since):
+        for n in itertools.count(since.after + 1):
+            yield {"n": n}
+            yield rdlt.checkpoint(Since(after=n))
+            started.set()
+    """
+    assert exits_with_seven(tmp_path, connectors, resource) == 7
+
+
+def test_a_process_exits_while_a_resource_polls_in_python(tmp_path: Path, connectors: Path) -> None:
+    resource = """
+    @rdlt.resource()
+    def source():
+        yield {"n": 0}
+        started.set()
+        while True:
+            time.sleep(0.003)
+    """
+    assert exits_with_seven(tmp_path, connectors, resource) == 7
+
+
+def test_a_process_exits_while_a_resource_lists_its_partitions(
+    tmp_path: Path, connectors: Path
+) -> None:
+    resource = """
+    def partitions():
+        started.set()
+        while True:
+            time.sleep(0.001)
+
+    @rdlt.resource(partitions=partitions)
+    def source(ctx):
+        yield {"n": 0}
+    """
+    assert exits_with_seven(tmp_path, connectors, resource) == 7
+
+
+class _Since(rdlt.Cursor):
+    after: int = -1
+
+
+@pytest.mark.parametrize("write", [None, rdlt.merge("id")], ids=["append", "merge"])
+def test_a_resource_with_a_cursor_resumes_the_next_run_and_adds_no_duplicate(
+    write: rdlt.WriteMode | None, tmp_path: Path, connectors: Path
+) -> None:
+    started_from: list[int] = []
+
+    @rdlt.resource(primary_key="id", write=write, cursor=_Since)
+    def users(since: _Since) -> Iterator[object]:
+        started_from.append(since.after)
+        for n in range(since.after + 1, 3):
+            yield {"id": n}
+        yield rdlt.checkpoint(_Since(after=2))
+
+    built = rdlt.pipeline("resumed", source=users, destination=into_sqlite(tmp_path))
+    every_host = host(tmp_path, connectors)
+    built.build(every_host).run()
+    built.build(every_host).run()
+    assert started_from == [-1, 2]
+    assert len(rows_of(tmp_path, "users")) == 3
+
+
+@pytest.mark.parametrize("write", [None, rdlt.merge("id")], ids=["append", "merge"])
+def test_a_read_that_ends_on_rows_resumes_from_its_last_checkpoint_and_loses_none(
+    write: rdlt.WriteMode | None, tmp_path: Path, connectors: Path
+) -> None:
+    available = [7]
+    finishing = [False]
+    started_from: list[int] = []
+
+    @rdlt.resource(primary_key="id", write=write, cursor=_Since)
+    def users(since: _Since) -> Iterator[object]:
+        started_from.append(since.after)
+        for n in range(since.after + 1, available[0]):
+            yield {"id": n}
+            if n % 3 == 2:
+                yield rdlt.checkpoint(_Since(after=n))
+        if finishing[0]:
+            yield rdlt.checkpoint(_Since(after=available[0] - 1))
+
+    built = rdlt.pipeline("partial", source=users, destination=into_sqlite(tmp_path))
+    every_host = host(tmp_path, connectors)
+
+    built.build(every_host).run()
+    assert rows_of(tmp_path, "users") == [(n,) for n in range(6)]
+
+    available[0], finishing[0] = 10, True
+    built.build(every_host).run()
+    assert rows_of(tmp_path, "users") == [(n,) for n in range(10)]
+
+    outcome = built.build(every_host).run()
+    assert outcome.report.rows == 0
+    assert len(rows_of(tmp_path, "users")) == 10
+    assert started_from == [-1, 5, 9]
+
+
+def test_a_resource_with_a_cursor_that_never_checkpoints_fails_naming_it(
+    tmp_path: Path, connectors: Path
+) -> None:
+    @rdlt.resource(cursor=_Since)
+    def users(since: _Since) -> Iterator[object]:
+        del since
+        yield {"id": 1}
+
+    built = rdlt.pipeline(
+        "unmarked",
+        source=users,
+        destination=into_sqlite(tmp_path),
+        retry=rdlt.Retry(max_attempts=1),
+    )
+    with pytest.raises(rdlt.Error) as raised:
+        built.build(host(tmp_path, connectors)).run()
+    assert raised.value.report().connector_code == "checkpoint_missing"
+
+
+def test_naming_a_resource_in_streams_keeps_what_it_does_not_change(
+    tmp_path: Path, connectors: Path
+) -> None:
+    @rdlt.resource(primary_key="id", write=rdlt.merge("id"))
+    def merged() -> Iterator[object]:
+        yield [{"id": n} for n in range(3)]
+
+    built = rdlt.pipeline(
+        "merged",
+        source=merged,
+        destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("merged", read="full")],
+    )
+    every_host = host(tmp_path, connectors)
+    built.build(every_host).run()
+    built.build(every_host).run()
+    assert len(rows_of(tmp_path, "merged")) == 3
+
+
+def test_an_entry_in_streams_overrides_what_it_sets(tmp_path: Path, connectors: Path) -> None:
+    @rdlt.resource(primary_key="id", write=rdlt.merge("id"))
+    def merged() -> Iterator[object]:
+        yield [{"id": n} for n in range(3)]
+
+    built = rdlt.pipeline(
+        "overridden",
+        source=merged,
+        destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("merged", write=rdlt.append())],
+    )
+    every_host = host(tmp_path, connectors)
+    built.build(every_host).run()
+    built.build(every_host).run()
+    assert len(rows_of(tmp_path, "merged")) == 6
+
+
+def test_an_object_with_only_aiter_is_read(tmp_path: Path, connectors: Path) -> None:
+    class Numbers:
+        def __aiter__(self) -> AsyncIterator[object]:
+            return self._numbers()
+
+        async def _numbers(self) -> AsyncIterator[object]:
+            yield {"n": 1}
+            yield {"n": 2}
+
+    @rdlt.resource()
+    def counted() -> Numbers:
+        return Numbers()
+
+    rdlt.pipeline("counted", source=counted, destination=into_sqlite(tmp_path)).build(
+        host(tmp_path, connectors)
+    ).run()
+    assert len(rows_of(tmp_path, "counted")) == 2
+
+
+def test_a_string_is_not_a_list_of_partitions(tmp_path: Path, connectors: Path) -> None:
+    def one_string() -> Sequence[str]:
+        return "abc"
+
+    @rdlt.resource(partitions=one_string)
+    def split(ctx: rdlt.StreamContext) -> Iterator[object]:
+        yield {"partition": ctx.partition}
+
+    built = rdlt.pipeline("split", source=split, destination=into_sqlite(tmp_path))
+    with pytest.raises(rdlt.SourceError) as raised:
+        built.build(host(tmp_path, connectors)).run()
+    assert raised.value.report().connector_code == "TypeError"
+
+
+def test_a_partitioned_resource_that_takes_no_ctx_is_refused() -> None:
+    def naive() -> Iterator[object]:
+        yield {"n": 1}
+
+    with pytest.raises(TypeError, match="ctx"):
+        rdlt.resource(partitions=lambda: ["a", "b"])(naive)

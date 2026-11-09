@@ -15,19 +15,19 @@ use arrow_array::RecordBatch;
 use bytes::Bytes;
 use parking_lot::Mutex;
 use pyo3::types::PyAnyMethods as _;
-use pyo3::{Bound, Py, PyAny, PyErr, Python, pyclass, pymethods};
+use pyo3::{Bound, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
 use rdlt_connector::ConnectorError;
 use serde_json::value::RawValue;
 use tokio::sync::mpsc;
 
 use crate::arrow::{Produced, produced};
+use crate::calls;
 use crate::errors::Failure;
 use crate::json::{self, JsonLimits};
 use crate::source::context::{NativeCheckpoint, NativeStreamContext};
 
 /// What a partition's thread sends its read.
 #[derive(Debug)]
-#[expect(dead_code, reason = "the source's read takes these in the next change")]
 pub(crate) enum Pushed {
     /// JSON lines, within one push's bytes.
     Json(Bytes),
@@ -75,8 +75,8 @@ impl Reading {
                 let started = Python::try_attach(|py| {
                     let context = Py::new(py, context)?;
                     let out = Py::new(py, out)?;
-                    py.import("rdlt._reading")?.call_method1(
-                        "start",
+                    calls::reading(py)?.call_method1(
+                        intern!(py, "start"),
                         (name, stream.as_ref(), partition, cursor, context, out),
                     )?;
                     Ok::<(), PyErr>(())

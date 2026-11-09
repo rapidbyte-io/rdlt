@@ -89,7 +89,8 @@ ignore = ["D105", "D107", "PLR0913", "TRY003"]
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"python/tests/**" = ["D103", "PLR2004", "S101", "S603"]
+"python/rdlt/_native.pyi" = ["A002"]
+"python/tests/**" = ["D103", "PLR2004", "S101", "S603", "S608"]
 
 [tool.pyright]
 include = ["python"]
