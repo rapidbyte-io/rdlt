@@ -271,3 +271,44 @@ async fn a_host_file_setting_of_a_feature_not_built_is_refused() {
     let plain = HostFile::parse("allow_env: [A]\n").unwrap();
     drop(plain.host().await.expect("nothing needs a feature"));
 }
+
+#[tokio::test]
+async fn a_host_file_is_read_from_its_path_as_a_document_is() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("host.yaml");
+    std::fs::write(&path, "writable: [/data]\n").unwrap();
+    let file = HostFile::from_path(&path).await.unwrap();
+    assert_eq!(file.writable, ["/data"].map(std::path::PathBuf::from));
+    let unread = |error: crate::Error| {
+        (
+            error.code().map(rdlt_engine::Code::as_str),
+            error.to_string(),
+        )
+    };
+    let absent = HostFile::from_path(directory.path().join("absent.yaml"))
+        .await
+        .unwrap_err();
+    let (code, said) = unread(absent);
+    assert_eq!(code, Some("document_unreadable"), "{said}");
+    assert!(said.starts_with("the host file "), "{said}");
+    let pipe = directory.path().join("a fifo");
+    let made = std::process::Command::new("mkfifo").arg(&pipe).status();
+    assert!(made.unwrap().success(), "mkfifo makes a pipe");
+    let reading = HostFile::from_path(&pipe);
+    let refused = tokio::time::timeout(std::time::Duration::from_secs(30), reading)
+        .await
+        .expect("a pipe is not waited on")
+        .unwrap_err();
+    assert_eq!(unread(refused).0, Some("document_unreadable"));
+    std::fs::write(&path, "writable: [/a]\nwritable: [/b]\n").unwrap();
+    let repeated = HostFile::from_path(&path).await.unwrap_err();
+    assert!(
+        repeated
+            .to_string()
+            .starts_with(&path.display().to_string()),
+        "{repeated}"
+    );
+    std::fs::write(&path, vec![b'#'; crate::limits::DOCUMENT_BYTES + 1]).unwrap();
+    let large = HostFile::from_path(&path).await.unwrap_err();
+    assert_eq!(unread(large).0, Some("document_too_large"));
+}

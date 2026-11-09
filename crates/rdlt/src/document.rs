@@ -172,28 +172,9 @@ impl Document {
     /// no UTF-8, or reading it takes past [`BUILD_WAIT`]; `document_too_large` past
     /// [`DOCUMENT_BYTES`], else as `parse`.
     pub async fn from_path(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let path = path.as_ref().to_owned();
-        let reading = {
-            let path = path.clone();
-            tokio::task::spawn_blocking(move || regular_file_bytes(&path))
-        };
-        let unread = |cause: io::Error| Error::unreadable(&path, cause);
-        let bytes = match tokio::time::timeout(BUILD_WAIT, reading).await {
-            Ok(Ok(bytes)) => bytes.map_err(&unread)?,
-            Ok(Err(joined)) => return Err(unread(io::Error::other(joined))),
-            Err(_) => {
-                let late = format!("not read within {BUILD_WAIT:?}");
-                return Err(unread(io::Error::new(io::ErrorKind::TimedOut, late)));
-            }
-        };
-        let origin = path.display().to_string();
-        if bytes.len() > DOCUMENT_BYTES {
-            return Err(refused(&Fault::too_large(DOCUMENT), Some(&origin)));
-        }
-        // The error holds the file's bytes; its position alone is kept.
-        let text = String::from_utf8(bytes)
-            .map_err(|error| Error::unreadable(&path, error.utf8_error()))?;
-        Self::from_text(&text, &origin)
+        let path = path.as_ref();
+        let text = file_text(path, DOCUMENT).await?;
+        Self::from_text(&text, &path.display().to_string())
     }
 
     /// The document as YAML, every secret still a reference.
@@ -230,6 +211,31 @@ impl Document {
 /// What a document's refusals call it.
 const DOCUMENT: &str = "the document";
 
+/// The text of the file at `path`, read on a blocking task so a stalled path holds up no runtime
+/// worker, saying `noun`: at most [`DOCUMENT_BYTES`] of UTF-8, and given up on at [`BUILD_WAIT`],
+/// leaving a read that stalled to run on.
+pub(crate) async fn file_text(path: &Path, noun: &str) -> Result<String, Error> {
+    let reading = {
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || regular_file_bytes(&path))
+    };
+    let unread = |cause: io::Error| Error::unreadable(noun, path, cause);
+    let bytes = match tokio::time::timeout(BUILD_WAIT, reading).await {
+        Ok(Ok(bytes)) => bytes.map_err(&unread)?,
+        Ok(Err(joined)) => return Err(unread(io::Error::other(joined))),
+        Err(_) => {
+            let late = format!("not read within {BUILD_WAIT:?}");
+            return Err(unread(io::Error::new(io::ErrorKind::TimedOut, late)));
+        }
+    };
+    let origin = path.display().to_string();
+    if bytes.len() > DOCUMENT_BYTES {
+        return Err(refused(&Fault::too_large(noun), Some(&origin)));
+    }
+    // The error holds the file's bytes; its position alone is kept.
+    String::from_utf8(bytes).map_err(|error| Error::unreadable(noun, path, error.utf8_error()))
+}
+
 /// `text` as a `T`, a mapping, read as a document is, its faults as errors saying `noun`.
 pub(crate) fn hostile_read<T: serde::de::DeserializeOwned>(
     text: &str,
@@ -238,12 +244,14 @@ pub(crate) fn hostile_read<T: serde::de::DeserializeOwned>(
     hostile::read(text, noun).map_err(|fault| refused(&fault, None))
 }
 
-/// As [`hostile_read`], a text holding nothing being `T::default()`.
+/// As [`hostile_read`], a text holding nothing being `T::default()`, its faults starting with
+/// `origin`.
 pub(crate) fn hostile_read_or_default<T: serde::de::DeserializeOwned + Default>(
     text: &str,
     noun: &str,
+    origin: Option<&str>,
 ) -> Result<T, Error> {
-    hostile::read_or_default(text, noun).map_err(|fault| refused(&fault, None))
+    hostile::read_or_default(text, noun).map_err(|fault| refused(&fault, origin))
 }
 
 /// The error `fault` is, its text naming `origin`.
