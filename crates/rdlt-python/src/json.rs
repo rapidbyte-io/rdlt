@@ -66,7 +66,7 @@ pub(crate) enum Unwritten {
     #[error("row {row}: nests deeper than {limit} levels")]
     Deep { row: usize, limit: usize },
     /// A row larger than a whole push.
-    #[error("row {row}: its {bytes} bytes of JSON exceed a push's {limit}")]
+    #[error("row {row}: its JSON reaches {bytes} bytes, past a push's {limit}")]
     Large {
         row: usize,
         bytes: usize,
@@ -138,6 +138,7 @@ struct Writer<'a, 'py> {
     typed: &'a Typed<'py>,
     row: usize,
     depth: usize,
+    limit: usize,
     path: String,
     out: Vec<u8>,
 }
@@ -152,6 +153,14 @@ impl Writer<'_, '_> {
     }
 
     fn value(&mut self, value: &Bound<'_, PyAny>, level: usize) -> Result<(), Unwritten> {
+        // Refused here, since repeated references can make a row far larger than Python holds.
+        if self.out.len() > self.limit {
+            return Err(Unwritten::Large {
+                row: self.row,
+                bytes: self.out.len(),
+                limit: self.limit,
+            });
+        }
         if value.is_none() {
             self.out.extend_from_slice(b"null");
         } else if let Ok(flag) = value.cast::<PyBool>() {
@@ -348,6 +357,7 @@ fn line(
         typed,
         row: number,
         depth: limits.depth,
+        limit: limits.push_bytes,
         path: "$".to_owned(),
         out: Vec::new(),
     };

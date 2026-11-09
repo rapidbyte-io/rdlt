@@ -193,7 +193,7 @@ impl ReadStream<PythonSource> for PythonStream {
     ) -> Result<()> {
         let key = self.partitioned.then(|| partition.id().to_string());
         let cursor = cursor.0.map(|cursor| cursor.get().to_owned());
-        let mut unmarked = self.resumes && cursor.is_none();
+        let mut unmarked = self.resumes;
         let mut pushed_rows = false;
         let limits = out.limits();
         let limits = JsonLimits::new(limits.json_push_bytes, limits.nesting_depth);

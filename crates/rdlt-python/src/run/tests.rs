@@ -144,7 +144,11 @@ fn an_event_read_for_a_wait_interrupted_as_it_ended_is_read_next() {
         let run = started(py, &memory_document("unlost", 10), memory_host());
         let events = run.events(py).unwrap();
         run.wait(py).unwrap();
-        assert_eq!(events.take(), None, "nothing is read before a read waits");
+        assert_eq!(
+            events.take(py).unwrap(),
+            None,
+            "nothing is read before a read waits"
+        );
         // What an interrupted wait leaves, twice: its read ended and nobody took the item.
         for _ in 0..2 {
             let reader = Arc::clone(&events.reader);
@@ -154,7 +158,7 @@ fn an_event_read_for_a_wait_interrupted_as_it_ended_is_read_next() {
             let item: serde_json::Value = serde_json::from_str(&item).unwrap();
             item["event"]["seq"].as_u64().expect("an event")
         };
-        assert_eq!(events.take().map(seq), Some(1));
+        assert_eq!(events.take(py).unwrap().map(seq), Some(1));
         let next = events.__next__(py).unwrap().expect("an event");
         assert_eq!(seq(next), 2);
     });

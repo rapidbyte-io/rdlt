@@ -432,11 +432,13 @@ def test_a_forked_child_may_not_take_its_parent_s_next_event(
         next(events)
         child = os.fork()
         if child == 0:
-            try:
-                next(events)
-            except rdlt.InternalError:
-                os._exit(0)
-            os._exit(3)
+            refused = 0
+            for read in (lambda: next(events), events._native.take):
+                try:
+                    read()
+                except rdlt.InternalError:
+                    refused += 1
+            os._exit(0 if refused == 2 else 3)
         _, status = os.waitpid(child, 0)
         run.cancel()
         sys.exit(os.waitstatus_to_exitcode(status))

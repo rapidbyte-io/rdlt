@@ -115,23 +115,20 @@ def _read_sync(opened: Iterable[object], out: _Out) -> None:
 
 
 def _read_async(opened: AsyncIterable[object], out: _Out) -> None:
+    asyncio.run(_pushed(opened, out))
+
+
+async def _pushed(opened: AsyncIterable[object], out: _Out) -> None:
+    """Reads `opened` in one task: a timeout or a context variable may span its yields."""
     iterator = aiter(opened)
-    loop = asyncio.new_event_loop()
     try:
-        while True:
-            try:
-                item = loop.run_until_complete(anext(iterator))
-            except StopAsyncIteration:
-                return
+        async for item in iterator:
             if not out.push(item):
                 return
     finally:
-        try:
-            aclose = getattr(iterator, "aclose", None)
-            if aclose is not None:
-                loop.run_until_complete(aclose())
-        finally:
-            loop.close()
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
 
 
 def call(function: Callable[..., object], arguments: tuple[object, ...], answer: _Answer) -> None:
