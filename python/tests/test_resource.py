@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 import subprocess
@@ -98,6 +99,17 @@ def test_a_transient_failure_retries_from_the_last_committed_checkpoint(
 
     started_from: list[int] = []
 
+    def checkpoint_committed() -> None:
+        # A row past the first checkpoint carries it in its commit: failing sooner, the retry
+        # rightly starts from the beginning.
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            with contextlib.suppress(sqlite3.OperationalError):
+                if len(rows_of(tmp_path, "numbers")) > 10:
+                    return
+            time.sleep(0.01)
+        raise AssertionError("no commit landed")
+
     @rdlt.resource(cursor=Since)
     def numbers(since: Since) -> Iterator[object]:
         started_from.append(since.after)
@@ -106,6 +118,7 @@ def test_a_transient_failure_retries_from_the_last_committed_checkpoint(
             if n % 10 == 9:
                 yield rdlt.checkpoint(Since(after=n))
             if n == 54 and len(started_from) == 1:
+                checkpoint_committed()
                 raise ConnectionResetError("the API went away")
 
     built = rdlt.pipeline(
