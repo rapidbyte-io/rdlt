@@ -16,6 +16,9 @@ __all__ = [
     "StreamContext",
     "Transform",
     "__version__",
+    "certify_source",
+    "certify_transform",
+    "clauses",
     "serve",
 ]
 
@@ -144,3 +147,8 @@ class Run:
     def wait_async(self) -> Awaitable[tuple[str, str | None]]: ...
 
 def serve(args: Sequence[str], factory: SourceFactory) -> str | None: ...
+def clauses(role: str) -> list[tuple[str, str]]: ...
+def certify_source(
+    factory: SourceFactory, config: str, launcher: str | PathLike[str] | None = None
+) -> str: ...
+def certify_transform(transform: Transform, inputs: Sequence[pa.RecordBatch]) -> str: ...

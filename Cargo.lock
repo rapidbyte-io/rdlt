@@ -4020,6 +4020,7 @@ dependencies = [
  "pyo3-async-runtimes",
  "pyo3-build-config",
  "rdlt",
+ "rdlt-certify",
  "rdlt-connector",
  "rdlt-connector-reference",
  "rdlt-testkit",

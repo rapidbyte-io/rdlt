@@ -14,6 +14,7 @@
 
 mod arrow;
 mod calls;
+mod certify;
 #[cfg(test)]
 mod embedded;
 mod errors;
@@ -54,5 +55,8 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     module.add_class::<source::NativeSourceFactory>()?;
     module.add_class::<transform::NativeTransform>()?;
     module.add_function(pyo3::wrap_pyfunction!(serve::serve, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(certify::clauses, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(certify::certify_source, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(certify::certify_transform, module)?)?;
     Ok(())
 }

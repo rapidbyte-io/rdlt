@@ -19,6 +19,9 @@ classifiers = [
   "Typing :: Typed",
 ]
 
+[project.entry-points.pytest11]
+rdlt = "rdlt.testing.plugin"
+
 [dependency-groups]
 dev = [
   "hypothesis==6.170.15",
