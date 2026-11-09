@@ -25,14 +25,16 @@ script that started a run and returned.
   and reads its answer, and a transform's batch and answer are imported and exported in Python,
   since pyarrow releases the GIL in both. `rdlt._reading` is imported when the package loads, so
   no thread imports under Rust.
-- **Two cases run under Rust, and are accepted.** Methods of what a generator yields run inside
+- **Three cases run under Rust, and are accepted.** Methods of what a generator yields run inside
   `push` with its Rust frames beneath them: a value's `isoformat` and a UUID's `__str__`, a
   `list` subclass's `__iter__`, `__getattr__` through `hasattr`, a producer's
   `__arrow_c_array__` and `__arrow_c_stream__`, and a Python-backed Arrow reader's next batch.
-  So do a raised exception's `__str__` and traceback, rendered where a failure is turned into an
-  error. A slow one of these at the instant of exit can abort the process on CPython 3.11, 3.12
-  and 3.13.0 to 3.13.7, as above. Moving them means encoding every row, or rendering every
-  failure, in Python; a process exiting commits nothing further, so no committed data is at risk.
+  So do a raised exception's `__str__`, traceback and declared kind, code and wait, read where a
+  failure is turned into an error, and a connector instance's finalizers, which run where the
+  native side lets go of the connection that holds it. A slow one of these at the instant of exit
+  can abort the process on CPython 3.11, 3.12 and 3.13.0 to 3.13.7, as above. Moving them means
+  encoding every row, rendering every failure, or releasing every connection, in Python; a
+  process exiting commits nothing further, so no committed data is at risk.
 - **What the native side holds of Python, it reaches weakly.** What the native side holds is
   opaque to Python's collector, so a strong reference from it to a resource, a transform or a
   secret store that holds the pipeline it serves could never be collected, and the pipeline's

@@ -9,14 +9,12 @@ from dataclasses import dataclass
 
 from rdlt import _native
 from rdlt._pipeline import WriteMode
+from rdlt._streams import Read, Stream
 from rdlt._weak import weakly_reached
-from rdlt.context import StreamContext
 from rdlt.cursor import Cursor
 
 RESOURCES = "io.rapidbyte.resources"
 """The connector id a pipeline's resources are placed under."""
-
-Read = Callable[..., Iterable[object] | AsyncIterable[object]]
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
@@ -71,53 +69,30 @@ def resource(
     return made
 
 
-class _Stream:
-    """A resource, as the native source reads it, which it reaches through a weak reference."""
+def _stream(resource: Resource, *, resumes: bool) -> Stream:
+    """`resource` as the native source reads it, which it reaches through a weak reference."""
+    reached = weakly_reached(resource, f"resource {resource.name!r}")
 
-    def __init__(self, resource: Resource, *, resumes: bool) -> None:
-        self._reached = weakly_reached(resource, f"resource {resource.name!r}")
-        self._takes_context = "ctx" in inspect.signature(resource.function).parameters
-        self._spec = json.dumps(
-            {
-                "name": resource.name,
-                "primary_key": None if resource.primary_key is None else list(resource.primary_key),
-                "read_modes": ["full", "incremental"] if resource.cursor else ["full"],
-                "checkpointing": "on_demand" if self._takes_context else "natural",
-                "partitioned": resource.partitions is not None,
-                "resumes": resumes,
-            }
-        )
+    def read(*arguments: object, **keywords: object) -> Iterable[object] | AsyncIterable[object]:
+        return reached().function(*arguments, **keywords)
 
-    @property
-    def spec(self) -> str:
-        return self._spec
+    def partitions() -> Sequence[str]:
+        made = reached().partitions
+        return [] if made is None else made()
 
-    def partitions(self) -> list[str]:
-        resource = self._reached()
-        if resource.partitions is None:
-            return []
-        found = resource.partitions()
-        if isinstance(found, str):
-            message = f"resource {resource.name!r}: partitions are a sequence, not one string"
-            raise TypeError(message)
-        return list(found)
-
-    def read(
-        self, partition: str | None, cursor: str | None, context: _native.StreamContext
-    ) -> Iterable[object] | AsyncIterable[object]:
-        del partition
-        resource = self._reached()
-        arguments: list[object] = []
-        if resource.cursor is not None:
-            arguments.append(
-                resource.cursor() if cursor is None else resource.cursor.model_validate_json(cursor)
-            )
-        keywords: dict[str, object] = {"ctx": StreamContext(context)} if self._takes_context else {}
-        return resource.function(*arguments, **keywords)
+    return Stream(
+        resource.name,
+        read,
+        resource.primary_key,
+        resource.cursor,
+        None if resource.partitions is None else partitions,
+        takes_context="ctx" in inspect.signature(resource.function).parameters,
+        resumes=resumes,
+    )
 
 
 class _Connected:
-    def __init__(self, streams: list[_Stream]) -> None:
+    def __init__(self, streams: list[Stream]) -> None:
         self.streams = streams
 
     def check(self) -> None:
@@ -128,7 +103,7 @@ def source_factory(
     resources: Sequence[Resource], resuming: Collection[str]
 ) -> _native.SourceFactory:
     """The source of `resources`; each named in `resuming` is read from its committed cursor."""
-    streams = [_Stream(resource, resumes=resource.name in resuming) for resource in resources]
+    streams = [_stream(resource, resumes=resource.name in resuming) for resource in resources]
     connected = _Connected(streams)
     return _native.SourceFactory(
         RESOURCES, _native.__version__, json.dumps({"type": "object"}), lambda _config: connected
