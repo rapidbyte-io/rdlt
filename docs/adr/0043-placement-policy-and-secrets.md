@@ -212,10 +212,10 @@ given. A host enforces that only where it closes each of these:
     of nothing but `*` and whitespace, which `***` would hold, is refused as it resolves
     (`secret_unredactable`). A call's error carries the last words of the process the call
     went to. An in-process connector's errors are flattened to text and scrubbed the same way.
-  - `rdlt-certify` reads a configuration from a file or standard input, never the command
-    line, resolves the references `--secret-env` and `--secret-dir` allow, scrubs what it
-    prints, and certifies a binary inside the sandbox, with the access its command line gives,
-    unless told it is trusted.
+  - `rdlt certify` reads a configuration from a file or standard input, never the command
+    line, resolves the references `--allow-env` and `--allow-files` allow, scrubs what it
+    prints, and certifies a binary inside the sandbox, with the access `--readable`,
+    `--writable` and `--network` give, unless told it is trusted with `--trust-binaries`.
 
 Rejected:
 - **Covering the host's inheritable descriptors with the null device in the child**, from a

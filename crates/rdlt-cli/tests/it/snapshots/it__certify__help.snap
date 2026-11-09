@@ -1,0 +1,37 @@
+---
+source: crates/rdlt-cli/tests/it/certify.rs
+expression: "String::from_utf8_lossy(&help.stdout)"
+---
+Certifies a connector, from its binary or at its endpoint, against the protocol's clauses
+
+Usage: rdlt certify [OPTIONS] [TARGET]
+
+Arguments:
+  [TARGET]  The connector: its binary's path, or the `grpcs://host:port` endpoint it listens at
+
+Options:
+      --role <ROLE>             Certify this role alone; by default, every role the connector serves [possible values: source, destination]
+      --config-file <PATH>      A file holding the connector's configuration, as JSON, or `-` to read it from standard input; an empty object without it; a text value may refer to a secret as `${env:NAME}` or `${file:/absolute/path}`, where `--allow-env` and `--allow-files` allow it, and no report then shows the secret
+      --network                 Lets the sandboxed connector reach the network
+      --env <NAME>              An environment variable a spawned connector keeps; it otherwise starts with glibc's malloc tunables alone, and in a sandbox `TMPDIR` names its scratch directory, whatever it was
+      --kill-seed <SEED>        Kills the connector at the points this seed draws, as a failed kill clause reports, to reproduce the failure
+      --kill-timeout <SECONDS>  Gives each kill clause this many seconds for all its loads, rather than 300: a connector slower than about two seconds a commit needs more
+      --credit-watch <MS>       Watches a read whose credit is spent this many milliseconds after each grant, from 1 to 1000, rather than 1000: `P-CREDIT` then takes four times as long, and its pass notes the watch
+      --timeout <SECONDS>       Ends the certification after this many seconds, rather than 3600, failing every clause of a role still certifying then
+      --no-timeout              Lets the certification take as long as its clauses' own bounds allow
+      --require <REQUIRE>       What exits 0: `complete`, every clause that applies seen to be met; `partial`, none failed and one passed, whatever was not observed [default: complete] [possible values: complete, partial]
+      --clauses                 Prints every clause, in Markdown, and exits
+      --host <PATH>             The operator's host file; by default `$XDG_CONFIG_HOME/rdlt/host.yaml`, where it exists
+      --connectors <DIR>        A directory local connectors are found in; by default `$XDG_DATA_HOME/rdlt/connectors`
+      --trust-binaries          Runs local connectors with your own access, in no sandbox
+      --writable <PATH>         A root a document may let its connectors write beneath
+      --readable <PATH>         A root a document may let its connectors read beneath
+      --allow-network           Lets a document let its sandboxed connectors share this host's network, its loopback services included
+      --allow-env <NAME>        An environment variable a configuration's `${env:NAME}` may reach
+      --allow-files <DIR>       A private directory a configuration's `${file:/path}` may reach beneath
+      --tls-cert <PATH>         The host's certificate chain, in PEM, for remote connectors
+      --tls-key <PATH>          The host's private key, in PEM
+      --tls-ca <PATH>           The CA bundle remote connectors' certificates chain to, in PEM
+      --output <OUTPUT>         How results print: plain on a terminal and JSON elsewhere, or as named [default: auto] [possible values: auto, plain, json]
+      --log-level <LEVEL>       The least level logged to standard error; `RUST_LOG`, where set, wins [default: warn] [possible values: off, error, warn, info, debug, trace]
+  -h, --help                    Print help

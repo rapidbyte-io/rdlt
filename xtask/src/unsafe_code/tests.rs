@@ -411,7 +411,7 @@ fn the_roots_of_every_kind_of_target_are_found() {
         "crates/rdlt-connector/src/lib.rs",
         "crates/rdlt-connector-macros/src/lib.rs",
         "crates/rdlt-adopt/src/lib.rs",
-        "crates/rdlt-certify/src/main.rs",
+        "crates/rdlt-cli/src/main.rs",
         "crates/rdlt-connector-reference/src/bin/rdlt-connector-files.rs",
         "crates/rdlt-engine/examples/crash_run/main.rs",
         "crates/rdlt-engine/tests/it/main.rs",

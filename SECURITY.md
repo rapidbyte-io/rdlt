@@ -122,7 +122,7 @@ anything runs; none is ignored.
   connector receives only its own configuration.
 - A resolved secret is replaced by `***` in that connector's errors, its last words and its
   logged output, whichever start of it said it, in an engine's report of them, and in
-  `rdlt-certify`'s reports, and so is each line of a secret that holds line ends and at least 8
+  `rdlt certify`'s reports, and so is each line of a secret that holds line ends and at least 8
   characters other than whitespace, wherever it is found. It is not written to state by the
   engine. A literal value in a configuration is not a secret and is not scrubbed.
 - A text is scrubbed until nothing of a secret is left in it: where a `***` completes a secret,
@@ -178,7 +178,7 @@ ADR 0048 records these.
 
 ## Certification
 
-`rdlt-certify` treats the connector it certifies as hostile: it spawns a binary inside the
+`rdlt certify` treats the connector it certifies as hostile: it spawns a binary inside the
 sandbox unless told the binary is trusted, reads the configuration from a file or standard input
 and never its command line, and scrubs the secrets the configuration refers to from what it
 prints. Every wait has a deadline, and

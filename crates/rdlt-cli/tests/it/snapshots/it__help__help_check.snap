@@ -22,5 +22,5 @@ Options:
       --tls-key <PATH>     The host's private key, in PEM
       --tls-ca <PATH>      The CA bundle remote connectors' certificates chain to, in PEM
       --output <OUTPUT>    How results print: plain on a terminal and JSON elsewhere, or as named [default: auto] [possible values: auto, plain, json]
-      --log-level <LEVEL>  The least level logged to standard error; `RUST_LOG`, where set, wins [default: warn]
+      --log-level <LEVEL>  The least level logged to standard error; `RUST_LOG`, where set, wins [default: warn] [possible values: off, error, warn, info, debug, trace]
   -h, --help               Print help

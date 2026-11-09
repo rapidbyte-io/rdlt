@@ -1,14 +1,13 @@
-//! The `rdlt-certify` binary: what it certifies, how it reports, and its exit codes.
+//! The `rdlt certify` verb: what it certifies, how it reports, and its exit codes.
 
 use std::process::Output;
 
 use rdlt_testkit::tls::Pki;
 use tokio::process::Command;
 
-use crate::listening::listening;
-use crate::spawned::example;
+use crate::support::{example, guarded, listening};
 
-/// Runs `rdlt-certify` with `args`, as the tests of what it certifies run it: a configuration
+/// Runs `rdlt certify` with `args`, as the tests of what it certifies run it: a configuration
 /// given after `--config` is written to its standard input, since it takes none on its command
 /// line, and a connector's binary is one the tests trust, unless `args` say how it is confined.
 async fn certify(args: &[&str]) -> Output {
@@ -22,12 +21,15 @@ async fn certify(args: &[&str]) -> Output {
     let spawned = given
         .first()
         .is_some_and(|target| std::path::Path::new(target).is_file());
-    let confined = given
-        .iter()
-        .any(|arg| arg.starts_with("--grant") || *arg == "--sandboxed");
+    let confined = given.iter().any(|arg| {
+        arg.starts_with("--readable")
+            || arg.starts_with("--writable")
+            || *arg == "--network"
+            || *arg == "--sandboxed"
+    });
     given.retain(|arg| *arg != "--sandboxed");
     if spawned && !confined {
-        given.push("--trusted");
+        given.push("--trust-binaries");
     }
     certify_given(&given, config.unwrap_or_default(), &[]).await
 }
@@ -35,7 +37,7 @@ async fn certify(args: &[&str]) -> Output {
 /// The watch the command-line tests give `P-CREDIT`, as the library's tests give theirs.
 const WATCH: [&str; 2] = ["--credit-watch", "50"];
 
-/// Runs `rdlt-certify` with `args`, `input` on its standard input and `env` in its environment,
+/// Runs `rdlt certify` with `args`, `input` on its standard input and `env` in its environment,
 /// watching a read whose credit is spent briefly when it certifies a connector.
 async fn certify_given(args: &[&str], input: &str, env: &[(&str, &str)]) -> Output {
     let certifying = args.first().is_some_and(|first| !first.starts_with("--"));
@@ -47,12 +49,15 @@ async fn certify_given(args: &[&str], input: &str, env: &[(&str, &str)]) -> Outp
     certify_exactly(&watched, input, env).await
 }
 
-/// Runs `rdlt-certify` with exactly `args`, `input` on its standard input and `env` in its
+/// Runs `rdlt certify` with exactly `args`, `input` on its standard input and `env` in its
 /// environment.
 async fn certify_exactly(args: &[&str], input: &str, env: &[(&str, &str)]) -> Output {
     use tokio::io::AsyncWriteExt as _;
-    let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
+    let plain = (!args.contains(&"--output")).then_some(["--output", "plain"]);
+    let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt"))
+        .arg("certify")
         .args(args)
+        .args(plain.iter().flatten())
         .env(
             "LLVM_PROFILE_FILE",
             std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
@@ -63,8 +68,8 @@ async fn certify_exactly(args: &[&str], input: &str, env: &[(&str, &str)]) -> Ou
         .stderr(std::process::Stdio::piped())
         .process_group(0)
         .spawn()
-        .expect("rdlt-certify runs");
-    crate::guarded(&certifying);
+        .expect("rdlt certify runs");
+    guarded(&certifying);
     let mut stdin = certifying.stdin.take().expect("its input is piped");
     // It may end without reading its input: a closed pipe is no failure of the test.
     stdin.write_all(input.as_bytes()).await.ok();
@@ -72,7 +77,15 @@ async fn certify_exactly(args: &[&str], input: &str, env: &[(&str, &str)]) -> Ou
     certifying
         .wait_with_output()
         .await
-        .expect("rdlt-certify ends")
+        .expect("rdlt certify ends")
+}
+
+/// What a certification reads to see its kill clauses fire: long enough to be killed mid-load.
+fn read_as_killed(seed: u64) -> serde_json::Value {
+    serde_json::json!({
+        "seed": seed,
+        "streams": [{ "name": "events", "rows": 40000, "partitions": 1, "batch_rows": 50 }],
+    })
 }
 
 fn code(output: &Output) -> Option<i32> {
@@ -85,7 +98,7 @@ const USERS: &str = r#"{"streams": {"users": [{"id": 1}, {"id": 2}]}, "page_size
 async fn a_connector_seen_to_keep_every_clause_exits_zero_and_reports_as_json() {
     let binary = example("serve_source");
     let binary = binary.to_str().expect("a UTF-8 path");
-    let config = crate::killed::read_as_killed(11).to_string();
+    let config = read_as_killed(11).to_string();
     let output = certify(&[
         binary,
         "--role",
@@ -115,7 +128,7 @@ async fn a_connector_seen_to_keep_every_clause_exits_zero_and_reports_as_json() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_certification_that_could_not_observe_a_clause_exits_two_unless_part_is_required() {
+async fn a_certification_that_could_not_observe_a_clause_exits_one_unless_part_is_required() {
     let binary = example("serve_reference");
     let binary = binary.to_str().expect("a UTF-8 path");
     // A stream of no rows: its read ends within its first credit, sends no checkpoint, and
@@ -138,7 +151,7 @@ async fn a_certification_that_could_not_observe_a_clause_exits_two_unless_part_i
     let complete = [&empty[..], &["--require", "complete"]].concat();
     let partial = [&empty[..], &["--require", "partial"]].concat();
     let (complete, partial) = tokio::join!(certify(&complete), certify(&partial));
-    for (output, exits) in [(complete, 2), (partial, 0)] {
+    for (output, exits) in [(complete, 1), (partial, 0)] {
         assert_eq!(code(&output), Some(exits));
         let report: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("the report is JSON");
@@ -480,13 +493,17 @@ async fn a_wrong_command_line_exits_sixty_four() {
         .into_iter()
         .chain(tls)
         .collect::<Vec<_>>();
-    let cases: [&[&str]; 13] = [
+    let cases: [&[&str]; 16] = [
         &[],
+        // A pipeline's host is no connector's to certify: its flags are refused, never ignored.
+        &["connector", "--host", "host.yaml"],
+        &["connector", "--connectors", "/opt"],
+        &["connector", "--allow-network"],
         // No configuration is taken on the command line, where every user can read it.
-        &["connector", "--trusted", "--config", "{}"],
-        &["connector", "--trusted", "--grant-network"],
-        &["connector", "--trusted", "--grant-read", "/usr"],
-        &["connector", "--trusted", "--grant-write", "/tmp"],
+        &["connector", "--trust-binaries", "--config", "{}"],
+        &["connector", "--trust-binaries", "--network"],
+        &["connector", "--trust-binaries", "--readable", "/usr"],
+        &["connector", "--trust-binaries", "--writable", "/tmp"],
         &["grpcs://localhost:1"],
         &["connector", "--role", "sink"],
         &no_port,
@@ -541,8 +558,8 @@ async fn a_connector_or_configuration_that_cannot_be_read_exits_seventy_four() {
 async fn an_output_closed_before_it_is_written_ends_quietly() {
     let (reader, writer) = std::io::pipe().expect("a pipe");
     drop(reader);
-    let status = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
-        .arg("--clauses")
+    let status = Command::new(env!("CARGO_BIN_EXE_rdlt"))
+        .args(["certify", "--clauses"])
         .env(
             "LLVM_PROFILE_FILE",
             std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
@@ -550,7 +567,7 @@ async fn an_output_closed_before_it_is_written_ends_quietly() {
         .stdout(writer)
         .status()
         .await
-        .expect("rdlt-certify runs");
+        .expect("rdlt certify runs");
     assert_eq!(status.code(), Some(0));
 }
 
@@ -558,8 +575,8 @@ async fn an_output_closed_before_it_is_written_ends_quietly() {
 #[tokio::test]
 async fn an_output_that_cannot_be_written_exits_seventy_four() {
     let full = std::fs::File::create("/dev/full").expect("the full device opens");
-    let status = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
-        .arg("--clauses")
+    let status = Command::new(env!("CARGO_BIN_EXE_rdlt"))
+        .args(["certify", "--clauses"])
         .env(
             "LLVM_PROFILE_FILE",
             std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
@@ -567,7 +584,7 @@ async fn an_output_that_cannot_be_written_exits_seventy_four() {
         .stdout(full)
         .status()
         .await
-        .expect("rdlt-certify runs");
+        .expect("rdlt certify runs");
     assert_eq!(status.code(), Some(74));
 }
 
@@ -593,7 +610,7 @@ fn the_committed_clause_documentation_is_generated_from_the_registry() {
     assert_eq!(
         committed,
         rdlt_certify::markdown(),
-        "regenerate it with `rdlt-certify --clauses`"
+        "regenerate it with `rdlt certify --clauses > docs/certify/clauses.md`"
     );
 }
 
@@ -687,14 +704,15 @@ async fn an_interrupted_or_terminated_certification_stops_its_connectors_before_
     for (signal, exits) in heard {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let launched = launcher(directory.path(), "serve_hang");
-        let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
+        let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt"))
             .args([
+                "certify",
                 launched.as_str(),
                 "--role",
                 "destination",
                 "--env",
                 "LLVM_PROFILE_FILE",
-                "--trusted",
+                "--trust-binaries",
             ])
             .env(
                 "LLVM_PROFILE_FILE",
@@ -704,8 +722,8 @@ async fn an_interrupted_or_terminated_certification_stops_its_connectors_before_
             .kill_on_drop(true)
             .process_group(0)
             .spawn()
-            .expect("rdlt-certify runs");
-        crate::guarded(&certifying);
+            .expect("rdlt certify runs");
+        guarded(&certifying);
         // Once a connector has started its members, the certification waits on it.
         let members = directory.path().join("members");
         for _ in 0..600 {
@@ -744,14 +762,20 @@ async fn a_second_interrupt_kills_what_a_certification_spawned_and_ends_it_at_on
     use nix::sys::signal::Signal;
     let directory = tempfile::tempdir().expect("a temporary directory");
     let launched = stubborn(directory.path());
-    let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
-        .args([launched.as_str(), "--role", "destination", "--trusted"])
+    let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt"))
+        .args([
+            "certify",
+            launched.as_str(),
+            "--role",
+            "destination",
+            "--trust-binaries",
+        ])
         .stdout(std::process::Stdio::null())
         .kill_on_drop(true)
         .process_group(0)
         .spawn()
-        .expect("rdlt-certify runs");
-    crate::guarded(&certifying);
+        .expect("rdlt certify runs");
+    guarded(&certifying);
     let members = directory.path().join("members");
     for _ in 0..600 {
         let started = std::fs::read_to_string(&members).unwrap_or_default();
@@ -828,7 +852,7 @@ async fn a_target_that_is_no_file_is_not_repeated_in_what_is_reported() {
 async fn a_configuration_that_is_no_json_document_is_refused_without_being_quoted() {
     let binary = example("serve_reference");
     let binary = binary.to_str().expect("a UTF-8 path");
-    let args = [binary, "--trusted", "--config-file", "-"];
+    let args = [binary, "--trust-binaries", "--config-file", "-"];
     for unusable in [
         "{not json: hunter2-canary",
         "",
@@ -849,7 +873,7 @@ async fn a_configuration_that_is_no_json_document_is_refused_without_being_quote
 async fn a_configuration_is_read_up_to_its_bound_and_refused_as_too_large_beyond() {
     let binary = example("serve_reference");
     let binary = binary.to_str().expect("a UTF-8 path");
-    let args = [binary, "--trusted", "--config-file", "-"];
+    let args = [binary, "--trust-binaries", "--config-file", "-"];
     let bound = usize::try_from(rdlt_wire::limits::CONFIG_BYTES).expect("a size");
     // An object of one text field, `{"pad":"…"}`, of `bytes` in all.
     let padded = |bytes: usize| format!(r#"{{"pad":"{}"}}"#, "x".repeat(bytes - 10));
@@ -879,7 +903,7 @@ async fn reports_with_a_secret(
     for output in ["plain", "json"] {
         let args = [
             binary,
-            "--trusted",
+            "--trust-binaries",
             "--role",
             "destination",
             "--config-file",
@@ -907,7 +931,7 @@ async fn a_secret_the_configuration_refers_to_is_in_no_report_however_the_connec
         .expect("the secret is private");
     let by_file = format!("${{file:{}}}", file.display());
     let dir = directory.path().to_str().expect("a UTF-8 path");
-    let allowed = ["--secret-env", "RDLT_TEST_CANARY", "--secret-dir", dir];
+    let allowed = ["--allow-env", "RDLT_TEST_CANARY", "--allow-files", dir];
     for reference in ["${env:RDLT_TEST_CANARY}", by_file.as_str()] {
         // A path that holds the secret, which the connector quotes back in each failure.
         let config = serde_json::json!({ "path": format!("/nonexistent/{reference}/store.db") });
@@ -934,7 +958,7 @@ async fn a_secret_the_configuration_refers_to_is_in_no_report_however_the_connec
 async fn a_secret_that_does_not_resolve_ends_the_certification_before_any_connector_runs() {
     let binary = example("serve_reference");
     let binary = binary.to_str().expect("a UTF-8 path");
-    let args = [binary, "--trusted", "--config-file", "-"];
+    let args = [binary, "--trust-binaries", "--config-file", "-"];
     let config = r#"{"path": "hunter2-canary ${env:RDLT_TEST_UNSET_VARIABLE}"}"#;
     let output = certify_given(&args, config, &[]).await;
     assert_eq!(code(&output), Some(64));
@@ -972,7 +996,7 @@ async fn a_binary_is_certified_inside_a_sandbox_unless_it_is_said_to_be_trusted(
         // No sandbox here: nothing is run, and the way to run a trusted binary is said.
         assert_eq!(code(&output), Some(74), "{said}");
         assert!(
-            said.contains("--trusted") && output.stdout.is_empty(),
+            said.contains("--trust-binaries") && output.stdout.is_empty(),
             "{said}"
         );
     }
@@ -1008,18 +1032,14 @@ async fn a_sandboxed_destination_writes_only_where_it_is_granted() {
     assert_eq!(code(&confined), Some(1));
     assert!(!directory.path().join("store.db").exists());
     // Granted the directory, it writes its store there.
-    let granted = [&common[..], &["--grant-write", store]].concat();
+    let granted = [&common[..], &["--writable", store]].concat();
     let granted = certify_given(&granted, &config, &[]).await;
     let report: serde_json::Value =
         serde_json::from_slice(&granted.stdout).expect("the report is JSON");
     assert_ne!(report["verdict"], "failed", "{report}");
     assert!(directory.path().join("store.db").exists());
     // Not where a secret directory it names lies: whoever writes there decides its secrets.
-    let guarded = [
-        &common[..],
-        &["--grant-write", store, "--secret-dir", store],
-    ]
-    .concat();
+    let guarded = [&common[..], &["--writable", store, "--allow-files", store]].concat();
     let guarded = certify_given(&guarded, &config, &[]).await;
     assert_eq!(code(&guarded), Some(1));
     let said = String::from_utf8_lossy(&guarded.stdout);
@@ -1041,7 +1061,7 @@ async fn a_reference_to_a_secret_the_command_line_does_not_allow_is_refused_unre
         format!("${{file:{}}}", file.display()),
     ] {
         let config = serde_json::json!({ "path": reference }).to_string();
-        let args = [binary, "--trusted", "--config-file", "-"];
+        let args = [binary, "--trust-binaries", "--config-file", "-"];
         let output = certify_given(&args, &config, &env).await;
         assert_eq!(code(&output), Some(64), "{reference}");
         let said = String::from_utf8_lossy(&output.stderr);
@@ -1061,7 +1081,7 @@ async fn a_shortened_credit_watch_is_noted_beside_its_pass_and_a_second_is_not()
         binary,
         "--role",
         "source",
-        "--trusted",
+        "--trust-binaries",
         "--config-file",
         "-",
         "--env",
@@ -1107,8 +1127,12 @@ async fn a_credit_watch_outside_one_to_a_thousand_ms_is_a_usage_error() {
         ("1000", 74),
     ];
     for (watch, expected) in cases {
-        let output =
-            certify_exactly(&[missing, "--trusted", "--credit-watch", watch], "", &[]).await;
+        let output = certify_exactly(
+            &[missing, "--trust-binaries", "--credit-watch", watch],
+            "",
+            &[],
+        )
+        .await;
         assert_eq!(code(&output), Some(expected), "--credit-watch {watch}");
     }
 }

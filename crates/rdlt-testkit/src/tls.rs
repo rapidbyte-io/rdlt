@@ -195,3 +195,47 @@ impl Pki {
         files
     }
 }
+
+/// The connector binary at `binary`, listening over mutual TLS with a CA `pki` made for it; its
+/// process, a process group's leader the test's end kills, and its endpoint.
+///
+/// # Panics
+///
+/// Panics when the binary cannot start or does not announce its address.
+pub async fn listening(pki: &Pki, binary: &Path) -> (tokio::process::Child, String) {
+    use tokio::io::AsyncBufReadExt as _;
+
+    let server = pki.server("server", &["localhost"]);
+    let mut child = tokio::process::Command::new(binary)
+        .args(["--listen", "127.0.0.1:0"])
+        .arg("--tls-cert")
+        .arg(&server.cert)
+        .arg("--tls-key")
+        .arg(&server.key)
+        .arg("--tls-client-ca")
+        .arg(pki.ca())
+        .args(["--tls-allow-host", "host"])
+        .env(
+            "LLVM_PROFILE_FILE",
+            std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .process_group(0)
+        .spawn()
+        .expect("the connector starts");
+    crate::process::guard(child.id().expect("the child runs")).expect("the child is guarded");
+    let stdout = child.stdout.take().expect("its output is piped");
+    let line = tokio::io::BufReader::new(stdout)
+        .lines()
+        .next_line()
+        .await
+        .expect("its output reads")
+        .expect("it announces its address");
+    let address = line
+        .strip_prefix("listening on ")
+        .expect("the announcement names the address");
+    let port = address.rsplit_once(':').expect("an address and port").1;
+    (child, format!("grpcs://localhost:{port}"))
+}

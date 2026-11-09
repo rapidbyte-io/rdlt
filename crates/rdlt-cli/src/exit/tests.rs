@@ -18,7 +18,10 @@ fn every_error_kind_exits_with_its_code_from_the_table() {
         assert_eq!(Exit::of(kind).code(), code, "{kind:?}");
     }
     let codes: Vec<u8> = Exit::TABLE.iter().map(|(exit, _)| exit.code()).collect();
-    assert_eq!(codes, [0, 1, 2, 3, 4, 5, 6, 7, 8, 64, 70, 74, 130, 143]);
+    assert_eq!(
+        codes,
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 64, 70, 74, 130, 143, 129, 131]
+    );
 }
 
 #[test]

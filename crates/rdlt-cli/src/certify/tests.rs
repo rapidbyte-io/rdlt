@@ -1,7 +1,8 @@
 use rdlt_certify::{Clause, ClauseResult, Outcome, Report, Verdict};
 
 use super::session::within;
-use super::{FINDINGS, INCOMPLETE, PASSED, Require, bound, code, ran, verdict};
+use super::{Require, bound, code, ran, verdict};
+use crate::Exit;
 
 fn report(outcomes: &[Outcome]) -> Report {
     let clause = Clause {
@@ -68,30 +69,29 @@ fn an_incomplete_certification_exits_zero_only_when_part_is_required_and_each_re
     for require in [Require::Complete, Require::Partial] {
         assert_eq!(
             code(Verdict::Passed, require, std::slice::from_ref(&passing)),
-            PASSED
+            Exit::Success
         );
         assert_eq!(
             code(Verdict::Failed, require, std::slice::from_ref(&failing)),
-            FINDINGS
+            Exit::Findings
         );
         // A report none of whose clauses passed certified nothing, whatever is required.
         let reports = [partly.clone(), unseen.clone()];
-        assert_eq!(code(Verdict::Incomplete, require, &reports), INCOMPLETE);
+        assert_eq!(code(Verdict::Incomplete, require, &reports), Exit::Findings);
         assert_eq!(
             code(Verdict::Incomplete, require, std::slice::from_ref(&unseen)),
-            INCOMPLETE
+            Exit::Findings
         );
     }
     let reports = [partly, passing];
     assert_eq!(
         code(Verdict::Incomplete, Require::Complete, &reports),
-        INCOMPLETE
+        Exit::Findings
     );
     assert_eq!(
         code(Verdict::Incomplete, Require::Partial, &reports),
-        PASSED
+        Exit::Success
     );
-    assert_eq!([PASSED, FINDINGS, INCOMPLETE], [0, 1, 2]);
 }
 
 #[test]
@@ -139,10 +139,12 @@ fn a_certification_is_bounded_unless_it_is_asked_not_to_be() {
 fn a_complete_certification_is_required_unless_part_is_asked_for() {
     use clap::Parser as _;
     let required = |asked: &[&str]| {
-        let args = [&["rdlt-certify", "connector"][..], asked].concat();
-        super::Args::try_parse_from(args)
-            .map(|args| args.require)
-            .ok()
+        let args = [&["rdlt", "certify", "connector"][..], asked].concat();
+        let cli = crate::args::Cli::try_parse_from(args).ok()?;
+        match cli.verb {
+            crate::args::Verb::Certify(args) => Some(args.require),
+            _ => None,
+        }
     };
     assert_eq!(required(&[]), Some(Require::Complete));
     assert_eq!(
