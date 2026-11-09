@@ -1,0 +1,65 @@
+use pyo3::types::PyAnyMethods as _;
+use pyo3::{Bound, PyAny, Python};
+
+use super::{Produced, produced};
+use crate::embedded;
+
+fn evaluated<'py>(py: Python<'py>, code: &str) -> Bound<'py, PyAny> {
+    py.eval(&std::ffi::CString::new(code).unwrap(), None, None)
+        .unwrap()
+}
+
+fn values_address(column: &Bound<'_, PyAny>) -> usize {
+    column
+        .call_method0("buffers")
+        .unwrap()
+        .get_item(1)
+        .unwrap()
+        .getattr("address")
+        .unwrap()
+        .extract()
+        .unwrap()
+}
+
+#[test]
+fn a_pyarrow_batch_crosses_into_rust_without_a_copy() {
+    embedded::with(|py| {
+        let batch = evaluated(
+            py,
+            "__import__('pyarrow').record_batch({'n': __import__('pyarrow').array(range(1000), __import__('pyarrow').int64())})",
+        );
+        let address = values_address(&batch.call_method1("column", (0,)).unwrap());
+        let Some(Produced::Batch(rust)) = produced(&batch).unwrap() else {
+            panic!("a batch")
+        };
+        assert_eq!(rust.num_rows(), 1000);
+        assert_eq!(
+            rust.column(0).to_data().buffers()[0].as_ptr().addr(),
+            address
+        );
+    });
+}
+
+#[test]
+fn a_table_and_other_libraries_cross_as_streams() {
+    embedded::with(|py| {
+        for code in [
+            "__import__('pyarrow').table({'n': [1, 2, 3]})",
+            "__import__('polars').DataFrame({'n': [1, 2, 3]})",
+            "__import__('duckdb').sql('SELECT * FROM range(3) t(n)')",
+        ] {
+            let Some(Produced::Stream(reader)) = produced(&evaluated(py, code)).unwrap() else {
+                panic!("{code}: a stream")
+            };
+            let rows: usize = reader.map(|batch| batch.unwrap().num_rows()).sum();
+            assert_eq!(rows, 3, "{code}");
+        }
+    });
+}
+
+#[test]
+fn what_is_no_arrow_producer_is_none() {
+    embedded::with(|py| {
+        assert!(produced(&evaluated(py, "{'n': 1}")).unwrap().is_none());
+    });
+}

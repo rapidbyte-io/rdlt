@@ -12,6 +12,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg_attr(not(test), expect(dead_code, reason = "partitions read arrow next"))]
+mod arrow;
 mod calls;
 #[cfg(test)]
 mod embedded;

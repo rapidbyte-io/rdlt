@@ -204,6 +204,7 @@ dependencies = [
  "chrono-tz",
  "half",
  "hashbrown 0.17.1",
+ "libc",
  "num-complex",
  "num-integer",
  "num-traits",
@@ -326,6 +327,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrow-pyarrow"
+version = "59.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba037102b3f52163f96db970209ada931c2a6f46c4607d3170950d075db68773"
+dependencies = [
+ "arrow-array",
+ "arrow-data",
+ "arrow-schema",
+ "pyo3",
+]
+
+[[package]]
 name = "arrow-row"
 version = "59.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -344,6 +357,7 @@ version = "59.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e87acb0c6bf6237fca7a50d7b51e801c98a18a5fe6f3bb34f7d77b85ca165388"
 dependencies = [
+ "bitflags",
  "serde_core",
  "serde_json",
 ]
@@ -3966,6 +3980,8 @@ dependencies = [
 name = "rdlt-python"
 version = "0.0.0"
 dependencies = [
+ "arrow-array",
+ "arrow-pyarrow",
  "bytes",
  "parking_lot",
  "proptest",
