@@ -235,7 +235,7 @@ fn a_row_larger_than_a_push_is_refused() {
 #[test]
 fn a_row_stops_being_written_once_it_is_past_a_push() {
     embedded::with(|py| {
-        let row = evaluated(py, "{'pad': ['x' * 1024] * 1_000_000}");
+        let row = evaluated(py, "{'pad': [1] * 1_000_000}");
         let error = pushes(
             py,
             &row,
@@ -254,9 +254,50 @@ fn a_row_stops_being_written_once_it_is_past_a_push() {
 }
 
 #[test]
-fn a_row_exactly_at_the_limit_before_a_value_is_measured_whole() {
+fn a_string_past_a_push_is_refused_before_it_is_encoded() {
+    embedded::with(|py| {
+        // Eight newlines encode to sixteen bytes: the size told is of what was never encoded.
+        let row = evaluated(py, "{'a': '\\n' * 8}");
+        let error = pushes(
+            py,
+            &row,
+            JsonLimits {
+                push_bytes: 8,
+                depth: 64,
+            },
+        )
+        .expect_err("too large");
+        assert!(
+            matches!(error, Unwritten::Large { bytes: 13, .. }),
+            "{error}"
+        );
+    });
+}
+
+#[test]
+fn a_string_that_only_reaches_the_limit_is_measured_encoded() {
     embedded::with(|py| {
         let row = evaluated(py, "{'a': 'x'}");
+        let error = pushes(
+            py,
+            &row,
+            JsonLimits {
+                push_bytes: 6,
+                depth: 64,
+            },
+        )
+        .expect_err("too large");
+        assert!(
+            matches!(error, Unwritten::Large { bytes: 10, .. }),
+            "{error}"
+        );
+    });
+}
+
+#[test]
+fn a_row_exactly_at_the_limit_before_a_value_is_measured_whole() {
+    embedded::with(|py| {
+        let row = evaluated(py, "{'a': 1}");
         let error = pushes(
             py,
             &row,
@@ -267,7 +308,7 @@ fn a_row_exactly_at_the_limit_before_a_value_is_measured_whole() {
         )
         .expect_err("too large");
         assert!(
-            matches!(error, Unwritten::Large { bytes: 10, .. }),
+            matches!(error, Unwritten::Large { bytes: 8, .. }),
             "{error}"
         );
     });
