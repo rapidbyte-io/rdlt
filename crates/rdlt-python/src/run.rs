@@ -161,6 +161,8 @@ async fn drive(
                     end.send_replace(Some(Arc::new(Ended::of(&outcome))));
                     return;
                 }
+                // A run that ended has nothing to cancel, and answers its handles on.
+                Some(Command::Cancel) if !running => {}
                 Some(Command::Cancel) | None => return,
             },
         }

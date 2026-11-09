@@ -149,6 +149,19 @@ fn a_status_says_where_the_run_stands() {
 }
 
 #[test]
+fn a_run_that_ended_still_answers_after_a_cancel() {
+    embedded::with(|py| {
+        let run = started(py, &memory_document("late-cancel", 3), memory_host());
+        run.wait(py).expect("it ends");
+        run.cancel();
+        let status: serde_json::Value = serde_json::from_str(&run.status(py).unwrap()).unwrap();
+        assert_eq!(status["phase"]["ended"]["status"], "succeeded", "{status}");
+        let again = run.wait(py).expect("its outcome stays");
+        assert!(again.1.is_none());
+    });
+}
+
+#[test]
 fn a_first_interrupt_stops_after_commit_and_a_second_cancels() {
     embedded::with(|py| {
         let (commands, mut asked) = tokio::sync::mpsc::unbounded_channel();
