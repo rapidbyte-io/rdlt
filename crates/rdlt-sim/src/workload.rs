@@ -304,7 +304,7 @@ impl SimStream {
             stream.draw_keys(rng);
         }
         if features.fat && stream.json && !stream.normalized() {
-            stream.fat = crate::fat::keys(salt, index);
+            stream.fat = crate::fat::keys(salt, index, &stream.reshaping);
         }
         stream.rows = (0..stream.partitions.len())
             .map(|partition| stream.draw_rows(salt, partition))

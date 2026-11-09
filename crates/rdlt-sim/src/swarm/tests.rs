@@ -228,7 +228,7 @@ fn transforms_change_nothing_else_a_workload_draws() {
         };
         let mut reshaped = crate::workload::Workload::generate(&mut rng.clone(), features);
         let plain = crate::workload::Workload::generate(&mut rng, lean);
-        for stream in &mut reshaped.streams {
+        for (stream, lean) in reshaped.streams.iter_mut().zip(&plain.streams) {
             let reshaping = &stream.reshaping;
             let unchanged = *reshaping == crate::workload::Reshaping::default();
             assert!(features.transform || unchanged, "seed {seed}");
@@ -238,6 +238,14 @@ fn transforms_change_nothing_else_a_workload_draws() {
             adding |= reshaping.constant;
             masking |= reshaping.masked.is_some();
             doubling |= reshaping.doubled;
+            // A stream that filters carries fat values a quarter as wide.
+            let fat = if reshaping.filter.is_some() {
+                lean.fat / 4
+            } else {
+                lean.fat
+            };
+            assert_eq!(stream.fat, fat, "seed {seed}");
+            stream.fat = lean.fat;
             stream.reshaping = crate::workload::Reshaping::default();
         }
         reshaped.features = lean;
