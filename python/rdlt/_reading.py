@@ -77,6 +77,14 @@ class _Answer(Protocol):
         ...
 
 
+class _Calls(Protocol):
+    """What one thread of Rust hands its daemon thread to call."""
+
+    def next(self) -> tuple[Callable[..., object], tuple[object, ...], _Answer] | None:
+        """The next call to make, waiting for it; `None` once its thread of Rust has ended."""
+        ...
+
+
 def start(  # noqa: PLR0917
     name: str,
     stream: _Stream,
@@ -149,15 +157,20 @@ async def _room(out: Out) -> None:
         turns += 1
 
 
-def call(function: Callable[..., object], arguments: tuple[object, ...], answer: _Answer) -> None:
-    """Calls `function(*arguments)` on a daemon thread of its own and gives `answer` its end."""
-    _thread.start_new_thread(_answered, (function, arguments, answer))
+def serve(calls: _Calls) -> None:
+    """Makes each call `calls` hands over on a daemon thread of its own, until `calls` closes."""
+    _thread.start_new_thread(_served, (calls,))
 
 
-def _answered(
-    function: Callable[..., object], arguments: tuple[object, ...], answer: _Answer
-) -> None:
+def _served(calls: _Calls) -> None:
     threading.current_thread().name = "rdlt-call"
+    while (call := calls.next()) is not None:
+        _made(*call)
+        # What a call held, its batch among it, stays no longer than the call.
+        del call
+
+
+def _made(function: Callable[..., object], arguments: tuple[object, ...], answer: _Answer) -> None:
     try:
         value = function(*arguments)
     except BaseException as error:  # noqa: BLE001
