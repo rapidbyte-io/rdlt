@@ -6,13 +6,13 @@ from __future__ import annotations
 import dataclasses
 import os
 import threading
-import weakref
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TypeAlias, cast
 
 from rdlt import _native
+from rdlt._weak import weakly_reached
 
 StrPath: TypeAlias = "str | os.PathLike[str]"
 """A path, as text or as a `pathlib.Path`."""
@@ -41,13 +41,7 @@ def _names(value: str | Sequence[str]) -> tuple[str, ...]:
 
 
 class _SecretStore:
-    """A host's `secret_store`, which the native host reaches through a weak reference.
-
-    What the native host holds is opaque to Python's collector, so a strong reference from it to a
-    store that holds the pipeline it serves, as a bound method of an object that keeps one does,
-    could never be collected, and the pipeline's connector processes would live on with it. What
-    may still need the store holds this instead, where the collector sees it.
-    """
+    """A host's `secret_store`, which the native host reaches through a weak reference."""
 
     __slots__ = ("__weakref__", "_answer")
 
@@ -56,14 +50,10 @@ class _SecretStore:
 
     def weakly(self) -> Callable[[str], str | None]:
         """The store, for the native host: what the native host holds does not keep it alive."""
-        held = weakref.ref(self)
+        reached = weakly_reached(self, "this host's secret store")
 
         def answer(name: str) -> str | None:
-            store = held()
-            if store is None:
-                msg = "what held this host's secret store was dropped"
-                raise ReferenceError(msg)
-            return store._answer(name)
+            return reached()._answer(name)
 
         return answer
 
@@ -120,6 +110,8 @@ class Host:
     _store: _SecretStore | None = field(default=None, init=False, repr=False, compare=False)
     _sources: tuple[_native.SourceFactory, ...] = field(default=(), repr=False)
     """Python functions and classes this host runs as sources, by the ids their factories name."""
+    _held: tuple[object, ...] = field(default=(), repr=False)
+    """What the native side reaches of Python's only weakly: this host holds it in the open."""
     _origin: Host | None = field(default=None, init=False, repr=False, compare=False)
     """The host this one was derived from, whose compute pool it shares."""
     _handle: _native.Host | None = field(default=None, init=False, repr=False, compare=False)

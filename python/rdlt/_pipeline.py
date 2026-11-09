@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
 from rdlt import _native
-from rdlt.host import Host, StrPath, _names, _paths, _SecretStore
+from rdlt.host import Host, StrPath, _names, _paths
 
 if TYPE_CHECKING:
     from rdlt._resource import Resource
@@ -394,13 +394,14 @@ def pipeline(
     """
     from rdlt._resource import RESOURCES, source_factory  # noqa: PLC0415
 
+    selected = [] if isinstance(source, Connector) else _resources(source)
     factories: list[_native.SourceFactory] = []
+    held: list[object] = list(selected)
     entries: dict[str, dict[str, Json]] = {}
     source_document: dict[str, Json]
     if isinstance(source, Connector):
         source_document = source._document()
     else:
-        selected = _resources(source)
         source_document = {"connector": RESOURCES}
         for resource in selected:
             entry: dict[str, Json] = {"name": resource.name}
@@ -419,7 +420,7 @@ def pipeline(
             entries[given.name] = {**entries.get(given.name, {}), **given._document()}
     if not isinstance(source, Connector):
         resuming = {name for name, entry in entries.items() if entry.get("read") == "incremental"}
-        factories.append(source_factory(_resources(source), resuming))
+        factories.append(source_factory(selected, resuming))
     document: dict[str, Json] = {
         "version": 1,
         "pipeline": name,
@@ -438,7 +439,7 @@ def pipeline(
             }
         )
     )
-    return PipelineBuilder(document=document, sources=factories)
+    return PipelineBuilder(document=document, sources=factories, held=held)
 
 
 class PipelineBuilder:
@@ -450,10 +451,12 @@ class PipelineBuilder:
         document: Mapping[str, Json] | None = None,
         path: Path | None = None,
         sources: Sequence[_native.SourceFactory] = (),
+        held: Sequence[object] = (),
     ) -> None:
         self._document = None if document is None else dict(document)
         self._path = path
         self._sources = tuple(sources)
+        self._held = tuple(held)
 
     def __repr__(self) -> str:
         if self._document is None:
@@ -472,21 +475,24 @@ class PipelineBuilder:
         Raises:
             rdlt.Error: the subclass for the first mistake found, which never quotes a value.
         """
-        if self._sources:
-            host = host._replaced(_sources=(*host._sources, *self._sources))
+        if self._sources or self._held:
+            host = host._replaced(
+                _sources=(*host._sources, *self._sources), _held=(*host._held, *self._held)
+            )
         native = host._native()
         if self._path is not None:
-            return Pipeline(_native.Pipeline.build_path(self._path, native), host._store)
+            return Pipeline(_native.Pipeline.build_path(self._path, native), host)
         text = json.dumps(self._document, ensure_ascii=False)
-        return Pipeline(_native.Pipeline.build(text, native), host._store)
+        return Pipeline(_native.Pipeline.build(text, native), host)
 
 
 class Pipeline:
     """A built pipeline."""
 
-    def __init__(self, native: _native.Pipeline, store: _SecretStore | None) -> None:
+    def __init__(self, native: _native.Pipeline, host: Host) -> None:
         self._native = native
-        self._store = store
+        # What the native pipeline reaches only weakly, held in the open.
+        self._host = host
         self._name = cast("str", _parse(native.document())["pipeline"])
 
     def __repr__(self) -> str:
@@ -535,7 +541,7 @@ class Pipeline:
 
     def start(self) -> Run:
         """Starts a run; it is cancelled once every reference to it and to its events is dropped."""
-        return Run(self._native.start(), self._name, self._store)
+        return Run(self._native.start(), self._name, self._host)
 
     def run(self) -> Outcome:
         """Runs to the end, the GIL released.
