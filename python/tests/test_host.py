@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import gc
 import os
+import subprocess
+import sys
+import textwrap
 import threading
 import time
 import weakref
@@ -249,3 +252,41 @@ def test_a_builder_and_a_pipeline_show_only_their_name(tmp_path: Path, connector
     assert "PipelineBuilder(path=" in repr(rdlt.Pipeline.from_path("orders.yaml"))
     host = rdlt.Host(connectors=connectors, writable=[tmp_path], trust_binaries=True)
     assert repr(builder.build(host)) == "Pipeline('named')"
+
+
+def test_a_first_build_held_at_a_fork_leaves_the_child_refused_not_hung(
+    tmp_path: Path, connectors: Path
+) -> None:
+    script = textwrap.dedent(
+        f"""
+        import os, pathlib, signal, sys, warnings
+        warnings.simplefilter("ignore")
+        import rdlt, rdlt.host
+        sys.path.insert(0, {str(Path(__file__).parents[1])!r})
+        from tests.documents import generated
+        settings = dict(
+            connectors={str(connectors)!r},
+            writable=[{str(tmp_path)!r}],
+            trust_binaries=True,
+        )
+        document = generated("forked", 1, pathlib.Path({str(tmp_path / "out.db")!r}))
+        rdlt.Pipeline.from_document(document).build(rdlt.Host(**settings))
+        fresh = rdlt.Host(**settings)
+        rdlt.host._first_build.acquire()
+        child = os.fork()
+        if child == 0:
+            signal.alarm(20)
+            try:
+                rdlt.Pipeline.from_document(document).build(fresh)
+            except rdlt.InternalError:
+                os._exit(0)
+            os._exit(3)
+        rdlt.host._first_build.release()
+        _, status = os.waitpid(child, 0)
+        sys.exit(os.waitstatus_to_exitcode(status))
+        """
+    )
+    finished = subprocess.run(
+        [sys.executable, "-c", script], timeout=60, check=False, capture_output=True
+    )
+    assert finished.returncode == 0, finished.stderr
