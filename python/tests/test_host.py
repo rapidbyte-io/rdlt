@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import sys
+import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -10,6 +10,16 @@ import pytest
 
 import rdlt
 from tests.documents import generated
+
+NO_SANDBOX = ("sandbox_missing", "sandbox_unavailable", "sandbox_unsupported")
+"""The codes a build answers with where no sandbox can be made here."""
+
+
+def without_sandbox(why: str) -> None:
+    """Skips a test that needs a sandbox, or fails it where one is required: CI must not skip."""
+    if os.environ.get("RDLT_REQUIRE_SANDBOX", "0") != "0":
+        pytest.fail(f"a sandbox is required here, and none can be made: {why}")
+    pytest.skip(f"no sandbox here: {why}")
 
 
 def test_a_document_builds_and_checks_against_the_host(tmp_path: Path, connectors: Path) -> None:
@@ -20,7 +30,6 @@ def test_a_document_builds_and_checks_against_the_host(tmp_path: Path, connector
     assert pipeline.document()["pipeline"] == "checked"
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="only Linux has the sandbox that checks roots")
 def test_a_write_outside_every_writable_root_is_refused(tmp_path: Path, connectors: Path) -> None:
     (tmp_path / "elsewhere").mkdir()
     # Sandboxed: a trusted binary has the host's own access, so nothing it asks for is checked.
@@ -28,6 +37,8 @@ def test_a_write_outside_every_writable_root_is_refused(tmp_path: Path, connecto
     document = generated("outside", 10, tmp_path / "out.db")
     with pytest.raises(rdlt.ConfigError) as refused:
         rdlt.Pipeline.from_document(document).build(host)
+    if refused.value.code in NO_SANDBOX:
+        without_sandbox(str(refused.value))
     assert refused.value.code == "grant_outside"
 
 
