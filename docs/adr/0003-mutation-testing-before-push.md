@@ -21,10 +21,11 @@ same check on a CI runner.
   instruction and allocation counts against `main`.
 - The nightly workflow runs the full pass: every crate's mutants against the tests of every
   package that links the crate (`just mutants <crate>`), the crate's own first, through a
-  nextest profile of its own, where most mutants are caught. The whole pass is some sixty
-  runner-hours, so each crate's mutants are cut into shards that finish within their limit; the
-  large crates' shards are taken a quarter a night and the small crates run whole every night,
-  so a missed mutant is found within four nights. A mutant it finds is fixed the next day, and
+  nextest profile of its own, where most mutants are caught. The whole pass takes far more
+  runner-hours than a night gives it, and more with each package that joins it, so each crate's
+  mutants are cut into shards that finish within their limit; the large crates' shards are taken
+  a quarter a night and the small crates run whole every night, so a missed mutant is found
+  within four nights. A mutant it finds is fixed the next day, and
   one a crate's `catching` packages missed adds the package that caught it.
 - Mutants build with the `mutants` cargo profile: no debug info, dependencies optimised, and
   incremental builds, which make rebuilding per mutant cheap. `just mutants-diff` runs four jobs
