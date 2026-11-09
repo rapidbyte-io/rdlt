@@ -326,6 +326,21 @@ def test_a_cancelled_await_raises_at_once_and_the_run_finishes_in_the_background
     assert asyncio.run(main()).report.status is rdlt.RunStatus.STOPPED
 
 
+def test_a_wait_cancelled_before_it_began_still_asks_for_the_stop(
+    tmp_path: Path, connectors: Path
+) -> None:
+    built = rdlt.Pipeline.from_document(endless(tmp_path)).build(host(tmp_path, connectors))
+
+    async def main() -> rdlt.Outcome:
+        run = built.start()
+        # A timeout of zero cancels the wait before its first step.
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(run.wait_async(), 0)
+        return await asyncio.wait_for(run.wait_async(), timeout=60)
+
+    assert asyncio.run(main()).report.status is rdlt.RunStatus.STOPPED
+
+
 def test_a_cancelled_await_leaves_the_run_cancellable_by_its_handle(
     tmp_path: Path, connectors: Path
 ) -> None:
