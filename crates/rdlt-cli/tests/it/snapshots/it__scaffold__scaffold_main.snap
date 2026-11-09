@@ -1,0 +1,11 @@
+---
+source: crates/rdlt-cli/tests/it/scaffold.rs
+expression: main
+---
+//! The tickets connector, served to a host that spawns it or that it listens for.
+
+#![forbid(unsafe_code)]
+
+fn main() -> std::process::ExitCode {
+    rdlt_connector::serve::<rdlt_connector_tickets::Tickets>()
+}

@@ -14,7 +14,7 @@ use rdlt::{Interrupts, StopsSpawned};
 use tokio::runtime::{Builder, Runtime};
 
 use crate::Exit;
-use crate::args::{Cli, HostArgs, StateAction, Verb};
+use crate::args::{Cli, ConnectorAction, HostArgs, Lang, StateAction, Verb};
 use crate::output::{self, Failure, Mode};
 use crate::stopping::{self, STOPPING};
 
@@ -135,7 +135,15 @@ async fn other(verb: Verb, host: HostArgs, mode: Mode) -> Result<Exit, Failure> 
             output::stdout(&String::from_utf8_lossy(&text)).await?;
             Ok(Exit::Success)
         }
+        Verb::Connector {
+            action:
+                ConnectorAction::New {
+                    name,
+                    lang: Lang::Rust,
+                    into,
+                },
+        } => crate::connector::new(&name, &into, mode).await,
+        Verb::Run { .. } => unreachable!("a run is dispatched before the other verbs"),
         Verb::Certify(_) => unreachable!("certification is dispatched before any verb runs"),
-        _ => Err(Failure::usage("this verb is not built yet")),
     }
 }

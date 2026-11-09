@@ -3773,6 +3773,8 @@ dependencies = [
  "rdlt-testkit",
  "rdlt-wire",
  "rusqlite",
+ "schemars",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
