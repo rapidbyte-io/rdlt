@@ -1466,6 +1466,20 @@ fn a_failure_keeps_its_transform_s_error_as_its_cause() {
     assert_eq!(cause, Some(&error));
 }
 
+#[test]
+fn a_failure_s_report_carries_its_error_and_the_cause_the_error_keeps() {
+    let stream = StreamName::new("s").unwrap();
+    let error = TransformError::new("KeyError: 'x'").with_cause("the traceback");
+    let failed = super::refused(
+        &stream,
+        Refusal::Failed {
+            transform: named("t"),
+            error,
+        },
+    );
+    assert_eq!(failed.report().causes, ["KeyError: 'x'", "the traceback"]);
+}
+
 /// A refusal of each room the stage asks for: for one row and for a flush, as a transform asks
 /// it and as moving flags does.
 fn refused_rooms() -> Vec<Refusal> {
