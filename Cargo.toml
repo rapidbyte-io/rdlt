@@ -12,7 +12,7 @@ repository = "https://github.com/rapidbyte-io/rdlt"
 
 [workspace.dependencies]
 # Workspace crates
-rdlt = { path = "crates/rdlt", version = "0.0.0" }                                         # the facade, which the Python extension binds
+rdlt = { path = "crates/rdlt", version = "0.0.0" }                                         # the facade, which the Python extension binds and the CLI is the binary of
 rdlt-adopt = { path = "crates/rdlt-adopt", version = "0.0.0" }                             # the audited unsafe code: adopting a host's socket, and a child's inherited descriptors
 rdlt-certify = { path = "crates/rdlt-certify", version = "0.0.0" }                         # certification as a library, whose T clauses rdlt-sql's tests run
 rdlt-connector = { path = "crates/rdlt-connector", version = "0.0.0" }                     # the connector contract
@@ -196,7 +196,8 @@ wildmatch = "2.7.0" # a document's stream selection by `*` and `?` against the s
 # Tooling and tests
 anyhow = "1.0.104" # error reporting at xtask's command-line entry point
 cargo_metadata = "0.23.1" # xtask reads the workspace graph for the dependency rule
-clap = { version = "4.6.7", features = ["derive"] } # command-line parsing for xtask
+clap = { version = "4.6.7", features = ["derive"] } # command-line parsing for xtask and the CLI
+clap_complete = "4.6.11" # the CLI's shell completions
 fail = { version = "0.5.1", default-features = false } # crash points for the failpoint sweep
 flatbuffers = "25.2.10" # the verifier's depth for IPC headers and Arrow file footers, and hand-built messages in their tests
 datafusion = { version = "55.2.0", default-features = false, features = [

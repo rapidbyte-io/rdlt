@@ -20,8 +20,8 @@ Most rules are enforced by a tool, named beside the rule: rustfmt, clippy (the w
 Google's API rules bind library code and guide application code. The library crates are `rdlt`,
 `rdlt-connector`, `rdlt-engine`, `rdlt-host`, `rdlt-wire`, `rdlt-adopt`, `rdlt-sql` and
 `rdlt-connector-macros`: connector authors and embedders build on their public items. The
-application and tooling crates are `rdlt-certify`, `rdlt-connector-reference`, `rdlt-sim`,
-`rdlt-testkit`, `xtask` and `fuzz`, which favor simplicity over generality.
+application and tooling crates are `rdlt-certify`, `rdlt-cli`, `rdlt-connector-reference`,
+`rdlt-sim`, `rdlt-testkit`, `xtask` and `fuzz`, which favor simplicity over generality.
 
 rdlt keeps no compatibility promise: a public API changes when its design does, and its callers in
 the workspace change with it. Google's rules whose reason is compatibility (`const fn` held

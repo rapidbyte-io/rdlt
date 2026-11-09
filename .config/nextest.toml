@@ -186,3 +186,10 @@ inherits = "mutants"
 [[profile.mutants-rdlt.overrides]]
 filter = "package(rdlt)"
 priority = 1
+
+[profile.mutants-rdlt-cli]
+inherits = "mutants"
+
+[[profile.mutants-rdlt-cli.overrides]]
+filter = "package(rdlt-cli)"
+priority = 1

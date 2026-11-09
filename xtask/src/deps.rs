@@ -35,6 +35,16 @@ const RULES: &[(&str, &[&str])] = &[
             "rdlt-wire",
         ],
     ),
+    (
+        "rdlt-cli",
+        &[
+            "rdlt",
+            "rdlt-certify",
+            "rdlt-connector",
+            "rdlt-host",
+            "rdlt-wire",
+        ],
+    ),
     ("rdlt-connector-reference", &["rdlt-connector", "rdlt-wire"]),
     ("rdlt-python", &["rdlt", "rdlt-certify", "rdlt-connector"]),
     (
@@ -55,7 +65,7 @@ const RULES: &[(&str, &[&str])] = &[
 
 /// Crates nothing may use as a dev-dependency: those nothing depends on at all, and the audited
 /// `unsafe` crate, which only the crates [`RULES`] names may use.
-const LEAVES: &[&str] = &["rdlt-adopt", "rdlt-python", "rdlt-sim", "xtask"];
+const LEAVES: &[&str] = &["rdlt-adopt", "rdlt-cli", "rdlt-python", "rdlt-sim", "xtask"];
 
 /// Crates the crates beside them may not use at all, dev-dependencies included: what a crate
 /// builds on never depends on it, even in its tests.

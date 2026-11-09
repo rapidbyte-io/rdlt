@@ -92,12 +92,13 @@ impl Error {
         )
     }
 
-    /// A document's file that `cause` left unread.
+    /// The file at `path`, `noun`, that `cause` left unread.
     pub(crate) fn unreadable(
+        noun: &str,
         path: &std::path::Path,
         cause: impl StdError + Send + Sync + 'static,
     ) -> Self {
-        let message = format!("the document {} cannot be read: {cause}", path.display());
+        let message = format!("{noun} {} cannot be read: {cause}", path.display());
         Self::config_caused(codes::DOCUMENT_UNREADABLE, message, cause)
     }
 

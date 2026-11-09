@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -103,6 +103,9 @@ impl RemoteFiles {
     }
 }
 
+/// What a host file's refusals call it.
+const HOST_FILE: &str = "the host file";
+
 impl HostFile {
     /// The host file `text` holds, read as a document is read; a text left empty or commented
     /// out allows nothing, as `HostFile::default()`.
@@ -111,7 +114,26 @@ impl HostFile {
     ///
     /// As [`Document::parse`](crate::Document::parse), saying "the host file".
     pub fn parse(text: &str) -> Result<Self, Error> {
-        crate::document::hostile_read_or_default(text, "the host file")
+        crate::document::hostile_read_or_default(text, HOST_FILE, None)
+    }
+
+    /// The host file at `path`, read as [`Document::from_path`](crate::Document::from_path)
+    /// reads a document, its faults starting with the file's name.
+    ///
+    /// # Errors
+    ///
+    /// `document_unreadable` where the path names no regular file, the file cannot be read or is
+    /// no UTF-8, or reading it takes past [`BUILD_WAIT`](crate::limits::BUILD_WAIT);
+    /// `document_too_large` past [`DOCUMENT_BYTES`](crate::limits::DOCUMENT_BYTES); else as
+    /// [`parse`](Self::parse).
+    pub async fn from_path(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let text = crate::document::file_text(path, HOST_FILE).await?;
+        crate::document::hostile_read_or_default(
+            text.as_str(),
+            HOST_FILE,
+            Some(&path.display().to_string()),
+        )
     }
 
     /// The host the file allows.
