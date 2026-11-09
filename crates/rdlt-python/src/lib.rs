@@ -12,23 +12,17 @@
 
 #![forbid(unsafe_code)]
 
-#[cfg_attr(not(test), expect(dead_code, reason = "partitions read arrow next"))]
 mod arrow;
 mod calls;
 #[cfg(test)]
 mod embedded;
 mod errors;
 mod host;
-#[cfg_attr(not(test), expect(dead_code, reason = "partitions read rows next"))]
 mod json;
 mod pipeline;
 mod run;
 mod runtime;
 mod secrets;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "a source reads partitions next")
-)]
 mod source;
 #[cfg(test)]
 mod tests;
@@ -52,5 +46,6 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     module.add_class::<run::NativeEvents>()?;
     module.add_class::<source::context::NativeStreamContext>()?;
     module.add_class::<source::context::NativeCheckpoint>()?;
+    module.add_class::<source::NativeSourceFactory>()?;
     Ok(())
 }

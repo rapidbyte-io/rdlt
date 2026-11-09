@@ -16,7 +16,7 @@ fn settings_waiting(py: pyo3::Python<'_>, allow_env: &str, build_wait: &str) -> 
         "__import__('types').SimpleNamespace(connectors=(), writable=(), readable=(), \
          always_readable=(), allow_network=False, build_wait={build_wait}, \
          allow_env=({allow_env:?},), allow_files=(), _weak_secret_store=None, remote=None, \
-         trust_binaries=False)"
+         trust_binaries=False, _sources=())"
     );
     let code = CString::new(code).unwrap();
     py.eval(&code, None, None)
@@ -43,7 +43,9 @@ fn an_environment_secret_resolves_only_where_the_host_allows_its_variable() {
             serde_json::from_str(&memory_document("secret", 1)).unwrap();
         document["destination"]["config"]["store"] = "${env:RDLT_TEST_STORE}".into();
         for (allowed, builds) in [("RDLT_TEST_STORE", true), ("OTHER", false)] {
-            let host = NativeHost::new(settings(py, allowed)).host(py).unwrap();
+            let host = NativeHost::new(settings(py, allowed), None)
+                .host(py)
+                .unwrap();
             let host = host
                 .source::<MemorySource>()
                 .destination::<MemoryDestination>();
@@ -67,7 +69,7 @@ fn an_environment_secret_resolves_only_where_the_host_allows_its_variable() {
 #[test]
 fn every_build_of_a_host_shares_its_facade_host() {
     embedded::with(|py| {
-        let native = NativeHost::new(settings(py, "OTHER"));
+        let native = NativeHost::new(settings(py, "OTHER"), None);
         let first = native.shared(py).unwrap();
         let second = native.shared(py).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
@@ -78,7 +80,7 @@ fn every_build_of_a_host_shares_its_facade_host() {
 fn a_build_wait_reaches_the_facade_s_host() {
     embedded::with(|py| {
         let wait = "__import__('datetime').timedelta(seconds=30)";
-        let host = NativeHost::new(settings_waiting(py, "OTHER", wait))
+        let host = NativeHost::new(settings_waiting(py, "OTHER", wait), None)
             .host(py)
             .unwrap();
         assert!(format!("{host:?}").contains("build_wait: 30s"), "{host:?}");

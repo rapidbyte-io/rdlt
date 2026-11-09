@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import threading
 import weakref
@@ -108,6 +109,10 @@ class Host:
     trust_binaries: bool = False
     """Runs local connectors with the host's own access rather than in the sandbox."""
     _store: _SecretStore | None = field(default=None, init=False, repr=False, compare=False)
+    _sources: tuple[_native.SourceFactory, ...] = field(default=(), repr=False)
+    """Python functions and classes this host runs as sources, by the ids their factories name."""
+    _origin: Host | None = field(default=None, init=False, repr=False, compare=False)
+    """The host this one was derived from, whose compute pool it shares."""
     _handle: _native.Host | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -121,10 +126,17 @@ class Host:
     def _weak_secret_store(self) -> Callable[[str], str | None] | None:
         return None if self._store is None else self._store.weakly()
 
+    def _replaced(self, **changes: object) -> Host:
+        """This host with `changes`, built on this host's compute pool."""
+        replaced = dataclasses.replace(self, **changes)
+        object.__setattr__(replaced, "_origin", self)
+        return replaced
+
     def _native(self) -> _native.Host:
         if self._handle is None:
+            origin = None if self._origin is None else self._origin._native()
             # Made outside the lock, since reading the settings can run a caller's `__fspath__`.
-            made = _native.Host(cast("_native._HostSettings", self))
+            made = _native.Host(cast("_native._HostSettings", self), origin)
             with _FIRST_BUILD:
                 if self._handle is None:
                     object.__setattr__(self, "_handle", made)

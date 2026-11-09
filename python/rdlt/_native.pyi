@@ -3,7 +3,16 @@ from datetime import timedelta
 from os import PathLike
 from typing import Protocol, final
 
-__all__ = ["Checkpoint", "Events", "Host", "Pipeline", "Run", "StreamContext", "__version__"]
+__all__ = [
+    "Checkpoint",
+    "Events",
+    "Host",
+    "Pipeline",
+    "Run",
+    "SourceFactory",
+    "StreamContext",
+    "__version__",
+]
 
 __version__: str
 
@@ -44,10 +53,12 @@ class _HostSettings(Protocol):
     def remote(self) -> _Tls | None: ...
     @property
     def trust_binaries(self) -> bool: ...
+    @property
+    def _sources(self) -> Sequence[SourceFactory]: ...
 
 @final
 class Host:
-    def __new__(cls, settings: _HostSettings) -> Host: ...
+    def __new__(cls, settings: _HostSettings, origin: Host | None = None) -> Host: ...
 
 @final
 class Pipeline:
@@ -75,6 +86,25 @@ class StreamContext:
     def follows(self) -> bool: ...
     @property
     def resumes(self) -> bool: ...
+
+class _Stream(Protocol):
+    @property
+    def spec(self) -> str: ...
+    def partitions(self) -> Sequence[str]: ...
+    def read(self, partition: str | None, cursor: str | None, context: StreamContext) -> object: ...
+
+class _Connected(Protocol):
+    @property
+    def streams(self) -> Sequence[_Stream]: ...
+    def check(self) -> None: ...
+
+@final
+class SourceFactory:
+    def __new__(
+        cls, id: str, version: str, config_schema: str, connect: Callable[[str], _Connected]
+    ) -> SourceFactory: ...
+    @property
+    def id(self) -> str: ...
 
 @final
 class Events:

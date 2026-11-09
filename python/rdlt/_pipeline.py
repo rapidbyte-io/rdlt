@@ -9,10 +9,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
 from rdlt import _native
 from rdlt.host import Host, StrPath, _names, _paths, _SecretStore
+
+if TYPE_CHECKING:
+    from rdlt._resource import Resource
 from rdlt.model import Catalog, Json, Outcome, ReadMode, _parse
 from rdlt.run import Run, _ended
 
@@ -365,11 +368,17 @@ class Defaults:
         )
 
 
+def _resources(source: Resource | Sequence[Resource]) -> list[Resource]:
+    from rdlt._resource import Resource  # noqa: PLC0415
+
+    return [source] if isinstance(source, Resource) else list(source)
+
+
 def pipeline(
     name: str,
     /,
     *,
-    source: Connector,
+    source: Connector | Resource | Sequence[Resource],
     destination: Connector,
     streams: Sequence[Stream] = (),
     defaults: Defaults | None = None,
@@ -378,13 +387,39 @@ def pipeline(
     retry: Retry | None = None,
     until: _UntilWord | timedelta | None = None,
 ) -> PipelineBuilder:
-    """The pipeline `name`, from `source` to `destination`; the same document a file would hold."""
+    """The pipeline `name`, from `source` to `destination`; the same document a file would hold.
+
+    `source` is a connector or, for sources written in Python, one or more `@rdlt.resource`
+    functions, each read as the stream it names.
+    """
+    from rdlt._resource import RESOURCES, source_factory  # noqa: PLC0415
+
+    factories: list[_native.SourceFactory] = []
+    entries: dict[str, dict[str, Json]] = {}
+    source_document: dict[str, Json]
+    if isinstance(source, Connector):
+        source_document = source._document()
+    else:
+        selected = _resources(source)
+        source_document = {"connector": RESOURCES}
+        for resource in selected:
+            entry: dict[str, Json] = {"name": resource.name}
+            if resource.write is not None:
+                entry["write"] = resource.write._document
+            if resource.cursor is not None:
+                entry["read"] = "incremental"
+            entries[resource.name] = entry
+    for given in streams:
+        entries[given.name] = {**entries.get(given.name, {}), **given._document()}
+    if not isinstance(source, Connector):
+        resuming = {name for name, entry in entries.items() if entry.get("read") == "incremental"}
+        factories.append(source_factory(_resources(source), resuming))
     document: dict[str, Json] = {
         "version": 1,
         "pipeline": name,
-        "source": source._document(),
+        "source": source_document,
         "destination": destination._document(),
-        "streams": [stream._document() for stream in streams],
+        "streams": list(entries.values()),
     }
     document.update(
         _kept(
@@ -397,17 +432,22 @@ def pipeline(
             }
         )
     )
-    return PipelineBuilder(document=document)
+    return PipelineBuilder(document=document, sources=factories)
 
 
 class PipelineBuilder:
     """A pipeline described and not yet built: `build(host)` checks it against the host."""
 
     def __init__(
-        self, *, document: Mapping[str, Json] | None = None, path: Path | None = None
+        self,
+        *,
+        document: Mapping[str, Json] | None = None,
+        path: Path | None = None,
+        sources: Sequence[_native.SourceFactory] = (),
     ) -> None:
         self._document = None if document is None else dict(document)
         self._path = path
+        self._sources = tuple(sources)
 
     def __repr__(self) -> str:
         if self._document is None:
@@ -426,6 +466,8 @@ class PipelineBuilder:
         Raises:
             rdlt.Error: the subclass for the first mistake found, which never quotes a value.
         """
+        if self._sources:
+            host = host._replaced(_sources=(*host._sources, *self._sources))
         native = host._native()
         if self._path is not None:
             return Pipeline(_native.Pipeline.build_path(self._path, native), host._store)
