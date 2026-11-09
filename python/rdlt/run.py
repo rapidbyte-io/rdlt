@@ -61,7 +61,10 @@ class Events:
         return self
 
     async def __anext__(self) -> Event | Lagged:
-        return _item(await self._native.__anext__())
+        while (text := self._native.take()) is None:
+            if not await self._native.readable():
+                raise StopAsyncIteration
+        return _item(text)
 
 
 class Run:

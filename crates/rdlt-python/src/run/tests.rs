@@ -139,6 +139,25 @@ fn events_end_with_the_run_gap_free() {
 }
 
 #[test]
+fn an_event_read_for_a_wait_interrupted_as_it_ended_is_read_next() {
+    embedded::with(|py| {
+        let run = started(py, &memory_document("unlost", 10), memory_host());
+        let events = run.events(py).unwrap();
+        run.wait(py).unwrap();
+        // What an interrupted wait leaves, twice: its read ended and nobody took the item.
+        for _ in 0..2 {
+            let reader = Arc::clone(&events.reader);
+            assert!(runtime::wait(py, async move { reader.readable().await }).unwrap());
+        }
+        for expected in 1..=2 {
+            let item = events.__next__(py).unwrap().expect("an event");
+            let item: serde_json::Value = serde_json::from_str(&item).unwrap();
+            assert_eq!(item["event"]["seq"], expected);
+        }
+    });
+}
+
+#[test]
 fn a_status_says_where_the_run_stands() {
     embedded::with(|py| {
         let run = endless(py, "status");

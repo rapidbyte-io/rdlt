@@ -7,7 +7,7 @@ mod tests;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use pyo3::exceptions::{PyKeyboardInterrupt, PyStopAsyncIteration, PyValueError};
+use pyo3::exceptions::{PyKeyboardInterrupt, PyValueError};
 use pyo3::types::PyAnyMethods as _;
 use pyo3::{Bound, PyAny, PyErr, PyRef, Python, pyclass, pymethods};
 use serde::Serialize;
@@ -180,7 +180,7 @@ impl NativeRun {
             None => self.ask(py, Command::Events)?,
         };
         Ok(NativeEvents {
-            stream: Arc::new(tokio::sync::Mutex::new(stream)),
+            reader: Arc::new(Reader::new(stream)),
             _run: self.commands.clone(),
         })
     }
@@ -255,9 +255,20 @@ async fn ended(mut receiver: watch::Receiver<Option<Arc<Ended>>>) -> Option<Arc<
 /// One subscriber's events, as JSON: `{"event": …}`, or `{"lagged": {"dropped": n}}`.
 #[pyclass(module = "rdlt._native", name = "Events", frozen)]
 pub(crate) struct NativeEvents {
-    stream: Arc<tokio::sync::Mutex<Option<rdlt::Events>>>,
+    reader: Arc<Reader>,
     /// A handle of the run: a subscriber keeps its run going until it is dropped too.
     _run: mpsc::UnboundedSender<Command>,
+}
+
+/// What a subscriber reads, and the item it has read and not yet taken.
+///
+/// A read waits for an item and then takes it, in two steps: an item read as its wait is
+/// interrupted or cancelled stays here for the next read, rather than going with an answer
+/// nobody is left to receive.
+struct Reader {
+    /// Held across the wait for the next item, so a subscription's readers read one at a time.
+    events: tokio::sync::Mutex<Option<rdlt::Events>>,
+    read: Mutex<Option<String>>,
 }
 
 #[derive(Serialize)]
@@ -267,18 +278,39 @@ enum Item<'a> {
     Lagged(&'a rdlt::Lagged),
 }
 
-async fn next(stream: Arc<tokio::sync::Mutex<Option<rdlt::Events>>>) -> Option<String> {
-    let mut held = stream.lock().await;
-    let item = held.as_mut()?.next().await;
-    let Some(item) = item else {
-        *held = None;
-        return None;
-    };
-    let item = match &item {
-        Ok(event) => Item::Event(event),
-        Err(lagged) => Item::Lagged(lagged),
-    };
-    Some(serde_json::to_string(&item).expect("an event serializes"))
+impl Reader {
+    fn new(events: Option<rdlt::Events>) -> Self {
+        Self {
+            events: tokio::sync::Mutex::new(events),
+            read: Mutex::new(None),
+        }
+    }
+
+    /// Waits for an item to take; false once the run ended and every event is read.
+    async fn readable(&self) -> bool {
+        let mut events = self.events.lock().await;
+        if self.read.lock().is_some() {
+            return true;
+        }
+        let Some(subscription) = events.as_mut() else {
+            return false;
+        };
+        let Some(item) = subscription.next().await else {
+            *events = None;
+            return false;
+        };
+        let item = match &item {
+            Ok(event) => Item::Event(event),
+            Err(lagged) => Item::Lagged(lagged),
+        };
+        let item = serde_json::to_string(&item).expect("an event serializes");
+        *self.read.lock() = Some(item);
+        true
+    }
+
+    fn take(&self) -> Option<String> {
+        self.read.lock().take()
+    }
 }
 
 #[pymethods]
@@ -289,20 +321,27 @@ impl NativeEvents {
 
     /// The next event, the GIL released while it waits; none once the run ended.
     pub(crate) fn __next__(&self, py: Python<'_>) -> Result<Option<String>, PyErr> {
-        runtime::wait(py, next(Arc::clone(&self.stream)))
+        loop {
+            if let Some(item) = self.reader.take() {
+                return Ok(Some(item));
+            }
+            let reader = Arc::clone(&self.reader);
+            if !runtime::wait(py, async move { reader.readable().await })? {
+                return Ok(None);
+            }
+        }
     }
 
-    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __anext__<'py>(&self, py: Python<'py>) -> Result<Bound<'py, PyAny>, PyErr> {
+    /// An awaitable of whether an item waits to be taken, false once the run ended and every
+    /// event is read; cancelling it loses nothing.
+    fn readable<'py>(&self, py: Python<'py>) -> Result<Bound<'py, PyAny>, PyErr> {
         runtime::get(py)?;
-        let stream = Arc::clone(&self.stream);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            next(stream)
-                .await
-                .ok_or_else(|| PyStopAsyncIteration::new_err(()))
-        })
+        let reader = Arc::clone(&self.reader);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(reader.readable().await) })
+    }
+
+    /// The item that waits to be taken, if one does.
+    fn take(&self) -> Option<String> {
+        self.reader.take()
     }
 }
