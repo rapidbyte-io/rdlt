@@ -218,8 +218,8 @@ fn changed(stream: &SimStream, row: &Row, column: usize) -> Chance {
 ///
 /// A hinted type never changes; a declared one changes only for a value it does not hold, which a
 /// column that discards never takes; an undeclared column that evolves takes the type of the first
-/// batch holding it and keeps it while every batch arrives as that type. Values nested in a stream
-/// that normalizes have none.
+/// batch holding it and keeps it while every batch, and every push shredded with one, arrives as
+/// that type. Values nested in a stream that normalizes have none.
 fn owned(stream: &SimStream, delivered: &[Row], column: usize) -> Option<LogicalType> {
     if stream.normalized() && !stream.whole(column) {
         return None;

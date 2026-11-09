@@ -246,14 +246,16 @@ pub(super) fn fixed(stream: &SimStream, column: usize) -> Option<LogicalType> {
 }
 
 /// Every type drift column `column` arrived as in `rows`, the rows delivered so far, each batch's
-/// once.
+/// once, and the widest each may arrive as: a push whose every row the filter drops still
+/// shreds together with the pushes around it, and decides the type they arrive as.
 pub(super) fn all(stream: &SimStream, rows: &[Row], column: usize) -> Vec<Arrival> {
     let mut arrivals: Vec<Arrival> = Vec::new();
     for row in rows {
-        if let Some(arrival) = arrival(stream, row, column)
-            && !arrivals.contains(&arrival)
-        {
-            arrivals.push(arrival);
+        let pushes = [arrival(stream, row, column), widest(stream, row, column)];
+        for arrival in pushes.into_iter().flatten() {
+            if !arrivals.contains(&arrival) {
+                arrivals.push(arrival);
+            }
         }
     }
     arrivals

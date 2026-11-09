@@ -332,6 +332,12 @@ impl SimStream {
         }
     }
 
+    /// Replaces each partition's rows, for a test of what batches holding them arrive as.
+    #[cfg(test)]
+    pub(crate) fn set_rows(&mut self, rows: Vec<[Vec<Row>; PHASES]>) {
+        self.rows = rows;
+    }
+
     /// Whether the stream's arrays land in child tables.
     pub fn normalized(&self) -> bool {
         self.max_depth().is_some()
