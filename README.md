@@ -500,9 +500,9 @@ passed: 6 passed, 0 failed, 0 not observed, 2 not applicable
 ```
 
 In process, certification runs a role's source or destination clauses. Through
-[`rdlt-certify`](#certifying-a-connector) the protocol and kill clauses run too, and this source
+[`rdlt certify`](#certifying-a-connector) the protocol and kill clauses run too, and this source
 passes every clause that applies but `K-SOURCE`. Its three rows load before a kill reaches it, so
-the report is incomplete and the command exits 2. `testing::certify_destination::<C>(config,
+the report is incomplete and the command exits 1. `testing::certify_destination::<C>(config,
 &probe)` certifies a destination the same way, reading what it published through `probe`.
 
 `rdlt_connector::sqlgen`, behind the `sqlgen` feature, plans a SQL destination's statements (state,
@@ -535,10 +535,10 @@ Certification checks that a connector keeps the contract the engine's guarantees
 test for a connector's author and does not vet an untrusted connector, which can tell a
 certification from a load ([SECURITY.md](SECURITY.md)). In process, `rdlt_connector::testing`
 ([above](#writing-a-connector)) runs the source and destination clauses. Through the protocol,
-`rdlt-certify` runs the protocol and kill clauses as well. As a library it reaches a connector
-served in the test's own process (`Target::served`), spawned from its binary, listening at a
-`grpcs://` endpoint, or over any stream a function opens (`Target::connected`). The binary reaches
-the spawned and listening ones.
+`rdlt certify` runs the protocol and kill clauses as well. As a library, `rdlt-certify` reaches a
+connector served in the test's own process (`Target::served`), spawned from its binary, listening
+at a `grpcs://` endpoint, or over any stream a function opens (`Target::connected`). The command
+reaches the spawned and listening ones.
 
 | Family | Clauses | Checks |
 |---|---|---|
@@ -550,12 +550,12 @@ the spawned and listening ones.
 From a clone, certify the reference generator source from its binary:
 
 ```sh
-cargo build -p rdlt-certify -p rdlt-connector-reference \
+cargo build -p rdlt-cli -p rdlt-connector-reference \
     --features rdlt-connector-reference/test-connectors
 echo '{"seed": 11, "streams": [{"name": "events", "rows": 40000, "batch_rows": 50}]}' \
     > generator.json
-target/debug/rdlt-certify target/debug/rdlt-connector-generator \
-    --trusted --config-file generator.json
+target/debug/rdlt certify target/debug/rdlt-connector-generator \
+    --trust-binaries --config-file generator.json
 ```
 
 ```text
@@ -579,13 +579,14 @@ certification of io.rapidbyte.generator
 passed: 15 passed, 0 failed, 0 not observed, 1 not applicable
 ```
 
-`--trusted` runs the binary outside any sandbox. On Linux, leave it out and the binary runs in
-bubblewrap with only what `--grant-read`, `--grant-write` and `--grant-network` give it. rdlt has
-no sandbox for macOS: leave `--trusted` out there and the certifier refuses the binary and exits 74.
+`--trust-binaries` runs the binary outside any sandbox. On Linux, leave it out and the binary runs
+in bubblewrap with only what `--readable`, `--writable` and `--network` give it. rdlt has no
+sandbox for macOS: leave `--trust-binaries` out there and the certifier refuses the binary and
+exits 74.
 A listening connector is certified at its endpoint with the host's certificate:
 
 ```sh
-rdlt-certify grpcs://connector.example.internal:7443 \
+rdlt certify grpcs://connector.example.internal:7443 \
     --tls-cert host.pem --tls-key host.key --tls-ca ca.pem --config-file config.json
 ```
 
@@ -596,10 +597,9 @@ not pass.
 | Exit code | Meaning |
 |---|---|
 | 0 | Every certified role passed, or, with `--require partial`, none failed and each passed a clause |
-| 1 | A clause failed, the certification was cut at its timeout, or the connector serves none of the roles asked for |
-| 2 | Nothing failed, but a clause that applies was not observed |
+| 1 | A clause failed, the certification was cut at its timeout, the connector serves none of the roles asked for, or nothing failed but a clause that applies was not observed |
 | 64 | The command line, the configuration's JSON, a secret it refers to that does not resolve, or the endpoint is wrong |
-| 74 | A file or binary cannot be read or run, no sandbox can be used and `--trusted` was not given, or a spawned connector was not seen to stop |
+| 74 | A file or binary cannot be read or run, no sandbox can be used and `--trust-binaries` was not given, or a spawned connector was not seen to stop |
 | 130, 143, 129, 131 | Interrupted by `SIGINT`, `SIGTERM`, `SIGHUP` or `SIGQUIT`, once the connectors it spawned are stopped |
 
 `--output json` prints a machine-readable report. Through the protocol, a destination is certified
@@ -609,10 +609,10 @@ destination implements `ReadBack`, and a connector binary built for certificatio
 likewise applies only where a source's binary serves `acknowledging_source_factory`. A binary that
 serves `serve::<C>()`, `source_factory` or `destination_factory` serves neither probe, and every
 reference binary does. Certified from their own binaries with `--role destination`, the SQLite and
-files destinations come out incomplete and exit 2. The memory destination fails instead, as each
+files destinations come out incomplete and exit 1. The memory destination fails instead, as each
 process it is spawned in starts with an empty store.
 [docs/certify/clauses.md](docs/certify/clauses.md) states every clause, its bounds and what
-certification cannot show, and `rdlt-certify --clauses` generates it.
+certification cannot show, and `rdlt certify --clauses` generates it.
 
 ## Placing connectors
 
@@ -870,7 +870,8 @@ flowchart LR
 | [`rdlt-connector-reference`](crates/rdlt-connector-reference) | The reference connectors and their binaries |
 | [`rdlt-host`](crates/rdlt-host) | Placing connectors in process, in a sandboxed or trusted process, or remote; secrets |
 | [`rdlt-wire`](crates/rdlt-wire) | The wire protocol: messages, the Arrow codec, limits, credit and TLS |
-| [`rdlt-certify`](crates/rdlt-certify) | Certification over the protocol, as a library and the `rdlt-certify` binary |
+| [`rdlt-certify`](crates/rdlt-certify) | Certification over the protocol, as a library for `rdlt certify` and tests |
+| [`rdlt-cli`](crates/rdlt-cli) | The `rdlt` command line: write, check, run, inspect and certify pipelines and connectors |
 | [`rdlt-adopt`](crates/rdlt-adopt) | The workspace's only `unsafe` code: adopting the socket a host passed a spawned connector, and spawning a connector that inherits no other descriptor of its host's |
 | [`rdlt-sim`](crates/rdlt-sim) | The deterministic simulation harness (not for publishing) |
 | [`rdlt-testkit`](crates/rdlt-testkit) | Drawn Arrow data and an exact value model for tests and the simulation (not for publishing) |
@@ -975,6 +976,7 @@ cargo xtask codegen    # regenerate the wire protocol's code after changing its 
 |---|---|
 | [docs/adr](docs/adr) | The 49 architecture decisions in force and the reasons for each |
 | [docs/certify/clauses.md](docs/certify/clauses.md) | Every certification clause, its bounds and what certification cannot show |
+| [docs/cli.md](docs/cli.md) | The `rdlt` command line: every verb, its JSON output, and the exit codes |
 | [docs/perf](docs/perf) | Performance records: each figure with its machine, method, range and commit |
 | [SECURITY.md](SECURITY.md) | The trust model, what rdlt guarantees against a hostile connector and what it leaves to the operator |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | The workflow, the project's vocabulary, and the standard for code, errors and tests |

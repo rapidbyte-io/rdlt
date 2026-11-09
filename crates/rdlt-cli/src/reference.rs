@@ -17,8 +17,43 @@ pub fn reference() -> String {
     for (exit, meaning) in Exit::TABLE {
         writeln!(text, "| {} | {meaning} |", exit.code()).ok();
     }
+    text.push_str(JSON_OUTPUT);
     text
 }
+
+/// How results and failures are shaped under `--output json`, and what ends the process last.
+const JSON_OUTPUT: &str = "
+## JSON output
+
+Under `--output json`, and under `--output auto` off a terminal, standard output holds JSON and
+standard error holds notes.
+
+- A verb that succeeds prints one JSON value, its result: `check`'s report, `discover`'s
+  catalog, `schema`'s schema, `connectors` as `{\"local\", \"sandboxed\", \"remote\"}`, `init` and
+  `connector new` as `{\"wrote\": <path>}`, `state reset` as `{\"streams\", \"dropped\", \"epoch\"}`,
+  `certify` as `{\"verdict\", \"passed\", \"reports\"}`, `verdict` one of `passed`, `failed`,
+  `incomplete`.
+- `run` prints `{\"report\": <report>, \"error\": <failure or null>}`. With `--events -` it prints
+  the events as NDJSON instead, one object a line, and then
+  `{\"outcome\": {\"report\": <report>, \"error\": <failure or null>}}`.
+- A failure is `{\"error\": <failure>}`, whichever verb it was. A failure of a pipeline is an
+  error report: `{\"kind\", \"origin\", \"stream\", \"code\", \"connector_code\", \"message\",
+  \"causes\", \"retryable\"}`, `kind` one of `config`, `schema`, `source`, `destination`,
+  `transform`, `fenced`, `memory`, `internal`, `cancelled`. A failure of the command line's own
+  is `{\"kind\", \"message\"}`, `kind` one of `usage`, `io`, `signal`; the last for a
+  verb a signal stopped before it had a result to print.
+- A usage error under an explicit `--output json` has that second form on standard output; under
+  `auto` off a terminal, and in plain text, it is the usual message on standard error.
+- A failure to write events or a report after the run ended is the run's `error` where the run
+  has none of its own, as well as a note on standard error; the exit is 74 then.
+
+With a collector named by `OTEL_EXPORTER_OTLP_ENDPOINT` or its per-signal variables, the process
+waits about ten seconds at most at its end for what it holds to be exported, on top of its own
+work; a signal does not cut that short.
+
+A signal the process was started ignoring, as `nohup` starts it with hangups, stays ignored on
+Linux. macOS has no way to see that without `unsafe`, so there it is heard as usual.
+";
 
 fn section(text: &mut String, command: &mut clap::Command, path: &str) {
     write!(

@@ -15,8 +15,10 @@ path = "src/main.rs"
 clap.workspace = true
 clap_complete.workspace = true
 rdlt = { workspace = true, features = ["local", "remote", "sql", "otel"] }
-rdlt-connector.workspace = true
+rdlt-certify.workspace = true
+rdlt-connector = { workspace = true, features = ["wire"] }
 rdlt-host.workspace = true
+rdlt-wire.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = [
   "fs",
@@ -32,6 +34,7 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 insta.workspace = true
 nix = { workspace = true, features = ["signal"] }
+parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["certify", "serve", "testing"] }
 rdlt-connector-reference = { workspace = true, features = ["certify", "test-connectors"] }
 rdlt-testkit.workspace = true

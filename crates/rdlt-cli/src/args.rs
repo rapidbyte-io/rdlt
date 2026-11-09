@@ -16,7 +16,13 @@ pub(crate) struct Cli {
     #[arg(long, value_enum, default_value_t = Output::Auto, global = true)]
     pub(crate) output: Output,
     /// The least level logged to standard error; `RUST_LOG`, where set, wins.
-    #[arg(long, value_name = "LEVEL", default_value = "warn", global = true)]
+    #[arg(
+        long,
+        value_name = "LEVEL",
+        default_value = "warn",
+        value_parser = ["off", "error", "warn", "info", "debug", "trace"],
+        global = true
+    )]
     pub(crate) log_level: String,
 }
 

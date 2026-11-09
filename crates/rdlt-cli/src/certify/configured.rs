@@ -3,7 +3,9 @@
 
 use std::io::Read as _;
 
-use super::{Args, Ended, IO, USAGE, redactions};
+use super::{CertifyArgs, Ended, redactions};
+use crate::Exit;
+use crate::args::HostArgs;
 
 /// Bytes read of a configuration at most, one beyond what a configuration may hold.
 const CONFIG_READ: u64 = rdlt_wire::limits::CONFIG_BYTES + 1;
@@ -12,7 +14,7 @@ const CONFIG_READ: u64 = rdlt_wire::limits::CONFIG_BYTES + 1;
 /// secret it refers to resolved, and kept from everything printed from here on.
 ///
 /// It is never taken from the command line itself, which other users of the machine can read.
-pub(super) fn config(args: &Args) -> Result<serde_json::Value, Ended> {
+pub(super) fn config(args: &CertifyArgs, host: &HostArgs) -> Result<serde_json::Value, Ended> {
     let Some(path) = &args.config_file else {
         return Ok(serde_json::json!({}));
     };
@@ -33,21 +35,22 @@ pub(super) fn config(args: &Args) -> Result<serde_json::Value, Ended> {
         });
         (read, path.display().to_string())
     };
-    let text = read.map_err(|error| Ended(IO, format!("reading {source} failed: {error}")))?;
+    let text =
+        read.map_err(|error| Ended(Exit::Io, format!("reading {source} failed: {error}")))?;
     // What is wrong with it is said without quoting it.
     let unusable = |error: rdlt_host::SecretError| {
         let cause = std::error::Error::source(&error);
         let cause = cause.map(|cause| format!(": {cause}")).unwrap_or_default();
         let message = format!("the configuration in {source} cannot be used: {error}{cause}");
-        Ended(USAGE, message)
+        Ended(Exit::Usage, message)
     };
     let held = rdlt_host::Config::parse(text).map_err(&unusable)?;
     let resolving = tokio::runtime::Builder::new_current_thread()
         .build()
-        .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
+        .map_err(|error| Ended(Exit::Io, format!("starting the runtime failed: {error}")))?;
     let secrets = rdlt_host::Secrets::new()
-        .allow_env(args.secret_env.iter().cloned())
-        .allow_files(args.secret_dir.iter().cloned());
+        .allow_env(host.allow_env.iter().cloned())
+        .allow_files(host.allow_files.iter().cloned());
     let resolved = resolving
         .block_on(held.resolved(&secrets, redactions()))
         .map_err(&unusable)?;

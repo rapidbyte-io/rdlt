@@ -266,6 +266,7 @@ mutants-diff base="origin/main" jobs="4":
             rdlt-connector-reference) echo "rdlt-connector-reference rdlt-engine" ;;
             rdlt-wire) echo "rdlt-wire rdlt-host" ;;
             rdlt-host) echo "rdlt-host rdlt-certify rdlt" ;;
+            rdlt-certify) echo "rdlt-certify rdlt-cli" ;;
             rdlt) echo "rdlt rdlt-cli" ;;
             rdlt-cli) echo "rdlt-cli" ;;
             *) echo "$1" ;;

@@ -46,18 +46,18 @@ clauses are ADR 0022's.
     (`slow_commit_within_deadline_succeeds`); no clause checks them of a connector.
 - **`rdlt-host` has raw wires** for clients that speak the protocol themselves: `Local::wire`,
   `Remote::wire`, `remote::client`, and `Connection::connector_spec`.
-- **The binary**: `rdlt-certify <binary | grpcs://host:port>` certifies every role the connector
-  serves, or `--role`'s, with one configuration, read from a file or standard input
+- **The command**: `rdlt certify <binary | grpcs://host:port>` certifies every role the
+  connector serves, or `--role`'s, with one configuration, read from a file or standard input
   (`--config-file`), never the command line, and certifies a binary inside a sandbox unless
-  `--trusted` (ADR 0043); an endpoint needs `--tls-cert`, `--tls-key` and `--tls-ca`. It prints
-  plain text or JSON (`--output`), and exits 0 when every report passed, 2 when one is
-  incomplete and none failed, 1 on findings or when the connector serves none of the roles
-  asked, 64 on a wrong command line and 74 when the connector or a file named cannot be read
+  `--trust-binaries` (ADR 0043); an endpoint needs `--tls-cert`, `--tls-key` and `--tls-ca`. It
+  prints plain text or JSON (`--output`), and exits 0 when every report passed, 1 on findings,
+  when one is incomplete and none failed or when the connector serves none of the roles asked,
+  64 on a wrong command line and 74 when the connector or a file named cannot be read
   (ADR 0050); `--require partial` exits 0 for an incomplete run in which a clause passed.
   `--clauses` prints the registry.
   - A clause passes, fails, is inapplicable by the connector's declaration, or is unobserved.
     A report passes when no clause failed, none was unobserved and one passed; otherwise it is
-    incomplete, in the library as in the binary, and its JSON says so (ADR 0050).
+    incomplete, in the library as in the command, and its JSON says so (ADR 0050).
   - No clause of a role the connector does not serve applies. Without `--role`, its report is
     left out; with `--role` naming such a role, nothing was certified, and it exits 1 saying so.
   - Plain output shows what the connector said, not obeys it: its controls, line breaks among them,
@@ -67,7 +67,7 @@ clauses are ADR 0022's.
   - A malformed endpoint is a wrong command line, and exits 64.
   - Its help and its reports are snapshots, with `insta`.
 - **The clauses' documentation is generated from the registry**: `docs/certify/clauses.md`, which
-  a test holds equal to `rdlt-certify --clauses`.
+  a test holds equal to `rdlt certify --clauses`.
 - **A read starts with the barrier pending.** `ReadStart` carries the barrier pending at the
   start (`barrier`, field 4), and the host also sends it as a control, before the read's credit,
   so a read too short to see a later control still answers it, as it does in the engine's

@@ -1,5 +1,5 @@
 ---
-source: crates/rdlt-certify/tests/it/cli.rs
+source: crates/rdlt-cli/tests/it/certify.rs
 expression: "String::from_utf8_lossy(&certified.stdout)"
 ---
 certification of io.rapidbyte.memory

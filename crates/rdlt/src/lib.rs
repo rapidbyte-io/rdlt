@@ -81,10 +81,10 @@ pub use rdlt_connector::{
     TablePath,
 };
 pub use rdlt_engine::{
-    Acks, AttemptReport, Bound, Call, Code, ColumnChange, CommitPhases, Commits, Counters, Discard,
-    DiscardReason, Discards, ErrorKind, ErrorReport, Event, EventKind, FilteredRows, Flushes,
-    Forgotten, Listed, Literal, Mask, MemoryHeld, Op, OpenWaits, Origin, Partitions, Phase,
-    PoolCounters, Quiet, Report, ResetReport, ResetScope, RunControl, RunStatus, Scope,
+    Acks, AttemptReport, Bound, Call, Code, ColumnChange, CommitPhases, Commits, Cores, Counters,
+    Discard, DiscardReason, Discards, ErrorKind, ErrorReport, Event, EventKind, FilteredRows,
+    Flushes, Forgotten, Listed, Literal, Mask, MemoryHeld, Op, OpenWaits, Origin, Partitions,
+    Phase, PoolCounters, Quiet, Report, ResetReport, ResetScope, RunControl, RunStatus, Scope,
     ShredCounts, Status, Step, StopMode, StreamReport, StreamStatus, Transform, TransformError,
     Trigger, Waited, Waits, WriterCall, WriterCounters, WriterStatus,
 };

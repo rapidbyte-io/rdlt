@@ -1,53 +1,18 @@
 //! A connector listening at an endpoint over mutual TLS, certified through the protocol.
 
-use std::process::Stdio;
-
 use rdlt_certify::{Outcome, Target, certify_destination, certify_source};
 use rdlt_connector::ConnectorId;
 use rdlt_host::{ConnectorRef, Identity, Remote};
 use rdlt_testkit::tls::Pki;
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt as _, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 
 use crate::spawned::{SqliteProbe, example};
 
 /// The reference connectors' binary, listening over mutual TLS with a CA made for it; its
 /// process, and its endpoint.
 pub(crate) async fn listening(pki: &Pki) -> (Child, String) {
-    let server = pki.server("server", &["localhost"]);
-    let mut child = Command::new(example("serve_reference"))
-        .args(["--listen", "127.0.0.1:0"])
-        .arg("--tls-cert")
-        .arg(&server.cert)
-        .arg("--tls-key")
-        .arg(&server.key)
-        .arg("--tls-client-ca")
-        .arg(pki.ca())
-        .args(["--tls-allow-host", "host"])
-        .env(
-            "LLVM_PROFILE_FILE",
-            std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
-        )
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .process_group(0)
-        .spawn()
-        .expect("the connector starts");
-    crate::guarded(&child);
-    let stdout = child.stdout.take().expect("its output is piped");
-    let line = BufReader::new(stdout)
-        .lines()
-        .next_line()
-        .await
-        .expect("its output reads")
-        .expect("it announces its address");
-    let address = line
-        .strip_prefix("listening on ")
-        .expect("the announcement names the address");
-    let port = address.rsplit_once(':').expect("an address and port").1;
-    (child, format!("grpcs://localhost:{port}"))
+    rdlt_testkit::tls::listening(pki, &example("serve_reference")).await
 }
 
 pub(crate) fn target(pki: &Pki, endpoint: &str) -> Target {

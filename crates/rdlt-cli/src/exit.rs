@@ -29,7 +29,7 @@ pub enum Exit {
     Usage,
     /// A defect in rdlt.
     Internal,
-    /// A file, binary or stream could not be read or written.
+    /// A file, a binary named on the command line, or a stream could not be read or written.
     Io,
     /// Stopped by a signal: the code is 128 and the signal's number.
     Signalled(i32),
@@ -37,7 +37,7 @@ pub enum Exit {
 
 impl Exit {
     /// Every exit with its meaning, as `docs/cli.md` lists them.
-    pub const TABLE: [(Exit, &'static str); 14] = [
+    pub const TABLE: [(Exit, &'static str); 16] = [
         (Exit::Success, "success"),
         (
             Exit::Findings,
@@ -45,7 +45,7 @@ impl Exit {
         ),
         (
             Exit::Config,
-            "config: the document, the host's policy, a placement or a secret reference",
+            "config: the document, the host's policy, a placement, a connector the host has none of, or a secret reference",
         ),
         (
             Exit::Schema,
@@ -66,7 +66,7 @@ impl Exit {
         (Exit::Internal, "internal: a defect in rdlt"),
         (
             Exit::Io,
-            "I/O: a file, binary or stream could not be read or written",
+            "I/O: a file, a binary named on the command line, or a stream could not be read or written",
         ),
         (
             Exit::Signalled(130),
@@ -75,6 +75,14 @@ impl Exit {
         (
             Exit::Signalled(143),
             "SIGTERM: terminated; the report says whether the stop was clean",
+        ),
+        (
+            Exit::Signalled(129),
+            "SIGHUP: hung up on, a signal it was not started ignoring",
+        ),
+        (
+            Exit::Signalled(131),
+            "SIGQUIT: asked to quit, a signal it was not started ignoring",
         ),
     ];
 

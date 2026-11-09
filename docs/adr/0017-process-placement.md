@@ -19,7 +19,7 @@ over a network ADR 0019's.
   - It leads a process group of its own, which the host owns, so neither a terminal's Ctrl-C nor
     its hanging up reaches it. A host listens for `SIGINT`, `SIGTERM`, `SIGHUP` and `SIGQUIT`
     (`rdlt_host::Interrupts`) and stops what it spawned (`rdlt_host::stop_spawned`, or the guard
-    `rdlt_host::StopsSpawned`) before it exits; `rdlt-certify` does (ADR 0050).
+    `rdlt_host::StopsSpawned`) before it exits; `rdlt run` and `rdlt certify` do (ADR 0050).
   - On Linux, it asks for `SIGTERM` when its parent dies (`PR_SET_PDEATHSIG`). Standard input
     ending covers a host that died before it asked. A host killed outright runs no code: these
     two end the connector, and nothing ends what the connector started and left in its group.

@@ -6,8 +6,7 @@ use std::time::Duration;
 use rdlt_testkit::process::{outliving, ready, started};
 use rdlt_testkit::tls::Pki;
 
-use crate::listening::listening;
-use crate::spawned::example;
+use crate::support::{example, guarded, listening};
 
 /// A stand-in for a test: it starts a certification of a connector that never answers, and
 /// a listening connector, as the suite's helpers start them, says which processes those are,
@@ -16,16 +15,17 @@ use crate::spawned::example;
 #[ignore = "run by the test below, as the process it kills"]
 async fn stand_in_starting_a_certification_and_a_listening_connector() {
     let hanging = example("serve_hang");
-    let certifying = tokio::process::Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
+    let certifying = tokio::process::Command::new(env!("CARGO_BIN_EXE_rdlt"))
+        .arg("certify")
         .arg(&hanging)
-        .args(["--role", "destination", "--trusted"])
+        .args(["--role", "destination", "--trust-binaries"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .process_group(0)
         .spawn()
-        .expect("rdlt-certify runs");
-    crate::guarded(&certifying);
+        .expect("rdlt certify runs");
+    guarded(&certifying);
     let certifier = certifying.id().expect("the certifier runs");
     started(certifier);
     // The connector it spawned, once it has.

@@ -66,6 +66,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -132,6 +133,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -193,6 +195,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -254,6 +257,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -321,6 +325,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -382,6 +387,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -449,6 +455,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -519,6 +526,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -576,6 +584,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -587,9 +596,51 @@ Options:
 ```text
 Certifies a connector, from its binary or at its endpoint, against the protocol's clauses
 
-Usage: certify [OPTIONS]
+Usage: certify [OPTIONS] [TARGET]
+
+Arguments:
+  [TARGET]
+          The connector: its binary's path, or the `grpcs://host:port` endpoint it listens at
 
 Options:
+      --role <ROLE>
+          Certify this role alone; by default, every role the connector serves
+          
+          [possible values: source, destination]
+
+      --config-file <PATH>
+          A file holding the connector's configuration, as JSON, or `-` to read it from standard input; an empty object without it; a text value may refer to a secret as `${env:NAME}` or `${file:/absolute/path}`, where `--allow-env` and `--allow-files` allow it, and no report then shows the secret
+
+      --network
+          Lets the sandboxed connector reach the network
+
+      --env <NAME>
+          An environment variable a spawned connector keeps; it otherwise starts with glibc's malloc tunables alone, and in a sandbox `TMPDIR` names its scratch directory, whatever it was
+
+      --kill-seed <SEED>
+          Kills the connector at the points this seed draws, as a failed kill clause reports, to reproduce the failure
+
+      --kill-timeout <SECONDS>
+          Gives each kill clause this many seconds for all its loads, rather than 300: a connector slower than about two seconds a commit needs more
+
+      --credit-watch <MS>
+          Watches a read whose credit is spent this many milliseconds after each grant, from 1 to 1000, rather than 1000: `P-CREDIT` then takes four times as long, and its pass notes the watch
+
+      --timeout <SECONDS>
+          Ends the certification after this many seconds, rather than 3600, failing every clause of a role still certifying then
+
+      --no-timeout
+          Lets the certification take as long as its clauses' own bounds allow
+
+      --require <REQUIRE>
+          What exits 0: `complete`, every clause that applies seen to be met; `partial`, none failed and one passed, whatever was not observed
+          
+          [default: complete]
+          [possible values: complete, partial]
+
+      --clauses
+          Prints every clause, in Markdown, and exits
+
       --host <PATH>
           The operator's host file; by default `$XDG_CONFIG_HOME/rdlt/host.yaml`, where it exists
 
@@ -633,6 +684,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -694,6 +746,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -766,6 +819,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -829,6 +883,7 @@ Options:
           The least level logged to standard error; `RUST_LOG`, where set, wins
           
           [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
 
   -h, --help
           Print help
@@ -841,7 +896,7 @@ Options:
 |---|---|
 | 0 | success |
 | 1 | certify findings: a clause failed, or one that applies was not observed |
-| 2 | config: the document, the host's policy, a placement or a secret reference |
+| 2 | config: the document, the host's policy, a placement, a connector the host has none of, or a secret reference |
 | 3 | schema: data does not fit its table's schema under its policy |
 | 4 | source: the source failed |
 | 5 | destination: the destination failed |
@@ -850,6 +905,39 @@ Options:
 | 8 | memory: the budget had no room for what the run holds |
 | 64 | usage: the command line is wrong |
 | 70 | internal: a defect in rdlt |
-| 74 | I/O: a file, binary or stream could not be read or written |
+| 74 | I/O: a file, a binary named on the command line, or a stream could not be read or written |
 | 130 | SIGINT: interrupted; the report says whether the stop was clean |
 | 143 | SIGTERM: terminated; the report says whether the stop was clean |
+| 129 | SIGHUP: hung up on, a signal it was not started ignoring |
+| 131 | SIGQUIT: asked to quit, a signal it was not started ignoring |
+
+## JSON output
+
+Under `--output json`, and under `--output auto` off a terminal, standard output holds JSON and
+standard error holds notes.
+
+- A verb that succeeds prints one JSON value, its result: `check`'s report, `discover`'s
+  catalog, `schema`'s schema, `connectors` as `{"local", "sandboxed", "remote"}`, `init` and
+  `connector new` as `{"wrote": <path>}`, `state reset` as `{"streams", "dropped", "epoch"}`,
+  `certify` as `{"verdict", "passed", "reports"}`, `verdict` one of `passed`, `failed`,
+  `incomplete`.
+- `run` prints `{"report": <report>, "error": <failure or null>}`. With `--events -` it prints
+  the events as NDJSON instead, one object a line, and then
+  `{"outcome": {"report": <report>, "error": <failure or null>}}`.
+- A failure is `{"error": <failure>}`, whichever verb it was. A failure of a pipeline is an
+  error report: `{"kind", "origin", "stream", "code", "connector_code", "message",
+  "causes", "retryable"}`, `kind` one of `config`, `schema`, `source`, `destination`,
+  `transform`, `fenced`, `memory`, `internal`, `cancelled`. A failure of the command line's own
+  is `{"kind", "message"}`, `kind` one of `usage`, `io`, `signal`; the last for a
+  verb a signal stopped before it had a result to print.
+- A usage error under an explicit `--output json` has that second form on standard output; under
+  `auto` off a terminal, and in plain text, it is the usual message on standard error.
+- A failure to write events or a report after the run ended is the run's `error` where the run
+  has none of its own, as well as a note on standard error; the exit is 74 then.
+
+With a collector named by `OTEL_EXPORTER_OTLP_ENDPOINT` or its per-signal variables, the process
+waits about ten seconds at most at its end for what it holds to be exported, on top of its own
+work; a signal does not cut that short.
+
+A signal the process was started ignoring, as `nohup` starts it with hangups, stays ignored on
+Linux. macOS has no way to see that without `unsafe`, so there it is heard as usual.

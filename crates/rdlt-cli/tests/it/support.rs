@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::Duration;
 
+use rdlt_testkit::tls::Pki;
+use tokio::process::Child;
+
 /// The example binary `name`, which the test build builds.
 pub(crate) fn example(name: &str) -> PathBuf {
     let tests = std::env::current_exe().expect("the test binary has a path");
@@ -15,8 +18,14 @@ pub(crate) fn example(name: &str) -> PathBuf {
         .expect("the test build builds the examples")
 }
 
+/// The reference connectors' binary, listening over mutual TLS with a CA made for it; its
+/// process, and its endpoint.
+pub(crate) async fn listening(pki: &Pki) -> (Child, String) {
+    rdlt_testkit::tls::listening(pki, &example("serve_reference")).await
+}
+
 /// Has `child`, spawned to lead a process group, killed with its group when this test ends.
-pub(crate) fn guarded(child: &tokio::process::Child) {
+pub(crate) fn guarded(child: &Child) {
     rdlt_testkit::process::guard(child.id().expect("the child runs"))
         .expect("the child is guarded");
 }

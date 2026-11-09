@@ -11,6 +11,7 @@ pub use rdlt::CommitPhases
 pub use rdlt::Commits
 pub use rdlt::ConnectorId
 pub use rdlt::ConnectorSpec
+pub use rdlt::Cores
 pub use rdlt::Counters
 pub use rdlt::DestinationConnector
 pub use rdlt::DestinationFactory

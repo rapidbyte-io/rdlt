@@ -108,7 +108,7 @@ falls short four ways:
   - `rdlt_host::stop_spawned` stops every group, kills what is still stopping when its
     patience ends, and waits to see it end. A host calls it before it exits, or holds
     `rdlt_host::StopsSpawned`, which does so when dropped, a panic's unwinding included.
-    `rdlt-certify` holds one from before it spawns anything: it stops what it spawned when
+    `rdlt certify` holds one from before it spawns anything: it stops what it spawned when
     its run completes, is cut at its timeout, panics on its main thread, or hears `SIGINT`,
     `SIGTERM`, `SIGHUP` or `SIGQUIT` (`rdlt_host::Interrupts`; exit 130, 143, 129, 131). A
     second signal while its connectors stop kills them at once.
