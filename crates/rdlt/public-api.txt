@@ -850,6 +850,7 @@ pub fn rdlt::Host::allow_files(self, impl core::iter::traits::collect::IntoItera
 pub fn rdlt::Host::allow_network(self) -> Self
 pub fn rdlt::Host::always_readable(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn rdlt::Host::build_wait(self, core::time::Duration) -> Self
+pub fn rdlt::Host::compute_of(self, &rdlt::Host) -> Self
 pub fn rdlt::Host::connectors(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn rdlt::Host::destination<C: rdlt_connector::destination::DestinationConnector>(self) -> Self
 pub fn rdlt::Host::destination_factory(self, alloc::sync::Arc<dyn rdlt_connector::destination::DestinationFactory>) -> Self
@@ -867,7 +868,7 @@ impl core::default::Default for rdlt::Host
 pub fn rdlt::Host::default() -> Self
 impl core::fmt::Debug for rdlt::Host
 pub fn rdlt::Host::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl !core::marker::Freeze for rdlt::Host
+impl core::marker::Freeze for rdlt::Host
 impl core::marker::Send for rdlt::Host
 impl core::marker::Sync for rdlt::Host
 impl core::marker::Unpin for rdlt::Host

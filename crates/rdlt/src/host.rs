@@ -56,7 +56,7 @@ pub struct Host {
     sources: Vec<Arc<dyn SourceFactory>>,
     destinations: Vec<Arc<dyn DestinationFactory>>,
     transforms: BTreeMap<String, Arc<dyn Transform>>,
-    env: OnceCell<Arc<SystemEnv>>,
+    env: Arc<OnceCell<Arc<SystemEnv>>>,
     build_wait: Duration,
 }
 
@@ -89,7 +89,7 @@ impl Default for Host {
             sources: Vec::new(),
             destinations: Vec::new(),
             transforms: BTreeMap::new(),
-            env: OnceCell::new(),
+            env: Arc::new(OnceCell::new()),
             build_wait: BUILD_WAIT,
         }
     }
@@ -144,6 +144,14 @@ impl Host {
     #[cfg(feature = "local")]
     pub fn always_readable(mut self, path: impl Into<PathBuf>) -> Self {
         self.local.always_readable.push(path.into());
+        self
+    }
+
+    /// Runs this host's pipelines on `other`'s compute pool, the first run of either starting
+    /// it: hosts that differ only in the code registered on them share one rather than each
+    /// start their own.
+    pub fn compute_of(mut self, other: &Host) -> Self {
+        self.env = Arc::clone(&other.env);
         self
     }
 
