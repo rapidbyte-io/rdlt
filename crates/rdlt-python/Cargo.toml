@@ -22,7 +22,7 @@ parking_lot.workspace = true
 pyo3.workspace = true
 pyo3-async-runtimes.workspace = true
 rdlt = { workspace = true, features = ["remote"] }
-rdlt-connector.workspace = true
+rdlt-connector = { workspace = true, features = ["certify", "serve"] }
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true

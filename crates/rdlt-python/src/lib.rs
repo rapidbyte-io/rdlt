@@ -23,6 +23,7 @@ mod pipeline;
 mod run;
 mod runtime;
 mod secrets;
+mod serve;
 mod source;
 #[cfg(test)]
 mod tests;
@@ -52,5 +53,6 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     module.add_class::<source::context::NativeCheckpoint>()?;
     module.add_class::<source::NativeSourceFactory>()?;
     module.add_class::<transform::NativeTransform>()?;
+    module.add_function(pyo3::wrap_pyfunction!(serve::serve, module)?)?;
     Ok(())
 }
