@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 
@@ -149,6 +152,31 @@ def test_a_tls_file_that_cannot_be_read_refuses_the_build(tmp_path: Path, connec
 def test_a_host_builds_every_pipeline_on_the_same_native_host() -> None:
     host = rdlt.Host()
     assert host._native() is host._native()  # pyright: ignore[reportPrivateUsage]
+
+
+class SlowPath:
+    """A path whose text takes a moment to give, as one read from a network mount does."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def __fspath__(self) -> str:
+        """Gives the path, the GIL released for a moment first."""
+        time.sleep(0.02)
+        return str(self._path)
+
+
+def test_concurrent_first_builds_of_a_host_get_one_handle(tmp_path: Path) -> None:
+    host = rdlt.Host(connectors=SlowPath(tmp_path), writable=[tmp_path])
+    barrier = threading.Barrier(8)
+
+    def first_build() -> object:
+        barrier.wait(30)
+        return host._native()  # pyright: ignore[reportPrivateUsage]
+
+    with ThreadPoolExecutor(8) as pool:
+        handles = [built.result(30) for built in [pool.submit(first_build) for _ in range(8)]]
+    assert all(handle is handles[0] for handle in handles)
 
 
 def test_a_host_takes_a_build_wait() -> None:
