@@ -3,6 +3,8 @@ from datetime import timedelta
 from os import PathLike
 from typing import Protocol, final
 
+import pyarrow as pa
+
 __all__ = [
     "Checkpoint",
     "Events",
@@ -11,6 +13,7 @@ __all__ = [
     "Run",
     "SourceFactory",
     "StreamContext",
+    "Transform",
     "__version__",
 ]
 
@@ -55,6 +58,8 @@ class _HostSettings(Protocol):
     def trust_binaries(self) -> bool: ...
     @property
     def _sources(self) -> Sequence[SourceFactory]: ...
+    @property
+    def _native_transforms(self) -> Sequence[tuple[str, Transform]]: ...
 
 @final
 class Host:
@@ -105,6 +110,18 @@ class SourceFactory:
     ) -> SourceFactory: ...
     @property
     def id(self) -> str: ...
+
+@final
+class Transform:
+    def __new__(
+        cls,
+        name: str,
+        function: Callable[[pa.RecordBatch], object],
+        filters: bool,
+        output: pa.Schema | None,
+    ) -> Transform: ...
+    @property
+    def name(self) -> str: ...
 
 @final
 class Events:

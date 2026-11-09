@@ -3981,7 +3981,9 @@ name = "rdlt-python"
 version = "0.0.0"
 dependencies = [
  "arrow-array",
+ "arrow-data",
  "arrow-pyarrow",
+ "arrow-schema",
  "bytes",
  "parking_lot",
  "proptest",

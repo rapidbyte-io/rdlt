@@ -26,6 +26,7 @@ mod secrets;
 mod source;
 #[cfg(test)]
 mod tests;
+mod transform;
 
 use pyo3::types::{PyModule, PyModuleMethods as _};
 use pyo3::{Bound, PyErr, pymodule};
@@ -47,5 +48,6 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     module.add_class::<source::context::NativeStreamContext>()?;
     module.add_class::<source::context::NativeCheckpoint>()?;
     module.add_class::<source::NativeSourceFactory>()?;
+    module.add_class::<transform::NativeTransform>()?;
     Ok(())
 }
