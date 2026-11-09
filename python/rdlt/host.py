@@ -9,10 +9,14 @@ import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TypeAlias, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 from rdlt import _native
+from rdlt._transform import Transform, named_once
 from rdlt._weak import weakly_reached
+
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 StrPath: TypeAlias = "str | os.PathLike[str]"
 """A path, as text or as a `pathlib.Path`."""
@@ -110,8 +114,8 @@ class Host:
     _store: _SecretStore | None = field(default=None, init=False, repr=False, compare=False)
     _sources: tuple[_native.SourceFactory, ...] = field(default=(), repr=False)
     """Python functions and classes this host runs as sources, by the ids their factories name."""
-    _native_transforms: tuple[tuple[str, _native.Transform], ...] = field(default=(), repr=False)
-    """Python transforms a document may name by its `{"code": name}`."""
+    _transforms: tuple[tuple[str, Transform], ...] = field(default=(), repr=False)
+    """Python transforms a document may name by its `{"code": name}`, held in the open."""
     _held: tuple[object, ...] = field(default=(), repr=False)
     """What the native side reaches of Python's only weakly: this host holds it in the open."""
     _origin: Host | None = field(default=None, init=False, repr=False, compare=False)
@@ -126,8 +130,23 @@ class Host:
             object.__setattr__(self, "_store", _SecretStore(self.secret_store))
 
     @property
+    def _native_transforms(self) -> tuple[tuple[str, _native.Transform], ...]:
+        return tuple((name, made._to_native()) for name, made in self._transforms)
+
+    @property
     def _weak_secret_store(self) -> Callable[[str], str | None] | None:
         return None if self._store is None else self._store.weakly()
+
+    def transform(
+        self, name: str, function: Transform | Callable[[pa.RecordBatch], object]
+    ) -> Host:
+        """A host that also lets a document name `function` as its code transform `name`."""
+        made = (
+            function
+            if isinstance(function, Transform)
+            else Transform(name, function, filters=False, output=None)
+        )
+        return self._replaced(_transforms=named_once(self._transforms, name, made))
 
     def _replaced(self, **changes: object) -> Host:
         """This host with `changes`, built on this host's compute pool."""

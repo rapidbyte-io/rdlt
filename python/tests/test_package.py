@@ -2,6 +2,8 @@
 
 import importlib.metadata
 import importlib.resources
+import subprocess
+import sys
 
 import rdlt
 
@@ -12,3 +14,9 @@ def test_the_package_and_its_extension_agree_on_the_version() -> None:
 
 def test_the_package_is_typed() -> None:
     assert importlib.resources.files("rdlt").joinpath("py.typed").is_file()
+
+
+def test_importing_the_package_does_not_load_pyarrow() -> None:
+    script = "import sys, rdlt; sys.exit(1 if 'pyarrow' in sys.modules else 0)"
+    done = subprocess.run([sys.executable, "-c", script], check=False, timeout=60)
+    assert done.returncode == 0

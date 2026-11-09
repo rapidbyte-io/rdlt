@@ -25,6 +25,7 @@ from rdlt._pipeline import (
     stream,
 )
 from rdlt._resource import Resource, resource
+from rdlt._transform import Transform, filter, transform  # noqa: A004
 from rdlt.context import StreamContext, checkpoint
 from rdlt.cursor import Cursor
 from rdlt.errors import (
@@ -99,15 +100,18 @@ __all__ = [
     "StreamName",
     "StreamReport",
     "Tls",
+    "Transform",
     "TransformError",
     "WriteMode",
     "__version__",
     "append",
     "checkpoint",
+    "filter",
     "history",
     "merge",
     "pipeline",
     "replace",
     "resource",
     "stream",
+    "transform",
 ]
