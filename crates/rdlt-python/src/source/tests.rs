@@ -298,7 +298,7 @@ streams = [stream]";
         let report: serde_json::Value =
             serde_json::from_str(&error.expect("the run failed")).unwrap();
         assert_eq!(report["kind"], "source");
-        assert_eq!(report["connector_code"], "ValueError");
+        assert_eq!(report["connector_code"], "value_error");
         let causes = report["causes"].as_array().expect("causes");
         assert!(
             causes.iter().any(|cause| cause

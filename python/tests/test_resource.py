@@ -151,7 +151,7 @@ def test_an_exception_fails_the_run_with_its_type_message_and_traceback(
     with pytest.raises(rdlt.SourceError) as raised:
         built.build(host(tmp_path, connectors)).run()
     report = raised.value.report()
-    assert report.connector_code == "ValueError"
+    assert report.connector_code == "value_error"
     assert any("page 2 is malformed" in cause for cause in report.causes)
     assert any(cause.startswith("Traceback (most recent call last)") for cause in report.causes)
     assert raised.value.outcome is not None
@@ -598,7 +598,7 @@ def test_a_string_is_not_a_list_of_partitions(tmp_path: Path, connectors: Path) 
     built = rdlt.pipeline("split", source=split, destination=into_sqlite(tmp_path))
     with pytest.raises(rdlt.SourceError) as raised:
         built.build(host(tmp_path, connectors)).run()
-    assert raised.value.report().connector_code == "TypeError"
+    assert raised.value.report().connector_code == "type_error"
 
 
 def test_a_partitioned_resource_that_takes_no_ctx_is_refused() -> None:

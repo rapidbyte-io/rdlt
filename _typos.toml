@@ -6,6 +6,8 @@ extend-exclude = ["target/", "proptest-regressions/", "crates/rdlt/public-api.tx
 [default.extend-identifiers]
 # The open flag O_WRONLY, as rustix names it.
 WRONLY = "WRONLY"
+# pydantic-core's serializer schema, as it names it.
+plain_serializer_function_ser_schema = "plain_serializer_function_ser_schema"
 
 [default.extend-words]
 # Keys and words misspelled on purpose, in the tests of a document's errors.

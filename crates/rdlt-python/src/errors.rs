@@ -4,9 +4,13 @@
 #[cfg(test)]
 mod tests;
 
+use std::time::Duration;
+
 use pyo3::exceptions::{PyConnectionError, PyTimeoutError};
 use pyo3::types::{PyAnyMethods as _, PyTypeMethods as _};
-use pyo3::{PyErr, Python};
+use pyo3::{Bound, PyAny, PyErr, Python};
+use rdlt_connector::limits::MAX_ERROR_CODE_BYTES;
+use rdlt_connector::wire::HOST_CODES;
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 
 /// The `rdlt.errors` exception for `error`.
@@ -77,9 +81,18 @@ pub(crate) struct Failure {
     /// The traceback as `traceback.format_exception` writes it, its last line the type and
     /// message.
     pub(crate) traceback: String,
-    /// The kind of connector error it is: `Transient` for a `TimeoutError` or a
-    /// `ConnectionError`, `Internal` for any other.
+    /// The kind of connector error it is: what a failure class of `rdlt.connector` declares,
+    /// else `Transient` for a `TimeoutError` or a `ConnectionError`, `Internal` for any other.
     pub(crate) kind: ConnectorErrorKind,
+    /// The machine code the host keeps beside it, as the protocol admits one: a failure class's
+    /// own, else the exception's type, `tickets.ApiError` as `tickets.api_error`; a failure
+    /// class's name alone where that is none of the host's own codes.
+    code: String,
+    /// How long before a retry, where a remote system said.
+    retry_after: Option<Duration>,
+    /// Whether it is a failure class of `rdlt.connector`: said as its author wrote it, with no
+    /// traceback.
+    declared: bool,
 }
 
 impl Failure {
@@ -100,22 +113,122 @@ impl Failure {
         } else {
             ConnectorErrorKind::Internal
         };
-        Self {
-            type_name: type_name(py, error),
+        let type_name = type_name(py, error);
+        let mut failure = Self {
+            code: coded(&type_name),
+            type_name,
             message,
             traceback,
             kind,
+            retry_after: None,
+            declared: false,
+        };
+        if let Some((kind, code, after)) = declared(py, value) {
+            failure.kind = kind;
+            let class = coded(failure.type_name.rsplit('.').next().unwrap_or_default());
+            failure.code = match code {
+                Some(code) => coded(&code),
+                // A class named as one of the host's codes keeps a code of its own, served too.
+                None if HOST_CODES.contains(&class.as_str()) => coded(&failure.type_name),
+                None => class,
+            };
+            failure.retry_after = after;
+            failure.declared = true;
         }
+        failure
     }
 
-    /// The connector error the failure is, of its kind, its code the exception's type and its
-    /// traceback its cause; the host shows and bounds each as connector text.
+    /// The connector error the failure is, of its kind and code; the host shows and bounds each
+    /// as connector text.
+    ///
+    /// A failure class of `rdlt.connector` says its message as written, with no cause: its
+    /// author chose what it says, and a refused configuration must carry nothing of its input.
+    /// Any other exception's message says its type, with its traceback its cause.
     pub(crate) fn connector_error(&self) -> ConnectorError {
+        if self.declared {
+            let error = if self.kind == ConnectorErrorKind::RateLimited {
+                ConnectorError::rate_limited(self.message.clone(), self.retry_after)
+            } else {
+                ConnectorError::new(self.kind, self.message.clone())
+            };
+            return error.with_code(self.code.clone());
+        }
         let message = format!("{}: {}", self.type_name, self.message);
         ConnectorError::new(self.kind, message)
-            .with_code(self.type_name.clone())
+            .with_code(self.code.clone())
             .with_source(Traceback(self.traceback.clone()))
     }
+}
+
+/// `name`, a Python type's name, as a code the protocol admits, so a connector's code is the same
+/// in process and served: snake case, `tickets.ApiError` as `tickets.api_error`, any character a
+/// code cannot hold as `_`, within [`MAX_ERROR_CODE_BYTES`].
+fn coded(name: &str) -> String {
+    let mut code = String::with_capacity(name.len() + 4);
+    let mut previous: Option<char> = None;
+    let mut chars = name.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_ascii_uppercase() {
+            let next = chars.peek().copied();
+            let after_word = previous
+                .is_some_and(|before| before.is_ascii_lowercase() || before.is_ascii_digit());
+            // The last capital of a run that begins a word: `HTTPError` is `http_error`.
+            let begins_word = previous.is_some_and(|before| before.is_ascii_uppercase())
+                && next.is_some_and(|after| after.is_ascii_lowercase());
+            if after_word || begins_word {
+                code.push('_');
+            }
+            code.push(c.to_ascii_lowercase());
+        } else if c.is_ascii_lowercase() || c.is_ascii_digit() || "_.-".contains(c) {
+            code.push(c);
+        } else {
+            code.push('_');
+        }
+        previous = Some(c);
+    }
+    code.truncate(MAX_ERROR_CODE_BYTES);
+    code
+}
+
+/// What a failure class of `rdlt.connector` declares of `value`: its kind, its code and its retry
+/// hint; none for any other exception.
+fn declared(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+) -> Option<(ConnectorErrorKind, Option<String>, Option<Duration>)> {
+    let class = py
+        .import("rdlt.connector._failures")
+        .and_then(|failures| failures.getattr("ConnectorFailure"))
+        .ok()?;
+    if !value.is_instance(&class).unwrap_or(false) {
+        return None;
+    }
+    let kind = match value
+        .getattr("kind")
+        .and_then(|kind| kind.extract::<String>())
+        .ok()?
+        .as_str()
+    {
+        "transient" => ConnectorErrorKind::Transient,
+        "rate_limited" => ConnectorErrorKind::RateLimited,
+        "config" => ConnectorErrorKind::Config,
+        "auth" => ConnectorErrorKind::Auth,
+        "data" => ConnectorErrorKind::Data,
+        "unsupported" => ConnectorErrorKind::Unsupported,
+        _ => ConnectorErrorKind::Internal,
+    };
+    let code = value
+        .getattr("code")
+        .and_then(|code| code.extract::<Option<String>>())
+        .ok()
+        .flatten();
+    let after = value
+        .getattr("after")
+        .and_then(|after| after.extract::<Option<f64>>())
+        .ok()
+        .flatten()
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok());
+    Some((kind, code, after))
 }
 
 /// A Python traceback, as the cause of the error it explains.
