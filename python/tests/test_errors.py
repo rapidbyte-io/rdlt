@@ -38,7 +38,7 @@ def test_an_error_survives_a_pickle() -> None:
     restored = pickle.loads(pickle.dumps(rdlt.SourceError(report)))  # noqa: S301
     assert isinstance(restored, rdlt.SourceError)
     assert restored.report() == report
-    assert str(restored) == "stream orders failed"
+    assert str(restored) == "stream orders failed: gone"
 
 
 def test_no_class_shadows_a_built_in() -> None:

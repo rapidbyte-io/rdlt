@@ -648,3 +648,22 @@ def test_a_built_pipeline_and_its_run_keep_its_resource(tmp_path: Path, connecto
     gc.collect()
     assert kept() is not None, "a run in progress reads with its resource"
     run.wait()
+
+
+def test_a_source_s_failure_says_its_type_and_message_once(
+    tmp_path: Path, connectors: Path
+) -> None:
+    @rdlt.resource(name="failing")
+    def failing() -> Iterator[object]:
+        yield {"n": 1}
+        raise ConnectionRefusedError("the api is down")
+
+    builder = rdlt.pipeline(
+        "failing",
+        source=failing,
+        destination=into_sqlite(tmp_path),
+        retry=rdlt.Retry(max_attempts=1),
+    )
+    with pytest.raises(rdlt.SourceError) as raised:
+        builder.build(host(tmp_path, connectors)).run()
+    assert str(raised.value).count("ConnectionRefusedError: the api is down") == 1
