@@ -73,7 +73,9 @@ serde = { version = "1.0.229", features = [
   "derive",
   "rc",
 ] } # serialization of state, specs and configuration
-serde_json = "1.0.151" # JSON rows, cursors, state values and configuration
+serde_json = { version = "1.0.151", features = [
+  "float_roundtrip",
+] } # JSON rows, cursors, state values and configuration, floats read back exactly
 serde_path_to_error = "0.1.20" # field paths in configuration errors
 serde-saphyr = { version = "2.1.1", default-features = false, features = [
   "deserialize",
