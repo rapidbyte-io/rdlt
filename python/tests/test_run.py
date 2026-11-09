@@ -6,7 +6,9 @@ import _thread
 import asyncio
 import contextlib
 import sqlite3
+import subprocess
 import sys
+import textwrap
 import threading
 import time
 from collections.abc import Generator
@@ -347,3 +349,41 @@ def test_a_cancelled_await_leaves_the_run_cancellable_by_its_handle(
                 await asyncio.wait_for(run.wait_async(), timeout=30)
 
     asyncio.run(main())
+
+
+def test_a_forked_child_may_not_stop_or_cancel_its_parent_s_run(
+    tmp_path: Path, connectors: Path
+) -> None:
+    script = textwrap.dedent(
+        f"""
+        import os, pathlib, sys, warnings
+        warnings.simplefilter("ignore")
+        import rdlt
+        sys.path.insert(0, {str(Path(__file__).parents[1])!r})
+        from tests.documents import generated
+        host = rdlt.Host(
+            connectors={str(connectors)!r},
+            writable=[{str(tmp_path)!r}],
+            trust_binaries=True,
+        )
+        database = pathlib.Path({str(tmp_path / "out.db")!r})
+        document = generated("forked", 1_000_000_000, database)
+        run = rdlt.Pipeline.from_document(document).build(host).start()
+        child = os.fork()
+        if child == 0:
+            for control in (run.stop, run.cancel):
+                try:
+                    control()
+                except rdlt.InternalError:
+                    continue
+                os._exit(3)
+            os._exit(0)
+        _, status = os.waitpid(child, 0)
+        run.cancel()
+        sys.exit(os.waitstatus_to_exitcode(status))
+        """
+    )
+    finished = subprocess.run(
+        [sys.executable, "-c", script], timeout=60, check=False, capture_output=True
+    )
+    assert finished.returncode == 0, finished.stderr
