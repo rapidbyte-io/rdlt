@@ -2,6 +2,7 @@
 
 mod init;
 mod inspect;
+mod run;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -13,7 +14,7 @@ use rdlt::{Interrupts, StopsSpawned};
 use tokio::runtime::{Builder, Runtime};
 
 use crate::Exit;
-use crate::args::{Cli, StateAction, Verb};
+use crate::args::{Cli, HostArgs, StateAction, Verb};
 use crate::output::{self, Failure, Mode};
 use crate::stopping::{self, STOPPING};
 
@@ -22,7 +23,11 @@ pub(crate) fn dispatch(cli: Cli) -> Exit {
     let mode = Mode::of(cli.output);
     let runtime = match Builder::new_multi_thread().enable_all().build() {
         Ok(runtime) => runtime,
-        Err(error) => return ended(mode, &Failure::io("starting the runtime", &error)),
+        Err(error) => {
+            let failure = Failure::io("starting the runtime", &error);
+            output::failed_at_start(mode, &failure);
+            return failure.exit;
+        }
     };
     // The export needs a runtime, and flushes on it: it installs once one runs, and ends first.
     let telemetry = {
@@ -60,12 +65,17 @@ fn ran(runtime: &Runtime, cli: Cli, mode: Mode) -> Exit {
     };
     let mut interrupts = match listening {
         Ok(interrupts) => interrupts,
-        Err(error) => return ended(mode, &Failure::io("listening for signals", &error)),
+        Err(error) => {
+            return runtime.block_on(ended(mode, Failure::io("listening for signals", &error)));
+        }
     };
     let stops = StopsSpawned::within(STOPPING);
-    let exit = runtime
-        .block_on(verb(cli, mode, &mut interrupts))
-        .unwrap_or_else(|failure| ended(mode, &failure));
+    let exit = runtime.block_on(async {
+        match verb(cli, mode, &mut interrupts).await {
+            Ok(exit) => exit,
+            Err(failure) => ended(mode, failure).await,
+        }
+    });
     let heard = matches!(exit, Exit::Signalled(_)).then_some(i32::from(exit.code()));
     let (stopped, _) = stopping::stopped(runtime, stops, &mut interrupts, heard);
     if let Err(lingering) = stopped {
@@ -74,21 +84,33 @@ fn ran(runtime: &Runtime, cli: Cli, mode: Mode) -> Exit {
     exit
 }
 
-fn ended(mode: Mode, failure: &Failure) -> Exit {
-    output::failed(mode, failure);
+/// Prints `failure`, and answers how the verb ended.
+async fn ended(mode: Mode, failure: Failure) -> Exit {
+    output::failed(mode, &failure).await;
     failure.exit
 }
 
 async fn verb(cli: Cli, mode: Mode, interrupts: &mut Interrupts) -> Result<Exit, Failure> {
+    let Cli { verb, host, .. } = cli;
+    if let Verb::Run {
+        document,
+        events,
+        report,
+    } = verb
+    {
+        let events = events.as_deref();
+        let report = report.as_deref();
+        return run::run(&document, events, report, &host, mode, interrupts).await;
+    }
     tokio::select! {
         biased;
-        status = interrupts.heard() => Ok(Exit::Signalled(status)),
-        exit = other(cli, mode) => exit,
+        // A signal wins, so a verb still placing connectors ends at once.
+        status = interrupts.heard() => Err(Failure::signalled(status)),
+        exit = other(verb, host, mode) => exit,
     }
 }
 
-async fn other(cli: Cli, mode: Mode) -> Result<Exit, Failure> {
-    let Cli { verb, host, .. } = cli;
+async fn other(verb: Verb, host: HostArgs, mode: Mode) -> Result<Exit, Failure> {
     match verb {
         Verb::Init { path } => init::init(&path, mode).await,
         Verb::Check { document } => inspect::check(&document, &host, mode).await,

@@ -31,11 +31,13 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+nix = { workspace = true, features = ["signal"] }
 rdlt-connector = { workspace = true, features = ["certify", "serve", "testing"] }
 rdlt-connector-reference = { workspace = true, features = ["certify", "test-connectors"] }
 rdlt-testkit.workspace = true
+rusqlite.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["process", "test-util"] }
+tokio = { workspace = true, features = ["net", "process", "test-util"] }
 
 [lints]
 workspace = true
@@ -48,3 +50,11 @@ path = "../rdlt-certify/examples/serve_reference.rs"
 [[example]]
 name = "serve_source"
 path = "../rdlt-certify/examples/serve_source.rs"
+
+[[example]]
+name = "serve_hang"
+path = "../rdlt-certify/examples/serve_hang.rs"
+
+[[example]]
+name = "serve_log"
+path = "../rdlt-engine/examples/serve_log.rs"
