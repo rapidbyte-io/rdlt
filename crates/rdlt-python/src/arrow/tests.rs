@@ -1,7 +1,7 @@
 use pyo3::types::PyAnyMethods as _;
 use pyo3::{Bound, PyAny, Python};
 
-use super::{Produced, produced};
+use super::{NativeBatch, Produced, produced};
 use crate::embedded;
 
 fn evaluated<'py>(py: Python<'py>, code: &str) -> Bound<'py, PyAny> {
@@ -35,6 +35,27 @@ fn a_pyarrow_batch_crosses_into_rust_without_a_copy() {
         assert_eq!(rust.num_rows(), 1000);
         assert_eq!(
             rust.column(0).to_data().buffers()[0].as_ptr().addr(),
+            address
+        );
+    });
+}
+
+#[test]
+fn a_rust_batch_crosses_into_pyarrow_without_a_copy() {
+    embedded::with(|py| {
+        let rust = arrow_array::RecordBatch::try_from_iter([(
+            "n",
+            std::sync::Arc::new(arrow_array::Int64Array::from_iter_values(0..1000))
+                as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        let address = rust.column(0).to_data().buffers()[0].as_ptr().addr();
+        let lent = Bound::new(py, NativeBatch::new(rust)).unwrap();
+        let batch = evaluated(py, "__import__('pyarrow').record_batch")
+            .call1((lent,))
+            .unwrap();
+        assert_eq!(
+            values_address(&batch.call_method1("column", (0,)).unwrap()),
             address
         );
     });

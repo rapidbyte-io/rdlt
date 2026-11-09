@@ -110,6 +110,8 @@ class Host:
     _store: _SecretStore | None = field(default=None, init=False, repr=False, compare=False)
     _sources: tuple[_native.SourceFactory, ...] = field(default=(), repr=False)
     """Python functions and classes this host runs as sources, by the ids their factories name."""
+    _native_transforms: tuple[tuple[str, _native.Transform], ...] = field(default=(), repr=False)
+    """Python transforms a document may name by its `{"code": name}`."""
     _held: tuple[object, ...] = field(default=(), repr=False)
     """What the native side reaches of Python's only weakly: this host holds it in the open."""
     _origin: Host | None = field(default=None, init=False, repr=False, compare=False)

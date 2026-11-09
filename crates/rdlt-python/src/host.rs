@@ -12,6 +12,7 @@ use pyo3::{FromPyObject, Py, PyAny, PyErr, Python, pyclass, pymethods};
 
 use crate::secrets::PythonSecrets;
 use crate::source::NativeSourceFactory;
+use crate::transform::NativeTransform;
 use crate::{errors, runtime};
 
 /// `rdlt.Host`'s attributes, each one of the facade's words for what an operator allows.
@@ -31,6 +32,8 @@ pub(crate) struct Settings {
     trust_binaries: bool,
     #[pyo3(attribute("_sources"))]
     sources: Vec<Py<NativeSourceFactory>>,
+    #[pyo3(attribute("_native_transforms"))]
+    transforms: Vec<(String, Py<NativeTransform>)>,
 }
 
 /// `rdlt.Tls`'s files: the host's certificate and key, and the CA its connectors' certificates
@@ -113,6 +116,9 @@ impl NativeHost {
         }
         for source in &settings.sources {
             host = host.source_factory(Arc::from(source.get().factory()));
+        }
+        for (name, transform) in &settings.transforms {
+            host = host.transform(name.clone(), transform.get().transform());
         }
         if let Some(origin) = &self.origin {
             host = host.compute_of(&*origin.get().shared(py)?);

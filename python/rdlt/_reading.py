@@ -11,7 +11,10 @@ import _thread
 import asyncio
 import threading
 from collections.abc import AsyncIterable, Callable, Iterable
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 # An async read waits for room in the engine with its event loop free: for this many turns of
 # the loop, since room usually comes at once, then with this many seconds between asks.
@@ -177,6 +180,25 @@ def _made(function: Callable[..., object], arguments: tuple[object, ...], answer
         answer.raised(error)
     else:
         answer.returned(value)
+
+
+def transformed(function: Callable[[pa.RecordBatch], object], batch: object) -> object:
+    """`function` over the Rust batch `batch`, its answer exported for Rust to read.
+
+    pyarrow releases the GIL inside both, and a thread whose interpreter exits as it takes the
+    GIL back must have only Python beneath it.
+    """
+    import pyarrow as pa  # noqa: PLC0415
+
+    answered = function(pa.record_batch(cast("Any", batch)))
+    export = getattr(answered, "__arrow_c_array__", None)
+    if export is None:
+        message = (
+            f"a transform answered {type(answered).__name__}: it must answer one batch, "
+            "anything with __arrow_c_array__"
+        )
+        raise TypeError(message)
+    return list(export())
 
 
 def connected(

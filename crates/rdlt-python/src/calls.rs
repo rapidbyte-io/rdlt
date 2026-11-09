@@ -4,18 +4,21 @@
 //! thread that runs it, and on `CPython` 3.11, 3.12 and early 3.13 that unwind through Rust frames
 //! aborts the process (ADR 0055). The caller holds no GIL and touches nothing of Python's: it
 //! hands the call over as closures, and its arguments are built and its answer read on the
-//! daemon thread. A call has a daemon thread of its own, since a runtime's worker runs many tasks
-//! and one that never returns must not hold up the rest.
+//! daemon thread. An async call has a daemon thread of its own, since a runtime's worker runs many
+//! tasks and one that never returns must not hold up the rest; a thread that waits for each
+//! answer in turn keeps one for its calls.
 
 #[cfg(test)]
 mod tests;
 
+use std::cell::RefCell;
 use std::sync::mpsc;
 
 use parking_lot::Mutex;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods as _, PyModule, PyTuple};
 use pyo3::{Bound, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
+use tokio::runtime::{Handle, RuntimeFlavor};
 use tokio::sync::oneshot;
 use tokio::task::JoinError;
 
@@ -100,6 +103,11 @@ pub(crate) fn reading(py: Python<'_>) -> Result<Bound<'_, PyModule>, PyErr> {
     Ok(reading.bind(py).clone())
 }
 
+thread_local! {
+    /// This thread's daemon thread, started at its first call and kept for the next.
+    static SERVED: RefCell<Option<mpsc::Sender<Call>>> = const { RefCell::new(None) };
+}
+
 /// Starts a daemon thread that makes each call its sender is handed, and ends once that sender is
 /// dropped.
 fn serving(py: Python<'_>) -> Result<mpsc::Sender<Call>, PyErr> {
@@ -121,6 +129,74 @@ pub(crate) enum Unanswered {
     /// Starting the call panicked.
     #[error("the call was not started")]
     Joined(#[from] JoinError),
+}
+
+/// Hands the call `prepare` builds to this thread's daemon thread; `give` receives what it
+/// returned or raised on that thread, and is dropped unanswered once its thread ended without
+/// answering.
+///
+/// The caller holds no GIL; the first call of a thread takes it, to start that thread's daemon.
+///
+/// # Errors
+///
+/// [`Unanswered::Started`] where the daemon thread did not start.
+pub(crate) fn start<P, G>(prepare: P, give: G) -> Result<(), Unanswered>
+where
+    P: for<'py> FnOnce(Python<'py>) -> Result<(Bound<'py, PyAny>, Bound<'py, PyTuple>), PyErr>
+        + Send
+        + 'static,
+    G: for<'py> FnOnce(Python<'py>, Answered<'py>) + Send + 'static,
+{
+    let call = Call {
+        prepare: Box::new(prepare),
+        give: Box::new(give),
+    };
+    SERVED.with_borrow_mut(|served| {
+        let sender = match served {
+            Some(sender) => sender,
+            None => served.insert(Python::attach(serving).map_err(Unanswered::Started)?),
+        };
+        if sender.send(call).is_err() {
+            // Its daemon thread ended: the next call starts another.
+            *served = None;
+            return Err(Unanswered::Thread);
+        }
+        Ok(())
+    })
+}
+
+/// Calls the function `prepare` names, with the arguments it builds, on this thread's daemon
+/// thread, and answers `finish` of what it returned or raised; the caller waits here, the GIL
+/// released, for a thread with no runtime to await on, and where this thread is a runtime's
+/// worker, that worker's other tasks move to another thread meanwhile.
+///
+/// # Errors
+///
+/// [`Unanswered`] where the call's thread ended without answering or did not start.
+pub(crate) fn blocking<T, P, F>(prepare: P, finish: F) -> Result<T, Unanswered>
+where
+    T: Send + 'static,
+    P: for<'py> FnOnce(Python<'py>) -> Result<(Bound<'py, PyAny>, Bound<'py, PyTuple>), PyErr>
+        + Send
+        + 'static,
+    F: for<'py> FnOnce(Python<'py>, Answered<'py>) -> T + Send + 'static,
+{
+    let (sender, received) = mpsc::channel();
+    away_from_the_runtime(move || {
+        start(prepare, move |py, answered| {
+            sender.send(finish(py, answered)).ok();
+        })?;
+        received.recv().map_err(|_| Unanswered::Thread)
+    })
+}
+
+/// Runs `wait`, leaving the runtime its worker where this thread is one of a multi-thread
+/// runtime's: a user's function takes as long as it takes.
+fn away_from_the_runtime<R>(wait: impl FnOnce() -> R) -> R {
+    match Handle::try_current().map(|handle| handle.runtime_flavor()) {
+        Ok(RuntimeFlavor::MultiThread) => tokio::task::block_in_place(wait),
+        _ => wait(),
+    }
 }
 
 /// Calls the function `prepare` names, with the arguments it builds, on a daemon thread of its
