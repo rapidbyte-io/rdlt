@@ -17,23 +17,43 @@ script that started a run and returned.
 - **User Python has only Python beneath it.** Every function of a user's that Rust calls, a
   generator's `next`, a source's `check` and `partitions`, a secret store, a transform, runs on a
   daemon thread Python started, running `rdlt/_reading.py`, never on a thread with Rust frames
-  beneath the call. A read's thread is one of these; each other call starts one through
-  `calls::start`, which answers what the function returned or raised on a oneshot channel. Rust
-  starts the call and reads its answer. `rdlt._reading` is imported when the package loads, so
+  beneath the call. A read's thread is one of these. An async call, made from a runtime's
+  worker, runs on a daemon thread of its own, since that worker runs many tasks and one that
+  never returns must not hold up the rest; a thread that waits for each answer in turn, as a
+  compute thread does, keeps one daemon thread for its calls. The caller holds no GIL and touches
+  nothing of Python's: it hands the call over as closures, the daemon thread builds its arguments
+  and reads its answer, and a transform's batch and answer are imported and exported in Python,
+  since pyarrow releases the GIL in both. `rdlt._reading` is imported when the package loads, so
   no thread imports under Rust.
 - **Two cases run under Rust, and are accepted.** Methods of what a generator yields run inside
   `push` with its Rust frames beneath them: a value's `isoformat` and a UUID's `__str__`, a
   `list` subclass's `__iter__`, `__getattr__` through `hasattr`, a producer's
   `__arrow_c_array__` and `__arrow_c_stream__`, and a Python-backed Arrow reader's next batch.
-  So do a raised exception's `__str__` and traceback, rendered in `failed` and in `called`'s
-  finish. A slow one of these at the instant of exit can abort the process on CPython 3.11, 3.12
+  So do a raised exception's `__str__` and traceback, rendered where a failure is turned into an
+  error. A slow one of these at the instant of exit can abort the process on CPython 3.11, 3.12
   and 3.13.0 to 3.13.7, as above. Moving them means encoding every row, or rendering every
   failure, in Python; a process exiting commits nothing further, so no committed data is at risk.
+- **What the native side holds of Python, it reaches weakly.** What the native side holds is
+  opaque to Python's collector, so a strong reference from it to a resource, a transform or a
+  secret store that holds the pipeline it serves could never be collected, and the pipeline's
+  connector processes would live on with it. The native side holds a function that reaches the
+  object through a weak reference, and what may still need the object holds it in the open: the
+  host and the builder, the pipeline, its runs and their events, and a detached run until it
+  ends.
 - **A thread that goes away is told, not inferred.** A read's end is said by `finished` or
   `failed`, and a call's by its answer; a read whose channel closes without a word fails, so a
   thread that died never reads as a finished partition.
 
 ## Consequences
 
-Calling Python from Rust costs a thread start. Exit is the price of an interpreter's own
-daemon-thread rules, the same as for any daemon thread, whatever the interpreter's version.
+An async call costs a thread start, and a compute thread's call a hand-off to the daemon thread
+it keeps. pyarrow's own C++ takes no such care as this ADR does: a daemon thread building arrays
+from Python sequences when the interpreter exits can abort on CPython 3.11 and 3.12 with or
+without `rdlt` in the process, so a transform doing so at the instant of exit can too. Exit is
+the price of an interpreter's own daemon-thread rules, the same as for any daemon thread,
+whatever the interpreter's version.
+
+A transform that never returns keeps its compute thread until the process ends, since Python
+code cannot be interrupted and a transform has no cancellation to pass in. A cancelled run ends
+without it, but once stuck calls reach a host's compute threads, that host's other runs stop. A
+user's function that can block, on a network or a lock, needs a timeout of its own.
