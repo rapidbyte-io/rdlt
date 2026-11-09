@@ -199,7 +199,15 @@ anyhow = "1.0.104" # error reporting at xtask's command-line entry point
 cargo_metadata = "0.23.1" # xtask reads the workspace graph for the dependency rule
 clap = { version = "4.6.7", features = ["derive"] } # command-line parsing for xtask and the CLI
 clap_complete = "4.6.11" # the CLI's shell completions
+console = { version = "0.16.6", default-features = false, features = [
+  "ansi-parsing",
+  "std",
+  "unicode-width",
+] } # the width and colour of what the CLI shows at a terminal
 fail = { version = "0.5.1", default-features = false } # crash points for the failpoint sweep
+indicatif = { version = "0.18.6", default-features = false, features = [
+  "unicode-width",
+] } # the spinners and live region of the CLI at a terminal
 flatbuffers = "25.2.10" # the verifier's depth for IPC headers and Arrow file footers, and hand-built messages in their tests
 datafusion = { version = "55.2.0", default-features = false, features = [
   "datetime_expressions",
@@ -219,6 +227,7 @@ peak_alloc = "0.3.0" # the heap's peak size, for the engine's memory bound
 stats_alloc = "0.1.10" # counts of a benchmark's allocations and the bytes they request, which peak_alloc does not keep
 proptest = "1.11.0" # property tests
 rcgen = "0.14.10" # a certificate authority made at test time, for the protocol's TLS
+vt100 = "0.18.1" # reads a pseudo-terminal's screen in the CLI's tests
 tonic-prost-build = "0.14.6" # xtask generates the wire protocol's messages and service stubs
 protox = "0.9.1" # xtask compiles the wire protocol's .proto files without protoc
 public-api = "0.52.2" # xtask lists the facade's public API, from rustdoc's JSON, against its snapshot
