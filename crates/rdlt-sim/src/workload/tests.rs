@@ -693,3 +693,27 @@ fn a_masked_constant_lands_redacted_or_as_its_hmac_in_hex() {
     );
     assert_eq!(Reshaping::default().landed_constant(), "c");
 }
+
+#[test]
+fn a_stream_that_filters_carries_fat_values_a_quarter_as_wide() {
+    let features = Features {
+        fat: true,
+        transform: true,
+        ..Features::ALL
+    };
+    let streams = (0..2_000)
+        .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed), features).streams);
+    let filtering: Vec<SimStream> = streams
+        .filter(|stream| stream.fat > 0 && stream.reshaping.filter.is_some())
+        .collect();
+    assert!(!filtering.is_empty(), "no stream both filters and is fat");
+    let widest = crate::fat::widest();
+    for stream in &filtering {
+        assert!(
+            stream.fat <= widest / 4,
+            "stream {} filters with {} keys of a widest {widest}",
+            stream.name,
+            stream.fat
+        );
+    }
+}

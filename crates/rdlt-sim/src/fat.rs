@@ -12,7 +12,7 @@ use rdlt_engine::EngineConfig;
 use rdlt_wire::Limits;
 
 use crate::rng::SplitMix64;
-use crate::workload::Row;
+use crate::workload::{Reshaping, Row};
 
 /// The column fat values arrive in, which a stream pushing JSON declares as JSON.
 pub(crate) const COLUMN: &str = "fat";
@@ -62,10 +62,21 @@ fn span() -> u64 {
     (least_push() / SHARE / widest()).saturating_sub(FRAME)
 }
 
-/// Keys of each fat value of stream `index` of a workload salted `salt`: the widest, or a half
-/// or a quarter of it.
-pub(crate) fn keys(salt: u64, index: u64) -> u64 {
-    widest() >> SplitMix64::new(salt ^ FAT ^ index).below(3)
+/// How many times narrower a filtering stream's fat values are than another's.
+const FILTERED: u64 = 4;
+
+/// Keys of each fat value of stream `index` of a workload salted `salt`, which `reshaping`
+/// reshapes: the widest, or a half or a quarter of it, and a quarter of that where it filters.
+///
+/// A filter copies the values it keeps out of what is left of the request its JSON flush was
+/// built in, which building the widest already takes the most of, before any is lowered.
+pub(crate) fn keys(salt: u64, index: u64, reshaping: &Reshaping) -> u64 {
+    let keys = widest() >> SplitMix64::new(salt ^ FAT ^ index).below(3);
+    if reshaping.filter.is_some() {
+        keys / FILTERED
+    } else {
+        keys
+    }
 }
 
 /// Rows apart that a push holds one of for it to carry spaces: every fourth carrier.
