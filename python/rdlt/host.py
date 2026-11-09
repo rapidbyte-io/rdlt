@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import threading
+import weakref
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -27,6 +28,34 @@ def _paths(value: StrPath | Sequence[StrPath]) -> tuple[StrPath, ...]:
 
 def _names(value: str | Sequence[str]) -> tuple[str, ...]:
     return (value,) if isinstance(value, str) else tuple(value)
+
+
+class _SecretStore:
+    """A host's `secret_store`, which the native host reaches through a weak reference.
+
+    What the native host holds is opaque to Python's collector, so a strong reference from it to a
+    store that holds the pipeline it serves, as a bound method of an object that keeps one does,
+    could never be collected, and the pipeline's connector processes would live on with it. What
+    may still need the store holds this instead, where the collector sees it.
+    """
+
+    __slots__ = ("__weakref__", "_answer")
+
+    def __init__(self, answer: Callable[[str], str | None]) -> None:
+        self._answer = answer
+
+    def weakly(self) -> Callable[[str], str | None]:
+        """The store, for the native host: what the native host holds does not keep it alive."""
+        held = weakref.ref(self)
+
+        def answer(name: str) -> str | None:
+            store = held()
+            if store is None:
+                msg = "what held this host's secret store was dropped"
+                raise ReferenceError(msg)
+            return store._answer(name)
+
+        return answer
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -72,22 +101,25 @@ class Host:
     allow_files: StrPath | Sequence[StrPath] = ()
     """The directories `${file:/dir/name}` may name files beneath."""
     secret_store: Callable[[str], str | None] | None = field(default=None, repr=False)
-    """Answers `${secret:name}`: the secret's text, or `None` where none is set.
-
-    Each pipeline built on the host holds this callable for as long as it lives: a bound method
-    of an object that also holds such a pipeline is a cycle the collector cannot see, and leaks.
-    """
+    """Answers `${secret:name}`: the secret's text, or `None` where none is set."""
     remote: Tls | None = None
     """The TLS that reaches remote connectors; without it a reference with an endpoint is
     refused."""
     trust_binaries: bool = False
     """Runs local connectors with the host's own access rather than in the sandbox."""
+    _store: _SecretStore | None = field(default=None, init=False, repr=False, compare=False)
     _handle: _native.Host | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for name in ("connectors", "writable", "readable", "always_readable", "allow_files"):
             object.__setattr__(self, name, _paths(getattr(self, name)))
         object.__setattr__(self, "allow_env", _names(self.allow_env))
+        if self.secret_store is not None:
+            object.__setattr__(self, "_store", _SecretStore(self.secret_store))
+
+    @property
+    def _weak_secret_store(self) -> Callable[[str], str | None] | None:
+        return None if self._store is None else self._store.weakly()
 
     def _native(self) -> _native.Host:
         if self._handle is None:

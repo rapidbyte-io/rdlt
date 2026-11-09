@@ -24,6 +24,7 @@ pub(crate) struct Settings {
     build_wait: Option<Duration>,
     allow_env: Vec<String>,
     allow_files: Vec<PathBuf>,
+    #[pyo3(attribute("_weak_secret_store"))]
     secret_store: Option<Py<PyAny>>,
     remote: Option<TlsFiles>,
     trust_binaries: bool,

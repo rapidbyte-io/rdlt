@@ -307,7 +307,7 @@ fn a_detached_run_finishes_though_every_handle_is_dropped() {
     embedded::with(|py| {
         let run = endless(py, "detached");
         let mut ended = run.ended();
-        run.detach();
+        run.detach(py.None());
         drop(run);
         let runtime = runtime::get(py).unwrap();
         let settled = py.detach(|| {

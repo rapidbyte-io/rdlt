@@ -15,7 +15,7 @@ fn settings_waiting(py: pyo3::Python<'_>, allow_env: &str, build_wait: &str) -> 
     let code = format!(
         "__import__('types').SimpleNamespace(connectors=(), writable=(), readable=(), \
          always_readable=(), allow_network=False, build_wait={build_wait}, \
-         allow_env=({allow_env:?},), allow_files=(), secret_store=None, remote=None, \
+         allow_env=({allow_env:?},), allow_files=(), _weak_secret_store=None, remote=None, \
          trust_binaries=False)"
     );
     let code = CString::new(code).unwrap();
