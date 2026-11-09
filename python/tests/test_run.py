@@ -12,6 +12,7 @@ import sys
 import textwrap
 import threading
 import time
+import types
 from collections.abc import Generator
 from pathlib import Path
 
@@ -445,6 +446,21 @@ def test_a_forked_child_may_not_take_its_parent_s_next_event(
         [sys.executable, "-c", script], timeout=60, check=False, capture_output=True
     )
     assert finished.returncode == 0, finished.stderr
+
+
+def test_a_wait_s_awaitable_can_be_delegated_to(tmp_path: Path, connectors: Path) -> None:
+    built = rdlt.Pipeline.from_document(generated("delegated", 10, tmp_path / "out.db"))
+    pipeline = built.build(host(tmp_path, connectors))
+    run = pipeline.start()
+
+    @types.coroutine
+    def through() -> Generator[object, None, rdlt.Outcome]:
+        return (yield from run.wait_async().__await__())
+
+    async def main() -> rdlt.Outcome:
+        return await asyncio.wait_for(through(), timeout=60)
+
+    assert asyncio.run(main()).report.status is rdlt.RunStatus.SUCCEEDED
 
 
 def test_a_forked_child_may_not_stop_or_cancel_its_parent_s_run(
