@@ -496,3 +496,16 @@ async fn a_batch_is_checked_and_pushed_without_the_columns_its_stream_excludes()
     let refused = out.batch(wide).await.unwrap_err().limit().unwrap();
     assert_eq!(refused.name, "schema columns");
 }
+
+#[test]
+fn an_emitter_answers_the_limits_its_sink_holds_it_to() {
+    let limits = rdlt_wire::Limits {
+        json_push_bytes: 4096,
+        nesting_depth: 9,
+        ..rdlt_wire::Limits::default()
+    };
+    let (sink, _feed) = partition_channel(NonZeroUsize::new(16).unwrap());
+    let emitter = Emitter::<u64>::new(sink.within(limits), 7, false);
+    assert_eq!(emitter.limits().json_push_bytes, 4096);
+    assert_eq!(emitter.limits().nesting_depth, 9);
+}

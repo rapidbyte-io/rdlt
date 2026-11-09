@@ -461,3 +461,99 @@ fn a_plan_beyond_its_partition_limit_is_refused() {
         })
     );
 }
+
+mod described {
+    use crate::prelude::*;
+    use crate::{ConnectorId, ConnectorSpec, source_factory_from};
+
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct Unread {}
+
+    struct Named {
+        streams: Vec<&'static str>,
+    }
+
+    impl SourceConnector for Named {
+        const ID: &'static str = "test.unread";
+        const VERSION: &'static str = "0.0.0";
+        type Config = Unread;
+
+        async fn connect(_config: Unread, _context: &ConnectContext) -> Result<Self> {
+            Err(ConnectorError::internal(
+                "a described source connects through its factory",
+            ))
+        }
+
+        async fn check(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn streams(&self) -> Streams<Self> {
+            self.streams
+                .iter()
+                .fold(Streams::new(), |streams, name| streams.with(One(name)))
+        }
+    }
+
+    struct One(&'static str);
+
+    impl ReadStream<Named> for One {
+        type Cursor = u64;
+
+        fn spec(&self) -> StreamSpec {
+            StreamSpec::new(StreamName::new(self.0).expect("a valid name"))
+        }
+
+        async fn read(&self, _: &Named, _: &Partition, _: u64, _: &mut Emitter<u64>) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn spec() -> ConnectorSpec {
+        ConnectorSpec {
+            id: ConnectorId::parse("io.example.described").expect("a valid id"),
+            version: "1.2.3".to_owned(),
+            config_schema: serde_json::json!({ "type": "object" }),
+        }
+    }
+
+    fn factory(streams: Vec<&'static str>) -> Box<dyn crate::SourceFactory> {
+        source_factory_from(spec(), move |config: serde_json::Value, _context| {
+            let streams = streams.clone();
+            Box::pin(async move {
+                assert_eq!(
+                    config,
+                    serde_json::json!({ "given": true }),
+                    "the whole configuration"
+                );
+                Ok(Named { streams })
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn a_described_source_answers_its_spec_and_its_connector_s_catalog() {
+        let factory = factory(vec!["a", "b"]);
+        assert_eq!(factory.spec(), &spec());
+        let source = factory
+            .connect(serde_json::json!({ "given": true }), ConnectContext::new())
+            .await
+            .expect("it connects");
+        source.check().await.expect("it checks");
+        let catalog = source.discover().await.expect("it discovers");
+        let names: Vec<String> = catalog
+            .iter()
+            .map(|stream| stream.name().to_string())
+            .collect();
+        assert_eq!(names, ["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn a_described_source_with_two_streams_of_one_name_is_refused() {
+        let connected = factory(vec!["a", "a"])
+            .connect(serde_json::json!({ "given": true }), ConnectContext::new())
+            .await;
+        let error = connected.err().expect("refused");
+        assert_eq!(error.kind(), ConnectorErrorKind::Internal);
+    }
+}

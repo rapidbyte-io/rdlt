@@ -180,7 +180,11 @@ pub(super) async fn adapted<C: SourceConnector>(
     context: &ConnectContext,
 ) -> Result<SourceAdapter<C>> {
     let config = config::parse::<C::Config>(&config)?;
-    let connector = C::connect(config, context).await?;
+    assembled(C::connect(config, context).await?)
+}
+
+/// `connector`, with its streams by name; two of one name are refused.
+fn assembled<C: SourceConnector>(connector: C) -> Result<SourceAdapter<C>> {
     let mut streams = BTreeMap::new();
     for stream in connector.streams().streams {
         let name = stream.spec().name().clone();
@@ -225,6 +229,55 @@ impl<C: SourceConnector> SourceFactory for Factory<C> {
 /// compile time.
 pub fn source_factory<C: SourceConnector>() -> Box<dyn SourceFactory> {
     Box::new(factory::<C>())
+}
+
+/// The factory of a source described at run time: its spec, and what connects it.
+struct Described<C, F> {
+    spec: ConnectorSpec,
+    connect: F,
+    connector: PhantomData<fn() -> C>,
+}
+
+impl<C, F> SourceFactory for Described<C, F>
+where
+    C: SourceConnector,
+    F: Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<C>>
+        + Send
+        + Sync
+        + 'static,
+{
+    fn spec(&self) -> &ConnectorSpec {
+        &self.spec
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, Result<Box<dyn Source>>> {
+        let connecting = (self.connect)(config, context);
+        Box::pin(async move { Ok(Box::new(assembled(connecting.await?)?) as Box<dyn Source>) })
+    }
+}
+
+/// The engine-facing factory for a source known only at run time, as one written in another
+/// language is: `spec` names it and `connect` makes it from its whole configuration.
+///
+/// `C`'s `ID`, `VERSION`, `Config` and `connect` are not read; `spec` and `connect` stand for
+/// them. Every other part of the source is `C`'s, its streams', and the SDK's choreography.
+pub fn source_factory_from<C, F>(spec: ConnectorSpec, connect: F) -> Box<dyn SourceFactory>
+where
+    C: SourceConnector,
+    F: Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<C>>
+        + Send
+        + Sync
+        + 'static,
+{
+    Box::new(Described {
+        spec,
+        connect,
+        connector: PhantomData,
+    })
 }
 
 pub(super) fn factory<C: SourceConnector>() -> Factory<C> {

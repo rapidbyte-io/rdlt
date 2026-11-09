@@ -75,6 +75,12 @@ impl<C: Serialize> Emitter<C> {
         self.sink.excluded()
     }
 
+    /// The limits the engine holds this read's pushes to: a JSON push's bytes and a value's
+    /// nesting among them, which an encoder outside this crate keeps within before it pushes.
+    pub fn limits(&self) -> rdlt_wire::Limits {
+        self.sink.limits()
+    }
+
     /// Resolves once the engine asks the read to stop, or stops listening: a read waiting for
     /// data selects on it, and returns.
     pub async fn stopped(&self) {
