@@ -6,6 +6,8 @@ mod events;
 mod facade;
 mod ledger;
 mod metered;
+#[cfg(feature = "local")]
+mod secrets;
 mod support;
 #[cfg(feature = "otel")]
 mod telemetry;

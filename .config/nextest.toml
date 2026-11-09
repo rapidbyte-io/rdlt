@@ -95,9 +95,9 @@ filter = "package(rdlt-certify) & binary(it) & test(/^(spawned|killed)::/)"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
 # The command line's certification and signal tests run the binary against real connectors and
-# kill processes, more slowly beside other tests.
+# kill processes, and its secret scan runs it dozens of times, more slowly beside other tests.
 [[profile.mutants.overrides]]
-filter = "package(rdlt-cli) & binary(it) & test(/^(certify|signals)::/)"
+filter = "package(rdlt-cli) & binary(it) & test(/^(certify|signals|secrets)::/)"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
 # The SQLite differential tests run hundreds of cases, each syncing a database to disk: on a shared

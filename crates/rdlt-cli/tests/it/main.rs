@@ -8,6 +8,7 @@ mod guarded;
 mod help;
 mod running;
 mod scaffold;
+mod secrets;
 mod signals;
 mod support;
 mod terminal;
