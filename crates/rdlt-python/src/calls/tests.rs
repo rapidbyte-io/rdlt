@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use pyo3::Python;
 use pyo3::types::{PyAnyMethods as _, PyTuple};
+use pyo3::{Py, PyAny, PyErr, Python};
 
 use super::{Unanswered, call};
 use crate::{embedded, runtime};
@@ -10,7 +10,7 @@ use crate::{embedded, runtime};
 fn calling<T: Send + 'static>(
     py: Python<'_>,
     code: &'static std::ffi::CStr,
-    finish: impl for<'py> FnOnce(Python<'py>, Result<pyo3::Bound<'py, pyo3::PyAny>, pyo3::PyErr>) -> T
+    finish: impl for<'py> FnOnce(Python<'py>, Result<pyo3::Bound<'py, PyAny>, PyErr>) -> T
     + Send
     + 'static,
 ) -> Result<T, Unanswered> {
@@ -68,12 +68,13 @@ fn a_call_goes_on_to_its_end_though_nothing_waits_for_it() {
             None,
         )
         .unwrap();
-        let function = py
-            .eval(c"lambda: __import__('builtins').finished.set()", None, None)
-            .unwrap();
-        let arguments = PyTuple::empty(py);
-        let received = super::start(py, &function, &arguments).unwrap();
-        drop(received);
+        let runtime = runtime::get(py).unwrap();
+        // Polled once, then dropped: the call has been handed over.
+        let dropped = runtime.block_on(async {
+            let call = called(c"lambda: __import__('builtins').finished.set()");
+            tokio::time::timeout(Duration::ZERO, call).await
+        });
+        assert!(dropped.is_err(), "the wait was let go before the answer");
         let finished = py.detach(|| {
             Python::attach(|py| {
                 py.eval(c"__import__('builtins').finished.wait(10)", None, None)
@@ -83,5 +84,61 @@ fn a_call_goes_on_to_its_end_though_nothing_waits_for_it() {
             })
         });
         assert!(finished);
+    });
+}
+
+/// A call of `code`, a callable expression, with no arguments, awaited on `runtime`.
+async fn called(code: &'static std::ffi::CStr) -> Result<Result<Py<PyAny>, PyErr>, Unanswered> {
+    call(
+        move |py| Ok((py.eval(code, None, None)?, PyTuple::empty(py))),
+        |_, answered| answered.map(pyo3::Bound::unbind),
+    )
+    .await
+}
+
+#[test]
+fn a_blocked_call_does_not_delay_another_on_the_same_worker() {
+    embedded::with(|py| {
+        py.run(
+            c"import builtins, threading; builtins.entered = threading.Event(); builtins.leave = threading.Event()",
+            None,
+            None,
+        )
+        .unwrap();
+        py.detach(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .unwrap();
+            let first = runtime.spawn(called(
+                c"lambda: (__import__('builtins').entered.set(), __import__('builtins').leave.wait(30))[1]",
+            ));
+            let entered = Python::attach(|py| {
+                py.eval(c"__import__('builtins').entered.wait(30)", None, None)
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            });
+            assert!(entered, "the first call started");
+            let quick = runtime.spawn(called(c"lambda: 7"));
+            let answered = runtime
+                .block_on(async { tokio::time::timeout(Duration::from_secs(20), quick).await })
+                .expect("the second call was not held up by the first")
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            Python::attach(|py| {
+                assert_eq!(answered.extract::<i64>(py).unwrap(), 7);
+                py.eval(c"__import__('builtins').leave.set()", None, None)
+                    .unwrap();
+            });
+            runtime
+                .block_on(async { tokio::time::timeout(Duration::from_secs(30), first).await })
+                .expect("the first call ended")
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        });
     });
 }
