@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import enum
-from collections.abc import AsyncIterator, Iterator
-from typing import Literal, cast
+from collections.abc import AsyncIterator, Coroutine, Generator, Iterator
+from typing import Any, Literal, cast
 
 from rdlt import _native
 from rdlt.errors import _from_report
@@ -67,6 +67,37 @@ class Events:
         return _item(text)
 
 
+class _Waiting(Coroutine[object, None, Outcome]):
+    """`Run.wait_async`'s coroutine, which asks for the stop however early it is cancelled.
+
+    A task cancelled before its first step throws into an `async def` that has not begun, so no
+    `except` in its body could run; the cancellation is caught around it instead.
+    """
+
+    def __init__(self, run: Run, waiting: Coroutine[object, None, Outcome]) -> None:
+        self._run = run
+        self._waiting = waiting
+
+    def send(self, value: None) -> object:
+        return self._waiting.send(value)
+
+    def throw(self, *raised: Any) -> object:  # noqa: ANN401
+        try:
+            return self._waiting.throw(*raised)
+        except asyncio.CancelledError:
+            self._run._native.detach()
+            raise
+
+    def close(self) -> None:
+        self._waiting.close()
+
+    def __await__(self) -> Generator[object, None, Outcome]:
+        return cast("Generator[object, None, Outcome]", self)
+
+    def __next__(self) -> object:
+        return self.send(None)
+
+
 class Run:
     """A pipeline's run; dropping every reference cancels it, unless a cancelled await left it."""
 
@@ -113,7 +144,7 @@ class Run:
         """Cancels the run now; what it staged and did not commit is discarded at the next open."""
         self._native.cancel()
 
-    async def wait_async(self) -> Outcome:
+    def wait_async(self) -> Coroutine[object, None, Outcome]:
         """Awaits the run's end.
 
         Cancelling the awaiting task, as `asyncio.timeout` and `asyncio.wait_for` do, asks the run
@@ -125,8 +156,7 @@ class Run:
             rdlt.Error: the subclass for the error that ended the run, its `outcome` set;
                 `rdlt.StoppedError` where the run was cancelled.
         """
-        try:
-            return _ended(await self._native.wait_async())
-        except asyncio.CancelledError:
-            self._native.detach()
-            raise
+        return _Waiting(self, self._waited())
+
+    async def _waited(self) -> Outcome:
+        return _ended(await self._native.wait_async())
