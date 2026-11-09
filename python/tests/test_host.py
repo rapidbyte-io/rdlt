@@ -127,12 +127,12 @@ def test_a_host_that_allows_the_network_does_not_refuse_it(
         "access": {"network": True},
     }
     host = rdlt.Host(connectors=connectors, writable=[tmp_path], allow_network=True)
-    code = None
     try:
         rdlt.Pipeline.from_document(document).build(host)
     except rdlt.Error as error:
-        code = error.code
-    assert code != "placement_refused"
+        if error.code not in NO_SANDBOX:
+            raise
+        without_sandbox(str(error))
 
 
 def test_a_tls_file_that_cannot_be_read_refuses_the_build(tmp_path: Path, connectors: Path) -> None:
