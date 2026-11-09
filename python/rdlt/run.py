@@ -96,6 +96,9 @@ class _Waiting(Coroutine[object, None, Outcome]):
     def __await__(self) -> Generator[object, None, Outcome]:
         return cast("Generator[object, None, Outcome]", self)
 
+    def __iter__(self) -> Generator[object, None, Outcome]:
+        return cast("Generator[object, None, Outcome]", self)
+
     def __next__(self) -> object:
         return self.send(None)
 

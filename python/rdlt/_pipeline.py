@@ -155,7 +155,7 @@ class Column:
     """What happens to a change of it the destination cannot apply in place."""
     nested: _NestedWord | Mapping[str, Json] | None = field(default=None, hash=False)
     """How its nested values are stored: a word, or `{"normalize": {"max_depth": n}}`."""
-    hint: str | Mapping[str, Json] | None = None
+    hint: str | Mapping[str, Json] | None = field(default=None, hash=False)
     """Its fixed type: a word such as `int64`, or `{"decimal": {"precision": p, "scale": s}}`."""
 
     def _document(self) -> dict[str, Json]:

@@ -202,6 +202,7 @@ def test_a_column_and_defaults_with_a_mapping_for_their_nesting_are_hashable() -
     column = rdlt.Column(nested={"normalize": {"max_depth": 2}})
     defaults = rdlt.Defaults(nested={"normalize": {"max_depth": 2}})
     assert hash(column) == hash(rdlt.Column())
+    assert hash(rdlt.Column(hint={"decimal": {"precision": 10, "scale": 2}})) == hash(rdlt.Column())
     assert hash(defaults) == hash(rdlt.Defaults())
     assert column != rdlt.Column()
 
