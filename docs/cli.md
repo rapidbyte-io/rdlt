@@ -1050,6 +1050,37 @@ Options:
 | 129 | SIGHUP: hung up on, a signal it was not started ignoring |
 | 131 | SIGQUIT: asked to quit, a signal it was not started ignoring |
 
+## At a terminal
+
+A verb's results go to standard output and its progress and notes to standard error, always.
+
+Colour follows `--color`, whose `always` and `never` beat every variable. Under the default
+`auto`, a stream is coloured only where it is a terminal and `TERM` is not `dumb`; `NO_COLOR`, set
+and not empty, turns colour off, and otherwise `CLICOLOR_FORCE`, set and not `0`, turns it on, off
+a terminal too. JSON is never coloured.
+
+Marks and spinners are Unicode where the locale says UTF-8: the first of `LC_ALL`, `LC_CTYPE` and
+`LANG` that is set. Elsewhere they are ASCII (`ok`, `FAIL`, `|/-\`).
+
+Standard error animates where it is a terminal and `TERM` is not `dumb`, unless `--quiet` is
+given, a run's events go to the terminal, logs are asked for at `debug` or
+`trace` or through `RUST_LOG`, or a collector is named; `--color always` does not make it animate.
+A verb then redraws its progress in place on a thread of its own, which nothing waits for: a
+terminal that stops reading holds up neither a verb nor a signal, and a verb waits for it at its
+end for a few seconds at most. What is redrawn is cleared at the end, leaving only the result, and
+log lines it had no room for are counted and said then. The cursor is left visible throughout.
+
+Where standard output is a terminal a verb prints its result in its full layout: a summary, a
+table, or `Created <path>` and what to run next. Off a terminal `--output plain` keeps one line per
+result, and `--output auto` prints JSON.
+
+Where standard error is a terminal a failure is printed in its full layout, with its causes and,
+where one helps, a hint; off a terminal it is one line beginning `rdlt:`.
+
+`--quiet` drops progress, notes and event lines; results and failures always print. Text a
+connector or a document supplies is shown with every control sequence escaped, on a terminal and
+off it.
+
 ## JSON output
 
 Under `--output json`, and under `--output auto` off a terminal, standard output holds JSON and
