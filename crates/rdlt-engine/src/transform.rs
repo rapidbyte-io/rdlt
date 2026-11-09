@@ -122,6 +122,7 @@ pub trait Transform: Send + Sync + 'static {
 pub struct TransformError {
     message: String,
     column: Option<String>,
+    cause: Option<Cause>,
 }
 
 impl TransformError {
@@ -130,6 +131,7 @@ impl TransformError {
         Self {
             message: message.into(),
             column: None,
+            cause: None,
         }
     }
 
@@ -137,6 +139,13 @@ impl TransformError {
     #[must_use]
     pub fn with_column(mut self, column: impl Into<String>) -> Self {
         self.column = Some(column.into());
+        self
+    }
+
+    /// The error, keeping `cause`, the text of what it came from, as its source.
+    #[must_use]
+    pub fn with_cause(mut self, cause: impl Into<String>) -> Self {
+        self.cause = Some(Cause(cause.into()));
         self
     }
 
@@ -160,7 +169,16 @@ impl fmt::Display for TransformError {
     }
 }
 
-impl std::error::Error for TransformError {}
+impl std::error::Error for TransformError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause.as_ref().map(|cause| cause as _)
+    }
+}
+
+/// What a [`TransformError`] came from, as text, so the error stays `Clone` and `Eq`.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+struct Cause(String);
 
 /// One step of a stream's transforms: an op, compared by value, or an embedder's transform,
 /// compared by identity.

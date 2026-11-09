@@ -43,6 +43,16 @@ fn a_transform_error_names_its_column_beside_its_message() {
 }
 
 #[test]
+fn a_transform_error_keeps_its_cause_as_text_and_compares_by_it() {
+    let error = TransformError::new("failed").with_cause("what it came from");
+    let cause = std::error::Error::source(&error).expect("its cause");
+    assert_eq!(cause.to_string(), "what it came from");
+    assert_eq!(error, error.clone());
+    assert_ne!(error, TransformError::new("failed"));
+    assert!(std::error::Error::source(&TransformError::new("failed")).is_none());
+}
+
+#[test]
 fn steps_compare_ops_by_value_and_code_by_identity() {
     use super::{Op, TransformStep};
     let code: Arc<dyn Transform> = Arc::new(Identity);
