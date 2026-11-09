@@ -144,6 +144,10 @@ impl Env for Inline {
     fn cores(&self) -> NonZeroUsize {
         self.0.cores()
     }
+
+    fn wait_aside(&self, wait: &mut dyn FnMut()) {
+        wait();
+    }
 }
 
 impl ComputePool for Inline {

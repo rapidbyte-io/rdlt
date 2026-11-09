@@ -98,6 +98,10 @@ impl Env for SimEnv {
         CORES
     }
 
+    fn wait_aside(&self, wait: &mut dyn FnMut()) {
+        wait();
+    }
+
     fn charged(&self, change: i64) {
         crate::oracle::account(change);
     }

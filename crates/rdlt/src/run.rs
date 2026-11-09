@@ -190,6 +190,10 @@ impl Env for Observed {
         self.base.cores()
     }
 
+    fn wait_aside(&self, wait: &mut dyn FnMut()) {
+        self.base.wait_aside(wait);
+    }
+
     fn observe(&self, event: &Event) {
         if matches!(event.kind, EventKind::RunEnded { .. }) {
             self.ended.store(true, Ordering::SeqCst);

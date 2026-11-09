@@ -3,6 +3,8 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use tokio::runtime::{Handle, RuntimeFlavor};
+
 use crate::compute::{ComputePool, ComputePoolError, Cores, RayonPool};
 use crate::env::{Env, Sleep};
 use crate::event::Event;
@@ -113,6 +115,15 @@ impl Env for SystemEnv {
 
     fn cores(&self) -> NonZeroUsize {
         self.cores
+    }
+
+    fn wait_aside(&self, wait: &mut dyn FnMut()) {
+        // On a worker of a multi-thread runtime its other tasks move to another thread; a
+        // current-thread runtime cannot do that, and on any other thread there is nothing to move.
+        match Handle::try_current().map(|handle| handle.runtime_flavor()) {
+            Ok(RuntimeFlavor::MultiThread) => tokio::task::block_in_place(wait),
+            _ => wait(),
+        }
     }
 
     fn observe(&self, event: &Event) {

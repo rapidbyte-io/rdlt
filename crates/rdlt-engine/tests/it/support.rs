@@ -233,6 +233,10 @@ impl Env for InlineEnv {
         self.0.cores()
     }
 
+    fn wait_aside(&self, wait: &mut dyn FnMut()) {
+        self.0.wait_aside(wait);
+    }
+
     fn observe(&self, event: &Event) {
         self.0.observe(event);
     }

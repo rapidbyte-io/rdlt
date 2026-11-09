@@ -42,6 +42,10 @@ impl Env for Told {
         NonZeroUsize::MIN
     }
 
+    fn wait_aside(&self, wait: &mut dyn FnMut()) {
+        wait();
+    }
+
     fn charged(&self, change: i64) {
         self.changes.lock().push(change);
     }

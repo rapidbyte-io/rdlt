@@ -47,6 +47,10 @@ impl Env for Kept {
         std::num::NonZeroUsize::MIN
     }
 
+    fn wait_aside(&self, wait: &mut dyn FnMut()) {
+        wait();
+    }
+
     fn observe(&self, event: &Event) {
         self.0.lock().push(event.clone());
     }

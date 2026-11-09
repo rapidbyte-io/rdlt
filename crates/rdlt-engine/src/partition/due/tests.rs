@@ -42,6 +42,10 @@ impl Env for Counting {
     fn cores(&self) -> NonZeroUsize {
         NonZeroUsize::MIN
     }
+
+    fn wait_aside(&self, wait: &mut dyn FnMut()) {
+        wait();
+    }
 }
 
 #[tokio::test(start_paused = true)]

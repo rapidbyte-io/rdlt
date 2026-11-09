@@ -49,6 +49,13 @@ async fn system_env_runs_compute_jobs_on_its_pool() {
 }
 
 #[test]
+fn an_inline_env_runs_a_wait_where_it_is() {
+    let mut ran = false;
+    InlineEnv.wait_aside(&mut || ran = true);
+    assert!(ran);
+}
+
+#[test]
 fn system_env_declares_the_cores_it_was_given_not_the_host_s() {
     for count in [1, 3, 64] {
         let count = NonZeroUsize::new(count).unwrap();
