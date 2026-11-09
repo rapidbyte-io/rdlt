@@ -6,6 +6,7 @@ mod certify;
 mod guarded;
 mod help;
 mod running;
+mod scaffold;
 mod signals;
 mod support;
 mod verbs;

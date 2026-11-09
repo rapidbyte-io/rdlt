@@ -1,0 +1,14 @@
+[package]
+name = "rdlt-connector-greetings"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rdlt-connector = { git = "https://github.com/rapidbyte-io/rdlt", features = ["serve"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+rdlt-connector = { git = "https://github.com/rapidbyte-io/rdlt", features = ["testing"] }
+tokio = { version = "1", features = ["macros", "rt"] }

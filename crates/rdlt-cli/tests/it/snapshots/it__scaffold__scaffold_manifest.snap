@@ -1,0 +1,18 @@
+---
+source: crates/rdlt-cli/tests/it/scaffold.rs
+expression: "std::fs::read_to_string(project.join(\"Cargo.toml\")).unwrap()"
+---
+[package]
+name = "rdlt-connector-tickets"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rdlt-connector = { git = "https://github.com/rapidbyte-io/rdlt", features = ["serve"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+rdlt-connector = { git = "https://github.com/rapidbyte-io/rdlt", features = ["testing"] }
+tokio = { version = "1", features = ["macros", "rt"] }
