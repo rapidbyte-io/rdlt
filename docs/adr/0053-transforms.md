@@ -13,7 +13,9 @@ determinism under simulation whatever the configuration says.
 
 - **Placement.** Transforms run once per batch at the start of `partition::write::write`.
   - By then a JSON push is shredded and an Arrow push has had its JSON columns checked. Nothing
-    has been split for normalization or resolved against a table.
+    has been split for normalization or resolved against a table. A flush's JSON pushes are
+    shredded together, so a row a filter then drops can still decide the types its flush's
+    columns arrive as (ADR 0014), and with them the table's.
   - Every push kind passes once: Arrow, JSON and changes. Schema evolution, naming, lowering and
     normalization apply to the output.
   - A stream that includes every column and transforms nothing takes no new step.

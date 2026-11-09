@@ -1,10 +1,14 @@
-use rdlt_connector::{Field, Fields, LogicalType};
-use rdlt_testkit::drawn::Scalar;
+use rdlt_connector::{Checkpointing, Field, Fields, LogicalType, ReadMode};
+use rdlt_engine::{Nested, SchemaPolicy};
+use rdlt_testkit::drawn::{Encoding, Scalar, Shape};
 use serde_json::{Value, json};
 
 use std::collections::BTreeMap;
 
-use super::{Node, Pending, Tables, child_rows, counted};
+use super::{Node, Pending, Tables, child_rows, counted, owned};
+use crate::rng::SplitMix64;
+use crate::swarm::Features;
+use crate::workload::{Level, Reshaping, Row, SimStream, Workload};
 
 fn objects() -> LogicalType {
     let fields = Fields::new(vec![
@@ -161,4 +165,98 @@ fn a_pushed_integer_a_float_column_would_round_is_told_apart() {
         "a float is no integer"
     );
     assert!(!json(&(edge + 1).to_string()).rounds_into(&LogicalType::Int64));
+}
+
+/// The row at `offset` of partition `partition`, holding `value` in its stream's one drift column.
+fn row(partition: i64, offset: i64, value: Scalar) -> Row {
+    Row {
+        id: partition * 1_000_000 + offset,
+        partition,
+        offset,
+        value: 0,
+        key: None,
+        tag: None,
+        extras: vec![Some(value)],
+        delivered: 0,
+    }
+}
+
+fn shape(logical: LogicalType) -> Shape {
+    Shape {
+        logical,
+        encoding: Encoding::Plain,
+        children: Vec::new(),
+    }
+}
+
+/// A JSON stream, pushing a row each and gathering its whole read, whose filter keeps odd ids:
+/// partition 0 holds lists in the rows it drops and nulls in those it keeps, partition 1 text.
+fn lists_filtered_from_nulls() -> SimStream {
+    let drawn = (0..400)
+        .flat_map(|seed| {
+            let features = Features {
+                transform: true,
+                ..Features::ALL
+            };
+            Workload::generate(&mut SplitMix64::new(seed), features).streams
+        })
+        .find(|stream| stream.json && !stream.drift.is_empty())
+        .expect("a generated stream pushing JSON with a drift column");
+    let list = LogicalType::List(Box::new(Field::new("item", LogicalType::Utf8, true)));
+    let mut stream = drawn;
+    stream.read = ReadMode::Full;
+    stream.checkpointing = Checkpointing::OnDemand;
+    stream.batch_rows = 1;
+    stream.partitions = vec![[4, 0], [4, 0]];
+    stream.schema = Level {
+        policy: Some(SchemaPolicy::Evolve),
+        on_unsupported: None,
+        nested: Some(Nested::Native),
+    };
+    stream.pipeline = Level::default();
+    stream.reshaping = Reshaping {
+        filter: Some(2),
+        ..Reshaping::default()
+    };
+    stream.drift.truncate(1);
+    stream.drift[0].shapes = vec![
+        [Some(shape(list)), None],
+        [Some(shape(LogicalType::Utf8)), None],
+    ];
+    stream.drift[0].settings = Level::default();
+    stream.drift[0].hint = None;
+    stream.drift[0].declared = None;
+    let text = || Scalar::Utf8("x".to_owned());
+    let lists = || Scalar::List(vec![text()]);
+    stream.set_rows(vec![
+        [
+            vec![
+                row(0, 0, lists()),
+                row(0, 1, Scalar::Null),
+                row(0, 2, lists()),
+                row(0, 3, Scalar::Null),
+            ],
+            Vec::new(),
+        ],
+        [
+            (0..4).map(|offset| row(1, offset, text())).collect(),
+            Vec::new(),
+        ],
+    ]);
+    stream
+}
+
+#[test]
+fn a_column_a_filtered_push_widens_has_no_sure_type() {
+    let stream = lists_filtered_from_nulls();
+    let kept: Vec<Row> = (0..2)
+        .flat_map(|partition| stream.rows(partition, 0))
+        .filter(|row| stream.reshaping.keeps(row))
+        .cloned()
+        .collect();
+    assert_eq!(
+        owned(&stream, &kept, 0),
+        None,
+        "the lists its filter drops shred with the nulls of its first partition"
+    );
 }
