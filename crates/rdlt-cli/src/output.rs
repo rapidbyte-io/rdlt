@@ -115,6 +115,26 @@ pub(crate) fn note(text: &str) {
     writeln!(std::io::stderr().lock(), "{}", shown(text)).ok();
 }
 
+/// Prints a verb's result: `plain`'s lines, each shown, or `json`, as `mode` says.
+pub(crate) async fn result(
+    mode: Mode,
+    plain: impl FnOnce() -> Vec<String>,
+    json: &serde_json::Value,
+) -> Result<(), Failure> {
+    let text = match mode {
+        Mode::Plain => {
+            let mut lines = String::new();
+            for line in plain() {
+                lines.push_str(&shown(line));
+                lines.push('\n');
+            }
+            lines
+        }
+        Mode::Json => format!("{json}\n"),
+    };
+    stdout(&text).await
+}
+
 /// Prints why a verb failed: on standard error as text, or on standard output as JSON.
 pub(crate) fn failed(mode: Mode, failure: &Failure) {
     let mut stdout = std::io::stdout().lock();

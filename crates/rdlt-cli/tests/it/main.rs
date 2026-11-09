@@ -4,3 +4,4 @@
 
 mod help;
 mod support;
+mod verbs;

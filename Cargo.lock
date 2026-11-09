@@ -3767,6 +3767,7 @@ dependencies = [
  "insta",
  "rdlt",
  "rdlt-connector",
+ "rdlt-connector-reference",
  "rdlt-host",
  "rdlt-testkit",
  "serde_json",

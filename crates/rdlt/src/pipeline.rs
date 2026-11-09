@@ -84,6 +84,23 @@ impl PipelineBuilder {
         &self.document
     }
 
+    /// The source's catalog, the source placed alone as [`build`](Self::build) would place it:
+    /// for a document whose streams are not chosen yet.
+    ///
+    /// # Errors
+    ///
+    /// The source's reference or placement error, or its failure to discover, as building the
+    /// pipeline reports them.
+    pub async fn discover(&self, host: &Host) -> Result<Catalog, Error> {
+        let source = lower::reference(&self.document.source, Role::Source)?;
+        #[cfg(feature = "local")]
+        host.admits_network(&self.document.source, Role::Source)?;
+        let provider = host.provider();
+        let placing = provider.source(&source, &self.document.source.config);
+        let placed = placed(Role::Source, host.wait(), placing).await?;
+        discovered(placed.connector.as_ref(), host.wait()).await
+    }
+
     /// Builds the pipeline on `host`, checking everything that needs no data.
     ///
     /// First, before a connector is placed: the document's version and names, its connectors'
@@ -440,7 +457,8 @@ pub enum Placement {
     InProcess,
     /// In a process of its own, spawned from `path`.
     Process {
-        /// Its binary.
+        /// Its binary, as text: one whose name is not UTF-8 is shown as far as it can be.
+        #[serde(serialize_with = "path_as_text")]
         path: PathBuf,
     },
     /// Listening at `endpoint`.
@@ -448,6 +466,11 @@ pub enum Placement {
         /// The endpoint's host and port.
         endpoint: String,
     },
+}
+
+/// `path` as text, which a path whose name is not UTF-8 may otherwise not serialize as.
+fn path_as_text<S: serde::Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(&path.display())
 }
 
 impl Placement {

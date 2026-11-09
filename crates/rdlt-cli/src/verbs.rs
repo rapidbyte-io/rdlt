@@ -1,5 +1,8 @@
 //! Each verb, run with the output mode and the host the command line names.
 
+mod init;
+mod inspect;
+mod state;
 #[cfg(test)]
 mod tests;
 
@@ -10,7 +13,7 @@ use rdlt::{Interrupts, StopsSpawned};
 use tokio::runtime::{Builder, Runtime};
 
 use crate::Exit;
-use crate::args::{Cli, Verb};
+use crate::args::{Cli, StateAction, Verb};
 use crate::output::{self, Failure, Mode};
 use crate::stopping::{self, STOPPING};
 
@@ -84,8 +87,26 @@ async fn verb(cli: Cli, mode: Mode, interrupts: &mut Interrupts) -> Result<Exit,
     }
 }
 
-async fn other(cli: Cli, _mode: Mode) -> Result<Exit, Failure> {
-    match cli.verb {
+async fn other(cli: Cli, mode: Mode) -> Result<Exit, Failure> {
+    let Cli { verb, host, .. } = cli;
+    match verb {
+        Verb::Init { path } => init::init(&path, mode).await,
+        Verb::Check { document } => inspect::check(&document, &host, mode).await,
+        Verb::Discover { document } => inspect::discover(&document, &host, mode).await,
+        Verb::Schema {
+            document,
+            connector,
+            role,
+        } => inspect::schema(document, connector.as_deref(), role, &host).await,
+        Verb::Connectors => inspect::connectors(&host, mode).await,
+        Verb::State {
+            action:
+                StateAction::Reset {
+                    document,
+                    streams,
+                    tables,
+                },
+        } => state::reset(&document, &streams, tables, &host, mode).await,
         Verb::Completions { shell } => {
             let mut text = Vec::new();
             clap_complete::generate(shell, &mut Cli::command(), "rdlt", &mut text);

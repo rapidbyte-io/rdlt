@@ -164,6 +164,7 @@ pub(crate) mod bubblewrap {
         assert!(!whole_env.contains_key(name), "{whole_env:?}");
         whole_env.insert(name.to_owned(), value.into());
         whole_env.insert("PWD".to_owned(), "/".into());
+        whole_env.insert("TMPDIR".to_owned(), "/.rdlt-scratch".into());
         let script = serde_json::json!({
             "only_its_descriptors": true,
             "whole_env": whole_env,
@@ -194,6 +195,64 @@ pub(crate) mod bubblewrap {
             .check()
             .await
             .expect_err("a trusted binary has its host's access");
+    }
+
+    /// Nothing a connector writes where it runs outlives it, so it must fail: a commit into
+    /// the sandbox's own root would report data gone with the process.
+    #[tokio::test]
+    async fn a_sandboxed_connector_cannot_write_where_it_runs_and_keeps_its_scratch_space() {
+        let Some(local) = sandboxed() else {
+            return;
+        };
+        let nowhere = [
+            "relative",
+            "/rooted",
+            "/tmp/scratch",
+            "/var/tmp/x",
+            "/run/x",
+        ];
+        for lost in nowhere.iter().chain(&["/dev/shm/x", "/dev/x", "/etc/x"]) {
+            let writing = serde_json::json!({ "writes": lost });
+            let source = local
+                .clone()
+                .source(&scripted(), &writing)
+                .await
+                .expect("it starts");
+            source
+                .connector
+                .check()
+                .await
+                .expect_err("its working directory and root are not written");
+        }
+        let scratch = serde_json::json!({ "writes_temp": "scratch" });
+        let source = local
+            .source(&scripted(), &scratch)
+            .await
+            .expect("it starts");
+        source
+            .connector
+            .check()
+            .await
+            .expect("it has the scratch space TMPDIR names");
+    }
+
+    /// A grant beneath `/tmp` is written and outlives the connector, as any other is.
+    #[tokio::test]
+    async fn a_write_grant_beneath_tmp_is_written_and_what_it_holds_outlives_the_connector() {
+        let Some(local) = sandboxed() else {
+            return;
+        };
+        let granted = tempfile::tempdir_in("/tmp").expect("a directory beneath /tmp");
+        let target = granted.path().join("kept");
+        let writing = serde_json::json!({ "writes": target });
+        let source = local
+            .writable(granted.path())
+            .source(&scripted().write(granted.path()), &writing)
+            .await
+            .expect("it starts");
+        source.connector.check().await.expect("it writes its grant");
+        drop(source);
+        assert_eq!(std::fs::read_to_string(&target).expect("kept"), "written");
     }
 
     #[tokio::test]
@@ -545,7 +604,7 @@ pub(crate) mod bubblewrap {
         let Some(local) = sandboxed() else {
             return;
         };
-        let writing = serde_json::json!({ "writes": "/tmp/scratch" });
+        let writing = serde_json::json!({ "writes_temp": "scratch" });
         let first = local
             .source(&scripted(), &writing)
             .await
@@ -555,7 +614,7 @@ pub(crate) mod bubblewrap {
             .check()
             .await
             .expect("it writes its scratch");
-        let seeing = serde_json::json!({ "absent": ["/tmp/scratch"] });
+        let seeing = serde_json::json!({ "absent": ["/.rdlt-scratch/scratch"] });
         let second = local.source(&scripted(), &seeing).await.expect("it starts");
         second
             .connector
@@ -563,8 +622,8 @@ pub(crate) mod bubblewrap {
             .await
             .expect("it sees none of another's scratch");
         assert!(
-            !Path::new("/tmp/scratch").exists(),
-            "the host's /tmp was written"
+            !Path::new("/.rdlt-scratch").exists(),
+            "the host's root was written"
         );
     }
 

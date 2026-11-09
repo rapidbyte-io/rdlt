@@ -31,9 +31,20 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+rdlt-connector = { workspace = true, features = ["certify", "serve", "testing"] }
+rdlt-connector-reference = { workspace = true, features = ["certify", "test-connectors"] }
 rdlt-testkit.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["process", "test-util"] }
 
 [lints]
 workspace = true
+
+# The certifier's connector binaries, built here too so the CLI's tests can place them.
+[[example]]
+name = "serve_reference"
+path = "../rdlt-certify/examples/serve_reference.rs"
+
+[[example]]
+name = "serve_source"
+path = "../rdlt-certify/examples/serve_source.rs"
