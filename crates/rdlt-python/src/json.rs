@@ -144,8 +144,19 @@ struct Writer<'a, 'py> {
 }
 
 impl Writer<'_, '_> {
-    fn text(&mut self, text: &str) {
+    /// Writes a string, refused first if its length alone passes the limit: escaping can make
+    /// it six times as long.
+    fn text(&mut self, text: &str) -> Result<(), Unwritten> {
+        let bytes = self.out.len().saturating_add(text.len());
+        if bytes > self.limit {
+            return Err(Unwritten::Large {
+                row: self.row,
+                bytes,
+                limit: self.limit,
+            });
+        }
         serde_json::to_writer(&mut self.out, text).expect("writing to a vector does not fail");
+        Ok(())
     }
 
     fn here(&self) -> (usize, String) {
@@ -180,7 +191,7 @@ impl Writer<'_, '_> {
                 let (row, path) = self.here();
                 return Err(Unwritten::NotText { row, path });
             };
-            self.text(text);
+            self.text(text)?;
         } else if let Ok(mapping) = value.cast::<PyDict>() {
             self.object(mapping, level + 1)?;
         } else if value.is_instance_of::<PyList>() || value.is_instance_of::<PyTuple>() {
@@ -237,7 +248,7 @@ impl Writer<'_, '_> {
             if index > 0 {
                 self.out.push(b',');
             }
-            self.text(&key);
+            self.text(&key)?;
             self.out.push(b':');
             self.path.push('.');
             self.path.push_str(&key);
@@ -276,10 +287,10 @@ impl Writer<'_, '_> {
             let iso = value
                 .call_method0("isoformat")
                 .map_err(|error| raised(self.py, &error))?;
-            self.text(&iso.to_string());
+            self.text(&iso.to_string())?;
         } else if instance(&self.typed.uuid) {
             let text = value.str().map_err(|error| raised(self.py, &error))?;
-            self.text(&text.to_string());
+            self.text(&text.to_string())?;
         } else {
             let (row, path) = self.here();
             return Err(Unwritten::Unsupported {
