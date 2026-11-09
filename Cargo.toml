@@ -221,7 +221,7 @@ tonic-prost-build = "0.14.6" # xtask generates the wire protocol's messages and 
 protox = "0.9.1" # xtask compiles the wire protocol's .proto files without protoc
 public-api = "0.52.2" # xtask lists the facade's public API, from rustdoc's JSON, against its snapshot
 rustdoc-json = "0.9.10" # xtask builds the facade's rustdoc JSON for its public-API snapshot
-rusqlite = { version = "0.40.2", default-features = false, features = [
+rusqlite = { version = "0.41.1", default-features = false, features = [
   "bundled",
   "cache",
   "limits",
