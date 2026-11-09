@@ -34,6 +34,7 @@ arrow-cast = "59.2" # exact casts into a table's column types, and text renderin
 arrow-data = "59.2" # the buffers behind an array, for which rows Arrow's writer writes a union from
 arrow-ipc = "59.2" # Arrow IPC, for the wire's batches, the files connectors and the bench sink
 arrow-json = "59.2" # JSON renderings of values stored as Json, and JSON lines files
+arrow-pyarrow = "59.3.2" # Arrow batches and schemas to and from Python through the C Data Interface and its capsules, with no copy
 arrow-row = "59.2" # comparable row encodings of merge keys
 arrow-schema = "59.2" # arrow data types and schemas
 arrow-select = "59.2" # take, filter and concat for discards, compaction and merges

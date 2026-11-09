@@ -13,6 +13,8 @@ name = "rdlt_python"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+arrow-array.workspace = true
+arrow-pyarrow.workspace = true
 bytes.workspace = true
 parking_lot.workspace = true
 pyo3.workspace = true
