@@ -242,12 +242,16 @@ pub(crate) mod bubblewrap {
         let Some(local) = sandboxed() else {
             return;
         };
+        // Its own copy: a build's output has a second name, and where /tmp shares its file system
+        // a grant there is refused.
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let alone = scripted_in(elsewhere.path());
         let granted = tempfile::tempdir_in("/tmp").expect("a directory beneath /tmp");
         let target = granted.path().join("kept");
         let writing = serde_json::json!({ "writes": target });
         let source = local
             .writable(granted.path())
-            .source(&scripted().write(granted.path()), &writing)
+            .source(&alone.write(granted.path()), &writing)
             .await
             .expect("it starts");
         source.connector.check().await.expect("it writes its grant");
