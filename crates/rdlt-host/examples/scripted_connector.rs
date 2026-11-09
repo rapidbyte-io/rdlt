@@ -62,6 +62,8 @@ struct Script {
     readable: Vec<PathBuf>,
     /// A file its check requires to create, and writes `written` to.
     writes: Option<PathBuf>,
+    /// A file its check requires to create in the directory `TMPDIR` names, its scratch space.
+    writes_temp: Option<String>,
     /// An address its check requires a TCP connection to succeed to, or to fail to.
     connects: Option<(String, bool)>,
     /// The most processes its check may see in `/proc`, itself included.
@@ -164,6 +166,12 @@ impl Script {
         }
         if let Some(path) = &self.writes {
             std::fs::write(path, "written")
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+        if let Some(name) = &self.writes_temp {
+            let scratch = std::env::var_os("TMPDIR").ok_or("TMPDIR is not set")?;
+            let path = PathBuf::from(scratch).join(name);
+            std::fs::write(&path, "written")
                 .map_err(|error| format!("{}: {error}", path.display()))?;
         }
         if let Some((address, reached)) = &self.connects {

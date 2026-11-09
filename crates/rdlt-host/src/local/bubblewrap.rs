@@ -25,6 +25,11 @@ const WELL_KNOWN: &str = "/usr/bin/bwrap";
 #[cfg(any(target_os = "linux", test))]
 const PROGRAM: &str = "/rdlt-connector";
 
+/// A connector's private scratch directory, in memory, which `TMPDIR` alone names: not a path a
+/// person would write in a document, as what it holds goes with the process.
+#[cfg(any(target_os = "linux", test))]
+const SCRATCH: &str = "/.rdlt-scratch";
+
 /// The directories of the host a dynamically linked program needs to start, each given read
 /// only where it exists, or as the link it is.
 #[cfg(any(target_os = "linux", test))]
@@ -45,8 +50,11 @@ const ARGS_FD: RawFd = 5;
 
 /// Confines a connector with bubblewrap.
 ///
-/// The connector sees the host's system directories read only, an empty `/tmp`, a `/proc`
-/// and a `/dev` of its own, and what it was granted: nothing of any home directory. It has
+/// The connector sees the host's system directories read only, a `/proc` and a `/dev` of its
+/// own, a private scratch directory that `TMPDIR` names, and what it was granted: nothing of any
+/// home directory. Its root, its working directory and `/tmp` are read only and its `/dev` holds
+/// only device nodes, so a write to anywhere but that scratch directory or a grant fails, rather
+/// than land in storage gone with the process. It has
 /// no network unless granted one, its own user, process, IPC, host-name and control-group
 /// namespaces and no further user namespace, only the environment the host states and the
 /// `PWD` the launcher sets, and a session of its own, and it ends with its host. Its
@@ -123,7 +131,9 @@ impl Bubblewrap {
         }
         flag("--proc", &["/proc".as_ref()]);
         flag("--dev", &["/dev".as_ref()]);
-        flag("--tmpfs", &["/tmp".as_ref()]);
+        // Empty and read only: a path beneath it is written only where a grant makes it so.
+        flag("--dir", &["/tmp".as_ref()]);
+        flag("--tmpfs", &[SCRATCH.as_ref()]);
         // Bound from what was opened and checked: a link swapped since changes nothing.
         for bind in confined.binds {
             let fd = bind.fd.to_string();
@@ -137,8 +147,14 @@ impl Bubblewrap {
         for (name, value) in confined.env {
             flag("--setenv", &[name, value]);
         }
+        // Last, so nothing the host passes on names another place.
+        flag("--setenv", &["TMPDIR".as_ref(), SCRATCH.as_ref()]);
         let program = confined.program.to_string();
         flag("--ro-bind-fd", &[program.as_ref(), PROGRAM.as_ref()]);
+        // After every bind has made its mount point in the sandbox's root. Device nodes are
+        // written through a read-only mount.
+        flag("--remount-ro", &["/dev".as_ref()]);
+        flag("--remount-ro", &["/".as_ref()]);
         flag("--chdir", &["/".as_ref()]);
         args
     }

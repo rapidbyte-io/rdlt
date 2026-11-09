@@ -630,7 +630,7 @@ cargo add --git https://github.com/rapidbyte-io/rdlt rdlt-host
 | Placement | Provider | What the connector can reach | Platforms |
 |---|---|---|---|
 | In process | `Registry::trusted()`, with `trusted_source::<C>()` and `trusted_destination::<C>()` | Everything the host can; for connectors compiled into the host and trusted | Linux, macOS |
-| Sandboxed process | `Local::sandboxed(Bubblewrap::new())` | Read-only system directories, its own `/proc` and `/dev`, a private `/tmp` held in memory, the paths it is granted, and its socket on file descriptor 3. A network grant shares the host's whole network. | Linux, with bubblewrap 0.8 or later, kernel 5.11 or later and unprivileged user namespaces |
+| Sandboxed process | `Local::sandboxed(Bubblewrap::new())` | Read-only system directories, its own `/proc` and `/dev`, a private scratch directory held in memory that `TMPDIR` names, the paths it is granted, and its socket on file descriptor 3. A network grant shares the host's whole network. | Linux, with bubblewrap 0.8 or later, kernel 5.11 or later and unprivileged user namespaces |
 | Trusted process | `Local::trusting_binaries()` | The host's own files, network and processes | Linux, macOS |
 | Remote | `Remote::new(identity, ca)` | What its own machine allows; reached over mutual TLS 1.3 and dialled again when lost | Any machine the host can reach; a connector served by `rdlt_connector::serve` runs on Linux or macOS |
 
@@ -693,7 +693,7 @@ async fn load() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .connector;
     // Found as `rdlt-connector-sqlite` in /opt/rdlt/bin, hashed, and spawned in the sandbox,
-    // which may write beneath /data and in a /tmp of its own, and nowhere else.
+    // which may write beneath /data and in the scratch directory TMPDIR names, and nowhere else.
     let sqlite = ConnectorRef::new(ConnectorId::parse("io.rapidbyte.sqlite")?).write("/data");
     let destination = provider
         .destination(&sqlite, &json!({ "path": "/data/out.db" }))
@@ -755,7 +755,8 @@ async fn load() -> Result<(), Box<dyn std::error::Error>> {
   24.04 lets a program make an unprivileged user namespace only where an AppArmor profile names it;
   [`.github/sandbox.sh`](.github/sandbox.sh) installs bubblewrap and such a profile.
 - rdlt sets no limit on a local connector's processor time, memory or disk, and a sandboxed
-  connector's `/tmp` is held in memory: limit them with control groups or a container
+  connector's scratch directory, which `TMPDIR` names, is held in memory: limit them with
+  control groups or a container
   ([SECURITY.md](SECURITY.md)).
 
 The protocol is gRPC, package `rdlt.connector.v1`, defined in

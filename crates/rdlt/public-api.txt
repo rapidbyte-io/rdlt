@@ -1011,6 +1011,7 @@ impl rdlt::PipelineBuilder
 pub async fn rdlt::PipelineBuilder::build(self, &rdlt::Host) -> core::result::Result<rdlt::Pipeline, rdlt::Error>
 pub fn rdlt::PipelineBuilder::commit(self, rdlt::Commit) -> Self
 pub fn rdlt::PipelineBuilder::defaults(self, rdlt::Defaults) -> Self
+pub async fn rdlt::PipelineBuilder::discover(&self, &rdlt::Host) -> core::result::Result<rdlt_connector::catalog::Catalog, rdlt::Error>
 pub fn rdlt::PipelineBuilder::document(&self) -> &rdlt::Document
 pub fn rdlt::PipelineBuilder::resources(self, rdlt::Resources) -> Self
 pub fn rdlt::PipelineBuilder::retry(self, rdlt::Retry) -> Self

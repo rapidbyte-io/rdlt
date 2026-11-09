@@ -14,6 +14,7 @@ mod args;
 mod certify;
 mod connector;
 mod exit;
+mod host;
 mod output;
 mod reference;
 mod stopping;

@@ -90,9 +90,13 @@ given. A host enforces that only where it closes each of these:
     protects hard links (Linux's `fs.protected_hardlinks`, on by default), since the program
     is no other user's to write. A sandboxed connector cannot add one either: its program and
     each grant are mounts of their own, and a link does not cross mounts. Each sandbox has a
-    `/tmp` of its own, in memory, as its private scratch directory.
+    private scratch directory of its own, in memory, at a path only `TMPDIR` names; `/tmp` is an
+    empty read-only directory, so a path written by accident, one a document names without a
+    grant, fails rather than report a commit into storage that goes with the process.
   - `Bubblewrap` is the sandbox rdlt ships, for Linux. The connector sees the host's system
-    directories read only, a `/tmp`, `/proc` and `/dev` of its own, and what it was granted;
+    directories read only, a `/proc` of its own, which is a kernel interface and no storage, a
+    `/tmp` and a `/dev` of its own, read only but for the device nodes, the scratch directory
+    `TMPDIR` names, and what it was granted;
     no home directory, no network unless granted, its own user, process, IPC, host-name and
     control-group namespaces and no further user namespace (`--disable-userns`, bubblewrap
     0.8 or later on a kernel with per-namespace limits); the environment the host states and

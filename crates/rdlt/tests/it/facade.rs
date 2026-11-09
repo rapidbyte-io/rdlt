@@ -491,3 +491,47 @@ async fn a_source_whose_catalog_cannot_be_read_fails_the_build_as_the_source_s()
     assert_eq!(refused.origin(), Origin::Source, "{said}");
     assert!(refused.is_retryable(), "{said}");
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_builder_discovers_its_source_before_its_streams_are_chosen() {
+    let rows = serde_json::json!([{ "id": 1 }]);
+    let builder =
+        memory_pipeline("unchosen", "facade-unchosen", &rows).stream(Stream::new("not-there"));
+    let catalog = builder
+        .clone()
+        .discover(&memory_host())
+        .await
+        .expect("discovered");
+    let names: Vec<String> = catalog
+        .iter()
+        .map(|stream| stream.name().to_string())
+        .collect();
+    assert_eq!(names, ["users"]);
+    let refused = builder
+        .build(&memory_host())
+        .await
+        .expect_err("no such stream");
+    assert_eq!(refused.kind(), ErrorKind::Config);
+}
+
+#[tokio::test(start_paused = true)]
+#[cfg(feature = "local")]
+async fn a_builder_discovers_over_the_network_only_where_its_host_allows_it() {
+    let source =
+        Side::new(Connector::new("io.rapidbyte.generator")).access(rdlt::Access::new().network());
+    let destination = Side::new(Connector::new("io.rapidbyte.memory"));
+    let builder = Pipeline::builder("networked", source, destination);
+    let refused = builder
+        .clone()
+        .discover(&Host::new())
+        .await
+        .expect_err("the host does not allow the network");
+    assert_eq!(refused.code().map(Code::as_str), Some("placement_refused"));
+    assert_eq!(refused.origin(), Origin::Source);
+    // Allowing it, the source goes on to be placed, and is found nowhere.
+    let unfound = builder
+        .discover(&Host::new().allow_network())
+        .await
+        .expect_err("no directory holds the connector");
+    assert_ne!(unfound.code().map(Code::as_str), Some("placement_refused"));
+}

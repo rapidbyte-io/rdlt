@@ -160,6 +160,8 @@ impl Local {
     /// Keeps the environment variable `name` in each connector's environment, which otherwise
     /// holds only glibc's malloc tunables; a tunable a kept `GLIBC_TUNABLES` or `MALLOC_*_`
     /// variable names is left as the operator set it.
+    ///
+    /// A sandboxed connector's `TMPDIR` names its scratch directory, whatever is kept.
     #[must_use]
     pub fn env_passthrough(mut self, name: impl Into<String>) -> Self {
         self.env_passthrough.push(name.into());

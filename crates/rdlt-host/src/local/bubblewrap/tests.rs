@@ -42,6 +42,22 @@ fn holds(arguments: &[String], sequence: &[&str]) -> bool {
     })
 }
 
+/// Only the scratch directory `TMPDIR` names, and what is granted, may be written.
+#[test]
+fn nothing_but_its_scratch_and_its_grants_is_writable() {
+    let arguments = arguments(&[], NetworkAccess::Denied);
+    assert!(holds(&arguments, &["--dir", "/tmp"]));
+    assert!(holds(&arguments, &["--tmpfs", super::SCRATCH]));
+    assert!(holds(&arguments, &["--setenv", "TMPDIR", super::SCRATCH]));
+    // Its root and its `/dev` are read only once every bind has made its mount point there.
+    assert!(holds(&arguments, &["--remount-ro", "/"]));
+    assert!(holds(&arguments, &["--remount-ro", "/dev"]));
+    let at = |wanted: &str| arguments.iter().rposition(|argument| argument == wanted);
+    assert!(at("--ro-bind-fd") < at("--remount-ro"), "{arguments:?}");
+    // The scratch's `TMPDIR` is set after the environment the host states.
+    assert!(at("KEPT") < at("TMPDIR"), "{arguments:?}");
+}
+
 #[test]
 fn a_connector_is_confined_to_what_it_is_granted_and_run_from_its_descriptor() {
     let arguments = arguments(&[], NetworkAccess::Denied);
@@ -78,7 +94,6 @@ fn a_connector_is_confined_to_what_it_is_granted_and_run_from_its_descriptor() {
     }
     assert!(holds(&arguments, &["--proc", "/proc"]));
     assert!(holds(&arguments, &["--dev", "/dev"]));
-    assert!(holds(&arguments, &["--tmpfs", "/tmp"]));
     assert!(holds(
         &arguments,
         &["--ro-bind-fd", &PROGRAM_FD.to_string(), PROGRAM]
