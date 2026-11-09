@@ -32,6 +32,26 @@ fn native(
     NativeTransform::new(py, "under_test".to_owned(), function, filters, output).unwrap()
 }
 
+#[test]
+fn a_thread_that_did_not_start_says_why_as_the_error_s_cause() {
+    let transform = embedded::with(|py| {
+        py.run(
+            c"import rdlt._reading as reading\n\
+              def refused(calls):\n    raise RuntimeError('no threads left')\n\
+              reading.serve = refused\n",
+            None,
+            None,
+        )
+        .unwrap();
+        native(py, "lambda batch: batch", false, None).transform()
+    });
+    let failed = transform
+        .apply(input())
+        .expect_err("no thread answers the call");
+    let cause = std::error::Error::source(&failed).expect("why it did not start");
+    assert!(cause.to_string().contains("no threads left"), "{cause}");
+}
+
 const DOUBLED: &str = "lambda batch: batch.append_column('doubled', __import__('pyarrow.compute', fromlist=['multiply']).multiply(batch.column('n'), 2))";
 
 #[test]

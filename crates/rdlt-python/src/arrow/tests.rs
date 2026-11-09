@@ -62,6 +62,42 @@ fn a_rust_batch_crosses_into_pyarrow_without_a_copy() {
 }
 
 #[test]
+fn a_rust_batch_keeps_its_schema_s_metadata_crossing_into_pyarrow() {
+    embedded::with(|py| {
+        let schema = arrow_schema::Schema::new_with_metadata(
+            vec![arrow_schema::Field::new(
+                "n",
+                arrow_schema::DataType::Int64,
+                false,
+            )],
+            std::collections::HashMap::from([("origin".to_owned(), "orders".to_owned())]),
+        );
+        let rust = arrow_array::RecordBatch::try_new(
+            std::sync::Arc::new(schema),
+            vec![
+                std::sync::Arc::new(arrow_array::Int64Array::from_iter_values(0..3))
+                    as arrow_array::ArrayRef,
+            ],
+        )
+        .unwrap();
+        let lent = Bound::new(py, NativeBatch::new(rust)).unwrap();
+        let batch = evaluated(py, "__import__('pyarrow').record_batch")
+            .call1((lent,))
+            .unwrap();
+        let metadata = batch
+            .getattr("schema")
+            .unwrap()
+            .getattr("metadata")
+            .unwrap();
+        let metadata: std::collections::HashMap<Vec<u8>, Vec<u8>> = metadata.extract().unwrap();
+        assert_eq!(
+            metadata,
+            std::collections::HashMap::from([(b"origin".to_vec(), b"orders".to_vec())])
+        );
+    });
+}
+
+#[test]
 fn a_table_and_other_libraries_cross_as_streams() {
     embedded::with(|py| {
         for code in [

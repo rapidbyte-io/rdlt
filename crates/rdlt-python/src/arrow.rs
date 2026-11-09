@@ -8,7 +8,7 @@ use arrow_array::ffi::to_ffi;
 use arrow_array::ffi_stream::ArrowArrayStreamReader;
 use arrow_array::{Array as _, RecordBatch, StructArray};
 use arrow_pyarrow::FromPyArrow as _;
-use arrow_schema::Schema;
+use arrow_schema::{ArrowError, Schema};
 use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyAnyMethods as _, PyCapsule, PyTuple};
 use pyo3::{Bound, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
@@ -63,8 +63,11 @@ impl NativeBatch {
     ) -> Result<(Bound<'py, PyCapsule>, Bound<'py, PyCapsule>), PyErr> {
         let _ = requested_schema;
         let columns = StructArray::from(self.0.clone());
-        let (array, schema) =
-            to_ffi(&columns.to_data()).map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let failed = |error: ArrowError| PyValueError::new_err(error.to_string());
+        let (array, schema) = to_ffi(&columns.to_data()).map_err(failed)?;
+        let schema = schema
+            .with_metadata(self.0.schema_ref().metadata())
+            .map_err(failed)?;
         Ok((
             PyCapsule::new_with_value(py, schema, c"arrow_schema")?,
             PyCapsule::new_with_value(py, array, c"arrow_array")?,
