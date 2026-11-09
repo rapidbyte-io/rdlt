@@ -30,7 +30,7 @@ def test_an_error_survives_a_pickle() -> None:
         origin="source",
         stream="orders",
         code="source_failed",
-        connector_code="ApiError",
+        connector_code="tickets.api_error",
         message="stream orders failed",
         causes=("gone",),
         retryable=True,

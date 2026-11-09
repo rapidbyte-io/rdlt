@@ -6,6 +6,7 @@ from typing import Protocol, final
 import pyarrow as pa
 
 __all__ = [
+    "HOST_CODES",
     "Checkpoint",
     "Events",
     "Host",
@@ -18,6 +19,7 @@ __all__ = [
 ]
 
 __version__: str
+HOST_CODES: tuple[str, ...]
 
 class _StreamName(Protocol):
     @property

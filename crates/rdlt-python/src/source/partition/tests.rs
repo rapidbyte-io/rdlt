@@ -105,7 +105,7 @@ fn an_exception_arrives_as_its_failure_and_ends_the_read() {
         let Pushed::Failed(error) = &pushed[1] else {
             panic!("a failure")
         };
-        assert_eq!(error.code(), Some("ValueError"));
+        assert_eq!(error.code(), Some("value_error"));
     });
 }
 
@@ -121,7 +121,7 @@ fn what_an_async_generator_raises_arrives_as_its_failure() {
         let Pushed::Failed(error) = &pushed[1] else {
             panic!("a failure")
         };
-        assert_eq!(error.code(), Some("ConnectionResetError"));
+        assert_eq!(error.code(), Some("connection_reset_error"));
         assert_eq!(error.kind(), ConnectorErrorKind::Transient);
     });
 }
@@ -139,7 +139,7 @@ fn a_base_exception_fails_the_read_and_reads_as_no_end() {
             panic!("a failure")
         };
         assert_eq!(error.kind(), ConnectorErrorKind::Internal);
-        assert_eq!(error.code(), Some("SystemExit"));
+        assert_eq!(error.code(), Some("system_exit"));
     });
 }
 
@@ -163,7 +163,7 @@ fn a_read_that_cannot_be_opened_fails_with_what_opening_raised() {
         let [Pushed::Failed(error)] = &pushed[..] else {
             panic!("one failure: {pushed:?}")
         };
-        assert_eq!(error.code(), Some("KeyError"));
+        assert_eq!(error.code(), Some("key_error"));
     });
 }
 
@@ -175,7 +175,7 @@ fn what_opens_to_something_not_iterable_fails_the_read_with_its_error() {
         let [Pushed::Failed(error)] = &pushed[..] else {
             panic!("one failure: {pushed:?}")
         };
-        assert_eq!(error.code(), Some("TypeError"));
+        assert_eq!(error.code(), Some("type_error"));
     });
 }
 

@@ -28,7 +28,7 @@ mod source;
 mod tests;
 mod transform;
 
-use pyo3::types::{PyModule, PyModuleMethods as _};
+use pyo3::types::{PyModule, PyModuleMethods as _, PyTuple};
 use pyo3::{Bound, PyErr, pymodule};
 
 /// The extension module `rdlt._native`.
@@ -41,6 +41,9 @@ fn native(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
 /// Adds the extension's classes and functions to `module`.
 fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    // The codes a host keeps for its own findings, which no connector may give.
+    let host_codes = PyTuple::new(module.py(), rdlt_connector::wire::HOST_CODES)?;
+    module.add("HOST_CODES", host_codes)?;
     module.add_class::<host::NativeHost>()?;
     module.add_class::<pipeline::NativePipeline>()?;
     module.add_class::<run::NativeRun>()?;
