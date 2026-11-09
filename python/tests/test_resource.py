@@ -21,6 +21,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import rdlt
+from rdlt import _reading
 
 
 def host(tmp_path: Path, connectors: Path) -> rdlt.Host:
@@ -543,6 +544,32 @@ def test_a_task_an_async_resource_leaves_running_is_cancelled_and_cleans_up(
         host(tmp_path, connectors)
     ).run()
     assert cleaned == [True]
+
+
+def test_an_async_read_leaves_its_event_loop_running_while_the_engine_is_full() -> None:
+    class Full:
+        room = False
+        room_at_push: bool | None = None
+
+        def has_room(self) -> bool:
+            return self.room
+
+        def push(self, _item: object) -> bool:
+            self.room_at_push = self.room
+            return True
+
+    out = Full()
+
+    async def opening() -> None:
+        out.room = True
+
+    async def reading() -> AsyncIterator[object]:
+        opened = asyncio.create_task(opening())
+        yield {"n": 1}
+        await opened
+
+    asyncio.run(_reading.pushed(reading(), cast("_reading.Out", out)))
+    assert out.room_at_push is True
 
 
 def test_a_string_is_not_a_list_of_partitions(tmp_path: Path, connectors: Path) -> None:
