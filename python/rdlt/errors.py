@@ -14,6 +14,14 @@ class Error(Exception):
         self._report = report
         self._outcome = outcome
 
+    def __str__(self) -> str:
+        """The failure's message, and what it came from where that says more."""
+        report = self._report
+        first = report.causes[0] if report.causes else None
+        if first is None or first in report.message:
+            return report.message
+        return f"{report.message}: {first}"
+
     def __reduce__(self) -> tuple[type[Error], tuple[ErrorReport, Outcome | None]]:
         return type(self), (self._report, self._outcome)
 
