@@ -60,8 +60,8 @@ opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 parking_lot.workspace = true
 proptest.workspace = true
-rdlt-connector = { workspace = true, features = ["serve"] }
-rdlt-connector-reference.workspace = true
+rdlt-connector = { workspace = true, features = ["certify", "serve"] }
+rdlt-connector-reference = { workspace = true, features = ["certify"] }
 rdlt-testkit.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = [
@@ -78,8 +78,12 @@ tracing-subscriber.workspace = true
 [lints]
 workspace = true
 
-# A connector binary the facade's tests place, named apart from the command line's build of the
-# same file: a failing source.
+# Connector binaries the facade's tests place, named apart from the command line's builds of the
+# same files: a failing source, and the reference memory source and SQLite destination.
 [[example]]
 name = "failing_connector"
 path = "../rdlt-cli/examples/serve_failing.rs"
+
+[[example]]
+name = "reference_connector"
+path = "../rdlt-certify/examples/serve_reference.rs"
