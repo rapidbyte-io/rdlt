@@ -336,15 +336,15 @@ jobs:
       - run: just quint-verify
 
   # The full mutation pass: every crate's mutants against the tests of every package that links
-  # the crate, its own first. On CI's runners a mutant takes about half a minute, so the whole
-  # pass, some sixty runner-hours, runs over four nights: each crate's mutants are cut into
-  # shards of 15 to 80 minutes, and the shards of the large crates are taken in turn, a quarter a
-  # night, while the small crates run whole every night. `night` runs another night's quarter.
-  # A mutant no test catches runs every linking package's tests, six minutes, and a shard cut off
-  # at its limit reports none of its mutants: the limit is half again the longest shard.
+  # the crate, its own first. On CI's runners a mutant takes about a minute, so the pass runs over
+  # four nights: each crate's mutants are cut into shards, and the shards of the large crates are
+  # taken in turn, a quarter a night, while the small crates run whole every night. `night` runs
+  # another night's quarter. A mutant no test catches runs every linking package's tests, and a
+  # shard cut off at its limit reports none of its mutants: the limit is half again the longest
+  # shard, which grows with each package that joins the pass and links the crate.
   mutants:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
