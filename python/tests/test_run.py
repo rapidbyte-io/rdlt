@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import _thread
 import asyncio
+import contextlib
 import sqlite3
+import sys
 import threading
 import time
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -26,8 +29,15 @@ def endless(tmp_path: Path) -> dict[str, Json]:
     return document
 
 
-def no_commit_near(tmp_path: Path) -> dict[str, Json]:
-    return generated("no-commit-near", 1_000_000_000_000, tmp_path / "out.db")
+@contextlib.contextmanager
+def held_back(database: Path) -> Generator[sqlite3.Connection]:
+    """Holds the database's write lock: a run writing to it can commit nothing while it is held."""
+    lock = sqlite3.connect(database, timeout=30, isolation_level=None, check_same_thread=False)
+    try:
+        lock.execute("BEGIN EXCLUSIVE")
+        yield lock
+    finally:
+        lock.close()
 
 
 def test_a_run_commits_every_row(tmp_path: Path, connectors: Path) -> None:
@@ -215,34 +225,69 @@ def test_a_first_ctrl_c_stops_a_blocking_run_after_its_commit(
     assert time.monotonic() - started < 10
 
 
+class Noted:
+    """A standard error that sets `noted` when the first press's note is written to it."""
+
+    def __init__(self, noted: threading.Event) -> None:
+        self._noted = noted
+
+    def write(self, text: str) -> int:
+        """Notes the first press's note; nothing is kept."""
+        if "stopping" in text:
+            self._noted.set()
+        return len(text)
+
+    def flush(self) -> None:
+        """Nothing is buffered."""
+
+
 def test_a_second_ctrl_c_cancels_a_blocking_run_within_a_second(
-    tmp_path: Path, connectors: Path
+    tmp_path: Path, connectors: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run = rdlt.Pipeline.from_document(no_commit_near(tmp_path)).build(host(tmp_path, connectors))
-    running = run.start()
+    built = rdlt.Pipeline.from_document(endless(tmp_path)).build(host(tmp_path, connectors))
+    run = built.start()
+    first_commit(run)
+    entered = threading.Event()
+    noted = threading.Event()
+    ended = threading.Event()
     second: list[float] = []
+    monkeypatch.setattr(sys, "stderr", Noted(noted))
 
-    def interrupt() -> None:
-        time.sleep(0.5)
-        _thread.interrupt_main()
-        deadline = time.monotonic() + 30
-        while running.status().phase != "stopping":
-            assert time.monotonic() < deadline, "the run never began stopping"
-            time.sleep(0.01)
-        second.append(time.monotonic())
-        _thread.interrupt_main()
+    def waiting() -> None:
+        entered.set()
+        run.wait()
 
-    threading.Thread(target=interrupt, daemon=True).start()
-    with pytest.raises(KeyboardInterrupt):
-        running.wait()
-    assert second
-    assert time.monotonic() - second[0] < 1.5
+    with held_back(tmp_path / "out.db") as lock:
+        # The run can commit nothing while the lock is held, so it cannot end before the second
+        # press: each press is bound to `wait` being in progress, never to a timing gap.
+        def press() -> None:
+            try:
+                entered.wait(30)
+                time.sleep(0.2)
+                _thread.interrupt_main()
+                if noted.wait(30):
+                    second.append(time.monotonic())
+                    _thread.interrupt_main()
+                ended.wait(10)
+            finally:
+                # Where the second press cancels nothing, the run commits now, `wait` returns and
+                # the test fails.
+                lock.close()
+
+        presser = threading.Thread(target=press, daemon=True)
+        presser.start()
+        with pytest.raises(KeyboardInterrupt):
+            waiting()
+        raised = time.monotonic()
+        ended.set()
+        presser.join(30)
+    assert noted.is_set(), "the first press was not answered with its note"
+    assert second, "the second press was not made"
+    assert raised - second[0] < 1.5
 
 
-def test_a_timeout_ends_the_wait_at_once_though_no_commit_is_near(
-    tmp_path: Path, connectors: Path
-) -> None:
-    built = rdlt.Pipeline.from_document(no_commit_near(tmp_path)).build(host(tmp_path, connectors))
+def test_a_timeout_ends_the_wait_at_once(tmp_path: Path, connectors: Path) -> None:
+    built = rdlt.Pipeline.from_document(endless(tmp_path)).build(host(tmp_path, connectors))
 
     async def timed_out(run: rdlt.Run) -> None:
         async with asyncio.timeout(0.5):
@@ -282,17 +327,23 @@ def test_a_cancelled_await_raises_at_once_and_the_run_finishes_in_the_background
 def test_a_cancelled_await_leaves_the_run_cancellable_by_its_handle(
     tmp_path: Path, connectors: Path
 ) -> None:
-    built = rdlt.Pipeline.from_document(no_commit_near(tmp_path)).build(host(tmp_path, connectors))
+    built = rdlt.Pipeline.from_document(endless(tmp_path)).build(host(tmp_path, connectors))
 
     async def main() -> None:
         run = built.start()
-        waiting = asyncio.ensure_future(run.wait_async())
-        await asyncio.sleep(0.1)
-        waiting.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await waiting
-        run.cancel()
-        with pytest.raises(rdlt.StoppedError):
-            await asyncio.wait_for(run.wait_async(), timeout=30)
+        async for event in run.events():
+            if isinstance(event, rdlt.Event) and event.kind == "committed":
+                break
+        # The run can commit nothing while the lock is held, so the stop the cancellation asks
+        # for cannot end it before `cancel` does.
+        with held_back(tmp_path / "out.db"):
+            waiting = asyncio.ensure_future(run.wait_async())
+            await asyncio.sleep(0.1)
+            waiting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiting
+            run.cancel()
+            with pytest.raises(rdlt.StoppedError):
+                await asyncio.wait_for(run.wait_async(), timeout=30)
 
     asyncio.run(main())
