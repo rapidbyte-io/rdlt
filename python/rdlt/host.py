@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 from rdlt import _native
 from rdlt._transform import Transform, named_once
 from rdlt._weak import weakly_reached
+from rdlt.connector._source import factory, registered_once
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -118,6 +119,8 @@ class Host:
     """Python transforms a document may name by its `{"code": name}`, held in the open."""
     _held: tuple[object, ...] = field(default=(), repr=False)
     """What the native side reaches of Python's only weakly: this host holds it in the open."""
+    _connectors: tuple[tuple[str, type], ...] = field(default=(), repr=False)
+    """Python connector classes this host runs, by the ids they answer to, held in the open."""
     _origin: Host | None = field(default=None, init=False, repr=False, compare=False)
     """The host this one was derived from, whose compute pool it shares."""
     _handle: _native.Host | None = field(default=None, init=False, repr=False, compare=False)
@@ -147,6 +150,20 @@ class Host:
             else Transform(name, function, filters=False, output=None)
         )
         return self._replaced(_transforms=named_once(self._transforms, name, made))
+
+    def source(self, connector: type) -> Host:
+        """A host that also runs `connector`, a class `@source` made, in process under its id.
+
+        A document names it by that id; the connector is held in the open, for the native side
+        to reach only weakly.
+
+        Raises:
+            ValueError: another class answers to the id.
+        """
+        connectors = registered_once(self._connectors, connector)
+        if connectors is self._connectors:
+            return self
+        return self._replaced(_sources=(*self._sources, factory(connector)), _connectors=connectors)
 
     def _replaced(self, **changes: object) -> Host:
         """This host with `changes`, built on this host's compute pool."""

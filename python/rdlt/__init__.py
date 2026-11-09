@@ -26,6 +26,7 @@ from rdlt._pipeline import (
 )
 from rdlt._resource import Resource, resource
 from rdlt._transform import Transform, filter, transform  # noqa: A004
+from rdlt.connector import Local, local
 from rdlt.context import StreamContext, checkpoint
 from rdlt.cursor import Cursor
 from rdlt.errors import (
@@ -77,6 +78,7 @@ __all__ = [
     "InternalError",
     "Json",
     "Lagged",
+    "Local",
     "MemoryBudgetError",
     "Outcome",
     "Pipeline",
@@ -108,6 +110,7 @@ __all__ = [
     "checkpoint",
     "filter",
     "history",
+    "local",
     "merge",
     "pipeline",
     "replace",
