@@ -165,6 +165,7 @@ pub use sink::{
 pub use source::{
     ACKNOWLEDGED_CODE, InvalidPlan, POSITION_UNSENT, Partition, PartitionPlan, ReadRequest,
     ReadStream, Sent, Source, SourceConnector, SourceFactory, Streams, source_factory,
+    source_factory_from,
 };
 #[cfg(feature = "certify")]
 pub use source::{AcknowledgedReader, Acknowledging, acknowledging_source_factory};
