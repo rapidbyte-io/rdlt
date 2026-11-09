@@ -3941,6 +3941,7 @@ dependencies = [
  "rdlt",
  "rdlt-connector",
  "rdlt-connector-reference",
+ "rdlt-testkit",
  "schemars",
  "serde",
  "serde_json",

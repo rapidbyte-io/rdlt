@@ -6,7 +6,7 @@ use pyo3::types::{PyAnyMethods as _, PyTypeMethods as _};
 use rdlt_connector::prelude::*;
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination};
 
-use super::{Command, NativeRun, interrupted};
+use super::{Command, NativeRun, Reader, interrupted};
 use crate::embedded;
 use crate::pipeline::NativePipeline;
 use crate::pipeline::tests::{memory_document, memory_host};
@@ -155,6 +155,44 @@ fn an_event_read_for_a_wait_interrupted_as_it_ended_is_read_next() {
             assert_eq!(item["event"]["seq"], expected);
         }
     });
+}
+
+#[test]
+fn a_read_dropped_at_every_wait_leaves_its_subscription_whole() {
+    use rdlt_testkit::cancel::{self, Ended};
+    struct Subscribed {
+        reader: Reader,
+        _pipeline: rdlt::Pipeline,
+        _driving: tokio::task::JoinHandle<rdlt::Outcome>,
+    }
+    let points = cancel::at_every_point(
+        async || {
+            let host = memory_host();
+            let builder = rdlt::Pipeline::from_text(&memory_document("cut", 10), "test").unwrap();
+            let pipeline = builder.build(&host).await.unwrap();
+            let run = pipeline.start();
+            Subscribed {
+                reader: Reader::new(Some(run.events())),
+                _pipeline: pipeline,
+                _driving: tokio::spawn(run),
+            }
+        },
+        async |subscribed| subscribed.reader.readable().await,
+        async |subscribed, ended| {
+            if matches!(ended, Ended::Cancelled { .. }) {
+                assert_eq!(
+                    subscribed.reader.take(),
+                    None,
+                    "a dropped read took nothing"
+                );
+                assert!(subscribed.reader.readable().await);
+            }
+            let item = subscribed.reader.take().expect("an event was read");
+            let item: serde_json::Value = serde_json::from_str(&item).unwrap();
+            assert_eq!(item["event"]["seq"], 1);
+        },
+    );
+    assert_eq!(points, 1);
 }
 
 #[test]
