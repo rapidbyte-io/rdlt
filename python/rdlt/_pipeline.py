@@ -150,7 +150,7 @@ class Column:
     """What happens to a value that would change its table, or that it cannot hold."""
     on_unsupported: _UnsupportedWord | None = None
     """What happens to a change of it the destination cannot apply in place."""
-    nested: _NestedWord | Mapping[str, Json] | None = None
+    nested: _NestedWord | Mapping[str, Json] | None = field(default=None, hash=False)
     """How its nested values are stored: a word, or `{"normalize": {"max_depth": n}}`."""
     hint: str | Mapping[str, Json] | None = None
     """Its fixed type: a word such as `int64`, or `{"decimal": {"precision": p, "scale": s}}`."""
@@ -350,7 +350,7 @@ class Defaults:
     """How streams' rows reach their tables."""
     schema: SchemaRules | None = None
     """What schemas do."""
-    nested: _NestedWord | Mapping[str, Json] | None = None
+    nested: _NestedWord | Mapping[str, Json] | None = field(default=None, hash=False)
     """How nested values are stored: a word, or `{"normalize": {"max_depth": n}}`."""
 
     def _document(self) -> dict[str, Json]:

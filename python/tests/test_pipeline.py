@@ -198,6 +198,14 @@ def test_a_stream_and_its_access_are_hashable() -> None:
     assert hash(rdlt.Access(read=["/data"])) is not None
 
 
+def test_a_column_and_defaults_with_a_mapping_for_their_nesting_are_hashable() -> None:
+    column = rdlt.Column(nested={"normalize": {"max_depth": 2}})
+    defaults = rdlt.Defaults(nested={"normalize": {"max_depth": 2}})
+    assert hash(column) == hash(rdlt.Column())
+    assert hash(defaults) == hash(rdlt.Defaults())
+    assert column != rdlt.Column()
+
+
 def test_a_stream_with_a_mapping_for_its_nesting_is_hashable_and_still_compares() -> None:
     deep = rdlt.stream("t", nested={"normalize": {"max_depth": 9}})
     stream = rdlt.stream("t", nested={"normalize": {"max_depth": 2}})
