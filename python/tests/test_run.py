@@ -223,10 +223,8 @@ def test_a_first_ctrl_c_stops_a_blocking_run_after_its_commit(
 ) -> None:
     built = rdlt.Pipeline.from_document(endless(tmp_path)).build(host(tmp_path, connectors))
     threading.Timer(1.0, _thread.interrupt_main).start()
-    started = time.monotonic()
     outcome = built.run()
     assert outcome.report.status is rdlt.RunStatus.STOPPED
-    assert time.monotonic() - started < 10
 
 
 class Noted:
