@@ -16,6 +16,7 @@ __all__ = [
     "StreamContext",
     "Transform",
     "__version__",
+    "serve",
 ]
 
 __version__: str
@@ -141,3 +142,5 @@ class Run:
     def cancel(self) -> None: ...
     def detach(self, host: object) -> None: ...
     def wait_async(self) -> Awaitable[tuple[str, str | None]]: ...
+
+def serve(args: Sequence[str], factory: SourceFactory) -> str | None: ...
