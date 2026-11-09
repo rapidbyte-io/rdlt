@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import json
 import sqlite3
 import subprocess
@@ -11,6 +12,7 @@ import sys
 import textwrap
 import threading
 import time
+import weakref
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextvars import ContextVar
 from pathlib import Path
@@ -605,3 +607,44 @@ def test_a_partitioned_resource_that_takes_no_ctx_is_refused() -> None:
 
     with pytest.raises(TypeError, match="ctx"):
         rdlt.resource(partitions=lambda: ["a", "b"])(naive)
+
+
+class Holder:
+    """What a resource keeps, which holds the pipeline the resource serves."""
+
+    pipeline: rdlt.Pipeline | None = None
+
+    def read(self) -> Iterator[object]:
+        """Yields one row that says what it holds."""
+        yield {"held": self.pipeline is not None}
+
+
+def test_a_resource_holding_its_own_pipeline_is_collected(tmp_path: Path, connectors: Path) -> None:
+    holder = Holder()
+    rows = rdlt.resource(name="rows")(holder.read)
+    holder.pipeline = rdlt.pipeline("cycle", source=rows, destination=into_sqlite(tmp_path)).build(
+        host(tmp_path, connectors)
+    )
+    collected = weakref.ref(holder)
+    del holder, rows
+    gc.collect()
+    assert collected() is None
+
+
+def test_a_built_pipeline_and_its_run_keep_its_resource(tmp_path: Path, connectors: Path) -> None:
+    @rdlt.resource(name="rows")
+    def rows() -> Iterator[object]:
+        yield {"n": 1}
+
+    built = rdlt.pipeline("kept", source=rows, destination=into_sqlite(tmp_path)).build(
+        host(tmp_path, connectors)
+    )
+    kept = weakref.ref(rows)
+    del rows
+    gc.collect()
+    assert kept() is not None, "a built pipeline reads with its resource"
+    run = built.start()
+    del built
+    gc.collect()
+    assert kept() is not None, "a run in progress reads with its resource"
+    run.wait()

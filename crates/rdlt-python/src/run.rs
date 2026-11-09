@@ -53,7 +53,7 @@ enum Command {
     Status(oneshot::Sender<String>),
     Stop(rdlt::StopMode),
     /// Stops the run after its next commit and lets it finish though every handle is dropped,
-    /// holding what its connectors' secrets are resolved through until it ends.
+    /// holding the host its resources, transforms and secrets are reached through until it ends.
     Detach(Py<PyAny>),
     /// Drops the run now, which cancels it.
     Cancel,
@@ -153,8 +153,8 @@ async fn drive(
                     drop(reply.send(status));
                 }
                 Some(Command::Stop(mode)) => run.stop(mode),
-                Some(Command::Detach(store)) => {
-                    detached = running.then_some(store);
+                Some(Command::Detach(host)) => {
+                    detached = running.then_some(host);
                     run.stop(rdlt::StopMode::AfterCommit);
                 }
                 None if detached.is_some() && running => {
@@ -209,10 +209,10 @@ impl NativeRun {
     }
 
     /// Asks the run to stop after its next commit and lets it finish in the background, though
-    /// every handle to it is then dropped, as a cancelled await of it does; `store`, what its
-    /// connectors' secrets are resolved through, is held until it ends.
-    fn detach(&self, store: Py<PyAny>) {
-        drop(self.commands.send(Command::Detach(store)));
+    /// every handle to it is then dropped, as a cancelled await of it does; `host`, what its
+    /// resources, transforms and secrets are reached through, is held until it ends.
+    fn detach(&self, host: Py<PyAny>) {
+        drop(self.commands.send(Command::Detach(host)));
     }
 
     /// Waits, the GIL released, for the run's end: its outcome, and its error report where it
