@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
 from rdlt import _native
+from rdlt._transform import Transform, named_once
 from rdlt.host import Host, StrPath, _names, _paths
 
 if TYPE_CHECKING:
@@ -173,6 +174,10 @@ def _value(value: str | Mapping[str, Json]) -> Json:
     return value if isinstance(value, str) else dict(value)
 
 
+def _step(step: Mapping[str, Json] | Transform) -> dict[str, Json]:
+    return {"code": step.name} if isinstance(step, Transform) else dict(step)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Stream:
     """A stream a pipeline selects, and how it reads and writes it."""
@@ -200,10 +205,11 @@ class Stream:
     """The only top-level columns it loads, beside its keys and change columns."""
     exclude: str | Sequence[str] | None = None
     """Top-level columns it leaves out."""
-    transform: Sequence[Mapping[str, Json]] = field(default=(), repr=False, hash=False)
-    """What reshapes its rows, in order, each step as a document writes it: `{"sql": "..."}`,
-    `{"rename": {...}}`, `{"constant": {...}}`, `{"mask": {...}}` or `{"code": "name"}`. Never
-    shown: a mask's key is only ever a reference, but a step is the author's text."""
+    transform: Sequence[Mapping[str, Json] | Transform] = field(default=(), repr=False, hash=False)
+    """What reshapes its rows, in order: an `@rdlt.transform` or `@rdlt.filter`, or a step as a
+    document writes it: `{"sql": "..."}`, `{"rename": {...}}`, `{"constant": {...}}`,
+    `{"mask": {...}}` or `{"code": "name"}`. Never shown: a mask's key is only ever a reference,
+    but a step is the author's text."""
 
     def __post_init__(self) -> None:
         if self.include is not None:
@@ -229,7 +235,7 @@ class Stream:
                 "columns": columns or None,
                 "include": None if self.include is None else list(_names(self.include)),
                 "exclude": None if self.exclude is None else list(_names(self.exclude)),
-                "transform": [dict(step) for step in self.transform] or None,
+                "transform": [_step(step) for step in self.transform] or None,
             }
         )
 
@@ -248,7 +254,7 @@ def stream(
     columns: Mapping[str, Column] | None = None,
     include: str | Sequence[str] | None = None,
     exclude: str | Sequence[str] | None = None,
-    transform: Sequence[Mapping[str, Json]] = (),
+    transform: Sequence[Mapping[str, Json] | Transform] = (),
 ) -> Stream:
     """The stream `name`, read as `read` and written as `write`."""
     return Stream(
@@ -412,12 +418,16 @@ def pipeline(
             entries[resource.name] = entry
     named: set[str] = set()
     repeated: list[dict[str, Json]] = []
+    transforms: tuple[tuple[str, Transform], ...] = ()
     for given in streams:
         if given.name in named:
             repeated.append(given._document())
         else:
             named.add(given.name)
             entries[given.name] = {**entries.get(given.name, {}), **given._document()}
+        for step in given.transform:
+            if isinstance(step, Transform):
+                transforms = named_once(transforms, step.name, step)
     if not isinstance(source, Connector):
         resuming = {name for name, entry in entries.items() if entry.get("read") == "incremental"}
         factories.append(source_factory(selected, resuming))
@@ -439,7 +449,7 @@ def pipeline(
             }
         )
     )
-    return PipelineBuilder(document=document, sources=factories, held=held)
+    return PipelineBuilder(document=document, sources=factories, transforms=transforms, held=held)
 
 
 class PipelineBuilder:
@@ -451,11 +461,13 @@ class PipelineBuilder:
         document: Mapping[str, Json] | None = None,
         path: Path | None = None,
         sources: Sequence[_native.SourceFactory] = (),
+        transforms: Sequence[tuple[str, Transform]] = (),
         held: Sequence[object] = (),
     ) -> None:
         self._document = None if document is None else dict(document)
         self._path = path
         self._sources = tuple(sources)
+        self._transforms = tuple(transforms)
         self._held = tuple(held)
 
     def __repr__(self) -> str:
@@ -475,9 +487,14 @@ class PipelineBuilder:
         Raises:
             rdlt.Error: the subclass for the first mistake found, which never quotes a value.
         """
-        if self._sources or self._held:
+        if self._sources or self._transforms or self._held:
+            registered = host._transforms
+            for name, made in self._transforms:
+                registered = named_once(registered, name, made)
             host = host._replaced(
-                _sources=(*host._sources, *self._sources), _held=(*host._held, *self._held)
+                _sources=(*host._sources, *self._sources),
+                _transforms=registered,
+                _held=(*host._held, *self._held),
             )
         native = host._native()
         if self._path is not None:
