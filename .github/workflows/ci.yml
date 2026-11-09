@@ -123,9 +123,15 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Make a sandbox available
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        run: ./.github/sandbox.sh
+      # On Linux a test that needs a sandbox fails where none can be made, rather than skip.
       - run: just python-wheel "${PYTHON}"
         env:
           PYTHON: ${{ matrix.python }}
+          RDLT_REQUIRE_SANDBOX: ${{ runner.os == 'Linux' && '1' || '0' }}
 
   # The simulation's integration tests, built once in its profile into the archive every shard
   # runs.
