@@ -1,0 +1,130 @@
+"""The pytest plugin: one test per clause, a failure naming its clause."""
+
+from __future__ import annotations
+
+import gc
+import textwrap
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any, cast
+
+import pyarrow as pa
+import pyarrow.compute as pc
+import pytest
+
+import rdlt
+from rdlt.connector import Config, source, stream
+from rdlt.testing import certify_source, certify_transform
+from tests.connectors.tickets import Tickets
+from tests.launchers import tickets_launcher
+
+TESTS = Path(__file__).resolve().parents[1]
+
+CERTIFIED = """
+import sys
+sys.path.append({tests!r})
+from rdlt.testing import certify_source
+from tests.connectors.tickets import Tickets
+
+test_certify = certify_source(Tickets, config={{"pages": 6, "token": "t0ken"}})
+"""
+
+FORGETFUL = """
+import sys
+sys.path.append({tests!r})
+from rdlt.connector import Config, Cursor, Secret, checkpoint, source, stream
+from rdlt.testing import certify_source
+
+class Since(Cursor):
+    after: int = -1
+
+class Settings(Config):
+    pages: int
+
+@source(id="io.example.forgetful", config=Settings, version="1.0.0")
+class Forgetful:
+    def __init__(self, config: Settings) -> None:
+        self.pages = config.pages
+
+    def check(self) -> None:
+        pass
+
+    @stream(primary_key=["id"], cursor=Since)
+    def pages_read(self, since: Since):
+        for page in range(self.pages):  # ignores where it resumes
+            yield [{{"id": page * 10 + n}} for n in range(10)]
+            yield checkpoint(Since(after=page))
+
+test_certify = certify_source(Forgetful, config={{"pages": 6}})
+"""
+
+
+def test_each_clause_is_a_test_of_its_own(pytester: pytest.Pytester) -> None:
+    pytester.makepyfile(test_tickets=textwrap.dedent(CERTIFIED.format(tests=str(TESTS))))
+    result = pytester.runpytest_subprocess("-v")
+    result.stdout.fnmatch_lines(
+        ["*test_certify[[]S-RESUME[]] PASSED*", "*test_certify[[]K-SOURCE[]] *"]
+    )
+    assert result.ret == pytest.ExitCode.OK
+
+
+def test_a_broken_clause_fails_naming_itself(pytester: pytest.Pytester) -> None:
+    pytester.makepyfile(test_forgetful=textwrap.dedent(FORGETFUL.format(tests=str(TESTS))))
+    result = pytester.runpytest_subprocess("-v")
+    result.stdout.fnmatch_lines(["*test_certify[[]S-RESUME[]] FAILED*", "*S-RESUME*"])
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+
+
+def test_a_launcher_that_cannot_start_fails_the_kill_clause_alone(tmp_path: Path) -> None:
+    certification = certify_source(
+        Tickets, config={"pages": 6, "token": "t0ken"}, launcher=tmp_path / "absent"
+    )
+    assert certification.result("S-RESUME").outcome == "passed"
+    assert certification.result("K-SOURCE").outcome == "failed"
+
+
+def test_a_launcher_s_kill_clause_kills_the_installed_connector(tmp_path: Path) -> None:
+    certification = certify_source(
+        Tickets,
+        config={"pages": 400, "token": "t0ken"},
+        launcher=tickets_launcher(tmp_path / "launchers"),
+    )
+    killed = certification.result("K-SOURCE")
+    assert killed.outcome == "passed", killed
+    assert killed.note is not None
+    assert killed.note.startswith("killed: "), killed
+
+
+def test_a_certification_keeps_the_connector_it_certifies() -> None:
+    class PagesConfig(Config):
+        pages: int
+
+    @source(id="io.example.unheld", config=PagesConfig, version="1.0.0")
+    class Unheld:
+        def __init__(self, config: PagesConfig) -> None:
+            self.pages = config.pages
+
+        def check(self) -> None:
+            """Reads need nothing checked first."""
+
+        @stream(primary_key=["id"])
+        def rows(self) -> Iterator[object]:
+            yield {"id": self.pages}
+
+    certification = certify_source(Unheld, config={"pages": 1})
+    del Unheld
+    gc.collect()
+    assert certification.result("P-HANDSHAKE").outcome == "passed"
+
+
+def test_a_transform_s_clauses_pass() -> None:
+    @rdlt.transform()
+    def doubled(batch: pa.RecordBatch) -> pa.RecordBatch:
+        column = cast("pa.Array[Any]", batch.column("n"))
+        return batch.append_column("twice", pc.multiply(column, pa.scalar(2)))
+
+    inputs = [pa.record_batch({"id": [1, 2, 3], "n": [4, 5, 6]})]
+    certification = certify_transform(doubled, inputs=inputs)
+    outcomes = {clause: certification.result(clause).outcome for clause, _ in certification.clauses}
+    assert "failed" not in outcomes.values(), outcomes
+    assert outcomes["T-ROWS"] == "passed"

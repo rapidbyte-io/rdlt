@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["pytester"]
+
 # Appended, so `tests` is importable and the installed `rdlt` still comes first on the path.
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
