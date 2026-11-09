@@ -6,6 +6,7 @@ mod events;
 mod facade;
 mod ledger;
 mod metered;
+mod placement;
 #[cfg(feature = "local")]
 mod secrets;
 mod support;
