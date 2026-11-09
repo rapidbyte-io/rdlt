@@ -3102,6 +3102,7 @@ dependencies = [
  "portable-atomic",
  "rand 0.9.5",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -4080,6 +4081,7 @@ dependencies = [
  "arrow-buffer",
  "arrow-cast",
  "arrow-schema",
+ "base64 0.22.1",
  "http",
  "hyper",
  "hyper-util",

@@ -35,6 +35,7 @@ pub mod held;
 pub mod nested;
 pub mod process;
 pub mod required;
+pub mod secrets;
 pub mod spans;
 pub mod tls;
 

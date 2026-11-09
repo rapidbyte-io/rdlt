@@ -2558,6 +2558,7 @@ dependencies = [
  "arrow-buffer",
  "arrow-cast",
  "arrow-schema",
+ "base64 0.22.1",
  "parking_lot",
  "proptest",
  "rcgen",

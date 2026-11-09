@@ -2,6 +2,8 @@
 //! them.
 
 use std::future::IntoFuture;
+#[cfg(any(feature = "local", feature = "remote"))]
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -11,6 +13,17 @@ use rdlt::{
     SecretReference, SecretResolver, Side, Stream,
 };
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
+
+/// The example binary `name`, which the test build builds.
+#[cfg(any(feature = "local", feature = "remote"))]
+pub(crate) fn example(name: &str) -> PathBuf {
+    let tests = std::env::current_exe().expect("the test binary has a path");
+    tests
+        .ancestors()
+        .map(|dir| dir.join("examples").join(name))
+        .find(|example| example.is_file())
+        .expect("the test build builds the examples")
+}
 
 /// A host running the reference memory connectors in process.
 pub(crate) fn memory_host() -> Host {

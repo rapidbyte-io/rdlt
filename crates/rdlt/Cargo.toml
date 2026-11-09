@@ -56,12 +56,23 @@ wildmatch.workspace = true
 insta.workspace = true
 jsonschema.workspace = true
 metrics-util.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 parking_lot.workspace = true
 proptest.workspace = true
+rdlt-connector = { workspace = true, features = ["serve"] }
 rdlt-connector-reference.workspace = true
 rdlt-testkit.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util", "time"] }
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+# A connector binary the facade's tests place, named apart from the command line's build of the
+# same file: a failing source.
+[[example]]
+name = "failing_connector"
+path = "../rdlt-cli/examples/serve_failing.rs"
