@@ -129,3 +129,10 @@ operates its host.
 - An embedder who needs a placement the facade does not offer uses `rdlt-host` directly.
 - `build` discovers the source's catalog, and `Engine::check` discovers it again.
 - One compute pool serves every pipeline of a host.
+- What the facade and the command line say (events, reports, errors, tracing, an OpenTelemetry
+  export, the command line's streams and files) is held to the host's scrub, and to its refusal
+  of names that contain a secret, by a secret scan that fails a pipeline at each boundary, and that is
+  shown to find a value the host was not told is a secret in each of those places. Connector
+  text reaches the export only as the stream and partition names spans carry.
+- The README starts from the facade and the command line; the engine's and the host's own APIs
+  are for what the facade does not cover.
