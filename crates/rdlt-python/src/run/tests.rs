@@ -144,7 +144,7 @@ fn a_status_says_where_the_run_stands() {
         let run = endless(py, "status");
         let status: serde_json::Value = serde_json::from_str(&run.status(py).unwrap()).unwrap();
         assert!(status.get("phase").is_some(), "{status}");
-        run.cancel();
+        run.cancel(py).unwrap();
     });
 }
 
@@ -153,7 +153,7 @@ fn a_run_that_ended_still_answers_after_a_cancel() {
     embedded::with(|py| {
         let run = started(py, &memory_document("late-cancel", 3), memory_host());
         run.wait(py).expect("it ends");
-        run.cancel();
+        run.cancel(py).unwrap();
         let status: serde_json::Value = serde_json::from_str(&run.status(py).unwrap()).unwrap();
         assert_eq!(status["phase"]["ended"]["status"], "succeeded", "{status}");
         let again = run.wait(py).expect("its outcome stays");
@@ -190,7 +190,7 @@ fn a_first_interrupt_stops_after_commit_and_a_second_cancels() {
 fn a_stop_after_commit_ends_the_run_stopped() {
     embedded::with(|py| {
         let run = endless(py, "after_commit");
-        run.stop("after_commit").unwrap();
+        run.stop(py, "after_commit").unwrap();
         let (outcome, error) = run.wait(py).expect("it ends");
         assert_eq!(error, None, "{outcome}");
         let outcome: serde_json::Value = serde_json::from_str(&outcome).unwrap();
@@ -202,7 +202,7 @@ fn a_stop_after_commit_ends_the_run_stopped() {
 fn a_stop_now_ends_the_run_cancelled() {
     embedded::with(|py| {
         let run = endless(py, "now");
-        run.stop("now").unwrap();
+        run.stop(py, "now").unwrap();
         let (outcome, error) = run.wait(py).expect("it ends");
         let outcome: serde_json::Value = serde_json::from_str(&outcome).unwrap();
         assert_eq!(outcome["report"]["status"], "cancelled");
@@ -215,7 +215,7 @@ fn a_stop_now_ends_the_run_cancelled() {
 fn a_stop_names_a_mode_that_exists() {
     embedded::with(|py| {
         let run = started(py, &memory_document("modes", 1), memory_host());
-        let refused = run.stop("sideways").unwrap_err();
+        let refused = run.stop(py, "sideways").unwrap_err();
         assert!(refused.is_instance_of::<PyValueError>(py));
         assert_eq!(
             refused.value(py).str().unwrap().to_string(),
@@ -294,7 +294,7 @@ fn a_subscriber_keeps_its_run_going_until_it_is_dropped_too() {
 fn a_cancelled_run_answers_a_stopped_error() {
     embedded::with(|py| {
         let run = endless(py, "cancelled");
-        run.cancel();
+        run.cancel(py).unwrap();
         let raised = run.wait(py).unwrap_err();
         assert_eq!(
             raised.get_type(py).name().unwrap().to_string(),

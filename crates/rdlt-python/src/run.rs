@@ -191,8 +191,10 @@ impl NativeRun {
             .ok_or_else(|| errors::stopped(py))
     }
 
-    /// Asks the run to stop: `after_commit`, or `now`.
-    fn stop(&self, mode: &str) -> Result<(), PyErr> {
+    /// Asks the run to stop: `after_commit`, or `now`; refused in a forked child, whose copy of
+    /// the run has no driver to ask.
+    fn stop(&self, py: Python<'_>, mode: &str) -> Result<(), PyErr> {
+        runtime::get(py)?;
         let mode = match mode {
             "after_commit" => rdlt::StopMode::AfterCommit,
             "now" => rdlt::StopMode::Now,
@@ -222,9 +224,12 @@ impl NativeRun {
         Ok((ended.outcome.clone(), ended.error.clone()))
     }
 
-    /// Cancels the run now: what it staged and did not commit is discarded at the next open.
-    fn cancel(&self) {
+    /// Cancels the run now: what it staged and did not commit is discarded at the next open;
+    /// refused in a forked child, whose copy of the run has no driver to ask.
+    fn cancel(&self, py: Python<'_>) -> Result<(), PyErr> {
+        runtime::get(py)?;
         drop(self.commands.send(Command::Cancel));
+        Ok(())
     }
 
     /// An awaitable of what `wait` answers, completed on the event loop's thread; dropping it,
