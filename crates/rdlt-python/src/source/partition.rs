@@ -136,6 +136,15 @@ impl PartitionOut {
         pushed(py, item, self.limits, &sent)
     }
 
+    /// Whether a push would be answered without waiting for the engine, as one is once the read
+    /// has gone.
+    fn has_room(&self) -> bool {
+        self.sent
+            .lock()
+            .as_ref()
+            .is_none_or(|sent| sent.is_closed() || sent.capacity() > 0)
+    }
+
     /// Says the read yielded everything, and closes its channel.
     fn finished(&self) {
         self.told.store(true, Ordering::Release);

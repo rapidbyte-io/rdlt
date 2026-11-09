@@ -2,12 +2,13 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
+use parking_lot::Mutex;
 use pyo3::types::PyAnyMethods as _;
 use pyo3::{Py, PyAny, Python};
-use rdlt_connector::ConnectorErrorKind;
+use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use tokio::sync::mpsc;
 
-use super::{Pushed, Reading};
+use super::{PartitionOut, Pushed, Reading};
 use crate::embedded;
 use crate::json::JsonLimits;
 use crate::runtime;
@@ -391,4 +392,28 @@ fn a_checkpoint_keeps_its_cursor_s_numbers_as_it_was_given_them() {
             .unwrap();
         assert_eq!(checkpoint.get().cursor().get(), text);
     });
+}
+
+#[test]
+fn a_read_has_room_until_its_channel_fills_and_again_once_it_has_gone() {
+    let (sent, mut received) = mpsc::channel(1);
+    let out = PartitionOut {
+        sent: Mutex::new(Some(sent.clone())),
+        limits: LIMITS,
+        told: Arc::new(AtomicBool::new(false)),
+    };
+    let push = || Pushed::Failed(ConnectorError::internal("a push"));
+    assert!(out.has_room());
+    sent.try_send(push()).unwrap();
+    assert!(!out.has_room());
+    drop(received.try_recv().unwrap());
+    assert!(out.has_room());
+    sent.try_send(push()).unwrap();
+    drop(received);
+    assert!(
+        out.has_room(),
+        "a push to a read that has gone answers at once"
+    );
+    out.finished();
+    assert!(out.has_room());
 }

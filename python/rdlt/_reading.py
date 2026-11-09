@@ -13,12 +13,21 @@ import threading
 from collections.abc import AsyncIterable, Callable, Iterable
 from typing import Protocol, cast
 
+# An async read waits for room in the engine with its event loop free: for this many turns of
+# the loop, since room usually comes at once, then with this many seconds between asks.
+_TURNS_BEFORE_PAUSING = 100
+_PAUSE = 0.001
 
-class _Out(Protocol):
+
+class Out(Protocol):
     """The native side of a partition's read."""
 
     def push(self, item: object) -> bool:
         """Pushes what the read yielded; false once the read has ended or the item failed it."""
+        ...
+
+    def has_room(self) -> bool:
+        """Whether a push would be answered without waiting for the engine."""
         ...
 
     def finished(self) -> None:
@@ -74,7 +83,7 @@ def start(  # noqa: PLR0917
     partition: str | None,
     cursor: str | None,
     context: object,
-    out: _Out,
+    out: Out,
 ) -> None:
     """Reads the partition on a daemon thread of its own named `name`."""
     _thread.start_new_thread(_read, (name, stream, partition, cursor, context, out))
@@ -86,7 +95,7 @@ def _read(  # noqa: PLR0917
     partition: str | None,
     cursor: str | None,
     context: object,
-    out: _Out,
+    out: Out,
 ) -> None:
     """Reads the partition to its end and says how it ended."""
     threading.current_thread().name = name
@@ -102,7 +111,7 @@ def _read(  # noqa: PLR0917
         out.finished()
 
 
-def _read_sync(opened: Iterable[object], out: _Out) -> None:
+def _read_sync(opened: Iterable[object], out: Out) -> None:
     iterator = iter(opened)
     try:
         for item in iterator:
@@ -114,21 +123,30 @@ def _read_sync(opened: Iterable[object], out: _Out) -> None:
             close()
 
 
-def _read_async(opened: AsyncIterable[object], out: _Out) -> None:
-    asyncio.run(_pushed(opened, out))
+def _read_async(opened: AsyncIterable[object], out: Out) -> None:
+    asyncio.run(pushed(opened, out))
 
 
-async def _pushed(opened: AsyncIterable[object], out: _Out) -> None:
+async def pushed(opened: AsyncIterable[object], out: Out) -> None:
     """Reads `opened` in one task: a timeout or a context variable may span its yields."""
     iterator = aiter(opened)
     try:
         async for item in iterator:
+            await _room(out)
             if not out.push(item):
                 return
     finally:
         aclose = getattr(iterator, "aclose", None)
         if aclose is not None:
             await aclose()
+
+
+async def _room(out: Out) -> None:
+    """Waits for the engine to have room, so what else runs on the loop keeps running."""
+    turns = 0
+    while not out.has_room():
+        await asyncio.sleep(0 if turns < _TURNS_BEFORE_PAUSING else _PAUSE)
+        turns += 1
 
 
 def call(function: Callable[..., object], arguments: tuple[object, ...], answer: _Answer) -> None:
