@@ -297,3 +297,20 @@ async fn a_host_starts_one_compute_pool_for_every_pipeline_built_on_it() {
     let again = host.environment().await.expect("the pool is the host's");
     assert!(Arc::ptr_eq(&first, &again));
 }
+
+#[tokio::test]
+async fn a_host_on_another_s_compute_pool_runs_on_the_same_pool() {
+    let first = Host::new();
+    let second = Host::new().compute_of(&first);
+    let third = Host::new();
+    let pool = first.environment().await.unwrap();
+    let shared = second.environment().await.unwrap();
+    assert!(
+        Arc::ptr_eq(&pool, &shared),
+        "the second host started no pool of its own"
+    );
+    assert!(
+        !Arc::ptr_eq(&pool, &third.environment().await.unwrap()),
+        "a host of its own starts its own"
+    );
+}
