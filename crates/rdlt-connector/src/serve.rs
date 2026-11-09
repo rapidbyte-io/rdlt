@@ -36,7 +36,7 @@ use rdlt_wire::flow::Transport;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tower::ServiceExt as _;
 
-pub use binary::serve;
+pub use binary::{ServeFailed, serve};
 pub use listen::{Listener, Listening, Log, serve_listener};
 
 use crate::destination::DestinationFactory;

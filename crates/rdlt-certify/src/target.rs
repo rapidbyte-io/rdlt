@@ -2,12 +2,13 @@
 //! listening at an endpoint.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_connector::wire::TRANSPORT;
-use rdlt_connector::{BoxFuture, ConnectorError, ConnectorErrorKind, Role};
+use rdlt_connector::{BoxFuture, ConnectorError, ConnectorErrorKind, ConnectorId, Role};
 use rdlt_host::remote::{CONNECTOR_LOST, Client, DEADLINE_EXCEEDED, client};
 use rdlt_host::{Connection, ConnectorRef, Local, Options, Remote, Stream, Witness};
 use rdlt_wire::Limits;
@@ -27,6 +28,8 @@ pub struct Target {
     kill_seed: Option<u64>,
     kill_timeout: Option<Duration>,
     credit_watch: Option<Duration>,
+    /// What the kill clauses run against, where not this target.
+    killed: Option<Box<Target>>,
 }
 
 enum Reach {
@@ -95,6 +98,12 @@ impl Target {
         Self::reaching(Reach::Spawned { local, reference })
     }
 
+    /// The connector binary at `path`, answering to `id`, spawned for each connection with this
+    /// process's own access: a test certifying its own build trusts it as itself.
+    pub fn trusted_binary(id: ConnectorId, path: impl Into<PathBuf>) -> Self {
+        Self::spawned(Local::trusting_binaries(), ConnectorRef::new(id).path(path))
+    }
+
     /// The connector listening at `reference`'s endpoint, dialed by `remote`.
     pub fn listening(remote: Remote, reference: ConnectorRef) -> Self {
         Self::reaching(Reach::Listening { remote, reference })
@@ -107,6 +116,7 @@ impl Target {
             kill_seed: None,
             kill_timeout: None,
             credit_watch: None,
+            killed: None,
         }
     }
 
@@ -123,6 +133,20 @@ impl Target {
     pub fn kill_seed(mut self, seed: u64) -> Self {
         self.kill_seed = Some(seed);
         self
+    }
+
+    /// Runs the kill clauses against `target`, with its own kill seed and bound, rather than this
+    /// target: a certification that checks its other clauses against a connector served in this
+    /// process kills its installed binary, which a kill ends rather than cuts.
+    #[must_use]
+    pub fn kill_target(mut self, target: Target) -> Self {
+        self.killed = Some(Box::new(target));
+        self
+    }
+
+    /// What the kill clauses run against: the kill target, where one is chosen, else this one.
+    pub(crate) fn killed(&self) -> &Target {
+        self.killed.as_deref().unwrap_or(self)
     }
 
     /// Gives each kill clause `bound` for all its loads, rather than 300 s: a connector slower
@@ -269,7 +293,7 @@ impl Target {
     /// engine admits within.
     pub(crate) fn provider(
         &self,
-        id: &rdlt_connector::ConnectorId,
+        id: &ConnectorId,
         kills: &rdlt_host::Kills,
         admitted: &Limits,
     ) -> (Box<dyn rdlt_host::Provider>, ConnectorRef) {

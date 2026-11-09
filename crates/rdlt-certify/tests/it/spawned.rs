@@ -7,7 +7,7 @@ use rdlt_certify::{
 };
 use rdlt_connector::serve::Served;
 use rdlt_connector::{BoxFuture, ConnectorId, TableRef, source_factory};
-use rdlt_connector_reference::{MemorySource, sqlite};
+use rdlt_connector_reference::{GeneratorSource, MemorySource, sqlite};
 use rdlt_host::{ConnectorRef, Local};
 use serde_json::json;
 
@@ -84,6 +84,21 @@ async fn a_spawned_source_killed_as_it_loads_is_spawned_again_and_resumes() {
         .map(|result| result.clause.id)
         .collect();
     assert_eq!(noted, ["P-CREDIT", "K-SOURCE"], "{report}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kill_target_takes_the_kill_clause_from_a_connector_served_in_process() {
+    let id = ConnectorId::parse("io.rapidbyte.generator").expect("a valid id");
+    let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
+    let installed = Target::spawned(local, ConnectorRef::new(id).path(example("serve_source")));
+    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
+        .credit_watch(crate::BRIEF)
+        .kill_target(installed);
+    let report = certify_source(&target, crate::killed::read_as_killed(11)).await;
+    report.assert_passed();
+    // Served in process, the source would be cut; spawned, it is killed.
+    let note = report.note("K-SOURCE").expect("a note");
+    assert!(note.starts_with("killed: "), "{report}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
