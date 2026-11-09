@@ -7,6 +7,10 @@ use tokio::process::Command;
 
 use crate::support::{example, guarded, listening};
 
+/// How long a certification or a wait for its end may take in a test here, past a slow run's
+/// own bounds: under the test runner's limit, so a hang fails as a test does.
+const CERTIFYING: std::time::Duration = std::time::Duration::from_secs(280);
+
 /// Runs `rdlt certify` with `args`, as the tests of what it certifies run it: a configuration
 /// given after `--config` is written to its standard input, since it takes none on its command
 /// line, and a connector's binary is one the tests trust, unless `args` say how it is confined.
@@ -74,9 +78,9 @@ async fn certify_exactly(args: &[&str], input: &str, env: &[(&str, &str)]) -> Ou
     // It may end without reading its input: a closed pipe is no failure of the test.
     stdin.write_all(input.as_bytes()).await.ok();
     drop(stdin);
-    certifying
-        .wait_with_output()
+    tokio::time::timeout(CERTIFYING, certifying.wait_with_output())
         .await
+        .expect("rdlt certify ends within its bound")
         .expect("rdlt certify ends")
 }
 
@@ -245,6 +249,33 @@ async fn a_connector_serving_no_role_is_reported_as_certifying_nothing() {
         Some(2),
         "{report}"
     );
+}
+
+#[tokio::test]
+async fn a_failure_of_the_command_line_is_json_on_standard_output_under_output_json() {
+    let cases: [(&[&str], i32, &str); 2] = [
+        (&["/nonexistent/connector", "--output", "json"], 74, "io"),
+        (
+            &["connector", "--host", "host.yaml", "--output", "json"],
+            64,
+            "usage",
+        ),
+    ];
+    for (args, exit, kind) in cases {
+        let binary = example("serve_reference");
+        let binary = binary.to_str().expect("a UTF-8 path");
+        let args: Vec<&str> = args
+            .iter()
+            .map(|arg| if *arg == "connector" { binary } else { arg })
+            .collect();
+        let output = certify(&args).await;
+        assert_eq!(code(&output), Some(exit), "{args:?}");
+        assert!(output.stderr.is_empty(), "{args:?}");
+        let said: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("one JSON value");
+        assert_eq!(said["error"]["kind"], kind, "{said}");
+        assert!(said["error"]["message"].is_string(), "{said}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -538,10 +569,20 @@ async fn a_connector_or_configuration_that_cannot_be_read_exits_seventy_four() {
     let unexecutable = directory.path().join("connector");
     std::fs::write(&unexecutable, "not a program").expect("the file writes");
     let unexecutable = unexecutable.to_str().expect("a UTF-8 path");
-    let cases: [&[&str]; 3] = [
+    let unreadable_tls = [
+        "grpcs://localhost:1",
+        "--tls-cert",
+        "/nonexistent/cert.pem",
+        "--tls-key",
+        "/nonexistent/key.pem",
+        "--tls-ca",
+        "/nonexistent/ca.pem",
+    ];
+    let cases: [&[&str]; 4] = [
         &["/nonexistent/connector"],
         &[binary, "--config-file", "/nonexistent/config.json"],
         &[unexecutable],
+        &unreadable_tls,
     ];
     for args in cases {
         let output = certify(args).await;
@@ -565,8 +606,10 @@ async fn an_output_closed_before_it_is_written_ends_quietly() {
             std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
         )
         .stdout(writer)
-        .status()
+        .status();
+    let status = tokio::time::timeout(CERTIFYING, status)
         .await
+        .expect("rdlt certify ends within its bound")
         .expect("rdlt certify runs");
     assert_eq!(status.code(), Some(0));
 }
@@ -582,8 +625,10 @@ async fn an_output_that_cannot_be_written_exits_seventy_four() {
             std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
         )
         .stdout(full)
-        .status()
+        .status();
+    let status = tokio::time::timeout(CERTIFYING, status)
         .await
+        .expect("rdlt certify ends within its bound")
         .expect("rdlt certify runs");
     assert_eq!(status.code(), Some(74));
 }
@@ -735,7 +780,10 @@ async fn an_interrupted_or_terminated_certification_stops_its_connectors_before_
         }
         let pid = i32::try_from(certifying.id().expect("it runs")).expect("a process id");
         nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), signal).expect("it is signalled");
-        let status = certifying.wait().await.expect("the certification ends");
+        let status = tokio::time::timeout(CERTIFYING, certifying.wait())
+            .await
+            .expect("the certification ends within its bound")
+            .expect("the certification ends");
         assert_eq!(status.code(), Some(exits), "{signal}");
         assert_eq!(surviving(directory.path()), Vec::<i32>::new(), "{signal}");
     }

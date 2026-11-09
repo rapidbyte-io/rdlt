@@ -6,7 +6,8 @@ use std::process::Output;
 use std::time::Duration;
 
 use rdlt_testkit::tls::Pki;
-use tokio::process::Child;
+use tokio::io::{BufReader, Lines};
+use tokio::process::{Child, ChildStderr};
 
 /// The example binary `name`, which the test build builds.
 pub(crate) fn example(name: &str) -> PathBuf {
@@ -28,6 +29,24 @@ pub(crate) async fn listening(pki: &Pki) -> (Child, String) {
 pub(crate) fn guarded(child: &Child) {
     rdlt_testkit::process::guard(child.id().expect("the child runs"))
         .expect("the child is guarded");
+}
+
+/// How long a test waits for something the run says it did.
+pub(crate) const SAYS: Duration = Duration::from_secs(120);
+
+/// Waits for `stderr` to say `what`, within [`SAYS`].
+pub(crate) async fn said(stderr: &mut Lines<BufReader<ChildStderr>>, what: &str) {
+    let telling = async {
+        while let Some(line) = stderr.next_line().await.expect("stderr reads") {
+            if line.contains(what) {
+                return;
+            }
+        }
+        panic!("rdlt ended without saying: {what}");
+    };
+    tokio::time::timeout(SAYS, telling)
+        .await
+        .expect("it said so within its bound");
 }
 
 /// A scratch directory: its `connectors/` holds the connectors copied in, its XDG directories
@@ -69,10 +88,25 @@ impl Scratch {
     /// scratch's, run in the scratch, leading a process group of its own.
     pub(crate) fn command(&self, args: &[&str]) -> tokio::process::Command {
         let mut command = self.bare_command(args);
+        self.trusting(&mut command);
+        command
+    }
+
+    /// `command`, its host's connectors the scratch's, run trusted.
+    pub(crate) fn trusting(&self, command: &mut tokio::process::Command) {
         command
             .arg("--connectors")
             .arg(self.path().join("connectors"))
             .arg("--trust-binaries");
+    }
+
+    /// As [`bare_command`](Self::bare_command), started by `wrapper`, which goes on to run it.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn wrapped(&self, wrapper: &str, args: &[&str]) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new(wrapper);
+        command.arg(env!("CARGO_BIN_EXE_rdlt"));
+        self.in_scratch(&mut command, args);
+        self.trusting(&mut command);
         command
     }
 
@@ -80,6 +114,13 @@ impl Scratch {
     /// of the host's is passed.
     pub(crate) fn bare_command(&self, args: &[&str]) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_rdlt"));
+        self.in_scratch(&mut command, args);
+        command
+    }
+
+    /// `command` given `args`, run in the scratch, with its XDG directories, and leading a
+    /// process group of its own.
+    fn in_scratch(&self, command: &mut tokio::process::Command, args: &[&str]) {
         command
             .args(args)
             .current_dir(self.path())
@@ -96,16 +137,26 @@ impl Scratch {
             .stderr(std::process::Stdio::piped())
             .process_group(0)
             .kill_on_drop(true);
-        command
     }
 
     /// What `rdlt args` printed and exited with, within two minutes.
     pub(crate) async fn rdlt(&self, args: &[&str]) -> Output {
-        let child = self.command(args).spawn().expect("rdlt starts");
-        guarded(&child);
-        tokio::time::timeout(Duration::from_secs(120), child.wait_with_output())
-            .await
-            .expect("rdlt ends within its bound")
-            .expect("rdlt's output reads")
+        output_of(&mut self.command(args)).await
     }
+}
+
+/// `work`, which ends within [`SAYS`]; a test fails rather than hangs.
+pub(crate) async fn bounded<F: Future>(work: F) -> F::Output {
+    tokio::time::timeout(SAYS, work)
+        .await
+        .expect("it ends within its bound")
+}
+
+/// What `command`, leading a process group of its own, printed and exited with, within [`SAYS`].
+pub(crate) async fn output_of(command: &mut tokio::process::Command) -> Output {
+    let child = command.spawn().expect("rdlt starts");
+    guarded(&child);
+    bounded(child.wait_with_output())
+        .await
+        .expect("rdlt's output reads")
 }

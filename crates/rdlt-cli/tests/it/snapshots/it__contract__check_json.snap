@@ -1,0 +1,28 @@
+---
+source: crates/rdlt-cli/tests/it/contract.rs
+expression: "serde_json::to_string_pretty(&checked).unwrap()"
+---
+{
+  "destination": {
+    "id": "io.rapidbyte.sqlite",
+    "placement": {
+      "process": {
+        "path": "<path>"
+      }
+    },
+    "version": "0.0.0"
+  },
+  "pipeline": "split",
+  "source": {
+    "id": "io.rapidbyte.memory",
+    "placement": {
+      "process": {
+        "path": "<path>"
+      }
+    },
+    "version": "0.0.0"
+  },
+  "streams": [
+    "users"
+  ]
+}

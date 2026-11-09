@@ -28,6 +28,7 @@ pub mod canon;
 pub mod decode;
 pub mod draw;
 pub mod drawn;
+pub mod failing;
 #[cfg(feature = "fake")]
 pub mod fake;
 pub mod held;
