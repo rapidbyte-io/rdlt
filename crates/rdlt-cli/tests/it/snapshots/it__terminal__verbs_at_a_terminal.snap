@@ -1,0 +1,38 @@
+---
+source: crates/rdlt-cli/tests/it/terminal.rs
+expression: "screens.join(\"\\n\\n\")"
+---
+check:
+✓ shown  memory → sqlite · 1 stream: users
+
+discover:
+  STREAM   READS   KEY   COLUMNS
+  users    full    -     -
+
+connectors:
+  CONNECTOR                  PATH
+  rdlt-connector-generator   <scratch>/connectors/rdlt-connector-generator
+  rdlt-connector-memory      <scratch>/connectors/rdlt-connector-memory
+  rdlt-connector-sqlite      <scratch>/connectors/rdlt-connector-sqlite
+
+  Local connectors run trusted, in no sandbox
+  Remote connectors are not reached
+
+init:
+✓ Created written.yaml
+  Next: rdlt check written.yaml
+  Next: rdlt run written.yaml
+
+connector new:
+✓ Created ./rdlt-connector-tickets
+  Next: cd ./rdlt-connector-tickets && cargo test
+
+state reset:
+✓ Reset  at epoch 2
+
+  RESET    NAME
+  stream   users
+
+failed check:
+✗ the document absent.yaml cannot be read: No such file or directory (os error 2)
+  hint: `rdlt init` writes a starter document

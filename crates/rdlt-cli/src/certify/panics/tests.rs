@@ -1,5 +1,9 @@
+use std::io::Write as _;
 use std::sync::Arc;
+use std::sync::mpsc;
+use std::time::Duration;
 
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use parking_lot::Mutex;
 
 use super::report;
@@ -72,4 +76,53 @@ fn a_panic_of_this_process_is_said_on_one_line_scrubbed_of_its_secrets() {
         !said.contains("hunter2") && !said.contains('\u{1b}'),
         "{said}"
     );
+}
+
+/// A process that contains its panics, as the command line does, and panics with its standard
+/// error stuck.
+#[test]
+#[ignore = "run by the test below, as the process whose standard error nobody reads"]
+fn stand_in_that_panics_with_nobody_reading() {
+    super::contain();
+    assert!(
+        std::thread::spawn(|| panic!("nobody reads this"))
+            .join()
+            .is_err()
+    );
+}
+
+/// A pipe whose buffer is full and whose reader reads nothing: its write end, blocking, for a
+/// child's standard error, and the reader, to hold while the child runs.
+fn stuck_pipe() -> (std::io::PipeWriter, std::io::PipeReader) {
+    let (reader, mut writer) = std::io::pipe().expect("a pipe");
+    fcntl(&writer, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).expect("the pipe does not block");
+    loop {
+        match writer.write(&[b'x'; 4096]) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("the pipe fills: {error}"),
+        }
+    }
+    fcntl(&writer, FcntlArg::F_SETFL(OFlag::empty())).expect("the pipe blocks again");
+    (writer, reader)
+}
+
+/// A panic's line is given up on where nobody reads it: the process goes on past it.
+#[test]
+fn a_panic_holds_up_nothing_where_nobody_reads_its_line() {
+    let (stuck, _reader) = stuck_pipe();
+    let mut command = rdlt_testkit::process::stand_in(
+        "certify::panics::tests::stand_in_that_panics_with_nobody_reading",
+    );
+    command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(stuck));
+    let mut child = rdlt_testkit::process::guarded(&mut command).expect("the stand-in runs");
+    let (answer, answered) = mpsc::channel();
+    std::thread::spawn(move || answer.send(child.wait()));
+    let status = answered
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the stand-in ends within its bound")
+        .expect("it ends");
+    assert!(status.success(), "{status:?}");
 }

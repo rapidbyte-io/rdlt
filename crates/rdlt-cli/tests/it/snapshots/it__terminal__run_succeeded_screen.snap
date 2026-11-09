@@ -1,0 +1,9 @@
+---
+source: crates/rdlt-cli/tests/it/terminal.rs
+expression: "normalized(finished.screen(), &scratch)"
+---
+✓ Succeeded  ended
+  3 rows · <bytes> · 1 commit · <time> · <rate>
+
+  STREAM   ROWS   BYTES   COMMITS
+  users    3      <bytes>    1

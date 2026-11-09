@@ -168,7 +168,7 @@ async fn two_sigints_stop_at_once_and_exit_130() {
 }
 
 /// The children of the process `parent`, as `pgrep` lists them.
-fn children(parent: u32) -> Vec<i32> {
+pub(crate) fn children(parent: u32) -> Vec<i32> {
     let listed = std::process::Command::new("pgrep")
         .args(["-P", &parent.to_string()])
         .output()

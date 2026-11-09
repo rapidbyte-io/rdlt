@@ -1,8 +1,10 @@
 use rdlt_certify::{Clause, ClauseResult, Outcome, Report, Verdict};
 
 use super::session::within;
-use super::{Require, bound, code, ran, verdict};
+use super::{Require, Watch, bound, code, ran, verdict};
 use crate::Exit;
+use crate::output::Mode;
+use crate::ui::Ui;
 
 fn report(outcomes: &[Outcome]) -> Report {
     let clause = Clause {
@@ -153,4 +155,61 @@ fn a_complete_certification_is_required_unless_part_is_asked_for() {
     );
     assert_eq!(required(&["--require", "partial"]), Some(Require::Partial));
     assert_eq!(required(&["--require", "some"]), None);
+}
+
+/// A signal cuts a role short with results the last tick has not shown: every one is waited for,
+/// with the painter behind, so a certification stopped from outside has said what it found.
+#[test]
+fn what_a_signal_cuts_short_has_said_everything_it_found_though_the_painter_is_behind() {
+    let (ui, queue) = Ui::queued();
+    let observed = rdlt_certify::Observed::new();
+    let found = 20;
+    for _ in 0..found {
+        observed.tell(ClauseResult {
+            clause: Clause {
+                id: "S-CHECK",
+                statement: "a statement",
+                unless: "",
+            },
+            outcome: Outcome::Passed,
+            note: None,
+        });
+    }
+    let mut watch = Watch::new(&ui, Mode::Plain, rdlt_connector::Role::Source);
+    let reading =
+        std::thread::spawn(move || queue.lines(found, std::time::Duration::from_secs(60)));
+    watch.drained(&observed);
+    let lines = reading.join().expect("the reader ends");
+    assert_eq!(lines.len(), found, "{lines:?}");
+}
+
+/// A role that applies to nothing is held back, and output that is not a terminal's says it as
+/// a report, so neither prints a line for what a signal cut short.
+#[test]
+fn what_a_signal_cuts_short_says_nothing_of_a_held_role_or_off_the_live_view() {
+    let told = |outcome: Outcome| {
+        let observed = rdlt_certify::Observed::new();
+        observed.tell(ClauseResult {
+            clause: Clause {
+                id: "S-CHECK",
+                statement: "a statement",
+                unless: "",
+            },
+            outcome,
+            note: None,
+        });
+        observed
+    };
+    let short = std::time::Duration::from_millis(50);
+    let (ui, queue) = Ui::queued();
+    let held = told(Outcome::Inapplicable("undeclared".into()));
+    Watch::new(&ui, Mode::Plain, rdlt_connector::Role::Source).drained(&held);
+    assert_eq!(queue.lines(1, short), Vec::<String>::new(), "a held role");
+    let found = told(Outcome::Passed);
+    Watch::new(&ui, Mode::Json, rdlt_connector::Role::Source).drained(&found);
+    assert_eq!(
+        queue.lines(1, short),
+        Vec::<String>::new(),
+        "JSON says it once"
+    );
 }

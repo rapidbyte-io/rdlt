@@ -7,6 +7,7 @@ use rdlt::ResetScope;
 use crate::Exit;
 use crate::args::HostArgs;
 use crate::output::{self, Failure, Mode};
+use crate::ui::{self, Tone, Ui};
 
 /// Resets `streams` of the pipeline `document` describes: their positions, or their tables too
 /// where `tables` asks.
@@ -16,7 +17,9 @@ pub(crate) async fn reset(
     tables: bool,
     host: &HostArgs,
     mode: Mode,
+    ui: &Ui,
 ) -> Result<Exit, Failure> {
+    ui.task("Placing connectors");
     let builder = crate::host::document(document).await?;
     let pipeline = builder.build(&crate::host::host(host).await?).await?;
     let scope = if tables {
@@ -24,6 +27,7 @@ pub(crate) async fn reset(
     } else {
         ResetScope::Positions
     };
+    ui.task("Resetting");
     let reset = pipeline.reset(streams, scope).await?;
     let json = serde_json::json!({
         "streams": reset.streams.iter().map(ToString::to_string).collect::<Vec<_>>(),
@@ -37,6 +41,11 @@ pub(crate) async fn reset(
             reset.epoch.0
         )]
     };
-    output::result(mode, plain, &json).await?;
+    let rich = || {
+        let streams: Vec<String> = reset.streams.iter().map(ToString::to_string).collect();
+        let dropped: Vec<String> = reset.dropped.iter().map(ToString::to_string).collect();
+        ui::reset(&streams, &dropped, reset.epoch.0, ui)
+    };
+    output::result(ui, mode, Some(Tone::Good), plain, rich, &json).await?;
     Ok(Exit::Success)
 }

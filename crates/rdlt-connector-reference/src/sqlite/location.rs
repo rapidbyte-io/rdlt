@@ -58,7 +58,9 @@ pub(super) fn located(path: &Path, create: bool) -> Result<Option<PathBuf>> {
         // A directory that is not there is the configuration's to name, not a wait's to bring.
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let message = format!("opening the database {}: {error}", path.display());
-            Err(ConnectorError::config(message).with_source(error))
+            Err(ConnectorError::config(message)
+                .with_code("database_not_found")
+                .with_source(error))
         }
         Err(error) => Err(refused(&path, error)),
     }

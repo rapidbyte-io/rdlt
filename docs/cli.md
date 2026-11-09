@@ -68,11 +68,26 @@ Options:
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
 
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
+
   -h, --help
           Print help
 
   -V, --version
           Print version
+
+Examples:
+  rdlt init                  Writes a starter document, rdlt.yaml
+  rdlt check rdlt.yaml       Builds the pipeline it describes, moving no data
+  rdlt run rdlt.yaml         Loads it
+  rdlt certify ./connector   Certifies a connector against the protocol's clauses
 
 ```
 
@@ -135,8 +150,21 @@ Options:
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
 
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
+
   -h, --help
           Print help
+
+Examples:
+  rdlt init
+  rdlt init pipelines/orders.yaml
 
 ```
 
@@ -197,8 +225,21 @@ Options:
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
 
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
+
   -h, --help
           Print help
+
+Examples:
+  rdlt check rdlt.yaml
+  rdlt check rdlt.yaml --trust-binaries
 
 ```
 
@@ -258,6 +299,15 @@ Options:
           
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
+
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
 
   -h, --help
           Print help
@@ -327,8 +377,21 @@ Options:
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
 
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
+
   -h, --help
           Print help
+
+Examples:
+  rdlt run rdlt.yaml
+  rdlt run rdlt.yaml --events events.ndjson --report report.json
 
 ```
 
@@ -388,6 +451,15 @@ Options:
           
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
+
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
 
   -h, --help
           Print help
@@ -456,6 +528,15 @@ Options:
           
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
+
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
 
   -h, --help
           Print help
@@ -528,6 +609,15 @@ Options:
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
 
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
+
   -h, --help
           Print help
 
@@ -585,6 +675,15 @@ Options:
           
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
+
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
 
   -h, --help
           Print help
@@ -686,8 +785,21 @@ Options:
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
 
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
+
   -h, --help
           Print help
+
+Examples:
+  rdlt certify ./target/release/rdlt-connector-tickets
+  rdlt certify ./connector --role source --trust-binaries
 
 ```
 
@@ -747,6 +859,15 @@ Options:
           
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
+
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
 
   -h, --help
           Print help
@@ -821,6 +942,15 @@ Options:
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
 
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
+
   -h, --help
           Print help
 
@@ -884,6 +1014,15 @@ Options:
           
           [default: warn]
           [possible values: off, error, warn, info, debug, trace]
+
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
 
   -h, --help
           Print help

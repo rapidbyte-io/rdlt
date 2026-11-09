@@ -6,6 +6,7 @@ use tokio::io::AsyncWriteExt as _;
 
 use crate::Exit;
 use crate::output::{self, Failure, Mode};
+use crate::ui::{self, Ui};
 
 /// A pipeline of the reference connectors: the generator's rows loaded into SQLite in `directory`,
 /// which the destination is let write.
@@ -45,7 +46,7 @@ fn working_directory() -> Result<String, Failure> {
 }
 
 /// Writes the starter document at `path`, which must not exist.
-pub(crate) async fn init(path: &Path, mode: Mode) -> Result<Exit, Failure> {
+pub(crate) async fn init(path: &Path, mode: Mode, ui: &Ui) -> Result<Exit, Failure> {
     let text = starter(&working_directory()?);
     let creating =
         |error: std::io::Error| Failure::io(&format!("creating {}", path.display()), &error);
@@ -66,6 +67,11 @@ pub(crate) async fn init(path: &Path, mode: Mode) -> Result<Exit, Failure> {
     }
     let wrote = || vec![format!("wrote {}", path.display())];
     let json = serde_json::json!({ "wrote": path.display().to_string() });
-    output::result(mode, wrote, &json).await?;
+    let rich = || {
+        let shown = path.display();
+        let next = [format!("rdlt check {shown}"), format!("rdlt run {shown}")];
+        ui::created(path, &next, ui)
+    };
+    output::result(ui, mode, None, wrote, rich, &json).await?;
     Ok(Exit::Success)
 }

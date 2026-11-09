@@ -134,8 +134,8 @@ fn a_database_s_directory_is_a_root_held_as_the_files_connectors_hold_theirs() {
     std::fs::write(&file, b"").expect("a file");
     let refused = refusal(connect(&file.join("orders.db")));
     assert_eq!(refused, config("not_a_directory"));
-    let (kind, _) = refusal(connect(&outer.path().join("missing").join("orders.db")));
-    assert_eq!(kind, ConnectorErrorKind::Config);
+    let refused = refusal(connect(&outer.path().join("missing").join("orders.db")));
+    assert_eq!(refused, config("database_not_found"));
 }
 
 #[test]

@@ -132,6 +132,8 @@ impl Scratch {
             )
             .env_remove("RUST_LOG")
             .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .env_remove("NO_COLOR")
+            .env_remove("CLICOLOR_FORCE")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

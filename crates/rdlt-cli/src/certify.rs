@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 use clap::ValueEnum;
 use rdlt_certify::{
-    CREDIT_WATCH, Observed, Outcome, Probe, RUN_TIMEOUT, Report, Target, Unprobed, Verdict,
+    CREDIT_WATCH, ClauseResult, DESTINATION_CLAUSES, KILL_CLAUSES, Observed, Outcome,
+    PROTOCOL_CLAUSES, Probe, RUN_TIMEOUT, Report, SOURCE_CLAUSES, Target, Unprobed, Verdict,
     certify_destination_observed, certify_source_observed, json, markdown, plain, read_back,
 };
 use rdlt_connector::ConnectorId;
@@ -25,8 +26,9 @@ use session::{Session, ending, signalled};
 
 use crate::Exit;
 use crate::args::HostArgs;
-use crate::output::{Mode, failure_json};
+use crate::output::{Mode, failure_json, written_within};
 use crate::stopping::STOPPING;
+use crate::ui::{self, Clause, Std, Ui};
 
 /// Certifies a connector against the protocol's conformance clauses.
 #[derive(Debug, clap::Args)]
@@ -99,20 +101,24 @@ struct Ended(Exit, String);
 
 /// Certifies the connector `args` names, as `host` lets it be reached, printing what it met as
 /// `mode` says, and answers how the command exits.
-pub(crate) fn certify(args: &CertifyArgs, host: &HostArgs, mode: Mode) -> Exit {
+pub(crate) fn certify(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) -> Exit {
     let ran = if args.clauses {
-        print(&markdown()).map(|()| Exit::Success)
+        // Nothing listens for signals yet, so a stopped terminal's Ctrl-C ends this as it would
+        // any program, and the document is not worth truncating.
+        printed(write_stdout(&redactions().scrubbed(markdown()))).map(|()| Exit::Success)
     } else {
-        run(args, host, mode)
+        run(args, host, mode, ui)
     };
     match ran {
         Ok(exit) => exit,
         Err(Ended(exit, message)) => {
             let message = redactions().scrubbed(message);
             if mode == Mode::Json {
-                print(&failure_json(exit, &message)).ok();
+                print(&failure_json(exit, &message), ui).ok();
+            } else if ui.rich_failures() {
+                ui.last_words(ui::certify_failure(&message, ui));
             } else {
-                writeln!(std::io::stderr(), "rdlt certify: {message}").ok();
+                ui.last_words(format!("rdlt certify: {message}\n"));
             }
             exit
         }
@@ -126,7 +132,7 @@ pub(crate) fn redactions() -> &'static Redactions {
     REDACTIONS.get_or_init(Redactions::new)
 }
 
-fn run(args: &CertifyArgs, host: &HostArgs, mode: Mode) -> Result<Exit, Ended> {
+fn run(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) -> Result<Exit, Ended> {
     if host.file.is_some() || !host.connectors.is_empty() || host.allow_network {
         return Err(Ended(
             Exit::Usage,
@@ -154,7 +160,8 @@ fn run(args: &CertifyArgs, host: &HostArgs, mode: Mode) -> Result<Exit, Ended> {
     // thread included, each connector it spawned is stopped with its whole process group.
     let stops = StopsSpawned::within(STOPPING);
     let mut session = Session::start(until(args)?)?;
-    let certified = certified(args, mode, &target, &config, &mut session);
+    let certified = certified(args, mode, ui, &target, &config, &mut session);
+    session.cleared(ui);
     let heard = certified.as_ref().err().and_then(signalled);
     let (stopped, heard) = session.stopped(stops, heard);
     let reports = ending(certified, stopped, heard)?;
@@ -167,12 +174,12 @@ fn run(args: &CertifyArgs, host: &HostArgs, mode: Mode) -> Result<Exit, Ended> {
             "passed": passed,
             "reports": reports,
         });
-        print(&format!("{document}\n"))?;
+        print(&format!("{document}\n"), ui)?;
     }
     if !reports.iter().any(ran) {
         // Told on standard error: JSON's one value, the reports, is written and says it already.
         let message = "the connector serves none of the roles asked, so nothing was certified";
-        writeln!(std::io::stderr(), "rdlt certify: {message}").ok();
+        ui.last_words(format!("rdlt certify: {message}\n"));
         return Ok(Exit::Findings);
     }
     Ok(code(verdict, args.require, &reports))
@@ -209,23 +216,32 @@ fn credit_watch(millis: u64) -> Result<Duration, Ended> {
 fn certified(
     args: &CertifyArgs,
     mode: Mode,
+    ui: &Ui,
     target: &Target,
     config: &serde_json::Value,
     session: &mut Session,
 ) -> Result<Vec<Report>, Ended> {
     let mut printed = Printed {
         mode,
+        ui,
         held: Vec::new(),
     };
     let mut reports = Vec::new();
     if !matches!(args.role, Some(Role::Destination)) {
         let observed = Observed::new();
         let certifying = std::pin::pin!(certify_source_observed(target, config.clone(), &observed));
-        let report = session.ran_to(target, rdlt_connector::Role::Source, &observed, certifying)?;
+        let mut watch = Watch::new(ui, mode, rdlt_connector::Role::Source);
+        let report = session.ran_to(
+            target,
+            rdlt_connector::Role::Source,
+            &observed,
+            certifying,
+            &mut watch,
+        )?;
         // No clause of a role the connector does not serve applies: unless the role was asked
         // for, or no role is served, its report is left out.
         if args.role.is_some() || ran(&report) {
-            printed.report(&report)?;
+            printed.report(&report, &mut watch)?;
             reports.push(report);
         } else {
             printed.held.push(report);
@@ -244,16 +260,18 @@ fn certified(
             certify_destination_observed(target, config.clone(), probe, &observed).await
         });
         let role = rdlt_connector::Role::Destination;
-        let report = session.ran_to(target, role, &observed, certifying)?;
+        let mut watch = Watch::new(ui, mode, role);
+        let report = session.ran_to(target, role, &observed, certifying, &mut watch)?;
         let served = ran(&report);
         if served || reports.is_empty() {
             if !served {
                 reports.append(&mut printed.held);
                 for held in &reports {
-                    printed.report(held)?;
+                    let source = rdlt_connector::Role::Source;
+                    printed.report(held, &mut Watch::new(ui, mode, source))?;
                 }
             }
-            printed.report(&report)?;
+            printed.report(&report, &mut watch)?;
             reports.push(report);
         }
     }
@@ -271,19 +289,140 @@ fn bound(timeout: Option<u64>, unbounded: bool) -> Option<Duration> {
 
 /// The reports printed as text as each role ends, so a certification stopped from outside has
 /// said what it found; as JSON they are one document, printed last.
-struct Printed {
+struct Printed<'a> {
     mode: Mode,
+    ui: &'a Ui,
     /// Reports of roles the connector does not serve, printed only when it serves none.
     held: Vec<Report>,
 }
 
-impl Printed {
-    fn report(&self, report: &Report) -> Result<(), Ended> {
+impl Printed<'_> {
+    /// Prints `report` as this role's result: what is left of it after what `watch` showed.
+    fn report(&self, report: &Report, watch: &mut Watch<'_>) -> Result<(), Ended> {
         match self.mode {
-            Mode::Plain => print(&plain(report)),
             Mode::Json => Ok(()),
+            Mode::Plain if watch.live() => {
+                watch.finish(report);
+                Ok(())
+            }
+            Mode::Plain if self.ui.rich_results() => {
+                print(&whole_report(report, watch.role, self.ui), self.ui)
+            }
+            Mode::Plain => print(&plain(report), self.ui),
         }
     }
+}
+
+/// `report` in full, its lines scrubbed by [`print`], for a terminal nothing is animated on.
+fn whole_report(report: &Report, role: rdlt_connector::Role, ui: &Ui) -> String {
+    let mut text = String::new();
+    for result in &report.results {
+        text.push_str(&ui::kept_line(result, None, ui));
+        text.push('\n');
+    }
+    text.push_str(&ui::verdict_line(report, role, ui));
+    text.push('\n');
+    text
+}
+
+/// What is shown of a role under certification as its clauses finish.
+///
+/// Each clause's line goes through the painter, as it is found, so a certification stopped from
+/// outside has already said what it found; the painter drops none of them, as `tick` retries
+/// what it could not take.
+struct Watch<'a> {
+    ui: &'a Ui,
+    live: bool,
+    role: rdlt_connector::Role,
+    clauses: Vec<&'static Clause>,
+    /// How many of the role's results have been shown.
+    shown: usize,
+    since: Instant,
+}
+
+impl<'a> Watch<'a> {
+    fn new(ui: &'a Ui, mode: Mode, role: rdlt_connector::Role) -> Self {
+        let family = match role {
+            rdlt_connector::Role::Source => SOURCE_CLAUSES,
+            rdlt_connector::Role::Destination => DESTINATION_CLAUSES,
+        };
+        let kill = match role {
+            rdlt_connector::Role::Source => &KILL_CLAUSES[..1],
+            rdlt_connector::Role::Destination => &KILL_CLAUSES[1..],
+        };
+        let clauses = PROTOCOL_CLAUSES.iter().chain(family).chain(kill).collect();
+        Self {
+            ui,
+            // Only where lines can be placed above the spinner, standard output being a terminal.
+            live: mode == Mode::Plain && ui.rich_results() && ui.animating(),
+            role,
+            clauses,
+            shown: 0,
+            since: Instant::now(),
+        }
+    }
+
+    /// Whether this role's clauses are printed as they finish.
+    fn live(&self) -> bool {
+        self.live
+    }
+
+    /// Shows what `observed` was told since the last call, and the clause under way.
+    fn tick(&mut self, observed: &Observed) {
+        if !self.ui.animating() {
+            return;
+        }
+        let results = observed.results();
+        // A role that applies to nothing is held back: its report may never be printed.
+        if self.live && results.iter().any(applies) {
+            for result in results.iter().skip(self.shown) {
+                let took = self.took();
+                let line = ui::kept_line(result, Some(took), self.ui);
+                if !self.ui.above(Std::Out, &redactions().scrubbed(line)) {
+                    break;
+                }
+                self.shown += 1;
+            }
+        }
+        let clause = self.clauses.get(results.len()).copied();
+        self.ui.task(&ui::in_progress(self.role, clause));
+    }
+
+    /// Prints what the checks of `report` found that was not shown yet, and its verdict.
+    fn finish(&mut self, report: &Report) {
+        let missed = report.results.iter().skip(self.shown);
+        let lines = missed.map(|result| ui::kept_line(result, None, self.ui));
+        for line in lines.chain([ui::verdict_line(report, self.role, self.ui)]) {
+            self.ui
+                .above_waiting(Std::Out, &redactions().scrubbed(line));
+        }
+    }
+
+    /// Prints what `observed` found that was not shown yet: a signal ended its checks, and with
+    /// no report to say it in, each line is waited for within the painter's bound.
+    fn drained(&mut self, observed: &Observed) {
+        let results = observed.results();
+        if !self.live || !results.iter().any(applies) {
+            return;
+        }
+        for result in results.iter().skip(self.shown) {
+            let line = ui::kept_line(result, None, self.ui);
+            self.ui
+                .above_waiting(Std::Out, &redactions().scrubbed(line));
+        }
+    }
+
+    /// How long the clause just found took, as this tick saw it.
+    fn took(&mut self) -> Duration {
+        let took = self.since.elapsed();
+        self.since = Instant::now();
+        took
+    }
+}
+
+/// Whether a clause's result applies to the connector.
+fn applies(result: &ClauseResult) -> bool {
+    !matches!(result.outcome, Outcome::Inapplicable(_))
 }
 
 /// What `reports` amount to together: failed when one failed, else incomplete when one is.
@@ -430,14 +569,28 @@ fn local(args: &CertifyArgs, host: &HostArgs) -> Result<Local, Ended> {
 }
 
 /// Prints `text` on standard output, scrubbed of the configuration's secrets: a closed pipe
-/// ends quietly, and any other failure is an I/O error.
-fn print(text: &str) -> Result<(), Ended> {
+/// ends quietly, a terminal that stopped reading is left within its bound, and any other failure
+/// is an I/O error.
+fn print(text: &str, ui: &Ui) -> Result<(), Ended> {
     let text = redactions().scrubbed(text.to_owned());
+    if ui.rich_results() {
+        printed(written_within(Std::Out, text))
+    } else {
+        printed(write_stdout(&text))
+    }
+}
+
+/// `text` written to standard output, blocking for as long as its reader takes.
+fn write_stdout(text: &str) -> std::io::Result<()> {
     let mut stdout = std::io::stdout().lock();
-    match stdout
+    stdout
         .write_all(text.as_bytes())
         .and_then(|()| stdout.flush())
-    {
+}
+
+/// How a write ended, for a verb: a closed pipe is no failure, and any other is an I/O error.
+fn printed(written: std::io::Result<()>) -> Result<(), Ended> {
+    match written {
         Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(Ended(
             Exit::Io,
             format!("writing to standard output failed: {error}"),
