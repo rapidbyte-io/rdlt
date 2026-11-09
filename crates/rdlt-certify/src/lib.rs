@@ -47,7 +47,8 @@ use rdlt_connector::testing::{
 use rdlt_connector::{DestinationFactory, SourceFactory};
 
 /// Certifies the source `target` reaches, with `config`: the protocol's clauses, the source
-/// clauses, each over connections of its own, then the kill clause.
+/// clauses, each over connections of its own, then the kill clause, against the target's kill
+/// target where it has one.
 ///
 /// No clause applies to a connector that serves no source.
 pub async fn certify_source(target: &Target, config: serde_json::Value) -> Report {
@@ -68,7 +69,7 @@ pub async fn certify_source_observed(
                 certify_source_factory_observed(&factory, config.clone(), observed).await;
             report.results.splice(0..0, protocol);
             let id = &SourceFactory::spec(&factory).id;
-            let killed = kill::source(target, id, &config).await;
+            let killed = kill::source(target.killed(), id, &config).await;
             observed.tell(killed.clone());
             report.results.push(killed);
             report
@@ -122,7 +123,7 @@ pub fn unfinished(target: &Target, role: Role, observed: &Observed, reason: &str
 
 /// Certifies the destination `target` reaches, with `config`, reading what it published through
 /// `probe` ([`Unprobed`] when nothing can read it): the protocol's clauses, the destination
-/// clauses, then the kill clause.
+/// clauses, then the kill clause, against the target's kill target where it has one.
 ///
 /// No clause applies to a connector that serves no destination.
 pub async fn certify_destination(
@@ -150,7 +151,7 @@ pub async fn certify_destination_observed(
             let mut report = certifying.await;
             report.results.splice(0..0, protocol);
             let id = &DestinationFactory::spec(&factory).id;
-            let killed = kill::destination(target, id, &config, probe).await;
+            let killed = kill::destination(target.killed(), id, &config, probe).await;
             observed.tell(killed.clone());
             report.results.push(killed);
             report

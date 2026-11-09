@@ -1,6 +1,9 @@
 //! A connector binary's whole `main`: its arguments, the connection its host passed it, and its
 //! shutdown when the host says so.
 
+#[cfg(test)]
+mod tests;
+
 use std::future::Future;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -12,6 +15,11 @@ use tokio_util::sync::CancellationToken;
 use super::args::{Args, Failure, parse};
 use super::{Hosted, Served, listen, serve_until};
 use crate::factory::{RoleFactory, Serve};
+
+/// Why a connector could not serve: its arguments, the host's socket, or its runtime.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct ServeFailed(Failure);
 
 /// Serves `C` as a whole binary's `main` does: `fn main() -> ExitCode { serve::<C>() }`.
 ///
@@ -56,26 +64,40 @@ impl Served {
     /// A spawned connector calls `build` once it has taken its host's socket, so nothing `build`
     /// runs comes before.
     pub fn serve(build: impl FnOnce() -> Self) -> ExitCode {
-        match run(build) {
+        match Self::serve_args(std::env::args().skip(1), build) {
             Ok(()) => ExitCode::SUCCESS,
-            Err(message) => {
+            Err(failed) => {
                 #[expect(
                     clippy::print_stderr,
                     reason = "a connector binary reports why it failed on its standard error, \
                               which its host keeps"
                 )]
                 {
-                    eprintln!("{message}");
+                    eprintln!("{failed}");
                 }
                 ExitCode::FAILURE
             }
         }
     }
+
+    /// Serves as [`serve`](Self::serve) does, with `args`, the arguments after the program's
+    /// name, rather than the process's own: for a connector whose process is another program's,
+    /// as an interpreter's is.
+    ///
+    /// # Errors
+    ///
+    /// A [`ServeFailed`] saying why it could not serve.
+    pub fn serve_args(
+        args: impl IntoIterator<Item = String>,
+        build: impl FnOnce() -> Self,
+    ) -> Result<(), ServeFailed> {
+        run(args.into_iter(), build).map_err(ServeFailed)
+    }
 }
 
-fn run(build: impl FnOnce() -> Served) -> Result<(), Failure> {
+fn run(args: impl Iterator<Item = String>, build: impl FnOnce() -> Served) -> Result<(), Failure> {
     // The arguments name the descriptor to take, and reading them runs no connector code.
-    let (args, limits) = parse(std::env::args().skip(1))?;
+    let (args, limits) = parse(args)?;
     match args {
         Args::Inherited { fd } => inherited_socket(build, fd, limits),
         Args::Listen(listening) => {

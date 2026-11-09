@@ -569,3 +569,18 @@ fn a_table_whose_rows_do_not_render_is_named_with_why_it_is_not_compared() {
          comparison holds"
     );
 }
+
+#[test]
+fn the_kill_clauses_run_against_the_kill_target_where_one_is_chosen() {
+    let served = || crate::Target::served(rdlt_connector::serve::Served::new());
+    let installed = || {
+        let id = rdlt_connector::ConnectorId::parse("io.example.installed").expect("an id");
+        let reference =
+            rdlt_host::ConnectorRef::new(id).path("/opt/connectors/rdlt-connector-installed");
+        crate::Target::spawned(rdlt_host::Local::trusting_binaries(), reference)
+    };
+    assert_ne!(served().describe(), installed().describe());
+    assert_eq!(served().killed().describe(), served().describe());
+    let chosen = served().kill_target(installed());
+    assert_eq!(chosen.killed().describe(), installed().describe());
+}
