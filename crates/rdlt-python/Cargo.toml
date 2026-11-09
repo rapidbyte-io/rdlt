@@ -28,6 +28,7 @@ pyo3-build-config.workspace = true
 [dev-dependencies]
 rdlt-connector.workspace = true
 rdlt-connector-reference.workspace = true
+rdlt-testkit.workspace = true
 schemars.workspace = true
 
 [lints]
