@@ -3,35 +3,37 @@
 //! and events.
 //!
 //! ```no_run
-//! use rdlt::{Access, Connector, Host, Pipeline, Side, Stream};
+//! use rdlt::{Connector, Host, Pipeline, ReadMode, Side, Stream};
+//! use rdlt_connector_reference::{LogSource, SqliteDestination};
 //!
-//! # #[cfg(feature = "local")]
-//! # async fn example() -> Result<(), rdlt::Error> {
-//! let host = Host::new().connectors("/opt/rdlt/bin").writable("/data");
-//! let source = Side::new(Connector::new("io.rapidbyte.generator"))
-//!     .config(rdlt::json!({ "seed": 7, "streams": [{ "name": "events", "rows": 1000 }] }));
-//! let destination = Side::new(Connector::new("io.rapidbyte.sqlite"))
-//!     .config(rdlt::json!({ "path": "/data/out.db" }))
-//!     .access(Access::new().write("/data"));
-//! let pipeline = Pipeline::builder("events", source, destination)
-//!     .stream(Stream::new("events"))
-//!     .build(&host)
-//!     .await?;
-//! let run = pipeline.start();
-//! let mut events = run.events();
-//! // Read while the run runs, so no event falls out of the run's ring.
-//! let telling = tokio::spawn(async move {
-//!     while let Some(event) = events.next().await {
-//!         println!("{event:?}");
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let database = std::env::args()
+//!         .nth(1)
+//!         .unwrap_or_else(|| "demo.db".to_owned());
+//!     // Compiled in and trusted: both connectors run in this process.
+//!     let host = Host::new()
+//!         .source::<LogSource>()
+//!         .destination::<SqliteDestination>();
+//!     // Two partitions of 500 seeded messages each, read up to their heads.
+//!     let source = Side::new(Connector::new("io.rapidbyte.log")).config(rdlt::json!({
+//!         "seed": 7,
+//!         "streams": [{ "name": "events", "partitions": 2, "messages": 500, "bounded": true }]
+//!     }));
+//!     let destination = Side::new(Connector::new("io.rapidbyte.sqlite"))
+//!         .config(rdlt::json!({ "path": database }));
+//!     // One stream, read incrementally: each run starts where the last committed one ended.
+//!     let pipeline = Pipeline::builder("events-demo", source, destination)
+//!         .stream(Stream::new("events").read(ReadMode::Incremental))
+//!         .build(&host)
+//!         .await?;
+//!     let outcome = pipeline.start().await;
+//!     if let Some(error) = outcome.error {
+//!         return Err(error.into());
 //!     }
-//! });
-//! let outcome = run.await;
-//! telling.await.ok();
-//! match outcome.error {
-//!     Some(error) => Err(error),
-//!     None => Ok(()),
+//!     println!("{:?}: committed {} rows", outcome.report.status, outcome.report.rows);
+//!     Ok(())
 //! }
-//! # }
 //! ```
 //!
 //! The facade runs on tokio: build and await pipelines inside a tokio runtime. A code transform

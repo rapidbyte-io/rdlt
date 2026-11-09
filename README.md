@@ -2,7 +2,7 @@
 
 # rdlt
 
-**A Rust library that loads data from sources into destinations exactly once.**
+**A Rust library and command line that load data from sources into destinations exactly once.**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/rapidbyte-io/rdlt/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/rapidbyte-io/rdlt/actions/workflows/ci.yml?query=branch%3Amain)
 [![Nightly](https://img.shields.io/github/actions/workflow/status/rapidbyte-io/rdlt/nightly.yml?branch=main&label=nightly&logo=githubactions&logoColor=white)](https://github.com/rapidbyte-io/rdlt/actions/workflows/nightly.yml?query=branch%3Amain)
@@ -21,7 +21,7 @@
 [![unsafe](https://img.shields.io/badge/unsafe-one%20audited%20crate-6f42c1)](docs/adr/0048-supply-chain-and-ci.md)
 
 [Quick start](#quick-start) ·
-[Embedding](#embedding-the-engine) ·
+[Embedding](#embedding-rdlt) ·
 [Connectors](#writing-a-connector) ·
 [Certification](#certifying-a-connector) ·
 [Placement](#placing-connectors) ·
@@ -33,20 +33,20 @@
 
 </div>
 
-rdlt runs inside a Rust program, which hands it a source, a destination and a plan. A source marks
-resumable positions in its data, called checkpoints. The engine commits the rows before a
-checkpoint together with that position, in one transaction of the destination's. Each row
-therefore lands once through crashes, retries and concurrent runs, and rdlt keeps no store of its
-own beside the destination. The guarantee holds for connectors that keep the connector contract,
-which certification checks.
+A pipeline is described once, in Rust or in a YAML document, and run from a program or from the
+`rdlt` command line with the same checks, errors and events. A source marks resumable positions
+in its data, called checkpoints. The engine commits the rows before a checkpoint together with
+that position, in one transaction of the destination's. Each row therefore lands once through
+crashes, retries and concurrent runs, and rdlt keeps no store of its own beside the destination.
+The guarantee holds for connectors that keep the connector contract, which certification checks.
 
 rdlt evolves each table's schema as data arrives, loads nested data and change streams, and holds
 every value exactly. A value its column cannot hold is refused with a typed error, or dropped or
 nulled and counted, as the schema policy says. Connectors are the code that reads a source or
-writes a destination, and the program that embeds rdlt is their host. The host places each
-connector in the host's own process (compiled in and trusted), in a separate process (sandboxed
-on Linux, or trusted), or on another machine over mutual TLS. rdlt is the core of the Rapidbyte
-data platform.
+writes a destination, and the program that embeds rdlt, or the command line, is their host. The
+host places each connector in the host's own process (compiled in and trusted), in a separate
+process (sandboxed on Linux, or trusted), or on another machine over mutual TLS. rdlt is the core
+of the Rapidbyte data platform.
 
 > [!WARNING]
 > rdlt is pre-release: no crate is published, and the project makes no promise of API
@@ -79,9 +79,6 @@ here yet:
 
 - A published crate. A project depends on the repository, as the [quick start](#quick-start)
   shows.
-- A command line or configuration file for pipelines: a pipeline is a `PipelinePlan` built in Rust.
-  [ADR 0001](docs/adr/0001-engine-architecture.md) records the plan for a CLI, and for a Python SDK
-  for connectors beside the Rust one.
 - Connectors beyond the reference ones, and `sqlgen` dialects beyond SQLite.
 - Windows. `rdlt-host`, `rdlt-certify`, a connector binary built on `rdlt_connector::serve` and the
   reference connectors need a Unix, and CI tests Linux and macOS. The sandbox and the hashing of
@@ -96,13 +93,47 @@ You need Rust 1.98 or newer and a C compiler, which rdlt's dependencies use to b
 from source: the TLS library's cryptography, SQLite, BLAKE3's SIMD code and stacker's stack
 switching. rdlt builds on Linux and macOS.
 
-No crate is published yet, so a project depends on the repository:
+### From the command line
+
+No crate is published yet, so install the `rdlt` binary and the reference connectors from the
+repository. The last two commands put the connectors in the directory `rdlt` looks in by
+default, `$XDG_DATA_HOME/rdlt/connectors` (`~/.local/share/rdlt/connectors` where it is unset),
+and run again as they are to update them:
+
+```sh
+cargo install --locked --git https://github.com/rapidbyte-io/rdlt rdlt-cli
+data="${XDG_DATA_HOME:-$HOME/.local/share}/rdlt"
+cargo install --locked --force --git https://github.com/rapidbyte-io/rdlt rdlt-connector-reference \
+    --bins --features test-connectors --root "$data"
+mkdir -p "$data/connectors" && mv -f "$data"/bin/rdlt-connector-* "$data/connectors/"
+```
+
+`rdlt init` writes a starter document, `rdlt.yaml`, that loads the seeded rows of the reference
+generator into a SQLite file beside it. `rdlt check` does everything a run does before moving
+data: it reads the document, places both connectors and checks them. `rdlt run` then loads the
+rows. Local connectors run in the sandbox, which lets a pipeline write only where its operator
+allows, so `--writable` names the new directory the document is written in:
+
+```sh
+mkdir starter && cd starter
+rdlt init
+rdlt check rdlt.yaml --writable "$PWD"
+rdlt run rdlt.yaml --writable "$PWD"
+```
+
+On macOS, which has no sandbox, or where bubblewrap is not installed, pass `--trust-binaries`
+instead of `--writable`, which runs the connectors with your own access. `rdlt run` exits 0 once
+every row is committed; [docs/cli.md](docs/cli.md) has the exit codes, `--output json`, and every
+other verb.
+
+### From Rust
+
+The same pipeline from a program: add the facade and the reference connectors from the repository,
+and tokio:
 
 ```sh
 cargo new rdlt-demo && cd rdlt-demo
-cargo add --git https://github.com/rapidbyte-io/rdlt \
-    rdlt-engine rdlt-connector rdlt-connector-reference
-cargo add serde_json
+cargo add --git https://github.com/rapidbyte-io/rdlt rdlt rdlt-connector-reference
 cargo add tokio --features macros,rt-multi-thread
 ```
 
@@ -115,59 +146,35 @@ Replace `src/main.rs` with a pipeline that loads `LogSource`, seeded offset logs
 queue's, into SQLite:
 
 ```rust
-use std::sync::Arc;
-
-use rdlt_connector::{
-    ConnectContext, PipelineId, ReadMode, StreamName, destination_factory, source_factory,
-};
-use rdlt_connector_reference::{LogSource, SqliteDestination, sqlite};
-use rdlt_engine::{Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
-use serde_json::json;
+use rdlt::{Connector, Host, Pipeline, ReadMode, Side, Stream};
+use rdlt_connector_reference::{LogSource, SqliteDestination};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "demo.db".to_owned());
-
+    // Compiled in and trusted: both connectors run in this process.
+    let host = Host::new()
+        .source::<LogSource>()
+        .destination::<SqliteDestination>();
     // Two partitions of 500 seeded messages each, read up to their heads.
-    let source = source_factory::<LogSource>()
-        .connect(
-            json!({ "seed": 7, "streams": [{
-                "name": "events", "partitions": 2, "messages": 500, "bounded": true
-            }] }),
-            ConnectContext::new(),
-        )
-        .await?;
-    let destination = destination_factory::<SqliteDestination>()
-        .connect(json!({ "path": database }), ConnectContext::new())
-        .await?;
-
+    let source = Side::new(Connector::new("io.rapidbyte.log")).config(rdlt::json!({
+        "seed": 7,
+        "streams": [{ "name": "events", "partitions": 2, "messages": 500, "bounded": true }]
+    }));
+    let destination = Side::new(Connector::new("io.rapidbyte.sqlite"))
+        .config(rdlt::json!({ "path": database }));
     // One stream, read incrementally: each run starts where the last committed one ended.
-    let plan = PipelinePlan::new(
-        PipelineId::parse("events-demo")?,
-        [StreamPlan::new(StreamName::new("events")?).read(ReadMode::Incremental)],
-    )?;
-
-    let engine = Engine::new(
-        EngineConfig::builder().build()?,
-        Arc::new(SystemEnv::try_from_host()?),
-    );
-    let outcome = engine
-        .run(plan, Arc::from(source), Arc::from(destination))
-        .await;
+    let pipeline = Pipeline::builder("events-demo", source, destination)
+        .stream(Stream::new("events").read(ReadMode::Incremental))
+        .build(&host)
+        .await?;
+    let outcome = pipeline.start().await;
     if let Some(error) = outcome.error {
         return Err(error.into());
     }
-
-    let stored: usize = sqlite::published(&database, "events")?
-        .iter()
-        .map(|batch| batch.num_rows())
-        .sum();
-    println!(
-        "{:?}: committed {} rows; the table holds {stored} rows",
-        outcome.report.status, outcome.report.rows
-    );
+    println!("{:?}: committed {} rows", outcome.report.status, outcome.report.rows);
     Ok(())
 }
 ```
@@ -176,9 +183,9 @@ Run it twice. The first run builds rdlt and its dependencies, which `-q` keeps q
 
 ```console
 $ cargo run -q -- demo.db
-Succeeded: committed 1000 rows; the table holds 1000 rows
+Succeeded: committed 1000 rows
 $ cargo run -q -- demo.db
-Succeeded: committed 0 rows; the table holds 1000 rows
+Succeeded: committed 0 rows
 ```
 
 The second run commits nothing: each partition resumes from the cursor the first run committed
@@ -186,49 +193,101 @@ into `demo.db` in the same transaction as its rows. With the `sqlite3` command-l
 `sqlite3 demo.db .tables` shows the `events` table beside the destination's bookkeeping, the
 `_rdlt_*` tables.
 
-## Embedding the engine
+## Embedding rdlt
 
-A program that embeds rdlt builds three things and starts a run:
+A pipeline is two things kept apart: a **document** (or the builder that makes one) is what its
+author writes, and a **`Host`** is what its operator allows. Nothing in a document can widen what
+its host allows. Both sides use the same words:
 
-1. A source and a destination: `source_factory::<C>()` and `destination_factory::<C>()` connect a
-   connector compiled into the program from its JSON configuration, and a
-   [provider](#placing-connectors) places one that runs elsewhere.
-2. A `PipelinePlan`: a `PipelineId` and one `StreamPlan` per stream. `PipelinePlan::new` refuses
-   modes that do not fit together before anything runs. A run fails at its start on a stream its
-   source cannot read, or its destination cannot write, in the modes asked.
-3. An `Engine`: an `EngineConfig` and an `Env`. `SystemEnv` is the production `Env`, with the
-   operating system's clock and randomness and a compute pool of one thread per core.
-4. A run: `engine.run(plan, source, destination)` returns a `RunHandle`, a future that resolves to
-   a `RunOutcome`. It holds a `Report` and the `Error` that ended the run, if one did.
+| Concept | Operator: `Host`, host file, CLI flag | Author: document or builder |
+|---|---|---|
+| Where local connector binaries are found | `.connectors(dir)` / `--connectors` | — |
+| How local binaries run | `Host::new()` sandboxed by default; `.trust_binaries()` | — |
+| Paths a connector may be let write | `.writable(path)` / `--writable` | `access: { write: [path] }` |
+| Paths a connector may be let read | `.readable(path)` / `--readable` | `access: { read: [path] }` |
+| Paths every connector reads | `.always_readable(path)` | — |
+| Network for a sandboxed connector | `.allow_network()` / `--allow-network` | `access: { network: true }` |
+| Secrets from the environment | `.allow_env([name])` / `--allow-env` | `"${env:NAME}"` |
+| Secrets from files | `.allow_files(dir)` / `--allow-files` | `"${file:/dir/name}"` |
+| A secret store | `.secret_store(resolver)` | `"${secret:name}"` |
+| Remote connectors | `.remote(Tls)` / `--tls-cert`, `--tls-key`, `--tls-ca` | `connector: { id, endpoint }` |
+| Compiled-in connectors (trusted) | `.source::<C>()`, `.destination::<C>()` | `connector: <id>` |
+| Code transforms (trusted) | `.transform(name, t)` | `transform: [{ code: name }]` |
+
+`rdlt::Pipeline` is the only way to a run. `Pipeline::builder` and `Pipeline::from_path` (or
+`Pipeline::from_document`, `Pipeline::from_text`) make a `PipelineBuilder`, which is a builder over
+a `Document`: the same model, so the same mistake fails with the same error from either, and
+`pipeline.document()` shows a built pipeline as its document, every secret still a reference.
+The document is YAML or JSON (`rdlt schema --document` prints its JSON Schema):
+
+```yaml
+version: 1
+pipeline: orders
+source:      { connector: io.rapidbyte.postgres, config: { dsn: "${secret:pg_dsn}" } }
+destination:
+  connector: io.rapidbyte.sqlite
+  config: { path: /data/out.db }
+  access: { write: [/data] }
+defaults:    { write: append, schema: { policy: evolve }, nested: native }
+streams:
+  - name: public.orders
+    read: cdc
+    write: { merge: { key: [id] } }
+    include: [id, email, amount, status]
+    transform:
+      - mask: { columns: [email], with: hmac_sha256, key: "${secret:mask_key}" }
+      - sql: SELECT *, amount * 100 AS cents FROM input WHERE status <> 'test'
+  - name: "public.*"          # selection by glob against the catalog; explicit entries win
+commit:    { every: 10s, rows: 1000000 }
+resources: { memory: 512MiB, writers: 8, partitions: 16 }
+retry:     { max_attempts: 8 }
+```
+
+A document is read as hostile input, at most 1 MiB, with its nesting and nodes bounded and no
+anchor, alias, tag, merge key, repeated key or second document. An error gives `file:line:col`,
+the key path and the nearest valid key, and never quotes a value, which may be a secret.
+
+`build(&host)` then does every check that needs no data: names and modes against the connectors'
+capabilities, policies, transforms (SQL parsed and planned, a mask's key resolved), limits, secret
+references, placement and the handshake. The same checks run for `rdlt check`. Once a pipeline is
+built, no configuration error remains but one against what earlier runs committed, as a stream
+whose key differs from the key its table was created with. `pipeline.check()`, `discover()` and
+`reset(streams, scope)` are the administrative calls.
+
+`pipeline.start()` returns a `Run`, a future of an `Outcome`; awaiting it runs the pipeline, and
+dropping it cancels the run. `run.events()` gives each subscriber its own stream of `Event`s
+(`Result<Event, Lagged>`), numbered gap-free by `seq`, and serializing as NDJSON; a subscriber that
+falls behind its 4,096 events gets a `Lagged { dropped }` and reads on. `run.status()` reads
+progress without waiting, and `run.stop(StopMode)`, or `run.control()` handed to another task,
+stops the run.
 
 ### Stream and pipeline options
 
-| To | Set |
-|---|---|
-| Append every row (the default) | `StreamPlan::new(name)` |
-| Read only what is past the last committed cursor | `.read(ReadMode::Incremental)` |
-| Replace the table on each run | `.write(WriteMode::Replace)`, with the default full read |
-| Merge by key | `.write(WriteMode::Merge).key(["id"])`, or the source's primary key when no key is set |
-| Keep every version of each key (SCD2) | `.write(WriteMode::History).key(["id"])` |
-| Merge a change stream | `.read(ReadMode::Cdc).write(WriteMode::Merge)` |
-| Keep a change log | `.read(ReadMode::Cdc)`, appending every change |
-| Soft-delete or ignore a merged change stream's deletes | `.deletes(DeleteMode::Soft)` or `.deletes(DeleteMode::Ignore)`, beside a `Cdc` read and a merge or history write |
-| Ignore a merged change stream's truncates | `.on_truncate(OnTruncate::Ignore)`, beside the same |
-| Refuse schema changes | `.schema(SchemaSettings::new().policy(SchemaPolicy::Freeze))` |
-| Normalize nested data into child tables | `.schema(SchemaSettings::new().nested(Nested::normalize()))` |
-| Fix a column's type | `.hint("amount", LogicalType::Int64)` |
-| Keep columns out of the table and its state | `.exclude(["ssn"])` |
-| Keep only some columns, and the key | `.include_only(["id", "email"])`, never beside `.exclude(..)` |
-| Rename, mask or add columns | `.transform(Op::rename([("amount", "amount_cents")]))`, `.transform(Op::mask(["email"], Mask::hmac_sha256(key)))`, `.transform(Op::constant([("region", Literal::Text("eu".into()))]))` |
-| Reshape or filter with SQL | `.transform(rdlt_sql::Sql::parse("SELECT id, lower(email) AS email FROM input WHERE status <> 'test'")?)` |
-| Reshape with your own code | `.transform(Arc::new(MyTransform) as Arc<dyn Transform>)` |
-| Follow the source until stopped, or for a set time | `.with_until(Until::Forever)` or `.with_until(Until::For(duration))` on the `PipelinePlan` |
-| Read on from the earliest data a source kept, rather than fail, when its retention dropped a read's place | `.on_retention_loss(RetentionLoss::Reset)`, beside an incremental read |
-| Read a stream again from its beginning, or drop its tables | `engine.reset(..)` with `ResetScope::Positions` or `ResetScope::Tables` |
+| To | In a document | In code |
+|---|---|---|
+| Append every row (the default) | `- name: events` | `Stream::new("events")` |
+| Read only what is past the last committed cursor | `read: incremental` | `.read(ReadMode::Incremental)` |
+| Replace the table on each run | `write: replace` | `.write(WriteMode::Replace)` |
+| Merge by key | `write: { merge: { key: [id] } }`, or `write: merge` for the source's primary key | `.write(WriteMode::merge(["id"]))` |
+| Keep every version of each key (SCD2) | `write: { history: { key: [id] } }` | `.write(WriteMode::history(["id"]))` |
+| Merge a change stream | `read: cdc`, with a merge | `.read(ReadMode::Cdc).write(WriteMode::merge(["id"]))` |
+| Keep a change log | `read: cdc`, appending every change | `.read(ReadMode::Cdc)` |
+| Soft-delete or ignore a merged change stream's deletes | `deletes: soft` or `ignore` | `.deletes(DeleteMode::Soft)` or `.deletes(DeleteMode::Ignore)` |
+| Ignore a merged change stream's truncates | `on_truncate: ignore` | `.on_truncate(OnTruncate::Ignore)` |
+| Refuse schema changes | `schema: { policy: freeze }` | `.schema(SchemaRules::new().policy(SchemaPolicy::Freeze))` |
+| Normalize nested data into child tables | `nested: normalize` | `.nested(Nested::Normalize { max_depth })` |
+| Fix a column's type | `columns: { amount: { hint: int64 } }` | `.column("amount", Column::new().hint(Hint::Int64))` |
+| Keep columns out of the table and its state | `exclude: [ssn]` | `.exclude(["ssn"])` |
+| Keep only some columns, and the key | `include: [id, email]`, never beside `exclude` | `.include_only(["id", "email"])` |
+| Rename, mask or add columns | `transform: [{ rename: { amount: amount_cents } }]`, `[{ mask: { columns: [email], with: hmac_sha256, key: "${secret:k}" } }]`, `[{ constant: { region: eu } }]` | `.transform(TransformStep::rename([("amount", "amount_cents")]))`, `.transform(TransformStep::Mask(MaskStep::new(["email"], MaskWith::HmacSha256).key("${secret:k}")))`, `.transform(TransformStep::constant([("region", Literal::Text("eu".into()))]))` |
+| Reshape or filter with SQL (the `sql` feature) | `transform: [{ sql: "SELECT id, lower(email) AS email FROM input WHERE status <> 'test'" }]` | `.transform(TransformStep::Sql(query))` |
+| Reshape with your own code | `transform: [{ code: pseudonymize }]`, with `.transform("pseudonymize", t)` on the host | `.transform(TransformStep::Code("pseudonymize".to_owned()))` |
+| Follow the source until stopped, or for a set time | `until: forever` or `until: 10m` | `.until(Until::Forever)` or `.until(Until::For(duration))` on the pipeline |
+| Read on from the earliest data a source kept, rather than fail, when its retention dropped a read's place | `on_retention_loss: reset` | `.on_retention_loss(RetentionLoss::Reset)`, beside an incremental read |
+| Read a stream again from its beginning, or drop its tables | `rdlt state reset <doc> <streams…>` (with `--tables` to drop them) | `pipeline.reset(streams, ResetScope::Positions)` or `ResetScope::Tables` |
 
-`ReadMode` and `LogicalType` come from `rdlt-connector`, and every other type here from
-`rdlt-engine`. A column's schema setting overrides its stream's, and a stream's overrides the
-pipeline's.
+Every type here is at the root of `rdlt`. A column's setting overrides its stream's, a stream's
+overrides the pipeline's `defaults`.
 
 ### Transforms
 
@@ -259,33 +318,38 @@ output after (ADR 0053).
 
 ### Defaults
 
-| Setting | Default | Change it with |
-|---|---|---|
-| Memory budget | 256 MiB | `EngineConfig::builder().memory(bytes)` |
-| Writers (concurrent destination writers) | One per core, up to the destination's limit | `.writers(n)` |
-| Partitions read at once | 16 | `.partitions(n)` |
-| Commits | Every 60 s or 1 GiB; every 10 s or 1 GiB when a run follows its source or reads changes | `.commit(CommitPolicy::new(every, rows, bytes)?)`, each an `Option` and one at least set |
-| Retries | 5 attempts; each delay is drawn from zero up to a limit that doubles from 1 s to 5 min, and a commit resets the count | `.retry(policy)` |
+| Setting | Default | In a document | In code |
+|---|---|---|---|
+| Memory budget | 256 MiB | `resources: { memory: 1GiB }` | `.resources(Resources::new().memory(bytes))` |
+| Writers (concurrent destination writers) | One per core, up to the destination's limit | `resources: { writers: 8 }` | `Resources::new().writers(n)` |
+| Partitions read at once | 16 | `resources: { partitions: 16 }` | `Resources::new().partitions(n)` |
+| Commits | Every 60 s or 1 GiB; every 10 s or 1 GiB when a run follows its source or reads changes | `commit: { every: 10s, rows: 1000000 }` | `.commit(Commit::new().every(duration).rows(n))`, each an option and one at least set |
+| Retries | 5 attempts; each delay is drawn from zero up to a limit that doubles from 1 s to 5 min, and a commit resets the count | `retry: { max_attempts: 8, initial: 1s, max_delay: 5m }` | `.retry(Retry::new().max_attempts(8))` |
 
 ### Run control and reporting
 
-`RunHandle::control()` returns a `RunControl`. Its `stop(StopMode::AfterCommit)` commits what is
-sealed and ends the run, and `stop(StopMode::Now)` ends the run at once as cancelled, its
-unpublished staging discarded at the next open. `RunHandle::status()` reads a run's progress
-without waiting, and dropping the handle cancels the run.
+`Run::stop(StopMode::AfterCommit)` commits what is sealed and ends the run, and
+`StopMode::Now` ends it at once as cancelled, its unpublished staging discarded at the next open.
+`Run::status` reads a run's progress without waiting, and dropping the `Run` cancels it.
 
-A `Report` serializes with serde. It holds the status, the latest 128 attempts, rows, bytes,
-commits, the most the run reserved of its memory budget, and a report per stream. Its row and byte
-totals come from the destination's commit receipts. An `Error` has a kind and names who failed
-(`Origin`). `Error::code` gives the engine's code, from `rdlt_engine::codes`, and
-`Error::connector_code` the code a connector's error carried, such as `retention_lost`.
-`Error::report` gives the error as data that serializes.
+An `Outcome` holds a `Report` and the `Error` that ended the run, if one did. A `Report` serializes
+with serde: the status, the latest 128 attempts, rows, bytes, commits, the most the run reserved of
+its memory budget, and a report per stream. Its row and byte totals come from the destination's
+commit receipts. An `Error` has a kind and names who failed (`Origin`). `Error::code` gives the
+failure's code (from `rdlt::codes`, the host's or the engine's), and `Error::connector_code` the
+code a connector's error carried, such as `retention_lost`. `Error::report` gives the error as
+data that serializes, every text shown and bounded.
 
-`SystemEnv::try_from_host()?.with_observer(Arc::new(|event| ..))` hands each event of a run to the
-closure as it happens. An event marks an attempt started, a commit landed, an earlier attempt's
-commit found landed, a schema change or a retry. Others mark a partition read again after
-retention loss, the markers of done partitions forgotten, and the end of the run. The closure must
-not block, panic or call into the run, so it hands each event on, to a channel for instance.
+A run's metrics go through the `metrics` crate to whichever recorder the embedder installs:
+counters and histograms from its events (rows and bytes committed, commit time and phases, retries,
+schema changes, discards) and gauges sampled from its status once a second (budget held by share,
+writer queues, partitions reading and waiting, how far each stream is behind), labelled by
+`pipeline` and `stream` alone. The engine opens `tracing` spans for a run, an attempt, a
+partition's read, a commit and its phases, and each connector call but a read or a write; none a
+batch. With the `otel` feature, `rdlt::telemetry::otlp(level)` exports traces and metrics over
+OTLP, configured by the standard `OTEL_*` variables, and the host sends a W3C `traceparent` in each
+call's gRPC metadata. No span, metric label or trace attribute holds a secret or a connector's
+configuration.
 
 ### Behaviour to know
 
@@ -321,10 +385,10 @@ not block, panic or call into the run, so it hands each event on, to a channel f
 
 ### Building an embedder
 
-- `rdlt-engine`, `rdlt-wire` and a served `rdlt-connector` refuse to compile with
+- `rdlt-engine`, `rdlt-wire`, `rdlt-host` and a served `rdlt-connector` refuse to compile with
   `panic = "abort"`. rdlt catches a panic by unwinding and turns it into a typed error, whether it
-  comes from Arrow on a corrupt frame, a compute job, an in-process connector, an observer or a
-  served connector's call.
+  comes from Arrow on a corrupt frame, a compute job, an in-process connector (its message
+  scrubbed of the secrets the connector was sent), an observer or a served connector's call.
 - Cargo applies only the root package's profiles, so a binary that wants the measured
   [performance](#performance) sets `lto = "fat"` and `codegen-units = 1` in its own
   `[profile.release]`.
@@ -343,9 +407,20 @@ not block, panic or call into the run, so it hands each event on, to a channel f
   builds its tokio runtime with `Cores::try_from_host()?.runtime_workers().get()` workers instead.
   That is half the cores, rounded down, and at least two on a machine with two or more, since more
   workers than half the cores slow a run of one partition.
-- rdlt's API takes and returns arrow-rs 59 types, such as `RecordBatch`, and runs on tokio.
-- `cargo doc --open -p rdlt-engine` builds the API documentation, in a project that depends on rdlt
-  or in a clone.
+- rdlt's API takes and returns arrow-rs 59 types, such as `RecordBatch`, which `rdlt::arrow`
+  re-exports so a project need not depend on Arrow itself, and runs on tokio.
+- `cargo doc --open -p rdlt` builds the API documentation, in a project that depends on rdlt or in
+  a clone.
+
+### The engine's own API
+
+The facade is built on `rdlt-engine`, whose own API is for what the facade does not cover, such as
+an `Env` of your own. `Engine::new(config, env).run(plan, source, destination)` takes a
+`PipelinePlan` of `StreamPlan`s and connectors placed by hand, and returns a `RunHandle`, a future
+of a `RunOutcome`. `SystemEnv::try_from_host()?.with_observer(Arc::new(|event| ..))` hands each
+event of a run to the closure as it happens; the closure must not block, panic or call into the
+run, so it hands each event on, to a channel for instance. `cargo doc --open -p rdlt-engine`
+documents it.
 
 ## Writing a connector
 
@@ -555,8 +630,10 @@ cargo build -p rdlt-cli -p rdlt-connector-reference \
 echo '{"seed": 11, "streams": [{"name": "events", "rows": 40000, "batch_rows": 50}]}' \
     > generator.json
 target/debug/rdlt certify target/debug/rdlt-connector-generator \
-    --trust-binaries --config-file generator.json
+    --trust-binaries --config-file generator.json --output plain > certified.txt
 ```
+
+Written to a file, the plain report reads as below; at a terminal it is laid out for reading.
 
 ```text
 certification of io.rapidbyte.generator
@@ -616,30 +693,45 @@ certification cannot show, and `rdlt certify --clauses` generates it.
 
 ## Placing connectors
 
-A `Provider` places each connector a `ConnectorRef` names, by a policy the host states. The engine
-drives the connector it returns through the same `Source` and `Destination` traits wherever it
-runs. The providers are in `rdlt-host`, which a project adds as it added the engine, with the same
-`--rev` where it holds to one commit:
+Where a connector runs is its host's decision, by the connector's reference:
+
+| A reference | Runs | The host has allowed it with |
+|---|---|---|
+| The id of a connector registered on the host | In the host's process, compiled in and trusted | `Host::source::<C>()`, `Host::destination::<C>()` |
+| An id with an endpoint: `connector: { id, endpoint: grpcs://… }` | Remotely, over mutual TLS | `Host::remote(Tls)` |
+| Any other id | As a local binary | `Host::connectors(dir)` |
+
+A placement the host was not given is refused (`placement_refused`), never made another way.
+`Host::new()` runs a local binary under bubblewrap; `.trust_binaries()` is the visible opt-out,
+which on macOS, where there is no sandbox, a local binary needs. A document names the paths its
+connectors want with `access: { read, write }`, each within a root the operator named on the host
+(`Host::readable`, `Host::writable`, `Host::always_readable`), and the secrets it refers to resolve
+only as the host's `allow_env`, `allow_files` and `secret_store` allow.
+
+### Placement policy
+
+| Placement | Host | What the connector can reach | Platforms |
+|---|---|---|---|
+| In process | `.source::<C>()`, `.destination::<C>()` | Everything the host can; for connectors compiled into the host and trusted | Linux, macOS |
+| Sandboxed process | `Host::new()` | Read-only system directories, its own `/proc` and `/dev`, a private scratch directory held in memory that `TMPDIR` names, the paths it is granted, and its socket on file descriptor 3. A network grant shares the host's whole network. | Linux, with bubblewrap 0.8 or later, kernel 5.11 or later and unprivileged user namespaces |
+| Trusted process | `.trust_binaries()` | The host's own files, network and processes | Linux, macOS |
+| Remote | `.remote(Tls::from_files(cert, key, ca).await?)` | What its own machine allows; reached over mutual TLS 1.3 and dialled again when lost | Any machine the host can reach; a connector served by `rdlt_connector::serve` runs on Linux or macOS |
+
+### Hosting without the facade
+
+An embedder who needs a placement the facade does not offer uses `rdlt-host`, which a project adds
+as it added the facade, with the same `--rev` where it holds to one commit:
 
 ```sh
 cargo add --git https://github.com/rapidbyte-io/rdlt rdlt-host
 ```
 
-### Placement policy
-
-| Placement | Provider | What the connector can reach | Platforms |
-|---|---|---|---|
-| In process | `Registry::trusted()`, with `trusted_source::<C>()` and `trusted_destination::<C>()` | Everything the host can; for connectors compiled into the host and trusted | Linux, macOS |
-| Sandboxed process | `Local::sandboxed(Bubblewrap::new())` | Read-only system directories, its own `/proc` and `/dev`, a private scratch directory held in memory that `TMPDIR` names, the paths it is granted, and its socket on file descriptor 3. A network grant shares the host's whole network. | Linux, with bubblewrap 0.8 or later, kernel 5.11 or later and unprivileged user namespaces |
-| Trusted process | `Local::trusting_binaries()` | The host's own files, network and processes | Linux, macOS |
-| Remote | `Remote::new(identity, ca)` | What its own machine allows; reached over mutual TLS 1.3 and dialled again when lost | Any machine the host can reach; a connector served by `rdlt_connector::serve` runs on Linux or macOS |
-
-A `Registry` places each connector where its reference says: in process for a registered id,
-remotely for a reference with an endpoint, and as a local binary otherwise. A placement it was not
-given is refused (`placement_refused`), never made another way. The program below runs the
-generator in process, dials any connector whose reference names a `grpcs://` endpoint, and runs
-every other connector in bubblewrap. On Linux it needs `rdlt-connector-sqlite` in a directory no other user may
-write. This command, run as root or as the host's user, puts it in `/opt/rdlt/bin`:
+A `Registry` places each connector a `ConnectorRef` names, by a policy the host states: in process
+for a registered id, remotely for a reference with an endpoint, and as a local binary otherwise. The
+program below runs the generator in process, dials any connector whose reference names a `grpcs://`
+endpoint, and runs every other connector in bubblewrap. On Linux it needs `rdlt-connector-sqlite` in
+a directory no other user may write. This command, run as root or as the host's user, puts it in
+`/opt/rdlt/bin`:
 
 ```sh
 cargo install --locked --git https://github.com/rapidbyte-io/rdlt rdlt-connector-reference \
@@ -725,12 +817,12 @@ async fn load() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Host enforcement
 
-- A sandboxed connector reaches the system directories, the paths the provider lets every connector
-  read (`Local::always_readable`), and the access its reference asks for (`ConnectorRef::read`,
-  `write`, `network`) within a root the provider names (`Local::readable`, `writable`). By
-  default no root is named and no access is given. Network access shares the host's network
-  namespace whole: every interface and route, the host's loopback services and its abstract Unix
-  sockets.
+- A sandboxed connector reaches the system directories, the paths the host lets every connector
+  read (`Host::always_readable`, `Local::always_readable`), and the access its document or reference
+  asks for (`access`, `ConnectorRef::read`, `write`, `network`) within a root the host names
+  (`Host::readable`, `writable`; `Local::readable`, `writable`). By default no root is named and no
+  access is given. Network access shares the host's network namespace whole: every interface and
+  route, the host's loopback services and its abstract Unix sockets.
 - A provider honours or refuses every requirement a reference states.
   `.isolation(Isolation::Sandbox)` or `.isolation(Isolation::Remote)` keeps a reference from being placed
   as a connector with the host's access, and `.digest(..)` accepts only the binary with that SHA-256.
@@ -793,12 +885,18 @@ at the `grpcs://` endpoint its reference names.
 
 A configuration's text values may hold the secret references `${env:NAME}`,
 `${file:/absolute/path}` and `${secret:name}`, and `$${` writes a literal `${`. None resolves by
-default: `${env:..}` resolves only for the variables `Secrets::allow_env` and `allow_env_prefix` allow,
-`${file:..}` only beneath the private directories `allow_files` names, and `${secret:..}` only
-from the `secret_store` the operator gives. A spawned or remote connector's references resolve only after the handshake has
-shown which connector it is, and an in-process one's once its id and version match the reference.
-Each resolved value then appears only as `***` in the connector's errors and output, the engine's
-reports and certification reports ([ADR 0043](docs/adr/0043-placement-policy-and-secrets.md)).
+default: `${env:..}` resolves only for the variables `Host::allow_env` allows, `${file:..}` only
+beneath the private directories `allow_files` names, and `${secret:..}` only from the `secret_store`
+the operator gives (`rdlt_host::Secrets` underneath, with `allow_env_prefix` besides). A spawned or
+remote connector's references resolve only after the handshake has shown which connector it is,
+and an in-process one's once its id and version match the reference. A mask's key resolves the same
+way when the pipeline is built.
+Each resolved value then appears only as `***` in the connector's errors and output, in the message
+of an in-process connector's panic, in the engine's reports and in certification reports. A catalog
+or partition plan in which a stream's, a column's or a partition's name contains a resolved value
+is refused, coded `named_by_secret`: a name is shown as it is, never scrubbed. The process's panic
+hook sees a panic before the host does, its message as it was raised
+([ADR 0043](docs/adr/0043-placement-policy-and-secrets.md), [SECURITY.md](SECURITY.md)).
 
 ## Exactly-once delivery
 
@@ -891,6 +989,8 @@ the whole engine runs under deterministic simulation.
 | Stress | The simulation on many threads and the real clock | 200 seeds nightly |
 | Simulation coverage | The simulation alone must reach at least 80% of the lines and 71% of the branches of the engine, connector, host and wire code | Nightly |
 | Integration tests | The engine's destination-facing tests against every reference destination in process, and against the SQLite, JSON lines and Arrow IPC destinations spawned in processes of their own and listening over mutual TLS | Every pull request, Linux and macOS |
+| Secret scan | Environment, file and store secrets and mask keys, made to fail at every boundary (a refused configuration, a connector in process or spawned echoing its configuration or panicking, a SQL error, a stream or partition whose name contains a secret): no value appears, escaped, shown, in hex, percent-encoded or in base64, in events, reports, errors, tracing output, an OpenTelemetry export, whose spans carry stream and partition names, or what the command line prints as JSON or plain text; each of those places is shown to find a value that reaches it, and a refusal never to quote a value | Every pull request, Linux and macOS |
+| Placement matrix | One pipeline through the facade in process, as sandboxed local connectors and remotely over mutual TLS, each loading every row once | Every pull request; the sandboxed case on Linux |
 | Real crashes | A pipeline in a process of its own is crashed at 8 durability failpoints and killed with its spawned connectors, then run again: every row lands once and no connector outlives its run | Every pull request, Linux and macOS |
 | Soak | Spawned connectors that are killed, stopped, crash and flood their output | 1,200 s nightly |
 | Kani | 14 proofs: wire credit, handshake limits, reading a length prefix from any bytes, the memory budget's shares, and a destination's answer to a commit | Every proof of each crate a pull request touches; all nightly |
@@ -1001,12 +1101,12 @@ These decisions are the ones to read first:
 ## Security
 
 rdlt treats a connector as untrusted code unless it is compiled into the host and registered in
-process with `Registry::trusted()`. `Local::trusting_binaries()` runs a binary the operator states
-is trusted, with the host's own access. rdlt treats everything any connector sends as untrusted
-data. Until its hardening is complete, run only connectors you trust. Report a vulnerability
-privately through the repository's [Security tab](https://github.com/rapidbyte-io/rdlt/security)
-and its "Report a vulnerability" button, never in a public issue. [SECURITY.md](SECURITY.md) states
-the trust model and its limits.
+process with `Host::source::<C>()` (`Registry::trusted()` in `rdlt-host`). `Host::trust_binaries`
+runs a binary the operator states is trusted, with the host's own access. rdlt treats everything
+any connector sends as untrusted data. Until its hardening is complete, run only connectors you
+trust. Report a vulnerability privately through the repository's
+[Security tab](https://github.com/rapidbyte-io/rdlt/security) and its "Report a vulnerability"
+button, never in a public issue. [SECURITY.md](SECURITY.md) states the trust model and its limits.
 
 ## Contributing
 
