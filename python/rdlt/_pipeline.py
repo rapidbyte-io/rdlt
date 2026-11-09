@@ -189,7 +189,7 @@ class Stream:
     nothing."""
     schema: SchemaRules | None = None
     """What its schema does, where it differs from the defaults'."""
-    nested: _NestedWord | Mapping[str, Json] | None = None
+    nested: _NestedWord | Mapping[str, Json] | None = field(default=None, hash=False)
     """How its nested values are stored: a word, or `{"normalize": {"max_depth": n}}`."""
     columns: Mapping[str, Column] = field(default_factory=dict[str, Column], hash=False)
     """Each top-level column's own settings, by name."""
