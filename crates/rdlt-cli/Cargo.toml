@@ -33,7 +33,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
-nix = { workspace = true, features = ["signal"] }
+nix = { workspace = true, features = ["signal", "term"] }
 parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["certify", "serve", "testing"] }
 rdlt-connector-reference = { workspace = true, features = ["certify", "test-connectors"] }

@@ -92,12 +92,33 @@ operates its host.
   call but a write; none a batch. The host sends a W3C `traceparent` in each call's gRPC metadata,
   from a context source the facade's `otel` installs; `serve` reads it only when it is a
   lower-case version 00 context of 55 bytes and runs the call in a span naming the host's trace.
-  `rdlt::telemetry::otlp()` exports both over OTLP, configured by `OTEL_*`: an `https` collector
+  `rdlt::telemetry::otlp(level)` exports both over OTLP, configured by `OTEL_*`: an `https` collector
   is verified against the operating system's roots or `OTEL_EXPORTER_OTLP_CERTIFICATE`, a failed
   export is logged through `tracing` and never stalls a run, and no error or log names an
   endpoint, which may hold credentials. No span, metric label or trace attribute holds a secret
   or a connector's configuration; connector text in them (a stream or partition name) is shown as
   the host shows it.
+- **The command line.** `rdlt` (crate `rdlt-cli`) is the facade with every feature, and
+  `rdlt certify` the certifier's command line. The host's policy comes from the operator's
+  `host.yaml` (`--host`, by default `$XDG_CONFIG_HOME/rdlt/host.yaml`) in the host's words, each
+  flag given standing in place of the file's setting; with neither, the host is sandboxed, finds
+  connectors in `$XDG_DATA_HOME/rdlt/connectors` and allows no secret. Results go to standard
+  output and notes to standard error; `--output json` makes every result and error JSON on
+  standard output, `auto` is plain on a terminal and JSON elsewhere, in the forms `docs/cli.md`
+  records (a failure is `{"error": …}`, an `ErrorReport` or the command line's own
+  `{"kind", "message"}`); a closed pipe ends quietly;
+  connector text is shown as the host shows it. One table in code holds the exit codes: 0
+  success, 1 certify findings (failed or incomplete), 2 config, 3 schema, 4 source, 5
+  destination, 6 transform, 7 fenced, 8 memory, 64 usage, 70 internal, 74 I/O, 128 plus a signal.
+  The first SIGINT or SIGTERM stops a run after its next commit, a second stops it at once; the
+  report says whether the stop was clean. A run's events and notes are written by tasks of their
+  own, so a reader that stops reading holds up neither the run nor its signals, and the process
+  ends without waiting on the runtime's blocking pool, so a hung read cannot hold its exit.
+  `rdlt state reset` opens a session and so fences a run in progress, as a write should; no verb
+  reads state back until the destination contract has a read that fences nothing. The binary
+  links the certifier and the reference connectors it certifies with; it serves no connector and
+  places none compiled in, so `cargo xtask shipped`, which holds connector binaries to no test
+  surface, does not list it.
 - **Features.** `local` (default), `remote`, `sql` and `otel`. `rdlt::arrow` re-exports Arrow, and
   `rdlt::Value` and `rdlt::json!` serde_json's, so an embedder never chases their versions. The
   facade runs on tokio. `just public-api` holds the public API to a reviewed snapshot, in the

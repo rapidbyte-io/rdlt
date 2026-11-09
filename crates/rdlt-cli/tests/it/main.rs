@@ -3,10 +3,12 @@
 #![forbid(unsafe_code)]
 
 mod certify;
+mod contract;
 mod guarded;
 mod help;
 mod running;
 mod scaffold;
 mod signals;
 mod support;
+mod terminal;
 mod verbs;
