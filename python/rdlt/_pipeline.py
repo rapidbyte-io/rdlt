@@ -409,8 +409,14 @@ def pipeline(
             if resource.cursor is not None:
                 entry["read"] = "incremental"
             entries[resource.name] = entry
+    named: set[str] = set()
+    repeated: list[dict[str, Json]] = []
     for given in streams:
-        entries[given.name] = {**entries.get(given.name, {}), **given._document()}
+        if given.name in named:
+            repeated.append(given._document())
+        else:
+            named.add(given.name)
+            entries[given.name] = {**entries.get(given.name, {}), **given._document()}
     if not isinstance(source, Connector):
         resuming = {name for name, entry in entries.items() if entry.get("read") == "incremental"}
         factories.append(source_factory(_resources(source), resuming))
@@ -419,7 +425,7 @@ def pipeline(
         "pipeline": name,
         "source": source_document,
         "destination": destination._document(),
-        "streams": list(entries.values()),
+        "streams": [*entries.values(), *repeated],
     }
     document.update(
         _kept(

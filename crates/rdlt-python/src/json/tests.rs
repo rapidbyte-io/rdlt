@@ -233,6 +233,47 @@ fn a_row_larger_than_a_push_is_refused() {
 }
 
 #[test]
+fn a_row_stops_being_written_once_it_is_past_a_push() {
+    embedded::with(|py| {
+        let row = evaluated(py, "{'pad': ['x' * 1024] * 1_000_000}");
+        let error = pushes(
+            py,
+            &row,
+            JsonLimits {
+                push_bytes: 512,
+                depth: 64,
+            },
+        )
+        .expect_err("too large");
+        assert_eq!(error.connector_error().code(), Some("json_push_bytes"));
+        let Unwritten::Large { bytes, .. } = error else {
+            panic!("{error}")
+        };
+        assert!(bytes < 2048, "written to {bytes} bytes");
+    });
+}
+
+#[test]
+fn a_row_exactly_at_the_limit_before_a_value_is_measured_whole() {
+    embedded::with(|py| {
+        let row = evaluated(py, "{'a': 'x'}");
+        let error = pushes(
+            py,
+            &row,
+            JsonLimits {
+                push_bytes: 5,
+                depth: 64,
+            },
+        )
+        .expect_err("too large");
+        assert!(
+            matches!(error, Unwritten::Large { bytes: 10, .. }),
+            "{error}"
+        );
+    });
+}
+
+#[test]
 fn a_limit_too_large_for_this_platform_holds_all_there_is() {
     let limits = JsonLimits::new(u64::MAX, u64::MAX);
     assert_eq!(limits.push_bytes, usize::MAX);

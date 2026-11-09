@@ -346,7 +346,8 @@ impl NativeEvents {
     }
 
     /// The item that waits to be taken, if one does.
-    fn take(&self) -> Option<String> {
-        self.reader.take()
+    fn take(&self, py: Python<'_>) -> Result<Option<String>, PyErr> {
+        runtime::get(py)?;
+        Ok(self.reader.take())
     }
 }

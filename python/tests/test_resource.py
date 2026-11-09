@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import subprocess
@@ -10,6 +11,7 @@ import textwrap
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
+from contextvars import ContextVar
 from pathlib import Path
 from typing import cast
 
@@ -387,6 +389,51 @@ def test_a_resource_with_a_cursor_that_never_checkpoints_fails_naming_it(
     assert raised.value.report().connector_code == "checkpoint_missing"
 
 
+def test_a_resumed_read_that_yields_rows_and_never_checkpoints_fails(
+    tmp_path: Path, connectors: Path
+) -> None:
+    checkpointing = [True]
+
+    @rdlt.resource(cursor=_Since)
+    def users(since: _Since) -> Iterator[object]:
+        yield {"id": since.after + 1}
+        if checkpointing[0]:
+            yield rdlt.checkpoint(_Since(after=since.after + 1))
+
+    built = rdlt.pipeline(
+        "unmarked",
+        source=users,
+        destination=into_sqlite(tmp_path),
+        retry=rdlt.Retry(max_attempts=1),
+    )
+    every_host = host(tmp_path, connectors)
+    built.build(every_host).run()
+
+    checkpointing[0] = False
+    with pytest.raises(rdlt.Error) as raised:
+        built.build(every_host).run()
+    assert raised.value.report().connector_code == "checkpoint_missing"
+
+
+def test_a_stream_named_twice_is_refused_by_the_plan(tmp_path: Path, connectors: Path) -> None:
+    @rdlt.resource()
+    def users() -> Iterator[object]:
+        yield {"id": 1}
+
+    built = rdlt.pipeline(
+        "twice",
+        source=users,
+        destination=into_sqlite(tmp_path),
+        streams=[
+            rdlt.stream("users", write=rdlt.append()),
+            rdlt.stream("users", write=rdlt.replace()),
+        ],
+    )
+    with pytest.raises(rdlt.Error) as refused:
+        built.build(host(tmp_path, connectors)).run()
+    assert refused.value.code == "plan_duplicate_stream"
+
+
 def test_naming_a_resource_in_streams_keeps_what_it_does_not_change(
     tmp_path: Path, connectors: Path
 ) -> None:
@@ -440,6 +487,62 @@ def test_an_object_with_only_aiter_is_read(tmp_path: Path, connectors: Path) -> 
         host(tmp_path, connectors)
     ).run()
     assert len(rows_of(tmp_path, "counted")) == 2
+
+
+def test_an_async_resource_is_read_in_one_task_of_a_running_loop(
+    tmp_path: Path, connectors: Path
+) -> None:
+    held: ContextVar[int] = ContextVar("held")
+
+    class Numbers:
+        def __aiter__(self) -> AsyncIterator[object]:
+            asyncio.get_running_loop()
+            return self._numbers()
+
+        async def _numbers(self) -> AsyncIterator[object]:
+            token = held.set(7)
+            try:
+                async with asyncio.timeout(60):
+                    yield {"n": held.get()}
+                    yield {"n": held.get()}
+            finally:
+                held.reset(token)
+
+    @rdlt.resource()
+    def counted() -> Numbers:
+        return Numbers()
+
+    rdlt.pipeline(
+        "counted",
+        source=counted,
+        destination=into_sqlite(tmp_path),
+        retry=rdlt.Retry(max_attempts=1),
+    ).build(host(tmp_path, connectors)).run()
+    assert rows_of(tmp_path, "counted") == [(7,), (7,)]
+
+
+def test_a_task_an_async_resource_leaves_running_is_cancelled_and_cleans_up(
+    tmp_path: Path, connectors: Path
+) -> None:
+    cleaned: list[bool] = []
+
+    async def forever() -> None:
+        try:
+            await asyncio.sleep(3600)
+        finally:
+            await asyncio.sleep(0)
+            cleaned.append(True)
+
+    @rdlt.resource()
+    async def leaving() -> AsyncIterator[object]:
+        left = asyncio.create_task(forever())
+        await asyncio.sleep(0)
+        yield {"done": left.done()}
+
+    rdlt.pipeline("leaving", source=leaving, destination=into_sqlite(tmp_path)).build(
+        host(tmp_path, connectors)
+    ).run()
+    assert cleaned == [True]
 
 
 def test_a_string_is_not_a_list_of_partitions(tmp_path: Path, connectors: Path) -> None:

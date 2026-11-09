@@ -31,6 +31,8 @@ class Resource:
     its last checkpoint are read again by the next run, from that checkpoint, so it ends on a
     `rdlt.checkpoint` to commit them; ending there, a later run with nothing new reads nothing.
     One that yields rows and never checkpoints fails the read: nothing it read could land.
+    All of this is of incremental reads: read `full`, it starts again from the beginning each
+    run, and a read that finishes commits what it yielded with no checkpoint.
     """
 
     function: Read
