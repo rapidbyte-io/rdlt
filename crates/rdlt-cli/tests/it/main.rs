@@ -3,5 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod help;
+mod running;
+mod signals;
 mod support;
 mod verbs;

@@ -117,7 +117,7 @@ impl core::marker::Unpin for rdlt::telemetry::Telemetry
 impl core::marker::UnsafeUnpin for rdlt::telemetry::Telemetry
 impl !core::panic::unwind_safe::RefUnwindSafe for rdlt::telemetry::Telemetry
 impl !core::panic::unwind_safe::UnwindSafe for rdlt::telemetry::Telemetry
-pub fn rdlt::telemetry::otlp() -> core::result::Result<rdlt::telemetry::Telemetry, rdlt::Error>
+pub fn rdlt::telemetry::otlp(&str) -> core::result::Result<rdlt::telemetry::Telemetry, rdlt::Error>
 #[non_exhaustive] pub enum rdlt::Connector
 pub rdlt::Connector::Id(alloc::string::String)
 pub rdlt::Connector::Reference(rdlt::ConnectorReference)

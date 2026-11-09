@@ -2,6 +2,7 @@
 //! error, connector text shown as the host shows it, and a closed pipe ending quietly.
 
 use std::io::{IsTerminal as _, Write as _};
+use std::time::Duration;
 
 use tokio::io::AsyncWriteExt as _;
 
@@ -10,6 +11,10 @@ use crate::args::Output;
 
 /// Bytes: the most of one line of human output.
 const LINE_BYTES: usize = 4_096;
+
+/// How long the last things a verb says, and a run's report, may take to reach where they go: a
+/// reader that stopped reading does not hold the exit past it.
+pub(crate) const FINISHING: Duration = Duration::from_secs(5);
 
 /// The variables that name a collector to export to.
 const COLLECTOR: [&str; 3] = [
@@ -59,6 +64,15 @@ impl Failure {
         }
     }
 
+    /// The end of a verb a signal stopped, `status` being the exit status of a process so ended.
+    pub(crate) fn signalled(status: i32) -> Self {
+        Self {
+            exit: Exit::Signalled(status),
+            message: "interrupted by a signal".to_owned(),
+            report: None,
+        }
+    }
+
     pub(crate) fn usage(message: impl Into<String>) -> Self {
         Self {
             exit: Exit::Usage,
@@ -80,12 +94,25 @@ impl From<rdlt::Error> for Failure {
         } else {
             Exit::of(error.kind())
         };
+        let report = Box::new(error.report());
         Self {
             exit,
-            message: error.to_string(),
-            report: Some(Box::new(error.report())),
+            message: with_causes(&error.to_string(), &report),
+            report: Some(report),
         }
     }
+}
+
+/// `message`, with what `report` gives as its causes after it, each once.
+pub(crate) fn with_causes(message: &str, report: &rdlt::ErrorReport) -> String {
+    let mut text = message.to_owned();
+    for cause in &report.causes {
+        if !text.contains(cause) {
+            text.push_str(": ");
+            text.push_str(cause);
+        }
+    }
+    text
 }
 
 /// `text` as a terminal may show it: every control sequence escaped, bounded.
@@ -115,6 +142,17 @@ pub(crate) fn note(text: &str) {
     writeln!(std::io::stderr().lock(), "{}", shown(text)).ok();
 }
 
+/// Writes `text` to standard error, whoever holds the reading end; a failure to write is no
+/// failure of the verb.
+pub(crate) async fn stderr(text: &str) {
+    let mut err = tokio::io::stderr();
+    let written = async {
+        err.write_all(text.as_bytes()).await?;
+        err.flush().await
+    };
+    written.await.ok();
+}
+
 /// Prints a verb's result: `plain`'s lines, each shown, or `json`, as `mode` says.
 pub(crate) async fn result(
     mode: Mode,
@@ -135,24 +173,61 @@ pub(crate) async fn result(
     stdout(&text).await
 }
 
-/// Prints why a verb failed: on standard error as text, or on standard output as JSON.
-pub(crate) fn failed(mode: Mode, failure: &Failure) {
-    let mut stdout = std::io::stdout().lock();
+/// Prints why a verb failed, on standard error as text or on standard output as JSON, within
+/// [`FINISHING`].
+pub(crate) async fn failed(mode: Mode, failure: &Failure) {
+    let printing = async {
+        match rendered(mode, failure) {
+            Rendered::Output(text) => {
+                stdout(&text).await.ok();
+            }
+            Rendered::Error(text) => stderr(&text).await,
+        }
+    };
+    tokio::time::timeout(FINISHING, printing).await.ok();
+}
+
+/// As [`failed`], with no runtime to print through, as the start of the process has none.
+pub(crate) fn failed_at_start(mode: Mode, failure: &Failure) {
+    match rendered(mode, failure) {
+        Rendered::Output(text) => write!(std::io::stdout().lock(), "{text}").ok(),
+        Rendered::Error(text) => write!(std::io::stderr().lock(), "{text}").ok(),
+    };
+}
+
+/// A failure of the command line's own, which is no error of a pipeline's, as JSON says one.
+pub(crate) fn failure_value(exit: Exit, message: &str) -> serde_json::Value {
+    let kind = match exit {
+        Exit::Usage => "usage",
+        Exit::Signalled(_) => "signal",
+        _ => "io",
+    };
+    serde_json::json!({ "kind": kind, "message": shown(message) })
+}
+
+/// The line standard output holds for such a failure, under `--output json`.
+pub(crate) fn failure_json(exit: Exit, message: &str) -> String {
+    format!(
+        "{}\n",
+        serde_json::json!({ "error": failure_value(exit, message) })
+    )
+}
+
+/// `failure` as `mode` prints it, and on which stream.
+fn rendered(mode: Mode, failure: &Failure) -> Rendered {
     match (mode, &failure.report) {
         (Mode::Json, Some(report)) => {
-            writeln!(stdout, "{}", serde_json::json!({ "error": report })).ok();
+            Rendered::Output(format!("{}\n", serde_json::json!({ "error": report })))
         }
-        (Mode::Json, None) => {
-            let message = shown(&failure.message);
-            writeln!(
-                stdout,
-                "{}",
-                serde_json::json!({ "error": { "message": message } })
-            )
-            .ok();
-        }
-        (Mode::Plain, _) => note(&format!("rdlt: {}", failure.message)),
+        (Mode::Json, None) => Rendered::Output(failure_json(failure.exit, &failure.message)),
+        (Mode::Plain, _) => Rendered::Error(format!("rdlt: {}\n", shown(&failure.message))),
     }
+}
+
+/// A failure, printed: JSON on standard output, or text on standard error.
+enum Rendered {
+    Output(String),
+    Error(String),
 }
 
 /// Logs to standard error at `level`, or as `RUST_LOG` says; and to a collector too where the
@@ -162,7 +237,7 @@ pub(crate) fn logging(level: &str) -> Option<rdlt::telemetry::Telemetry> {
         .iter()
         .any(|name| std::env::var_os(name).is_some())
     {
-        match rdlt::telemetry::otlp() {
+        match rdlt::telemetry::otlp(level) {
             Ok(telemetry) => return Some(telemetry),
             Err(error) => note(&format!("rdlt: {error}")),
         }

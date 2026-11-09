@@ -4,6 +4,8 @@
 #[cfg(test)]
 mod tests;
 
+use std::io::IsTerminal as _;
+
 use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::trace::{TraceContextExt as _, TracerProvider as _};
 use opentelemetry_otlp::tonic_types::transport::{Certificate, ClientTlsConfig};
@@ -13,6 +15,7 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use rdlt_host::TraceParent;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::Layer as _;
+use tracing_subscriber::filter::FilterExt as _;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
@@ -87,9 +90,12 @@ impl Settings {
 }
 
 /// Installs export of traces and metrics over the OpenTelemetry protocol, as the `OTEL_*`
-/// variables configure it: the process's `tracing` subscriber (filtered by `RUST_LOG`, `info` by
-/// default, and also writing to standard error), its `metrics` recorder, and the trace context
-/// each connector call sends.
+/// variables configure it: the process's `tracing` subscriber, its `metrics` recorder, and the
+/// trace context each connector call sends.
+///
+/// `RUST_LOG`, where set, filters both what is exported and what is written to standard error;
+/// where it is not, `info` is exported and `stderr_level`, a `tracing` level, is written, in
+/// colour only on a terminal.
 ///
 /// A collector at an `https` endpoint is verified against the operating system's roots, or
 /// against the certificate `OTEL_EXPORTER_OTLP_CERTIFICATE` names. A failed export is logged by
@@ -103,25 +109,32 @@ impl Settings {
 ///
 /// `telemetry_unavailable` where there is no tokio runtime to export from, an exporter cannot be
 /// built, or a subscriber or recorder is already installed.
-pub fn otlp() -> Result<Telemetry, Error> {
-    install(&Settings::from_vars(&environment))
+pub fn otlp(stderr_level: &str) -> Result<Telemetry, Error> {
+    install(&Settings::from_vars(&environment), stderr_level)
 }
 
-fn install(settings: &Settings) -> Result<Telemetry, Error> {
+/// `RUST_LOG`'s filter, else one at `level`.
+fn filter_at(level: &str) -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level))
+}
+
+fn install(settings: &Settings, stderr_level: &str) -> Result<Telemetry, Error> {
     let telemetry = providers(settings)?;
     let own_traffic = tracing_subscriber::filter::Targets::new()
         .with_default(tracing::Level::TRACE)
         .with_targets(OWN_TRAFFIC.map(|target| (target, tracing::level_filters::LevelFilter::OFF)));
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let exporting = tracing_opentelemetry::layer()
         .with_tracer(telemetry.tracer.tracer("rdlt"))
         .with_tracked_inactivity(false)
-        .with_filter(own_traffic);
+        .with_filter(filter_at("info").and(own_traffic));
+    let writing = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_filter(filter_at(stderr_level));
     tracing_subscriber::registry()
-        .with(filter)
         .with(exporting)
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(writing)
         .try_init()
         .map_err(|error| unavailable("the tracing subscriber", error))?;
     let recorder =
