@@ -8,7 +8,7 @@ use std::process::Stdio;
 
 use tokio::process::Command;
 
-use super::{InstallError, io_error};
+use super::{InstallError, blocking, io_error};
 
 /// What a wheel says of itself, read from its archive.
 #[derive(Debug, serde::Deserialize)]
@@ -48,7 +48,13 @@ impl Wheel {
 /// `path` as an absolute path, once it is seen to be an existing regular file named `*.whl` that
 /// can be read: nothing else reaches pip, which would take a name for a package of an index, or a
 /// leading `-` for one of its options.
-pub(super) fn checked(path: &Path) -> Result<PathBuf, InstallError> {
+pub(super) async fn checked(path: &Path) -> Result<PathBuf, InstallError> {
+    let path = path.to_owned();
+    blocking(move || checked_now(&path)).await
+}
+
+/// [`checked`], on a thread that may block.
+fn checked_now(path: &Path) -> Result<PathBuf, InstallError> {
     let refused = |why: &str| InstallError::Wheel {
         path: path.to_owned(),
         why: why.to_owned(),
