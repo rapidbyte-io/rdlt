@@ -1,7 +1,7 @@
 use rdlt_certify::{Clause, ClauseResult, Outcome, Report, Verdict};
 
 use super::session::within;
-use super::{Require, Watch, bound, code, ran, verdict};
+use super::{Require, Watch, bound, code, ran, redactions, verdict, whole_report};
 use crate::Exit;
 use crate::output::Mode;
 use crate::ui::Ui;
@@ -212,4 +212,65 @@ fn what_a_signal_cuts_short_says_nothing_of_a_held_role_or_off_the_live_view() {
         Vec::<String>::new(),
         "JSON says it once"
     );
+}
+
+/// A secret wider than a line, which a wrap would split where no scrub could find either half.
+const WIDE_SECRET: &str = "hunter2-CANARY-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\
+     0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuv\
+     wxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\
+     0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrst";
+
+/// A report a connector holding `WIDE_SECRET` fails with: the secret in a clause's reason, in a
+/// passing clause's note, and in the connector's own name.
+fn report_saying_the_secret() -> Report {
+    redactions().add(WIDE_SECRET);
+    let clause = Clause {
+        id: "D-OPEN",
+        statement: "a statement",
+        unless: "",
+    };
+    let said = format!("opening the database /nonexistent/{WIDE_SECRET}/store.db failed");
+    Report {
+        connector: format!("io.example.{WIDE_SECRET}"),
+        results: vec![
+            ClauseResult {
+                clause,
+                outcome: Outcome::Failed(said.as_str().into()),
+                note: None,
+            },
+            ClauseResult {
+                clause,
+                outcome: Outcome::Passed,
+                note: Some(said.as_str().into()),
+            },
+        ],
+    }
+}
+
+/// Whether `text` holds any part of `WIDE_SECRET` long enough to tell it by.
+fn holds_part_of_the_secret(text: &str) -> bool {
+    let secret: Vec<char> = WIDE_SECRET.chars().collect();
+    secret
+        .windows(12)
+        .any(|part| text.contains(&part.iter().collect::<String>()))
+}
+
+/// A line is scrubbed before it is wrapped: a break that split a secret would leave both halves
+/// where the scrub finds neither.
+#[test]
+fn a_secret_wider_than_a_line_is_scrubbed_before_the_line_is_wrapped() {
+    let report = report_saying_the_secret();
+    let (ui, queue) = Ui::queued();
+    let role = rdlt_connector::Role::Destination;
+    let mut watch = Watch::new(&ui, Mode::Plain, role);
+    let lines = report.results.len() + 1;
+    let reading =
+        std::thread::spawn(move || queue.lines(lines, std::time::Duration::from_secs(60)));
+    watch.finish(&report);
+    let shown = reading.join().expect("the reader ends").join("\n");
+    assert!(shown.contains("/nonexistent/***/store.db"), "{shown}");
+    assert!(!holds_part_of_the_secret(&shown), "{shown}");
+    let printed = redactions().scrubbed(whole_report(&report, role, &ui));
+    assert!(printed.contains("/nonexistent/***/store.db"), "{printed}");
+    assert!(!holds_part_of_the_secret(&printed), "{printed}");
 }
