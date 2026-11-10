@@ -129,6 +129,9 @@ fn io_error(context: impl Into<String>) -> impl FnOnce(io::Error) -> InstallErro
 /// Installs `installation`'s wheel as a directory connector, replacing an earlier install of the
 /// same connector.
 ///
+/// Only an existing wheel file reaches pip, named by its `file:` URL, which no index is asked for;
+/// with requirements, `--require-hashes` covers every package, the wheel among them.
+///
 /// Dropped before it ends, as it is when a signal ends the command line, it kills the processes
 /// it started, every process of their groups, and removes the environment it was making.
 ///

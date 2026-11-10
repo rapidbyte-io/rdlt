@@ -240,7 +240,9 @@ pub(crate) enum ConnectorAction {
     /// tree, and only a tree an install of that connector made: a pipeline running it then fails,
     /// its files gone with the tree replaced, and is run again once the install is done. The
     /// tree's `bin/pip` and other scripts name the directory the environment was made in, so
-    /// run its packages' tools as `<tree>/bin/python -m pip`.
+    /// run its packages' tools as `<tree>/bin/python -m pip`. While it runs, an install holds
+    /// `.rdlt-install.lock` in the connector directory, a file of its own, and it records the
+    /// connector's id in the tree as `rdlt-connector.id`.
     Install(InstallArgs),
 }
 
