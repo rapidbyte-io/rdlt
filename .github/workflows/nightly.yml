@@ -248,6 +248,48 @@ jobs:
           cache_key_prefix: mise-v2-test
       - run: just resident
 
+  # The wheel on every CPython it ships for, on Linux and macOS: the abi3 wheel, built once, on
+  # 3.11 to 3.15 in turn, and free-threaded 3.14 on its own wheel; pull requests test the abi3
+  # range's two ends.
+  python-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        wheel: [abi3, free-threaded]
+        include:
+          - { wheel: abi3, pythons: 3.11 3.12 3.13 3.14 3.15 }
+          - { wheel: free-threaded, pythons: 3.14t }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
+          install_args: --locked just python uv maturin
+          cache_key_prefix: mise-v3-python-matrix
+      # The two wheels link PyO3 against different interpreters: each keeps a cache of its own.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.wheel }}
+      - name: Make a sandbox available
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        run: ./.github/sandbox.sh
+      # On Linux a test that needs a sandbox fails where none can be made, rather than skip.
+      - run: |
+          read -ra pythons <<< "$PYTHONS"
+          just python-wheel "${pythons[@]}"
+        env:
+          PYTHONS: ${{ matrix.pythons }}
+          RDLT_REQUIRE_SANDBOX: ${{ runner.os == 'Linux' && '1' || '0' }}
+
   # A thousand seeds under coverage, side by side on the runner's four cores.
   sim-coverage:
     runs-on: ubuntu-24.04

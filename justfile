@@ -56,23 +56,43 @@ connectors-build:
 python-test *args: python-develop connectors-build
     .venv/bin/python -m pytest {{ args }}
 
-# Build the release wheel and test it as it ships: installed with the test dependencies into an
-# environment of its own on CPython `version`, which uv installs from the downloads its release
-# names, never the editable package
-python-wheel version: connectors-build
+# Build the release wheel and test it as it ships, on each CPython of `versions` in turn: installed
+# with the test dependencies into an environment of its own, on an interpreter uv installs from the
+# downloads its release names, never the editable package. The abi3 wheel is built once; a version
+# ending in `t` is free-threaded CPython, such as `3.14t`, which loads no abi3 wheel: its wheel is
+# built for that interpreter alone. Every version is tested, and the recipe fails after the last
+# if any failed
+python-wheel +versions: connectors-build
     #!/usr/bin/env bash
     set -euo pipefail
     rm -rf target/wheels target/wheel-env
-    # The wheel is built without `.venv`, which the exported PYO3_PYTHON names
-    export PYO3_PYTHON="$(mise which python)"
-    maturin build --release --out target/wheels --interpreter "$(mise which python)"
-    uv python install "{{ version }}"
-    uv venv --python "{{ version }}" target/wheel-env
-    VIRTUAL_ENV=target/wheel-env uv sync --locked --active --only-group dev
-    uv pip install --python target/wheel-env/bin/python target/wheels/*.whl
-    # The tests must read the wheel, not the source tree beside it
-    target/wheel-env/bin/python -c 'import pathlib, rdlt; assert "site-packages" in pathlib.Path(rdlt.__file__).parts'
-    target/wheel-env/bin/python -m pytest -p no:cacheprovider
+    failed=()
+    for version in {{ versions }}; do
+        uv python install "$version"
+        if [[ "$version" == *t ]]; then
+            interpreter=$(uv python find "$version")
+            wheels="target/wheels/$version"
+        else
+            interpreter=$(mise which python)
+            wheels=target/wheels/abi3
+        fi
+        if [[ ! -d "$wheels" ]]; then
+            # The wheel is built without `.venv`, which the exported PYO3_PYTHON names
+            PYO3_PYTHON="$interpreter" maturin build --release --out "$wheels" --interpreter "$interpreter"
+        fi
+        rm -rf target/wheel-env
+        uv venv --python "$version" target/wheel-env
+        VIRTUAL_ENV=target/wheel-env uv sync --locked --active --only-group dev
+        uv pip install --python target/wheel-env/bin/python "$wheels"/*.whl
+        # The tests must read the wheel, not the source tree beside it
+        target/wheel-env/bin/python -c 'import pathlib, rdlt; assert "site-packages" in pathlib.Path(rdlt.__file__).parts'
+        echo "CPython $version: $(target/wheel-env/bin/python -VV)"
+        target/wheel-env/bin/python -m pytest -p no:cacheprovider || failed+=("$version")
+    done
+    if (( ${#failed[@]} )); then
+        echo "the suite failed on CPython ${failed[*]}" >&2
+        exit 1
+    fi
 
 # Run every static check CI runs
 lint: checks pins
