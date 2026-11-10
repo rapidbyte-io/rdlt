@@ -2,7 +2,8 @@ use std::error::Error as _;
 use std::time::Duration;
 
 use super::{
-    ConnectorError, ConnectorErrorKind, LimitExceeded, RETENTION_LOST, ResultExt, TABLE_OWNED,
+    ConnectorError, ConnectorErrorKind, HostRefusal, LimitExceeded, RETENTION_LOST, ResultExt,
+    TABLE_OWNED,
 };
 
 #[test]
@@ -209,4 +210,16 @@ fn what_a_host_scrubs_is_gone_from_the_message_the_code_and_every_cause_before_a
         assert!(!text.contains("hun"), "{text}");
     }
     assert_eq!(received.code(), Some("***"));
+}
+
+#[test]
+fn a_host_s_refusal_is_found_where_it_gave_one_and_never_where_a_connector_did() {
+    let refusal = HostRefusal::new("named_by_secret");
+    let refused = ConnectorError::config("refused").with_source(refusal);
+    assert_eq!(HostRefusal::of(&refused), Some(refusal));
+    assert_eq!(refusal.code(), "named_by_secret");
+    // A connector's own refusal, as its host keeps it, and a connector's code of the same text.
+    assert_eq!(HostRefusal::of(&refused.received(&|text| text)), None);
+    let coded = ConnectorError::config("refused").with_code("named_by_secret");
+    assert_eq!(HostRefusal::of(&coded), None);
 }

@@ -9,7 +9,7 @@ use std::fmt;
 use std::time::Duration;
 
 use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_CODE_BYTES, MAX_ERROR_TEXT_BYTES};
-use rdlt_connector::{ConnectorError, ConnectorErrorKind, StreamName};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, HostRefusal, StreamName};
 use serde::Serialize;
 
 use crate::budget::Exhausted;
@@ -81,8 +81,8 @@ impl Side {
     }
 }
 
-/// Whose code an error carries: the engine's, or the code its connector's error carried, shown
-/// and bounded.
+/// Whose code an error carries: the engine's or its host's, or the code its connector's error
+/// carried, shown and bounded.
 enum Coded {
     Engine(Code),
     Connector(Box<str>),
@@ -148,7 +148,8 @@ impl Error {
     /// failures are retryable, and only a rate limit keeps the wait it asks for. No connector's
     /// error is of the kind a wait on the memory budget fails with, and its code stays the
     /// connector's, [shown](rdlt_connector::text::shown) within a code's limit: the error's
-    /// [`connector_code`](Self::connector_code), never its [`code`](Self::code).
+    /// [`connector_code`](Self::connector_code), never its [`code`](Self::code). An answer the
+    /// connector's host refused, as its [`HostRefusal`] says, has the host's code as its code.
     ///
     /// A call the engine's wait ended is no connector's failure: it is the engine's, as
     /// [`expired`](Self::expired) builds it.
@@ -170,9 +171,13 @@ impl Error {
             origin: side.origin(),
             context: context.into(),
             stream: None,
-            code: error.code().map(|code| {
-                Coded::Connector(rdlt_connector::text::shown(code, MAX_ERROR_CODE_BYTES).into())
-            }),
+            code: match HostRefusal::of(&error) {
+                Some(refusal) => Some(Coded::Engine(Code::new(refusal.code()))),
+                None => error.code().map(|code| {
+                    let shown = rdlt_connector::text::shown(code, MAX_ERROR_CODE_BYTES);
+                    Coded::Connector(shown.into())
+                }),
+            },
             retryable: error.is_retryable(),
             retry_after,
             source: Some(Box::new(error)),

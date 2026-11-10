@@ -213,7 +213,12 @@ given. A host enforces that only where it closes each of these:
     (`secret_unredactable`). A call's error carries the last words of the process the call
     went to. An in-process connector's errors are flattened to text and scrubbed the same way,
     and so is the message of its panic, which unwinds on to whatever catches it; the panic hook,
-    which runs first, sees it as it was raised.
+    which runs first, sees it as it was raised. A name is shown as it is in reports, events,
+    metrics, spans and table names, and scrubbing it would rename what it names, so a catalog or
+    partition plan in which a stream's, a namespace's, a column's or a partition's name contains
+    a resolved value is refused as a configuration error, in process and out of it alike. Its
+    code, `named_by_secret`, is the host's: the error's cause is a `HostRefusal`, which the host
+    gives and a connector's own causes, kept only as text, never are.
   - `rdlt certify` reads a configuration from a file or standard input, never the command
     line, resolves the references `--allow-env` and `--allow-files` allow, scrubs what it
     prints, and certifies a binary inside the sandbox, with the access `--readable`,
@@ -276,6 +281,8 @@ Rejected:
     bind mount of the same file system; what is mounted within a grant is the operator's;
   - a secret a connector transforms before it says it, and an in-process connector's panic
     as the process's panic hook sees it, before the host does;
+  - a name the check does not see: a field name that first appears in a read's batches, as a
+    schema drifts, and a timestamp's time-zone text;
   - the buffers of the transport a configuration is sent through, which are not wiped.
 - A reference with a requirement its placement cannot honour is refused before anything runs. A
   connector finds nothing at a number the host holds a descriptor at.
