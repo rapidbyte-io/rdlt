@@ -186,7 +186,7 @@ pub(crate) enum Verb {
     /// Certifies a connector, from its binary or at its endpoint, against the protocol's clauses.
     #[command(after_help = examples(EXAMPLES_CERTIFY))]
     Certify(crate::certify::CertifyArgs),
-    /// Makes connector projects.
+    /// Makes connector projects, and installs connectors.
     Connector {
         #[command(subcommand)]
         action: ConnectorAction,
@@ -232,6 +232,27 @@ pub(crate) enum ConnectorAction {
         #[arg(long, value_name = "DIR", default_value = ".")]
         into: PathBuf,
     },
+    /// Installs a Python connector's wheel as a directory connector, an environment of its own.
+    ///
+    /// The environment is made in the first connector directory with Python 3.11 or later, and
+    /// holds the connector's packages and its launcher, `bin/rdlt-connector`.
+    Install(InstallArgs),
+}
+
+/// What `connector install` installs, and with what.
+#[derive(Debug, Args)]
+pub(crate) struct InstallArgs {
+    /// The connector's wheel, naming one `rdlt.connectors` entry point: its connector's id and
+    /// class.
+    pub(crate) wheel: PathBuf,
+    /// The interpreter the environment is made with, by default `python3` on the path; on Linux
+    /// one in the system's directories, which the sandbox shows.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) python: Option<PathBuf>,
+    /// A requirements file holding, each with its hash, every package the wheel needs: only
+    /// those are installed.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) requirements: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

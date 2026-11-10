@@ -258,6 +258,7 @@ pub(crate) fn failed_at_start(mode: Mode, failure: &Failure) {
 pub(crate) fn failure_value(exit: Exit, message: &str) -> serde_json::Value {
     let kind = match exit {
         Exit::Usage => "usage",
+        Exit::Config => "config",
         Exit::Signalled(_) => "signal",
         _ => "io",
     };

@@ -6,6 +6,7 @@ mod certify;
 mod contract;
 mod guarded;
 mod help;
+mod install;
 mod running;
 mod scaffold;
 mod secrets;

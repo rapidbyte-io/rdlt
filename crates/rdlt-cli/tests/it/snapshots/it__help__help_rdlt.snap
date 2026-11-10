@@ -15,7 +15,7 @@ Commands:
   schema       Prints the document's JSON Schema, or a connector's configuration schema
   connectors   Lists what the host can place
   certify      Certifies a connector, from its binary or at its endpoint, against the protocol's clauses
-  connector    Makes connector projects
+  connector    Makes connector projects, and installs connectors
   completions  Prints shell completions
   help         Print this message or the help of the given subcommand(s)
 

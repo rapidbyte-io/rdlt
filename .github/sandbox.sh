@@ -6,9 +6,10 @@
 # steps that run this give it the minutes Ubuntu's archive mirror can take, and no more.
 set -eux
 
-# Bubblewrap from Ubuntu's signed archive, at /usr/bin/bwrap, where the host looks for it.
+# Bubblewrap from Ubuntu's signed archive, at /usr/bin/bwrap, where the host looks for it, and the
+# system Python's venv, which a Python connector a sandbox runs is installed with.
 sudo apt-get update -q
-sudo apt-get install -y -q --no-install-recommends bubblewrap
+sudo apt-get install -y -q --no-install-recommends bubblewrap python3-venv
 
 # Ubuntu 24.04 lets a program make an unprivileged user namespace only where an AppArmor
 # profile names it. This profile names bubblewrap alone, and grants it that and nothing more:

@@ -65,9 +65,9 @@ standard error holds notes.
 
 - A verb that succeeds prints one JSON value, its result: `check`'s report, `discover`'s
   catalog, `schema`'s schema, `connectors` as `{\"local\", \"sandboxed\", \"remote\"}`, `init` and
-  `connector new` as `{\"wrote\": <path>}`, `state reset` as `{\"streams\", \"dropped\", \"epoch\"}`,
-  `certify` as `{\"verdict\", \"passed\", \"reports\"}`, `verdict` one of `passed`, `failed`,
-  `incomplete`.
+  `connector new` as `{\"wrote\": <path>}`, `connector install` as `{\"installed\": <path>}`,
+  `state reset` as `{\"streams\", \"dropped\", \"epoch\"}`, `certify` as
+  `{\"verdict\", \"passed\", \"reports\"}`, `verdict` one of `passed`, `failed`, `incomplete`.
 - `run` prints `{\"report\": <report>, \"error\": <failure or null>}`. With `--events -` it prints
   the events as NDJSON instead, one object a line, and then
   `{\"outcome\": {\"report\": <report>, \"error\": <failure or null>}}`.
@@ -75,8 +75,9 @@ standard error holds notes.
   error report: `{\"kind\", \"origin\", \"stream\", \"code\", \"connector_code\", \"message\",
   \"causes\", \"retryable\"}`, `kind` one of `config`, `schema`, `source`, `destination`,
   `transform`, `fenced`, `memory`, `internal`, `cancelled`. A failure of the command line's own
-  is `{\"kind\", \"message\"}`, `kind` one of `usage`, `io`, `signal`; the last for a
-  verb a signal stopped before it had a result to print.
+  is `{\"kind\", \"message\"}`, `kind` one of `usage`, `config`, `io`, `signal`: `config`
+  for a connector `connector install` refuses, and `signal` for a verb a signal stopped before
+  it had a result to print.
 - A usage error under an explicit `--output json` has that second form on standard output; under
   `auto` off a terminal, and in plain text, it is the usual message on standard error.
 - A failure to write events or a report after the run ended is the run's `error` where the run
