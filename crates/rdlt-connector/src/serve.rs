@@ -207,7 +207,8 @@ where
 }
 
 /// Whether `error` says the host had already closed its end, which is how a connection ends: some
-/// platforms, macOS among them, fail the shutdown of a socket whose peer has closed.
+/// platforms, macOS among them, fail the shutdown of a socket whose peer has closed, and a host
+/// that closes before it sends its preface leaves an end of input where the preface was due.
 fn gone(error: &hyper::Error) -> bool {
     use std::io::ErrorKind;
     std::error::Error::source(error)
@@ -215,7 +216,10 @@ fn gone(error: &hyper::Error) -> bool {
         .is_some_and(|io| {
             matches!(
                 io.kind(),
-                ErrorKind::NotConnected | ErrorKind::BrokenPipe | ErrorKind::ConnectionReset
+                ErrorKind::NotConnected
+                    | ErrorKind::BrokenPipe
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::UnexpectedEof
             )
         })
 }

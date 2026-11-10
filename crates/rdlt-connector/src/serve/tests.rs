@@ -56,3 +56,28 @@ async fn a_served_response_carries_no_date_from_the_wall_clock() {
         response.headers()
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_host_that_closes_before_its_preface_ends_the_connection_cleanly() {
+    use tokio::io::AsyncReadExt as _;
+
+    let (mut host, connector) = tokio::io::duplex(64 * 1024);
+    let serving = tokio::spawn(serve_connection(
+        Arc::new(Served::default()),
+        connector,
+        Limits::default(),
+    ));
+    // The connector's settings, which it sends before it reads anything.
+    let mut settings = [0; 1024];
+    let read = tokio::time::timeout(std::time::Duration::from_secs(10), host.read(&mut settings))
+        .await
+        .expect("the connector writes first")
+        .expect("the host reads");
+    assert!(read > 0, "the connector sent its settings");
+    drop(host);
+    let served = tokio::time::timeout(std::time::Duration::from_secs(10), serving)
+        .await
+        .expect("the connection ends")
+        .expect("serving does not panic");
+    assert!(served.is_ok(), "{served:?}");
+}
