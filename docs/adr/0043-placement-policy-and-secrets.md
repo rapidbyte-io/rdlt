@@ -134,6 +134,17 @@ given. A host enforces that only where it closes each of these:
     the kernel resolves it: each directory it passes through as reached, and each a link on
     the way is read from. A directory others may write passes only where it is sticky, as
     `/tmp` is, and the entry in it, a link included, is the user's or the superuser's.
+  - A connector may be a directory. Where `rdlt-connector-<name>` in a connector directory, or
+    the path a reference names, is a directory, its `bin/rdlt-connector` is the binary, reached
+    through no link, the directory and `bin` held to the rule a binary's directories are. A
+    sandbox binds the directory's tree read only at its own path, so the launcher finds what
+    was installed beside it, an environment's interpreter among them; no root that may be
+    written may hold the tree or lie within it, whether its connector is sandboxed or trusted.
+    The digest is the launcher's, its first line naming its interpreter; the interpreter is
+    held by its path, as any script's is, and the tree's other files by its operator's
+    permissions, as a native binary's shared libraries are. An interpreter the tree's links
+    lead out of it to, as a virtual environment's base installation, must lie where the
+    sandbox shows the system's directories.
   - The open file is what is hashed, at placement and before every spawn, and what is
     executed: through `/proc/self/fd`, or handed to the sandbox, which binds it. A file that
     takes the binary's name later is never run; one whose bytes change is refused; and one

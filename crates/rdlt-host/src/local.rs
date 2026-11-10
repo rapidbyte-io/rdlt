@@ -21,7 +21,7 @@ use crate::secrets::{Config, SecretResolver, Secrets};
 use crate::supervise::{Configured, Gate, Spawned, Start, Supervisor};
 use binary::{Binary, Unfit};
 pub use bubblewrap::Bubblewrap;
-use grants::{Chain, Claim, Guarded, Lease, Leases, Opened, Program, Roots};
+use grants::{Chain, Claim, Guarded, Lease, Leases, Opened, Program, Roots, Tree};
 #[cfg(feature = "sim")]
 pub use process::{Ended, Played, Playing};
 pub use process::{Interrupts, LastWords, Lingering, StopsSpawned, Witness, spawned, stop_spawned};
@@ -104,6 +104,10 @@ impl Local {
 
     /// Looks for connectors named without a path in `dir`, an absolute path to a directory no
     /// other user may write; nowhere else is searched.
+    ///
+    /// A connector there, or at the path a reference names, may be a directory: its
+    /// `bin/rdlt-connector` is then the binary, and a sandbox lets the connector read the
+    /// directory's tree.
     #[must_use]
     pub fn connectors(mut self, dir: impl Into<PathBuf>) -> Self {
         self.dirs.push(dir.into());
@@ -131,8 +135,9 @@ impl Local {
     /// Lets a reference ask to read and write within `root`, an absolute path.
     ///
     /// No placement is made while `root` holds, or lies within, what decides what the host
-    /// runs or keeps: a connector directory, a binary placed or its directory, a script's
-    /// interpreter, the sandbox's launcher, the host's executable's directory, a directory
+    /// runs or keeps: a connector directory, a binary placed or its directory, a directory
+    /// connector's tree, a script's interpreter, the sandbox's launcher, the host's
+    /// executable's directory, a directory
     /// the host keeps its own files in ([`guarded_dir`](Self::guarded_dir)), or one secrets
     /// are read from.
     #[must_use]
@@ -213,7 +218,8 @@ impl Local {
     }
 
     /// Where the binary `reference` names is: its path, or
-    /// `rdlt-connector-<the id's last segment>` in the first connector directory that holds it.
+    /// `rdlt-connector-<the id's last segment>` in the first connector directory that holds it;
+    /// for a directory connector, its launcher.
     ///
     /// # Errors
     ///
@@ -344,8 +350,9 @@ impl Local {
     }
 
     /// What a placement of `reference`, run from `binary`, holds while it lives: the programs
-    /// it runs and, where it is `confined`, what it is given, each path opened once and
-    /// checked against the roots, what is guarded, and what other placements hold now.
+    /// it runs, the directory connector's tree it launches, and, where it is `confined`, what it
+    /// is given, each path opened once and checked against the roots, what is guarded, and what
+    /// other placements hold now.
     fn lease(
         &self,
         reference: &ConnectorRef,
@@ -366,6 +373,10 @@ impl Local {
             roots: &self.roots,
             guarded: &self.guarded(),
             programs: &programs,
+            tree: binary.tree().map(|path| Tree {
+                path,
+                bound: confined,
+            }),
         };
         self.leases
             .take(&claim)

@@ -116,6 +116,15 @@ pub(crate) struct Program {
     pub(crate) linked: bool,
 }
 
+/// A directory connector's tree: held as a read where its connector is confined, and guarded as
+/// a connector directory is, so no root that may be written holds it or lies within it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Tree<'a> {
+    pub(crate) path: &'a Path,
+    /// Whether the sandbox binds it, read only, at its path.
+    pub(crate) bound: bool,
+}
+
 /// What a placement asks to hold.
 #[derive(Debug)]
 pub(crate) struct Claim<'a> {
@@ -129,6 +138,8 @@ pub(crate) struct Claim<'a> {
     pub(crate) guarded: &'a Guarded,
     /// The programs the placement runs: its binary, and a script's interpreter.
     pub(crate) programs: &'a [Program],
+    /// The tree of the directory connector the binary launches, where it launches one.
+    pub(crate) tree: Option<Tree<'a>>,
 }
 
 /// `path`, opened, as a grant or a root names it: absolute, and there.
@@ -163,7 +174,9 @@ impl Leases {
         let write_roots = all_opened(&claim.roots.write)?;
         let mut programs = claim.programs.to_vec();
         programs.extend(launchers(&claim.guarded.files)?);
-        guarding(&write_roots, &claim.guarded.directories, &programs)?;
+        let mut guarded = claim.guarded.directories.clone();
+        guarded.extend(claim.tree.map(|tree| tree.path.to_owned()));
+        guarding(&write_roots, &guarded, &programs)?;
         let writable: Vec<&Chain> = write_roots.iter().map(|(_, root)| &root.chain).collect();
         let readable: Vec<&Chain> = read_roots.iter().map(|(_, root)| &root.chain).collect();
         let within = |granted: &Opened, roots: &[&Chain]| {
@@ -194,7 +207,12 @@ impl Leases {
                 path: path.to_path_buf(),
             });
         }
-        let reads: Vec<_> = shared.into_iter().chain(reads).collect();
+        // The operator's, as the system's directories are: no root need let it be read.
+        let tree = match claim.tree.filter(|tree| tree.bound) {
+            Some(tree) => Some((tree.path, opened(tree.path)?)),
+            None => None,
+        };
+        let reads: Vec<_> = shared.into_iter().chain(tree).chain(reads).collect();
         self.held(claim, programs, reads, writes)
     }
 

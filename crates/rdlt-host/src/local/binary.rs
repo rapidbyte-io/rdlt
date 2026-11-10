@@ -43,6 +43,8 @@ pub(crate) struct Binary {
     path: PathBuf,
     /// Whether another name led to the file when it was opened.
     linked: bool,
+    /// The directory connector it is the launcher of, where it is one's.
+    tree: Option<PathBuf>,
 }
 
 /// The flags of every open: nothing outlives an exec, no pipe is waited on, no terminal taken.
@@ -55,13 +57,14 @@ const OPEN: OFlags = OFlags::RDONLY
 const LINKS: usize = 40;
 
 impl Binary {
-    /// Opens the binary at `path`, as its operator wrote the path, links included: every
-    /// directory a name on the way is looked up in must be no other user's to change.
+    /// Opens the binary at `path`, as its operator wrote the path, links included, or the
+    /// launcher of the directory connector there: every directory a name on the way is looked
+    /// up in must be no other user's to change.
     pub(crate) fn at(path: &Path) -> Result<Self, Unfit> {
         let absolute = std::path::absolute(path).map_err(|error| Unfit::Absent(Some(error)))?;
         let fd = rustix::fs::open(&absolute, OPEN, Mode::empty())
             .map_err(|error| Unfit::Absent(Some(error.into())))?;
-        let binary = Self::checked(File::from(fd), absolute)?;
+        let binary = Self::opened(File::from(fd), absolute)?;
         reached_private(&binary.path)?;
         Ok(binary)
     }
@@ -76,9 +79,10 @@ impl Binary {
         self.linked
     }
 
-    /// Opens the binary `name` in the first of `dirs` that holds it: each an absolute path to
-    /// a directory no other user may write, nor any a name on the way to it is looked up in,
-    /// searched by that name alone, following no link.
+    /// Opens the binary `name` in the first of `dirs` that holds it, or the launcher of the
+    /// directory connector of that name: each an absolute path to a directory no other user may
+    /// write, nor any a name on the way to it is looked up in, searched by that name alone,
+    /// following no link.
     pub(crate) fn named(dirs: &[PathBuf], name: &str) -> Result<Self, Unfit> {
         for dir in dirs {
             if !dir.is_absolute() {
@@ -102,7 +106,7 @@ impl Binary {
             let unfollowed = OPEN.union(OFlags::NOFOLLOW);
             let named = rustix::fs::openat(&opened, name, unfollowed, Mode::empty());
             if let Ok(fd) = named {
-                match Self::checked(File::from(fd), dir.join(name)) {
+                match Self::opened(File::from(fd), dir.join(name)) {
                     Err(Unfit::Absent(_)) => {}
                     found => return found,
                 }
@@ -126,12 +130,58 @@ impl Binary {
         }
         private(&file, &path)?;
         let linked = metadata.nlink() > 1;
-        Ok(Self { file, path, linked })
+        Ok(Self {
+            file,
+            path,
+            linked,
+            tree: None,
+        })
+    }
+
+    /// `file`, found at `path`: the binary it is, or the launcher of the directory connector it
+    /// is.
+    fn opened(file: File, path: PathBuf) -> Result<Self, Unfit> {
+        let metadata = file
+            .metadata()
+            .map_err(|error| Unfit::Absent(Some(error)))?;
+        if metadata.is_dir() {
+            Self::launcher_in(&file, path)
+        } else {
+            Self::checked(file, path)
+        }
+    }
+
+    /// The launcher of the directory connector open as `directory`, found at `path`: its
+    /// `bin/rdlt-connector`, reached through no link, the directory and `bin` no other user's
+    /// to write.
+    fn launcher_in(directory: &File, path: PathBuf) -> Result<Self, Unfit> {
+        let absent = |error: rustix::io::Errno| Unfit::Absent(Some(error.into()));
+        private(directory, &path)?;
+        let listing = OFlags::RDONLY
+            .union(OFlags::DIRECTORY)
+            .union(OFlags::CLOEXEC)
+            .union(OFlags::NOFOLLOW);
+        let bin = rustix::fs::openat(directory, "bin", listing, Mode::empty()).map_err(absent)?;
+        let bin = File::from(bin);
+        private(&bin, &path.join("bin"))?;
+        let unfollowed = OPEN.union(OFlags::NOFOLLOW);
+        let launcher = rustix::fs::openat(&bin, "rdlt-connector", unfollowed, Mode::empty())
+            .map_err(absent)?;
+        let found = path.join("bin").join("rdlt-connector");
+        let mut binary = Self::checked(File::from(launcher), found)?;
+        binary.tree = Some(path);
+        Ok(binary)
     }
 
     /// Where the binary was found.
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The directory connector the binary is the launcher of, where it is one's: its tree, which
+    /// a sandbox binds read only and no root that may be written may hold or lie within.
+    pub(crate) fn tree(&self) -> Option<&Path> {
+        self.tree.as_deref()
     }
 
     /// The open file.
