@@ -53,6 +53,9 @@ impl Mode {
 #[derive(Debug)]
 pub(crate) struct Failure {
     pub(crate) exit: Exit,
+    /// The stable code of a refusal of the command line's own, said in JSON where an error
+    /// report says its code.
+    pub(crate) code: Option<&'static str>,
     pub(crate) message: String,
     pub(crate) report: Option<Box<rdlt::ErrorReport>>,
     /// Whether the pipeline's document could not be read because it is not there.
@@ -63,6 +66,7 @@ impl Failure {
     pub(crate) fn io(context: &str, error: &std::io::Error) -> Self {
         Self {
             exit: Exit::Io,
+            code: None,
             message: format!("{context}: {error}"),
             report: None,
             file_not_found: false,
@@ -73,6 +77,7 @@ impl Failure {
     pub(crate) fn signalled(status: i32) -> Self {
         Self {
             exit: Exit::Signalled(status),
+            code: None,
             message: "interrupted by a signal".to_owned(),
             report: None,
             file_not_found: false,
@@ -82,7 +87,19 @@ impl Failure {
     pub(crate) fn usage(message: impl Into<String>) -> Self {
         Self {
             exit: Exit::Usage,
+            code: None,
             message: message.into(),
+            report: None,
+            file_not_found: false,
+        }
+    }
+
+    /// A refusal of the command line's own that ends as `exit`, with its stable `code`.
+    pub(crate) fn coded(exit: Exit, code: &'static str, message: String) -> Self {
+        Self {
+            exit,
+            code: Some(code),
+            message,
             report: None,
             file_not_found: false,
         }
@@ -111,6 +128,7 @@ impl Failure {
         let report = Box::new(error.report());
         Self {
             exit,
+            code: None,
             message: with_causes(&error.to_string(), &report),
             report: Some(report),
             file_not_found: false,
@@ -288,7 +306,13 @@ fn rendered_off_a_terminal(mode: Mode, failure: &Failure, ui: Option<&Ui>) -> Re
         (Mode::Json, Some(report)) => {
             Rendered::Output(format!("{}\n", serde_json::json!({ "error": report })))
         }
-        (Mode::Json, None) => Rendered::Output(failure_json(failure.exit, &failure.message)),
+        (Mode::Json, None) => {
+            let mut error = failure_value(failure.exit, &failure.message);
+            if let Some(code) = failure.code {
+                error["code"] = code.into();
+            }
+            Rendered::Output(format!("{}\n", serde_json::json!({ "error": error })))
+        }
         (Mode::Plain, _) => Rendered::Error(failure_line(&failure.message, ui)),
     }
 }

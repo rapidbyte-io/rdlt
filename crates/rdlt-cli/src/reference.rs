@@ -75,9 +75,10 @@ standard error holds notes.
   error report: `{\"kind\", \"origin\", \"stream\", \"code\", \"connector_code\", \"message\",
   \"causes\", \"retryable\"}`, `kind` one of `config`, `schema`, `source`, `destination`,
   `transform`, `fenced`, `memory`, `internal`, `cancelled`. A failure of the command line's own
-  is `{\"kind\", \"message\"}`, `kind` one of `usage`, `config`, `io`, `signal`: `config`
-  for a connector `connector install` refuses, and `signal` for a verb a signal stopped before
-  it had a result to print.
+  is `{\"kind\", \"message\"}`, `kind` one of `usage`, `config`, `io`, `signal`, the last for a
+  verb a signal stopped before it had a result to print. A refusal of `connector install` adds
+  its `code`, where an error report has its own: `kind` `config`, or `io` for a file it could
+  not read or write.
 - A usage error under an explicit `--output json` has that second form on standard output; under
   `auto` off a terminal, and in plain text, it is the usual message on standard error.
 - A failure to write events or a report after the run ended is the run's `error` where the run

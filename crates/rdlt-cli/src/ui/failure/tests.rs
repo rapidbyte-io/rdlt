@@ -22,6 +22,7 @@ fn rendered(report: ErrorReport) -> String {
     failure(
         &Failure {
             exit: Exit::Destination,
+            code: None,
             message: "unused where a report is given".to_owned(),
             report: Some(Box::new(report)),
             file_not_found: false,
