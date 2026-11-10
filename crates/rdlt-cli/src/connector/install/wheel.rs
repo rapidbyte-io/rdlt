@@ -96,10 +96,32 @@ pub(super) async fn described(python: &Path, path: &Path) -> Result<Wheel, Insta
         return Err(failed());
     }
     match serde_json::from_slice(&output.stdout).map_err(|_| failed())? {
+        // It reaches pip's command line and a requirements file's line: a name of anything else
+        // could be an option of pip's or a line of its own there.
+        Read::Wheel(wheel) if !distribution(&wheel.name) => Err(InstallError::Wheel {
+            path: path.to_owned(),
+            why: format!(
+                "its metadata names the distribution {:?}, which is no distribution's name",
+                wheel.name
+            ),
+        }),
         Read::Wheel(wheel) => Ok(wheel),
         Read::Refused { refused } => Err(InstallError::Wheel {
             path: path.to_owned(),
             why: refused,
         }),
+    }
+}
+
+/// Whether `name` is a distribution's name as PEP 508 has it: ASCII letters and digits, and `.`,
+/// `_` and `-` between them.
+fn distribution(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    let inner = |byte: &u8| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-');
+    match (bytes.first(), bytes.last()) {
+        (Some(first), Some(last)) => {
+            first.is_ascii_alphanumeric() && last.is_ascii_alphanumeric() && bytes.iter().all(inner)
+        }
+        _ => false,
     }
 }
