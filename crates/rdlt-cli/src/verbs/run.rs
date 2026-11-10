@@ -11,6 +11,7 @@ use rdlt::{Event, EventKind, Events, Interrupts, Lagged, StopMode};
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_stream::{Stream, StreamExt as _};
 
 use crate::Exit;
 use crate::args::HostArgs;
@@ -322,20 +323,29 @@ async fn writing(mut events: Events, mut sink: Sink) -> Option<Failure> {
 
 /// Writes the `waiting` lines to standard error, and a line for each of `events`, on a task of
 /// its own, so standard error stopping holds up nothing else.
-async fn telling(mut events: Option<Events>, mut waiting: mpsc::Receiver<String>) {
+async fn telling(events: Option<Events>, waiting: mpsc::Receiver<String>) {
+    tell(events, waiting, async |text| output::stderr(&text).await).await;
+}
+
+/// Hands `write` the `waiting` lines, and a line for each of `events`, until both have ended.
+async fn tell<S>(
+    mut events: Option<S>,
+    mut waiting: mpsc::Receiver<String>,
+    mut write: impl AsyncFnMut(String),
+) where
+    S: Stream<Item = Result<Event, Lagged>> + Unpin,
+{
     let mut saying = true;
     while saying || events.is_some() {
         tokio::select! {
             biased;
             // A note goes first, ahead of however many events are waiting.
             line = waiting.recv(), if saying => match line {
-                Some(line) => output::stderr(&line).await,
+                Some(line) => write(line).await,
                 None => saying = false,
             },
             item = next_of(&mut events), if events.is_some() => match item {
-                Some(item) => {
-                    output::stderr(&format!("{}\n", output::shown(line(&item)))).await;
-                }
+                Some(item) => write(format!("{}\n", output::shown(line(&item)))).await,
                 None => events = None,
             },
         }
@@ -343,7 +353,7 @@ async fn telling(mut events: Option<Events>, mut waiting: mpsc::Receiver<String>
 }
 
 /// The next of `events`, which is there.
-async fn next_of(events: &mut Option<Events>) -> Option<Result<Event, Lagged>> {
+async fn next_of<S: Stream + Unpin>(events: &mut Option<S>) -> Option<S::Item> {
     match events {
         Some(events) => events.next().await,
         None => None,
@@ -408,4 +418,68 @@ fn line(item: &Result<Event, Lagged>) -> String {
         EventKind::RunEnded { status } => format!("ended {status:?}"),
     };
     format!("attempt {}: {what}", event.attempt)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use rdlt::PipelineId;
+    use tokio::sync::Notify;
+
+    use super::*;
+
+    const BOUND: Duration = Duration::from_secs(30);
+
+    fn event(seq: u64) -> Event {
+        Event {
+            seq,
+            at: SystemTime::UNIX_EPOCH,
+            pipeline: PipelineId::parse("told").unwrap(),
+            attempt: 1,
+            kind: EventKind::AttemptStarted,
+        }
+    }
+
+    fn stream_of(
+        events: impl IntoIterator<Item = Event>,
+    ) -> impl Stream<Item = Result<Event, Lagged>> + Unpin {
+        tokio_stream::iter(events.into_iter().map(Ok).collect::<Vec<_>>())
+    }
+
+    #[tokio::test]
+    async fn the_events_left_are_told_after_the_notes_end() {
+        let (notes, waiting) = mpsc::channel(1);
+        drop(notes);
+        let mut written = Vec::new();
+        let events = stream_of([event(1), event(2), event(3)]);
+        let telling = tell(Some(events), waiting, async |text| written.push(text));
+        tokio::time::timeout(BOUND, telling)
+            .await
+            .expect("it ends once both have");
+        assert_eq!(written, vec!["attempt 1: started\n"; 3]);
+    }
+
+    #[tokio::test]
+    async fn the_notes_left_are_told_after_the_events_end() {
+        let (notes, waiting) = mpsc::channel(1);
+        let first = Notify::new();
+        let mut written = Vec::new();
+        let events = stream_of([event(1)]);
+        let telling = tell(Some(events), waiting, async |text| {
+            written.push(text);
+            first.notify_one();
+        });
+        // The note is sent once `telling` waits on the notes alone, which it does only after the
+        // events have ended: a `telling` that stops with them never reads it.
+        let late = async {
+            first.notified().await;
+            notes.send("a late note\n".to_owned()).await.unwrap();
+            drop(notes);
+        };
+        tokio::time::timeout(BOUND, async { tokio::join!(telling, late) })
+            .await
+            .expect("it ends once both have");
+        assert_eq!(written, ["attempt 1: started\n", "a late note\n"]);
+    }
 }
