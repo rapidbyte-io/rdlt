@@ -12,7 +12,7 @@ use rdlt_wire::Limits;
 use tokio::io::AsyncReadExt as _;
 use tokio_util::sync::CancellationToken;
 
-use super::args::{Args, Failure, parse};
+use super::args::{Args, Failure, parse, said};
 use super::{Hosted, Served, listen, serve_until};
 use crate::factory::{RoleFactory, Serve};
 
@@ -143,10 +143,7 @@ fn inherited_socket(
         let stop = told_to_stop().map_err(|error| format!("watching for stops failed: {error}"))?;
         serve_until(Arc::new(served), io, limits, Hosted::spawning(), stop)
             .await
-            .map_err(|error| match std::error::Error::source(&error) {
-                Some(source) => format!("{error}: {source}"),
-                None => error.to_string(),
-            })
+            .map_err(|error| said(&error))
     });
     // Reading standard input blocks a thread the runtime would otherwise wait for.
     runtime.shutdown_background();

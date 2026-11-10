@@ -2,7 +2,7 @@ use rdlt_wire::tls::Hosts;
 
 use rdlt_wire::Limits;
 
-use super::{Args, Failure, Listen, parse};
+use super::{Args, Failure, Listen, parse, said};
 
 fn parsed(args: &[&str]) -> Result<Args, Failure> {
     limited(args).map(|(args, _)| args)
@@ -220,4 +220,44 @@ fn a_listening_connector_must_name_its_hosts_and_count_its_sessions() {
         ),
     ]);
     assert!(parsed(&listening(&[])).is_ok());
+}
+
+/// An error whose message is `message`, caused by `cause`.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+struct Caused {
+    message: &'static str,
+    #[source]
+    cause: Option<Box<Caused>>,
+}
+
+fn caused(chain: &[&'static str]) -> Option<Box<Caused>> {
+    chain.split_first().map(|(&message, rest)| {
+        Box::new(Caused {
+            message,
+            cause: caused(rest),
+        })
+    })
+}
+
+#[test]
+fn every_cause_of_a_failure_is_said_once() {
+    for (chain, expected) in [
+        (
+            &[
+                "serving the connection failed",
+                "connection error",
+                "connection closed",
+            ][..],
+            "serving the connection failed: connection error: connection closed",
+        ),
+        (
+            &["reading failed: the file is gone", "the file is gone"][..],
+            "reading failed: the file is gone",
+        ),
+        (&["gone"][..], "gone"),
+    ] {
+        let error = caused(chain).expect("a chain of at least one");
+        assert_eq!(said(&*error), expected, "{chain:?}");
+    }
 }

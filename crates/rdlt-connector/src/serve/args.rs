@@ -22,6 +22,27 @@ impl From<String> for Failure {
     }
 }
 
+/// `what` failed with `error`, with every cause of `error`.
+pub(crate) fn failure(what: &str, error: &dyn std::error::Error) -> Failure {
+    format!("{what} failed: {}", said(error)).into()
+}
+
+/// What `error` says, then each cause beneath it, joined by `: `: a cause whose words are already
+/// said is left out, as an error that quotes its cause in its own message would repeat it.
+pub(crate) fn said(error: &dyn std::error::Error) -> String {
+    use std::fmt::Write as _;
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let words = cause.to_string();
+        if !message.contains(&words) {
+            write!(message, ": {words}").ok();
+        }
+        source = cause.source();
+    }
+    message
+}
+
 impl From<&str> for Failure {
     fn from(message: &str) -> Self {
         Self(message.to_owned())
