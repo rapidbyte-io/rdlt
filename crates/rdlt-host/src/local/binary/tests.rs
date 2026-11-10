@@ -474,12 +474,14 @@ fn a_scripts_interpreter_is_the_first_word_of_its_first_line() {
 
 #[test]
 fn a_directory_s_launcher_is_its_binary_and_the_directory_its_tree() {
-    let root = tempfile::tempdir().expect("a temporary directory");
-    let tree = dir(root.path(), "rdlt-connector-tree");
+    let temporary = tempfile::tempdir().expect("a temporary directory");
+    // Resolved, so the tree found is the path written here.
+    let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
+    let tree = dir(&root, "rdlt-connector-tree");
     let launcher = dir(&tree, "bin").join("rdlt-connector");
     file(&launcher, b"#!/bin/sh\n", 0o755);
     for found in [
-        Binary::named(&[root.path().to_owned()], "rdlt-connector-tree").expect("found by name"),
+        Binary::named(std::slice::from_ref(&root), "rdlt-connector-tree").expect("found by name"),
         Binary::at(&tree).expect("found by path"),
     ] {
         assert_eq!(found.path(), launcher);
@@ -487,4 +489,26 @@ fn a_directory_s_launcher_is_its_binary_and_the_directory_its_tree() {
     }
     let binary = Binary::at(&launcher).expect("the launcher alone is a binary");
     assert_eq!(binary.tree(), None);
+}
+
+#[test]
+fn a_tree_reached_through_a_link_is_known_by_where_it_lies() {
+    let temporary = tempfile::tempdir().expect("a temporary directory");
+    let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
+    let tree = dir(&root, "rdlt-connector-tree");
+    file(
+        &dir(&tree, "bin").join("rdlt-connector"),
+        b"#!/bin/sh\n",
+        0o755,
+    );
+    let links = dir(&root, "links");
+    std::os::unix::fs::symlink(&tree, links.join("rdlt-connector-tree")).expect("a link");
+    let found = Binary::at(&links.join("rdlt-connector-tree")).expect("found by path");
+    // What its launcher names, and what a sandbox binds, is the tree as installed.
+    assert_eq!(found.tree(), Some(tree.as_path()));
+    let linked_root = dir(&root, "linked-root");
+    std::os::unix::fs::symlink(&root, linked_root.join("connectors")).expect("a link");
+    let found = Binary::named(&[linked_root.join("connectors")], "rdlt-connector-tree")
+        .expect("found by name");
+    assert_eq!(found.tree(), Some(tree.as_path()));
 }

@@ -936,7 +936,8 @@ async fn load() -> Result<(), Box<dyn std::error::Error>> {
   route, the host's loopback services and its abstract Unix sockets.
 - A provider honours or refuses every requirement a reference states.
   `.isolation(Isolation::Sandbox)` or `.isolation(Isolation::Remote)` keeps a reference from being placed
-  as a connector with the host's access, and `.digest(..)` accepts only the binary with that SHA-256.
+  as a connector with the host's access, and `.digest(..)` accepts only the binary with that SHA-256;
+  a directory connector's digest pins only its launcher, not the packages installed beside it.
   `.version(..)` accepts only the versions a `semver::VersionReq` matches, from the `semver` crate,
   which rdlt does not re-export.
 - `Local` finds a binary at the reference's path, or as `rdlt-connector-` and the last segment of

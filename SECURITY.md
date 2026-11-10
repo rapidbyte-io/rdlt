@@ -59,15 +59,13 @@ anything runs; none is ignored.
 - **Local** (`Local`): built with a sandbox, or with the statement that its binaries are
   trusted, and in no other way.
   - `Bubblewrap`, on Linux: a connector sees the system directories read only, a directory
-    connector its own tree read only too, a private
-    scratch directory named only by `TMPDIR`, a private `/dev/shm` for shared memory, and what
-    it was granted: nothing else is written, so a write to `/tmp`, `/var/tmp` or its root fails
-    unless a grant makes the path writable, rather than land somewhere gone with the process;
-    what is written to the scratch directory and `/dev/shm` is memory, gone with the sandbox;
-    nothing of a home directory, no
-    process of the host's,
-    only the environment stated, no network unless granted, and no user namespace of its own
-    making; it ends with its host. Its arguments and environment reach the launcher through a
+    connector its own tree read only too, a private scratch directory named only by `TMPDIR`,
+    a private `/dev/shm` for shared memory, and what it was granted: nothing else is written,
+    so a write to `/tmp`, `/var/tmp` or its root fails unless a grant makes the path writable,
+    rather than land somewhere gone with the process. The scratch directory and `/dev/shm` are
+    each a tmpfs of up to half the machine's memory, gone with the sandbox. A connector sees
+    nothing of a home directory, no process of the host's, only the environment stated, no
+    network unless granted, and no user namespace of its own making; it ends with its host. Its arguments and environment reach the launcher through a
     descriptor, never a command line another user could read. The launcher is checked as a
     connector's binary is, and run from the file opened. Where bubblewrap is missing, older
     than 0.8, or cannot make user namespaces, the placement is refused.
@@ -105,7 +103,8 @@ anything runs; none is ignored.
     must every directory a name on the way to it or to a connector directory is looked up in,
     through every link, a sticky directory such as `/tmp` excepted for entries the user owns.
     It is opened once, and the open file is what is hashed and what is executed, so no file
-    can be swapped in between. A sandboxed connector whose binary was replaced since it was
+    can be swapped in between. A directory connector's digest is its launcher's alone: it pins
+    neither the interpreter nor the packages installed beside it. A sandboxed connector whose binary was replaced since it was
     placed is refused until it is placed again. On macOS an open file cannot be executed: a
     digest is refused there rather than checked against a path.
   - A connector is given its standard streams and its socket, and no other descriptor of the
