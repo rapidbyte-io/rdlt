@@ -292,6 +292,21 @@ Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, ben
 `test_certify = rdlt.testing.certify_source(Tickets, config=...)` in a test module, or
 `certify_destination`, makes each clause a pytest test, `test_certify[S-RESUME]`.
 
+**Spawned connectors.** `rdlt connector new tickets --lang python` writes a connector project,
+`rdlt-connector-tickets`: a source class, registered as the `rdlt.connectors` entry point
+`io.example.tickets`, and a certification test that passes as written. `rdlt connector install`
+installs its wheel as a directory connector, `rdlt-connector-tickets/` in the first connector
+directory: an environment of its own, whose launcher, `bin/rdlt-connector`, a host spawns and
+sandboxes as it does a binary. None of the connector's code runs while it is installed. With
+`--requirements`, a file of every package the wheel needs, each with its hash, pip installs those
+alone; until `rdlt`'s wheel is published, that file names one built from the repository,
+`rdlt @ file:///<its path> --hash=sha256:<its digest>`, as
+[`python/tests/test_directory.py`](python/tests/test_directory.py) writes it. On Linux the
+environment's interpreter must lie in the system's directories, which the sandbox shows, such as
+`--python /usr/bin/python3.12`: one beneath a home directory, as uv, pyenv and mise install them,
+is refused as `interpreter_unreachable`, and such a connector is served with `--listen` from an
+environment holding its wheel instead.
+
 **The GIL** is held for Python's own calls alone. Each partition of a Python source reads on a
 thread of its own and releases the GIL while it waits for the engine, and a transform takes it
 only inside its call, so a pipeline with no Python in it keeps committing while Python runs. On
@@ -941,9 +956,10 @@ async fn load() -> Result<(), Box<dyn std::error::Error>> {
   `.version(..)` accepts only the versions a `semver::VersionReq` matches, from the `semver` crate,
   which rdlt does not re-export.
 - `Local` finds a binary at the reference's path, or as `rdlt-connector-` and the last segment of
-  its id in the directories it is given, never on `PATH`. It refuses a binary, or a directory on the
-  way to it, that belongs to neither the host's user nor the superuser, or that another user may
-  write.
+  its id in the directories it is given, never on `PATH`. A directory there is a directory
+  connector, whose launcher is its `bin/rdlt-connector`, reached through no link, and which a
+  sandbox shows read only. It refuses a binary, or a directory on the way to it, that belongs to
+  neither the host's user nor the superuser, or that another user may write.
 - On Linux, `Local` hashes the open file with SHA-256 at placement and before every spawn, and
   spawns that same file. A file put in the binary's place later never runs, one whose bytes change
   is refused, and a sandboxed connector whose binary was replaced is refused until it is placed
@@ -1115,7 +1131,7 @@ the whole engine runs under deterministic simulation.
 | Resident memory | Peak resident memory of 3 workloads at 2, 4 and all cores against the limit their budget gives them | Nightly, Linux |
 | Miri | The test of `rdlt-adopt`'s `adopt`, the socket half of its `unsafe` code | Every pull request |
 | Property and differential tests | Every logical type in every Arrow encoding, lowered and normalized and read back by meaning | Every pull request |
-| Python | The wheel as it ships, built in release and installed: the bindings, Python sources and transforms, the connector SDK, served mode and certification under pytest; ten thousand batches through a Python source and transform leave the heap's blocks, pyarrow's allocations and resident memory flat, and a pipeline with no Python in it commits while another's transform holds the GIL | Every pull request on CPython 3.14 on Linux and 3.11 on macOS; 3.11 to 3.15 and free-threaded 3.14 on both nightly |
+| Python | The wheel as it ships, built in release and installed: the bindings, Python sources and transforms, the connector SDK, served mode and certification under pytest; ten thousand batches through a Python source and transform leave the heap's blocks, pyarrow's allocations and resident memory flat, and a pipeline with no Python in it commits while another's transform holds the GIL; and, in pull requests on Linux, a connector `rdlt connector new --lang python` writes, installed by `rdlt connector install` with PyPI's packages, run in the sandbox and certified | Every pull request on CPython 3.14 on Linux and 3.11 on macOS; 3.11 to 3.15 and free-threaded 3.14 on both nightly |
 | Supply chain | cargo-deny over every lockfile, actions referenced by commit SHA, and every other tool but the Rust toolchains, which rustup installs, locked to a checksum in `mise.lock`; valgrind and bubblewrap come from Ubuntu's archive; the release's wheels are built by maturin-action, held to its commit, which fetches maturin, rustup and build tools unchecked, in pypa's manylinux containers on Linux | Every pull request; advisories nightly |
 
 `unsafe` lives in `rdlt-adopt` alone. Every other target's root starts with
