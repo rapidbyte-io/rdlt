@@ -15,7 +15,7 @@ fn fake_python(dir: &Path, facts: &str, described: &str, reading: u8) -> PathBuf
     let made = dir.join("made");
     let script = format!(
         "#!/bin/sh\nif [ \"$2\" = -m ]; then touch '{}'; \
-         elif [ \"$#\" = 5 ]; then echo '{described}'; exit {reading}; \
+         elif [ \"$#\" = 5 ]; then printf '%s\\n' '{described}'; exit {reading}; \
          else echo '{facts}'; fi\n",
         made.display()
     );
@@ -476,4 +476,48 @@ async fn an_install_replaces_only_an_earlier_install_of_its_connector() {
     installed(&python, built, None, &connectors)
         .await
         .expect("an install of its own connector replaces it");
+}
+
+#[tokio::test]
+async fn a_wheel_whose_metadata_names_no_distribution_is_refused_before_anything_is_made() {
+    for name in [
+        "--index-url=http://x",
+        "tickets\n--index-url=http://x",
+        "tickets\n",
+        "-tickets",
+        "tickets-",
+        ".tickets",
+        "tic kets",
+        "",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let named = serde_json::json!({
+            "name": name,
+            "uri": "file:///absent.whl",
+            "sha256": "00",
+            "entry_points": [["io.example.tickets", "tickets:Tickets"]],
+        });
+        let python = fake_python(
+            dir.path(),
+            &facts("3, 14, 0", "/usr"),
+            &named.to_string(),
+            0,
+        );
+        let asked = installation(dir.path(), python);
+        let refused = install(&asked).await.unwrap_err();
+        assert_eq!(refused.code(), "wheel", "{name:?}: {refused}");
+        assert!(
+            !asked.connectors.exists(),
+            "{name:?}: the connector directory was made"
+        );
+        assert!(
+            !dir.path().join("made").exists(),
+            "{name:?}: the environment was made"
+        );
+    }
+    for name in ["tickets", "T", "rdlt-connector-tickets", "a.b_c-1"] {
+        let named = DESCRIBED.replace("\"name\": \"tickets\"", &format!("\"name\": \"{name}\""));
+        let refused = refusal(&facts("3, 14, 0", "/usr"), &named, 0).await;
+        assert_eq!(refused.code(), "pip_failed", "{name}: {refused}");
+    }
 }
