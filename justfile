@@ -56,6 +56,18 @@ connectors-build:
 python-test *args: python-develop connectors-build
     .venv/bin/python -m pytest {{ args }}
 
+# The Python package's tests that install from PyPI, with a wheel of this tree built: a connector
+# `rdlt connector new` scaffolds, built, installed as a directory connector, placed, run and
+# certified with its kill clause spawning the installed launcher
+python-network: python-develop connectors-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --package rdlt-cli
+    rm -rf target/wheels
+    # The wheel is built without `.venv`, which the exported PYO3_PYTHON names
+    PYO3_PYTHON="$(mise which python)" maturin build --release --out target/wheels --interpreter "$(mise which python)"
+    .venv/bin/python -m pytest -m network
+
 # Build the release wheel and test it as it ships: installed with the test dependencies into an
 # environment of its own on CPython `version`, which uv installs from the downloads its release
 # names, never the editable package

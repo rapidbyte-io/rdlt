@@ -891,7 +891,7 @@ Options:
           The project's language
           
           [default: rust]
-          [possible values: rust]
+          [possible values: rust, python]
 
       --into <DIR>
           The directory the project's directory is made in
