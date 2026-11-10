@@ -2,13 +2,14 @@
 source: crates/rdlt-cli/tests/it/help.rs
 expression: "String::from_utf8_lossy(&output.stdout)"
 ---
-Makes connector projects
+Makes connector projects, and installs connectors
 
 Usage: rdlt connector [OPTIONS] <COMMAND>
 
 Commands:
-  new   Writes a connector project whose certify test passes on its first run
-  help  Print this message or the help of the given subcommand(s)
+  new      Writes a connector project whose certify test passes on its first run
+  install  Installs a Python connector's wheel as a directory connector, an environment of its own
+  help     Print this message or the help of the given subcommand(s)
 
 Options:
       --host <PATH>        The operator's host file; by default `$XDG_CONFIG_HOME/rdlt/host.yaml`, where it exists

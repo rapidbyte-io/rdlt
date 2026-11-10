@@ -45,7 +45,7 @@ impl Exit {
         ),
         (
             Exit::Config,
-            "config: the document, the host's policy, a placement, a connector the host has none of, or a secret reference",
+            "config: the document, the host's policy, a placement, a connector the host has none of or cannot install, or a secret reference",
         ),
         (
             Exit::Schema,
