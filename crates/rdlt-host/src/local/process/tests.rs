@@ -30,6 +30,7 @@ fn writing(leases: &Leases, written: &Path) -> Result<Lease, SandboxError> {
         roots: &roots,
         guarded: &Guarded::default(),
         programs: &[],
+        tree: None,
     })
 }
 
@@ -236,6 +237,7 @@ fn a_sandboxed_connector_is_not_spawned_once_its_launcher_has_a_second_name() {
         roots: &roots,
         guarded: &guarded,
         programs: &[],
+        tree: None,
     });
     launch.lease = Arc::new(lease.expect("one name, beside"));
     launch.confinement = Some(Confinement {
@@ -303,6 +305,7 @@ async fn a_scripts_interpreter_given_a_second_name_since_it_was_placed_is_not_sp
             roots: &Roots::default(),
             guarded: &Guarded::default(),
             programs: &programs,
+            tree: None,
         });
         (Arc::new(binary), Arc::new(lease.expect("held")))
     };
