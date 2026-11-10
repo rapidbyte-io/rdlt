@@ -58,7 +58,8 @@ anything runs; none is ignored.
   connector runs in is its isolation.
 - **Local** (`Local`): built with a sandbox, or with the statement that its binaries are
   trusted, and in no other way.
-  - `Bubblewrap`, on Linux: a connector sees the system directories read only, a private
+  - `Bubblewrap`, on Linux: a connector sees the system directories read only, a directory
+    connector its own tree read only too, a private
     scratch directory named only by `TMPDIR`, and what it was granted: nothing else is written,
     so a write to `/tmp`, `/var/tmp`, `/dev/shm` or its root fails unless a grant makes the path
     writable, rather than land somewhere gone with the process; nothing of a home directory, no
@@ -73,8 +74,9 @@ anything runs; none is ignored.
     beyond those, is asked for on the reference that places it, which a pipeline's author may
     write, and granted only within the roots the operator names on the provider
     (`Local::readable`, `writable`). By default none is named and nothing is granted.
-  - A root that may be written may hold nothing that decides what the host runs or keeps: no
-    connector directory or binary, no script's interpreter, no launcher, not the host's
+  - A root that may be written may lie within no connector directory or directory connector's
+    tree, and may hold nothing that decides what the host runs or keeps: no connector
+    directory, binary or tree, no script's interpreter, no launcher, not the host's
     executable's directory, a directory the host keeps its log, state or secrets in, or one a
     secret resolver reads. The placement is refused otherwise. Where a binary, interpreter or
     launcher has a second name, a hard link, no root on its file system may be written.
@@ -95,7 +97,9 @@ anything runs; none is ignored.
   - On macOS there is no sandbox: a local connector runs only as a trusted binary, with the
     host's access. Run untrusted connectors remotely there.
   - A binary named without a path is found only in the directories configured, never on
-    `PATH` or in the working directory. The binary must be writable by no other user, and so
+    `PATH` or in the working directory; a directory of the name is a directory connector,
+    whose `bin/rdlt-connector`, reached through no link, is its binary. The binary must be
+    writable by no other user, and so
     must every directory a name on the way to it or to a connector directory is looked up in,
     through every link, a sticky directory such as `/tmp` excepted for entries the user owns.
     It is opened once, and the open file is what is hashed and what is executed, so no file

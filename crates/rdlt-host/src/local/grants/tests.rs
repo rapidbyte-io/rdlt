@@ -72,6 +72,7 @@ impl Asked {
             roots: &self.roots,
             guarded: &self.guarded,
             programs: &programs,
+            tree: None,
         })
     }
 }

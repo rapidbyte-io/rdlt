@@ -471,3 +471,20 @@ fn a_scripts_interpreter_is_the_first_word_of_its_first_line() {
         assert_eq!(found.as_deref(), interpreter.map(Path::new), "{bytes:?}");
     }
 }
+
+#[test]
+fn a_directory_s_launcher_is_its_binary_and_the_directory_its_tree() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let tree = dir(root.path(), "rdlt-connector-tree");
+    let launcher = dir(&tree, "bin").join("rdlt-connector");
+    file(&launcher, b"#!/bin/sh\n", 0o755);
+    for found in [
+        Binary::named(&[root.path().to_owned()], "rdlt-connector-tree").expect("found by name"),
+        Binary::at(&tree).expect("found by path"),
+    ] {
+        assert_eq!(found.path(), launcher);
+        assert_eq!(found.tree(), Some(tree.as_path()));
+    }
+    let binary = Binary::at(&launcher).expect("the launcher alone is a binary");
+    assert_eq!(binary.tree(), None);
+}

@@ -12,6 +12,7 @@ mod cuts;
 mod decoded;
 mod descriptors;
 mod dictionaries;
+mod directories;
 mod flow;
 mod frames;
 mod grants;
