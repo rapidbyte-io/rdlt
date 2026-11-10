@@ -114,13 +114,13 @@ async fn a_played_placement_hashes_its_binary_where_it_is_placed() {
 }
 
 #[test]
-fn a_tree_replaced_after_it_was_checked_is_bound_as_it_was_checked() {
+fn a_tree_put_where_a_checked_one_was_is_never_bound() {
     use std::os::unix::fs::MetadataExt as _;
 
     use rdlt_connector::ConnectorId;
 
     use super::Local;
-    use crate::provider::ConnectorRef;
+    use crate::provider::{ConnectorRef, ProviderError};
 
     let temporary = tempfile::tempdir().expect("a temporary directory");
     let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
@@ -135,19 +135,35 @@ fn a_tree_replaced_after_it_was_checked_is_bound_as_it_was_checked() {
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
             .expect("the launcher is executable");
     };
+    let identity = |metadata: std::fs::Metadata| (metadata.dev(), metadata.ino());
     let path = root.join("rdlt-connector-tree");
     tree(&path);
-    let checked = std::fs::metadata(&path).expect("the tree is there").ino();
+    let checked = identity(std::fs::metadata(&path).expect("the tree is there"));
     let binary = Binary::at(&path).expect("the tree opens");
     // Another tree takes its path once it was checked.
     std::fs::rename(&path, root.join("moved")).expect("the tree moves");
     tree(&path);
+    let replacing = identity(std::fs::metadata(&path).expect("the other tree is there"));
+    assert_ne!(replacing, checked, "another tree is at the path");
     let reference = ConnectorRef::new(ConnectorId::parse("test.tree").expect("a valid id"));
-    let lease = Local::trusting_binaries()
-        .lease(&reference, &binary, true)
-        .expect("it is held");
-    let bound = lease.bound.iter().find(|bound| bound.at == path);
-    let bound = bound.expect("the tree is bound at its path");
-    let held = bound.file.metadata().expect("what is bound").ino();
-    assert_eq!(held, checked, "what is bound is the tree checked");
+    let lease = Local::trusting_binaries().lease(&reference, &binary, true);
+    // Linux finds the launcher where the kernel says the open file lies, so the tree checked is
+    // held and bound, wherever it went; elsewhere the launcher is found again by its path, which
+    // names another tree's now, and the placement is refused.
+    if cfg!(target_os = "linux") {
+        let lease = lease.expect("it is held");
+        let bound = lease.bound.iter().find(|bound| bound.at == path);
+        let bound = bound.expect("the tree is bound at its path");
+        let held = identity(bound.file.metadata().expect("what is bound"));
+        assert_eq!(held, checked, "what is bound is the tree checked");
+    } else {
+        let refused = lease.expect_err("a placement of a replaced tree is refused");
+        assert!(
+            matches!(
+                &refused,
+                ProviderError::SpawnFailed { source, .. } if source.to_string().contains("changed")
+            ),
+            "{refused:?}"
+        );
+    }
 }
