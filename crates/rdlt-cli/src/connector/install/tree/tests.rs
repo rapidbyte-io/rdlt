@@ -1,7 +1,7 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
-use super::{launcher, locked, private, replaceable, replaced, swept, target};
+use super::{launcher, locked_now, private, replaceable_now, replaced, swept, target};
 use crate::connector::install::InstallError;
 
 fn mode(path: &Path) -> u32 {
@@ -125,11 +125,11 @@ fn an_old_tree_that_cannot_be_removed_is_left_once_the_new_one_is_in_place() {
 #[test]
 fn one_install_at_a_time_holds_a_connector_directory() {
     let connectors = tempfile::tempdir().unwrap();
-    let held = locked(connectors.path()).unwrap();
-    let refused = locked(connectors.path()).unwrap_err();
+    let held = locked_now(connectors.path()).unwrap();
+    let refused = locked_now(connectors.path()).unwrap_err();
     assert_eq!(refused.code(), "install_running");
     drop(held);
-    locked(connectors.path()).expect("free once the first is done");
+    locked_now(connectors.path()).expect("free once the first is done");
 }
 
 #[tokio::test]
@@ -161,20 +161,20 @@ async fn what_a_killed_install_left_is_swept_and_nothing_else() {
 fn only_an_earlier_install_of_the_same_connector_may_be_replaced() {
     let connectors = tempfile::tempdir().unwrap();
     let tree = connectors.path().join("rdlt-connector-tickets");
-    replaceable(&tree, "io.example.tickets").expect("nothing is there");
+    replaceable_now(&tree, "io.example.tickets").expect("nothing is there");
     std::fs::create_dir(&tree).unwrap();
     let id = tree.join("rdlt-connector.id");
-    let refused = replaceable(&tree, "io.example.tickets").unwrap_err();
+    let refused = replaceable_now(&tree, "io.example.tickets").unwrap_err();
     assert_eq!(refused.code(), "name_taken", "a tree that records no id");
     std::fs::write(&id, "com.acme.tickets\n").unwrap();
-    let refused = replaceable(&tree, "io.example.tickets").unwrap_err();
+    let refused = replaceable_now(&tree, "io.example.tickets").unwrap_err();
     assert_eq!(refused.code(), "name_taken", "a tree of another connector");
     std::fs::write(&id, "io.example.tickets\n").unwrap();
-    replaceable(&tree, "io.example.tickets").expect("an earlier install of the connector");
+    replaceable_now(&tree, "io.example.tickets").expect("an earlier install of the connector");
     std::fs::remove_file(&id).unwrap();
     std::os::unix::fs::symlink(connectors.path().join("elsewhere"), &id).unwrap();
     std::fs::write(connectors.path().join("elsewhere"), "io.example.tickets\n").unwrap();
-    let refused = replaceable(&tree, "io.example.tickets").unwrap_err();
+    let refused = replaceable_now(&tree, "io.example.tickets").unwrap_err();
     assert_eq!(
         refused.code(),
         "name_taken",
@@ -182,7 +182,7 @@ fn only_an_earlier_install_of_the_same_connector_may_be_replaced() {
     );
     std::fs::remove_dir_all(&tree).unwrap();
     std::fs::write(&tree, "a native connector's binary").unwrap();
-    let refused = replaceable(&tree, "io.example.tickets").unwrap_err();
+    let refused = replaceable_now(&tree, "io.example.tickets").unwrap_err();
     assert_eq!(refused.code(), "name_taken", "a binary of the name");
 }
 
@@ -192,7 +192,7 @@ fn a_tree_that_cannot_be_looked_at_is_no_tree_that_is_not_there() {
     let shut = connectors.path().join("shut");
     std::fs::create_dir(&shut).unwrap();
     chmod(&shut, 0o000);
-    let looked = replaceable(&shut.join("rdlt-connector-tickets"), "io.example.tickets");
+    let looked = replaceable_now(&shut.join("rdlt-connector-tickets"), "io.example.tickets");
     // The superuser looks all the same, and finds nothing there.
     let superuser = std::fs::read_dir(&shut).is_ok();
     chmod(&shut, 0o755);

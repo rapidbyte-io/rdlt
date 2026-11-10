@@ -126,6 +126,14 @@ fn io_error(context: impl Into<String>) -> impl FnOnce(io::Error) -> InstallErro
     move |source| InstallError::Io { context, source }
 }
 
+/// What `work`, which touches the file system and may block, answers, done on a thread that may
+/// block; a panic there is resumed here.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    tokio::task::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|joined| std::panic::resume_unwind(joined.into_panic()))
+}
+
 /// Installs `installation`'s wheel as a directory connector, replacing an earlier install of the
 /// same connector.
 ///
@@ -140,7 +148,7 @@ fn io_error(context: impl Into<String>) -> impl FnOnce(io::Error) -> InstallErro
 /// An [`InstallError`] naming the step that failed; the connector directory holds nothing new
 /// then, but its lock file.
 pub(crate) async fn install(installation: &Installation) -> Result<Installed, InstallError> {
-    let wheel = wheel::checked(&installation.wheel)?;
+    let wheel = wheel::checked(&installation.wheel).await?;
     let python = installation
         .python
         .clone()
@@ -154,18 +162,27 @@ pub(crate) async fn install(installation: &Installation) -> Result<Installed, In
     })?;
     let (module, attribute) = tree::target(target)?;
     environment::reachable(&facts, module, attribute)?;
-    let connectors = tree::made(&installation.connectors)?;
+    let connectors = tree::made(&installation.connectors).await?;
     let last = id.as_str().rsplit('.').next().unwrap_or(id.as_str());
     let at = connectors.join(format!("rdlt-connector-{last}"));
     let launcher = tree::launcher(&at, module, attribute)?;
-    let _locked = tree::locked(&connectors)?;
+    let _locked = tree::locked(&connectors).await?;
     tree::swept(&connectors).await;
-    tree::replaceable(&at, id.as_str())?;
-    let staging = tree::staging(&connectors)?;
-    environment::made(&python, staging.path()).await?;
+    tree::replaceable(&at, id.as_str()).await?;
+    let staging = tree::staging(&connectors).await?;
     let requirements = installation.requirements.as_deref();
-    environment::installed(staging.path(), &described, requirements).await?;
-    tree::finished(staging.path(), launcher, id.as_str()).await?;
-    let left = tree::placed(staging.path(), &at, &connectors).await?;
-    Ok(Installed { tree: at, left })
+    let made = async {
+        environment::made(&python, staging.path()).await?;
+        environment::installed(staging.path(), &described, requirements).await?;
+        tree::finished(staging.path(), launcher, id.as_str()).await?;
+        tree::placed(staging.path(), &at, &connectors).await
+    };
+    let left = made.await;
+    // What is left of the environment, all of it where the install failed, is removed where that
+    // may block; dropped with the install, it is removed at once.
+    blocking(move || drop(staging)).await;
+    Ok(Installed {
+        tree: at,
+        left: left?,
+    })
 }

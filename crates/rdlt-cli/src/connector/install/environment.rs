@@ -5,11 +5,10 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use rdlt_host::Bubblewrap;
-use tokio::io::AsyncWriteExt as _;
 use tokio::process::{Child, Command};
 
 use super::wheel::Wheel;
-use super::{InstallError, io_error};
+use super::{InstallError, blocking, io_error};
 
 /// What an interpreter says it is: its version, and where its executable, the base executable an
 /// environment it makes links to, and its standard library lie.
@@ -163,7 +162,7 @@ pub(super) async fn installed(
         }
     };
     let installing = ran(&mut pip).await;
-    drop(pinned);
+    blocking(move || drop(pinned)).await;
     if !installing {
         return Err(InstallError::PipFailed {
             what: "the wheel and the packages it needs",
@@ -183,22 +182,16 @@ pub(super) async fn installed(
 
 /// A requirements file naming the wheel, `direct`, by the hash its bytes were read with.
 async fn pinned(direct: &str, sha256: &str) -> Result<tempfile::NamedTempFile, InstallError> {
-    let pinned = tempfile::Builder::new()
-        .prefix("rdlt-install-")
-        .suffix(".txt")
-        .tempfile()
-        .map_err(io_error("making the wheel's requirements file"))?;
-    let mut file = tokio::fs::File::from_std(
-        pinned
-            .reopen()
-            .map_err(io_error("opening the wheel's requirements file"))?,
-    );
     let line = format!("{direct} --hash=sha256:{sha256}\n");
-    file.write_all(line.as_bytes())
-        .await
-        .map_err(io_error("writing the wheel's requirements file"))?;
-    file.flush()
-        .await
-        .map_err(io_error("writing the wheel's requirements file"))?;
-    Ok(pinned)
+    blocking(move || {
+        let pinned = tempfile::Builder::new()
+            .prefix("rdlt-install-")
+            .suffix(".txt")
+            .tempfile()
+            .map_err(io_error("making the wheel's requirements file"))?;
+        std::fs::write(pinned.path(), line)
+            .map_err(io_error("writing the wheel's requirements file"))?;
+        Ok(pinned)
+    })
+    .await
 }

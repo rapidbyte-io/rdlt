@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use rustix::fs::FlockOperation;
 
-use super::{InstallError, io_error};
+use super::{InstallError, blocking, io_error};
 
 /// Bytes of a script's first line the kernel reads, its newline among them.
 const SHEBANG_BYTES: usize = 256;
@@ -88,7 +88,13 @@ pub(super) fn launcher(
 
 /// The connector directory `connectors`, made where it is not there, where it lies: the launcher
 /// names its interpreter by this path, which the host binds a tree at.
-pub(super) fn made(connectors: &Path) -> Result<PathBuf, InstallError> {
+pub(super) async fn made(connectors: &Path) -> Result<PathBuf, InstallError> {
+    let connectors = connectors.to_owned();
+    blocking(move || made_now(&connectors)).await
+}
+
+/// [`made`], on a thread that may block.
+fn made_now(connectors: &Path) -> Result<PathBuf, InstallError> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o755)
@@ -100,7 +106,13 @@ pub(super) fn made(connectors: &Path) -> Result<PathBuf, InstallError> {
 
 /// The lock of `connectors`, held while the returned file is open: one install at a time makes
 /// and sweeps what lies beside its trees.
-pub(super) fn locked(connectors: &Path) -> Result<File, InstallError> {
+pub(super) async fn locked(connectors: &Path) -> Result<File, InstallError> {
+    let connectors = connectors.to_owned();
+    blocking(move || locked_now(&connectors)).await
+}
+
+/// [`locked`], on a thread that may block.
+fn locked_now(connectors: &Path) -> Result<File, InstallError> {
     let path = connectors.join(LOCK_FILE);
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -144,7 +156,13 @@ pub(super) async fn swept(connectors: &Path) {
 }
 
 /// Refuses `tree` where it holds anything but an earlier install of the connector `id`.
-pub(super) fn replaceable(tree: &Path, id: &str) -> Result<(), InstallError> {
+pub(super) async fn replaceable(tree: &Path, id: &str) -> Result<(), InstallError> {
+    let (tree, id) = (tree.to_owned(), id.to_owned());
+    blocking(move || replaceable_now(&tree, &id)).await
+}
+
+/// [`replaceable`], on a thread that may block.
+fn replaceable_now(tree: &Path, id: &str) -> Result<(), InstallError> {
     let metadata = match tree.symlink_metadata() {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         held => held.map_err(io_error(format!("reading {}", tree.display())))?,
@@ -164,14 +182,18 @@ pub(super) fn replaceable(tree: &Path, id: &str) -> Result<(), InstallError> {
 }
 
 /// A directory of the install's own beside the trees of `connectors`, removed when it drops.
-pub(super) fn staging(connectors: &Path) -> Result<tempfile::TempDir, InstallError> {
-    tempfile::Builder::new()
-        .prefix(STAGED[0])
-        .tempdir_in(connectors)
-        .map_err(io_error(format!(
-            "making a directory in {}",
-            connectors.display()
-        )))
+pub(super) async fn staging(connectors: &Path) -> Result<tempfile::TempDir, InstallError> {
+    let connectors = connectors.to_owned();
+    blocking(move || {
+        tempfile::Builder::new()
+            .prefix(STAGED[0])
+            .tempdir_in(&connectors)
+            .map_err(io_error(format!(
+                "making a directory in {}",
+                connectors.display()
+            )))
+    })
+    .await
 }
 
 /// Writes `launcher` and the id of its connector into the environment at `environment`, and
@@ -183,7 +205,7 @@ pub(super) async fn finished(
 ) -> Result<(), InstallError> {
     let environment = environment.to_owned();
     let id = format!("{id}\n");
-    let writing = tokio::task::spawn_blocking(move || {
+    blocking(move || {
         let path = environment.join("bin/rdlt-connector");
         std::fs::write(&path, launcher).map_err(io_error("writing the launcher"))?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
@@ -191,10 +213,8 @@ pub(super) async fn finished(
         std::fs::write(environment.join(ID_FILE), id)
             .map_err(io_error("writing the connector's id"))?;
         private(&environment)
-    });
-    writing
-        .await
-        .unwrap_or_else(|joined| std::panic::resume_unwind(joined.into_panic()))
+    })
+    .await
 }
 
 /// Takes write away from group and others throughout `tree`, links aside: a sandboxed
@@ -231,10 +251,7 @@ pub(super) async fn placed(
     connectors: &Path,
 ) -> Result<Option<String>, InstallError> {
     let (staged, tree, connectors) = (staged.to_owned(), tree.to_owned(), connectors.to_owned());
-    let placing = tokio::task::spawn_blocking(move || replaced(&staged, &tree, &connectors));
-    placing
-        .await
-        .unwrap_or_else(|joined| std::panic::resume_unwind(joined.into_panic()))
+    blocking(move || replaced(&staged, &tree, &connectors)).await
 }
 
 /// [`placed`], on a thread that may block.
