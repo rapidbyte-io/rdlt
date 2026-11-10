@@ -9,12 +9,36 @@ from __future__ import annotations
 
 import _thread
 import asyncio
+import sys
 import threading
 from collections.abc import AsyncIterable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     import pyarrow as pa
+
+
+def _ended() -> None:
+    """Lets `threading` forget this thread, which is ending, as CPython 3.13 and later do.
+
+    Before 3.13, `threading` keeps for ever the object `current_thread()` makes for a thread
+    `_thread` started, unless a later thread has its ident:
+    https://github.com/python/cpython/issues/114423. Its registry and lock are looked up on each
+    call, since a forked child's `threading` makes new ones.
+    """
+    if sys.version_info < (3, 13):
+        registry = vars(threading)
+        with registry["_active_limbo_lock"]:
+            registry["_active"].pop(_thread.get_ident(), None)
+
+
+def _forgotten(run: Callable[..., None], *arguments: object) -> None:
+    """Runs `run`, then lets `threading` forget this thread, once what `run` held is let go."""
+    try:
+        run(*arguments)
+    finally:
+        _ended()
+
 
 # An async read waits for room in the engine with its event loop free: for this many turns of
 # the loop, since room usually comes at once, then with this many seconds between asks.
@@ -97,7 +121,7 @@ def start(  # noqa: PLR0917
     out: Out,
 ) -> None:
     """Reads the partition on a daemon thread of its own named `name`."""
-    _thread.start_new_thread(_read, (name, stream, partition, cursor, context, out))
+    _thread.start_new_thread(_forgotten, (_read, name, stream, partition, cursor, context, out))
 
 
 def _read(  # noqa: PLR0917
@@ -162,7 +186,7 @@ async def _room(out: Out) -> None:
 
 def serve(calls: _Calls) -> None:
     """Makes each call `calls` hands over on a daemon thread of its own, until `calls` closes."""
-    _thread.start_new_thread(_served, (calls,))
+    _thread.start_new_thread(_forgotten, (_served, calls))
 
 
 def _served(calls: _Calls) -> None:

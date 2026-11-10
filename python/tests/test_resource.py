@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import gc
 import json
+import logging
 import sqlite3
 import subprocess
 import sys
@@ -667,3 +668,89 @@ def test_a_source_s_failure_says_its_type_and_message_once(
     with pytest.raises(rdlt.SourceError) as raised:
         builder.build(host(tmp_path, connectors)).run()
     assert str(raised.value).count("ConnectionRefusedError: the api is down") == 1
+
+
+def ended_threads() -> list[threading.Thread]:
+    """What `threading` holds of threads that have ended."""
+    running = sys._current_frames()  # pyright: ignore[reportPrivateUsage]
+    return [thread for thread in threading.enumerate() if thread.ident not in running]
+
+
+def test_a_read_s_threads_leave_nothing_in_threading_once_they_end(
+    tmp_path: Path, connectors: Path
+) -> None:
+    @rdlt.resource(name="parted", partitions=lambda: [str(n) for n in range(32)])
+    def parted(ctx: rdlt.StreamContext) -> Iterator[object]:
+        yield {"partition": ctx.partition}
+
+    built = rdlt.pipeline("parted", source=parted, destination=into_sqlite(tmp_path))
+    assert built.build(host(tmp_path, connectors)).run().report.rows == 32
+    deadline = time.monotonic() + 30
+    while ended := ended_threads():
+        assert time.monotonic() < deadline, f"threading holds {len(ended)} threads that ended"
+        time.sleep(0.05)
+
+
+class Logged:
+    """A partition's rows, which log as they are let go, as a client closing its connection does."""
+
+    def __init__(self, partition: str | None) -> None:
+        self._rows = iter([{"partition": partition}])
+
+    def __iter__(self) -> Logged:
+        return self
+
+    def __next__(self) -> object:
+        return next(self._rows)
+
+    def __del__(self) -> None:
+        logging.getLogger(__name__).warning("closed")
+
+
+def test_rows_that_log_as_they_are_let_go_leave_nothing_in_threading(
+    tmp_path: Path, connectors: Path
+) -> None:
+    @rdlt.resource(name="logged", partitions=lambda: [str(n) for n in range(8)])
+    def logged(ctx: rdlt.StreamContext) -> Iterator[object]:
+        return Logged(ctx.partition)
+
+    built = rdlt.pipeline("logged", source=logged, destination=into_sqlite(tmp_path))
+    assert built.build(host(tmp_path, connectors)).run().report.rows == 8
+    deadline = time.monotonic() + 30
+    while ended := ended_threads():
+        assert time.monotonic() < deadline, f"threading holds {len(ended)} threads that ended"
+        time.sleep(0.05)
+
+
+def test_a_thread_of_a_forked_child_ends_though_threading_s_lock_was_held_at_the_fork() -> None:
+    script = textwrap.dedent(
+        """
+        import os, signal, sys, threading, time, warnings
+        warnings.simplefilter("ignore")
+        from rdlt import _reading
+        held, release = threading.Event(), threading.Event()
+        def hold():
+            with vars(threading)["_active_limbo_lock"]:
+                held.set()
+                release.wait()
+        threading.Thread(target=hold, daemon=True).start()
+        held.wait()
+        child = os.fork()
+        if child == 0:
+            _reading._ended()
+            os._exit(0)
+        release.set()
+        deadline = time.monotonic() + 10
+        while not (ended := os.waitpid(child, os.WNOHANG))[0]:
+            if time.monotonic() > deadline:
+                os.kill(child, signal.SIGKILL)
+                os.waitpid(child, 0)
+                sys.exit("the child's thread never ended")
+            time.sleep(0.05)
+        sys.exit(os.waitstatus_to_exitcode(ended[1]))
+        """
+    )
+    finished = subprocess.run(
+        [sys.executable, "-c", script], timeout=30, check=False, capture_output=True
+    )
+    assert finished.returncode == 0, finished.stderr
