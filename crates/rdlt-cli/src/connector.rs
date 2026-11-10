@@ -182,19 +182,17 @@ pub(crate) async fn install(
             "there is no connector directory to install into: name one with --connectors",
         ));
     };
-    // The launcher names the tree's interpreter by an absolute path.
-    let connectors = std::path::absolute(connectors)
-        .map_err(|error| Failure::io(&format!("resolving {}", connectors.display()), &error))?;
     let installation = Installation {
         wheel: args.wheel,
         python: args.python,
         requirements: args.requirements,
-        connectors,
+        connectors: connectors.clone(),
     };
-    let installing = tokio::task::spawn_blocking(move || install::install(&installation));
-    let tree = installing
-        .await
-        .unwrap_or_else(|joined| std::panic::resume_unwind(joined.into_panic()))?;
+    let installed = install::install(&installation).await?;
+    if let Some(left) = &installed.left {
+        output::note(&format!("rdlt: {left}"));
+    }
+    let tree = installed.tree;
     let plain = || vec![format!("installed {}", tree.display())];
     let rich = || ui::created(&tree, &[], ui);
     let json = serde_json::json!({ "installed": tree.display().to_string() });
@@ -204,9 +202,11 @@ pub(crate) async fn install(
 
 impl From<InstallError> for Failure {
     fn from(error: InstallError) -> Self {
-        let exit = match error {
-            InstallError::Io { .. } => Exit::Io,
-            _ => Exit::Config,
+        // A file that could not be read or written fails as I/O, and every refusal as config.
+        let exit = if error.code() == "io" {
+            Exit::Io
+        } else {
+            Exit::Config
         };
         let mut message = error.to_string();
         let mut cause = std::error::Error::source(&error);

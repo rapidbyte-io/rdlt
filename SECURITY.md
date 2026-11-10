@@ -104,7 +104,10 @@ anything runs; none is ignored.
     through every link, a sticky directory such as `/tmp` excepted for entries the user owns.
     It is opened once, and the open file is what is hashed and what is executed, so no file
     can be swapped in between. A directory connector's digest is its launcher's alone: it pins
-    neither the interpreter nor the packages installed beside it. A sandboxed connector whose binary was replaced since it was
+    neither the interpreter nor the packages installed beside it. `rdlt connector install`
+    runs, as the operator, the interpreter named and the pip it installs, never the connector's
+    code: the wheel is read from its archive with no `site`, so no `.pth` file runs, pip installs
+    binaries only, and the check after it runs with no `site` either. A sandboxed connector whose binary was replaced since it was
     placed is refused until it is placed again. On macOS an open file cannot be executed: a
     digest is refused there rather than checked against a path.
   - A connector is given its standard streams and its socket, and no other descriptor of the

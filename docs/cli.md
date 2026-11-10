@@ -962,7 +962,7 @@ Options:
 ```text
 Installs a Python connector's wheel as a directory connector, an environment of its own.
 
-The environment is made in the first connector directory with Python 3.11 or later, and holds the connector's packages and its launcher, `bin/rdlt-connector`.
+The environment is made in the first connector directory with Python 3.11 or later, and holds the connector's packages and its launcher, `bin/rdlt-connector`; none of the connector's code runs while it is installed. Installing a connector again replaces its tree, and only a tree an install of that connector made: a pipeline running it then fails, its files gone with the tree replaced, and is run again once the install is done. The tree's `bin/pip` and other scripts name the directory the environment was made in, so run its packages' tools as `<tree>/bin/python -m pip`.
 
 Usage: install [OPTIONS] <WHEEL>
 
