@@ -53,7 +53,9 @@ pub(crate) async fn host(args: &HostArgs) -> Result<rdlt::Host, Failure> {
 /// The pipeline the document at `path` describes, read by the facade, which refuses a path that
 /// is no regular file and whose errors start with the path; one that cannot be read exits 74.
 pub(crate) async fn document(path: &Path) -> Result<rdlt::PipelineBuilder, Failure> {
-    Ok(rdlt::Pipeline::from_path(path).await?)
+    rdlt::Pipeline::from_path(path)
+        .await
+        .map_err(|error| Failure::of_document(&error))
 }
 
 /// `$name`, or `$HOME/<fallback>` where it is unset or not absolute; none without a home.

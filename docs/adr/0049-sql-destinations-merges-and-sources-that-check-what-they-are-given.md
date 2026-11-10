@@ -109,13 +109,14 @@ generated sources each take something as given unless they check it:
   - A database's place is its user's alone, by the rule of ADR 0047 and through the same code:
     its directory is opened as the files connectors open a root, and belongs to the user the
     process runs as and is writable by neither its group nor others (`not_private`;
-    `not_a_directory` where it is none). The database and each file SQLite keeps beside it
-    (`-wal`, `-shm`, `-journal`), where they exist, are asked of that directory and must be
-    regular files of that user's under one name each, and beyond the files connectors' rule no
-    one else reaches them at all: a link, at the database's name too, or a second name of the
-    file, which would have a log of its own, is refused as `not_a_regular_file`, and a file
-    others reach as `not_private`, never re-moded, since tightening it would hide that it had
-    been exposed. Each is a configuration error, since the path is the operator's to name.
+    `not_a_directory` where it is none, `database_not_found` where it is not there). The
+    database and each file SQLite keeps beside it (`-wal`, `-shm`, `-journal`), where they
+    exist, are asked of that directory and must be regular files of that user's under one name
+    each, and beyond the files connectors' rule no one else reaches them at all: a link, at the
+    database's name too, or a second name of the file, which would have a log of its own, is
+    refused as `not_a_regular_file`, and a file others reach as `not_private`, never re-moded,
+    since tightening it would hide that it had been exposed. Each is a configuration error,
+    since the path is the operator's to name.
   - None of the four is opened to be inspected. SQLite locks its files by record, and closing
     any descriptor of a file releases every such lock its process holds on it: a check that
     opened and closed the database let another process write in the middle of a connection's

@@ -55,7 +55,7 @@ pub(crate) struct Failure {
     pub(crate) exit: Exit,
     pub(crate) message: String,
     pub(crate) report: Option<Box<rdlt::ErrorReport>>,
-    /// Whether what could not be read is not there.
+    /// Whether the pipeline's document could not be read because it is not there.
     pub(crate) file_not_found: bool,
 }
 
@@ -109,14 +109,23 @@ impl Failure {
             Exit::of(error.kind())
         };
         let report = Box::new(error.report());
-        let file_not_found = std::error::Error::source(error)
-            .and_then(|cause| cause.downcast_ref::<std::io::Error>())
-            .is_some_and(|cause| cause.kind() == std::io::ErrorKind::NotFound);
         Self {
             exit,
             message: with_causes(&error.to_string(), &report),
             report: Some(report),
+            file_not_found: false,
+        }
+    }
+
+    /// As [`of`](Self::of), for `error` met reading the pipeline's document, saying whether the
+    /// document is not there: of all the files a verb reads, only it is what `rdlt init` writes.
+    pub(crate) fn of_document(error: &rdlt::Error) -> Self {
+        let file_not_found = std::error::Error::source(error)
+            .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+            .is_some_and(|cause| cause.kind() == std::io::ErrorKind::NotFound);
+        Self {
             file_not_found,
+            ..Self::of(error)
         }
     }
 }
