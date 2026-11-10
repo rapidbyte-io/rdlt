@@ -87,9 +87,15 @@ async fn two_pipelines_leave_no_shared_file() {
         .env(LOADED_IN, directory.path())
         .kill_on_drop(true);
     let output = within(command.output()).await.expect("the stand-in runs");
-    let said = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{said}");
-    assert!(said.contains("1 passed"), "the stand-in ran: {said}");
+    let (said, stderr) = (
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(output.status.success(), "{said}\n{stderr}");
+    assert!(
+        said.contains("1 passed"),
+        "the stand-in ran: {said}\n{stderr}"
+    );
 }
 
 /// What [`two_pipelines_leave_no_shared_file`] runs in a process of its own; nothing where no
@@ -100,7 +106,10 @@ async fn two_pipelines_load_in_their_directory() {
     let Some(directory) = std::env::var_os(LOADED_IN).map(std::path::PathBuf::from) else {
         return;
     };
-    assert_eq!(std::env::current_dir().unwrap(), directory);
+    // The system names its working directory as it resolves it, and a temporary directory may
+    // be reached through a link, as macOS's beneath /var is.
+    let working = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+    assert_eq!(working, std::fs::canonicalize(&directory).unwrap());
     let host = sqlite_host();
     let mut seen = files(&directory);
     let mut added = Vec::new();
