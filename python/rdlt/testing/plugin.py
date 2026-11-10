@@ -1,4 +1,9 @@
-"""The pytest plugin: a `Certification` bound to a `test_*` name is one test per clause."""
+"""The pytest plugin: a `Certification` bound to a `test_*` name is one test per clause.
+
+A clause the connector breaks fails its test, as does one that went unobserved: a certification
+is complete only once every clause that applies was seen to be met. A clause that does not apply,
+by what the connector declares, skips.
+"""
 
 from __future__ import annotations
 
@@ -10,11 +15,22 @@ from rdlt.testing import Certification, ClauseResult
 
 
 class ClauseFailed(Exception):  # noqa: N818 - a clause's failure, reported as its test's
-    """A clause the connector breaks."""
+    """A clause the connector breaks, or one that went unobserved."""
 
     def __init__(self, result: ClauseResult) -> None:
         super().__init__(result.clause)
         self.result = result
+
+    def said(self) -> str:
+        """The clause and its statement, then why its test failed."""
+        result = self.result
+        if result.outcome == "unobserved":
+            return (
+                f"{result.clause}: {result.statement}\n"
+                f"it went unobserved: {result.reason}\n"
+                "certifying with a fixture that shows this behaviour observes it"
+            )
+        return f"{result.clause}: {result.statement}\n{result.reason}"
 
 
 class ClauseItem(pytest.Item):
@@ -34,10 +50,10 @@ class ClauseItem(pytest.Item):
     def runtest(self) -> None:
         """Runs the clause, reading its result from the certification's one run."""
         result = self.certification.result(self.clause)
-        if result.outcome == "failed":
+        if result.outcome in {"failed", "unobserved"}:
             raise ClauseFailed(result)
-        if result.outcome != "passed":
-            pytest.skip(f"{self.clause} is {result.outcome}: {result.reason}")
+        if result.outcome == "inapplicable":
+            pytest.skip(f"{self.clause} does not apply: {result.reason}")
 
     def repr_failure(
         self,
@@ -46,8 +62,7 @@ class ClauseItem(pytest.Item):
     ) -> Any:  # noqa: ANN401 - pytest's own
         """The clause and its statement, then why it failed."""
         if isinstance(excinfo.value, ClauseFailed):
-            result = excinfo.value.result
-            return f"{result.clause}: {result.statement}\n{result.reason}"
+            return excinfo.value.said()
         return super().repr_failure(excinfo, style)
 
     def reportinfo(self) -> tuple[Any, int, str]:
