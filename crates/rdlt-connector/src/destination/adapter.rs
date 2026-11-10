@@ -1,5 +1,6 @@
 //! Turns an author's [`DestinationConnector`] into the engine-facing [`Destination`].
 
+use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -125,12 +126,93 @@ pub(super) async fn adapted<C: DestinationConnector>(
     context: &ConnectContext,
 ) -> Result<DestinationAdapter<C>> {
     let config = config::parse::<C::Config>(&config)?;
-    let connector = C::connect(config, context).await?;
+    Ok(assembled(C::connect(config, context).await?))
+}
+
+/// `connector`, with the capabilities it declares.
+fn assembled<C: DestinationConnector>(connector: C) -> DestinationAdapter<C> {
     let capabilities = connector.capabilities();
-    Ok(DestinationAdapter {
+    DestinationAdapter {
         connector: Arc::new(connector),
         capabilities,
-    })
+    }
+}
+
+/// The factory of a destination described at run time: its spec, and what connects it.
+pub(super) struct Described<C, F> {
+    spec: ConnectorSpec,
+    connect: F,
+    connector: PhantomData<fn() -> C>,
+}
+
+impl<C, F> Described<C, F>
+where
+    C: DestinationConnector,
+    F: Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<C>>
+        + Send
+        + Sync
+        + 'static,
+{
+    /// The destination `spec` names, which `connect` makes from its whole configuration.
+    pub(super) fn new(spec: ConnectorSpec, connect: F) -> Self {
+        Self {
+            spec,
+            connect,
+            connector: PhantomData,
+        }
+    }
+
+    /// Connects `C` with `config` through the function that describes it.
+    pub(super) fn adapted(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> impl Future<Output = Result<DestinationAdapter<C>>> + Send + 'static {
+        let connecting = (self.connect)(config, context);
+        async move { Ok(assembled(connecting.await?)) }
+    }
+}
+
+impl<C, F> DestinationFactory for Described<C, F>
+where
+    C: DestinationConnector,
+    F: Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<C>>
+        + Send
+        + Sync
+        + 'static,
+{
+    fn spec(&self) -> &ConnectorSpec {
+        &self.spec
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, Result<Box<dyn Destination>>> {
+        let adapting = self.adapted(config, context);
+        Box::pin(async move { Ok(Box::new(adapting.await?) as Box<dyn Destination>) })
+    }
+}
+
+/// The engine-facing factory for a destination known only at run time, as one written in
+/// another language is: `spec` names it and `connect` makes it from its whole configuration.
+///
+/// `C`'s `ID`, `VERSION`, `Config` and `connect` are not read; `spec` and `connect` stand for
+/// them. Every other part of the destination is `C`'s, its sessions' and table writers', and the
+/// SDK's choreography.
+pub fn destination_factory_from<C, F>(
+    spec: ConnectorSpec,
+    connect: F,
+) -> Box<dyn DestinationFactory>
+where
+    C: DestinationConnector,
+    F: Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<C>>
+        + Send
+        + Sync
+        + 'static,
+{
+    Box::new(Described::new(spec, connect))
 }
 
 /// The engine-facing factory for destination connector `C`.

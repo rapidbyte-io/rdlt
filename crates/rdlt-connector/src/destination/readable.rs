@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::adapter::{Factory, adapted, factory};
+use super::adapter::{Described, DestinationAdapter, Factory, adapted, factory};
 use super::{
     Destination, DestinationFactory, PublishedReader, PublishedRows, ReadBack, Reading, TableRef,
 };
@@ -47,14 +47,53 @@ impl<C: ReadBack> DestinationFactory for ReadableFactory<C> {
         config: serde_json::Value,
         context: ConnectContext,
     ) -> BoxFuture<'_, Result<Reading>> {
-        Box::pin(async move {
-            let adapter = adapted::<C>(config, &context).await?;
-            let reader = ReaderAdapter(Arc::clone(&adapter.connector));
-            Ok((
-                Arc::new(adapter) as Arc<dyn Destination>,
-                Arc::new(reader) as Arc<dyn PublishedReader>,
-            ))
-        })
+        Box::pin(async move { Ok(reading(adapted::<C>(config, &context).await?)) })
+    }
+}
+
+/// `adapter`, and what reads back what its connector published.
+fn reading<C: ReadBack>(adapter: DestinationAdapter<C>) -> Reading {
+    let reader = ReaderAdapter(Arc::clone(&adapter.connector));
+    (
+        Arc::new(adapter) as Arc<dyn Destination>,
+        Arc::new(reader) as Arc<dyn PublishedReader>,
+    )
+}
+
+/// [`Described`], for a connector that can read back what it published.
+struct ReadableDescribed<C, F>(Described<C, F>);
+
+impl<C, F> DestinationFactory for ReadableDescribed<C, F>
+where
+    C: ReadBack,
+    F: Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<C>>
+        + Send
+        + Sync
+        + 'static,
+{
+    fn spec(&self) -> &ConnectorSpec {
+        self.0.spec()
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, Result<Box<dyn Destination>>> {
+        self.0.connect(config, context)
+    }
+
+    fn reads_back(&self) -> bool {
+        true
+    }
+
+    fn connect_reading(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, Result<Reading>> {
+        let adapting = self.0.adapted(config, context);
+        Box::pin(async move { Ok(reading(adapting.await?)) })
     }
 }
 
@@ -71,4 +110,21 @@ impl<C: ReadBack> DestinationFactory for ReadableFactory<C> {
 /// attribute checks it at compile time.
 pub fn readable_destination_factory<C: ReadBack>() -> Box<dyn DestinationFactory> {
     Box::new(ReadableFactory(factory::<C>()))
+}
+
+/// The engine-facing factory for a destination known only at run time, as
+/// [`destination_factory_from`](super::destination_factory_from) makes, which also reads back
+/// what `C` published, for certification.
+pub fn readable_destination_factory_from<C, F>(
+    spec: ConnectorSpec,
+    connect: F,
+) -> Box<dyn DestinationFactory>
+where
+    C: ReadBack,
+    F: Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<C>>
+        + Send
+        + Sync
+        + 'static,
+{
+    Box::new(ReadableDescribed(Described::new(spec, connect)))
 }
