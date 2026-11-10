@@ -113,8 +113,8 @@ async fn a_played_placement_hashes_its_binary_where_it_is_placed() {
     assert_eq!(launch.digest, Some(expected));
 }
 
-#[test]
-fn a_tree_put_where_a_checked_one_was_is_never_bound() {
+#[tokio::test]
+async fn a_tree_put_where_a_checked_one_was_is_never_bound() {
     use std::os::unix::fs::MetadataExt as _;
 
     use rdlt_connector::ConnectorId;
@@ -147,7 +147,9 @@ fn a_tree_put_where_a_checked_one_was_is_never_bound() {
     let replacing = identity(std::fs::metadata(&path).expect("the other tree is there"));
     assert_ne!(replacing, checked, "another tree is at the path");
     let reference = ConnectorRef::new(ConnectorId::parse("test.tree").expect("a valid id"));
-    let lease = Local::trusting_binaries().lease(&reference, &binary, true);
+    let lease = Local::trusting_binaries()
+        .lease(&reference, &binary, true)
+        .await;
     // Linux finds the launcher where the kernel says the open file lies, so the tree checked is
     // held and bound, wherever it went; elsewhere the launcher is found again by its path, which
     // names another tree's now, and the placement is refused.

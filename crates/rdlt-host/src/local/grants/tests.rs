@@ -1,4 +1,7 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use super::{Chain, Claim, Guarded, Lease, Leases, Opened, Program, Roots};
 use crate::local::sandbox::{Access, SandboxError};
@@ -57,23 +60,37 @@ impl Asked {
         self
     }
 
-    fn taken(&self, leases: &Leases) -> Result<Lease, SandboxError> {
-        let programs: Vec<Program> = self
-            .programs
+    fn opened_programs(&self) -> Vec<Program> {
+        self.programs
             .iter()
             .map(|path| {
                 let opened = Opened::at(path).expect("the program is there");
                 Program::opened(path.clone(), opened).expect("its names are counted")
             })
-            .collect();
-        leases.take(&Claim {
+            .collect()
+    }
+
+    fn claim<'a>(&'a self, programs: &'a [Program]) -> Claim<'a> {
+        Claim {
             access: &self.access,
             shared_reads: &self.shared_reads,
             roots: &self.roots,
             guarded: &self.guarded,
-            programs: &programs,
+            programs,
             tree: None,
-        })
+        }
+    }
+
+    fn taken(&self, leases: &Leases) -> Result<Lease, SandboxError> {
+        let programs = self.opened_programs();
+        leases.take(&self.claim(&programs))
+    }
+
+    /// Taken as a placement takes it, waiting up to `patience` for what only connectors told to
+    /// stop hold.
+    async fn within(&self, leases: &Leases, patience: Duration) -> Result<Lease, SandboxError> {
+        let programs = self.opened_programs();
+        leases.take_within(&self.claim(&programs), patience).await
     }
 }
 
@@ -611,4 +628,68 @@ fn knowing_a_path_reads_nothing_of_it_nor_of_the_directories_above_it() {
         (inner.parent(), unread.parent()),
         (Some(shut.clone()), Some(shut))
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_grant_only_connectors_told_to_stop_hold_is_held_once_they_release_it() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let a = dir(root.path(), "a");
+    let leases = Leases::default();
+    let under = || Asked::under(root.path());
+    let placed = under().writing(&a).taken(&leases).expect("a's grant");
+    // Its placement is gone, and a connector spawned from it, told to stop, has yet to end.
+    let connector = placed.holding();
+    drop(placed);
+    let reaped = Duration::from_millis(50);
+    let ending = tokio::spawn(async move {
+        tokio::time::sleep(reaped).await;
+        drop(connector);
+    });
+    let started = Instant::now();
+    let again = under()
+        .writing(&a)
+        .within(&leases, Duration::from_secs(60))
+        .await;
+    again.expect("held once the connector is reaped");
+    assert_eq!(started.elapsed(), reaped, "held as soon as it is released");
+    ending.await.expect("the connector ends");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_grant_a_placement_holds_is_refused_without_waiting() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let (a, b) = (dir(root.path(), "a"), dir(root.path(), "b"));
+    let leases = Leases::default();
+    let under = || Asked::under(root.path());
+    // One placement is gone and its connector is ending; the other is there.
+    let gone = under().writing(&a).taken(&leases).expect("a's grant");
+    let ending = gone.holding();
+    drop(gone);
+    let placed = under().writing(&b).taken(&leases).expect("b's grant");
+    let connector = placed.holding();
+    let started = Instant::now();
+    let refused = under()
+        .writing(root.path())
+        .within(&leases, Duration::from_secs(60))
+        .await;
+    assert_eq!(refused.expect_err("it overlaps").code(), "grant_overlap");
+    assert_eq!(started.elapsed(), Duration::ZERO, "refused at once");
+    drop((ending, placed, connector));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_grant_connectors_told_to_stop_keep_past_the_wait_is_refused() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let a = dir(root.path(), "a");
+    let leases = Leases::default();
+    let under = || Asked::under(root.path());
+    let placed = under().writing(&a).taken(&leases).expect("a's grant");
+    let connector = placed.holding();
+    drop(placed);
+    let patience = Duration::from_secs(5);
+    let started = Instant::now();
+    let refused = under().writing(&a).within(&leases, patience).await;
+    assert_eq!(refused.expect_err("still held").code(), "grant_overlap");
+    assert_eq!(started.elapsed(), patience, "refused once the wait is over");
+    drop(connector);
 }

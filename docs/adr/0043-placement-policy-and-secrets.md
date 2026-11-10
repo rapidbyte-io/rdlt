@@ -80,7 +80,9 @@ given. A host enforces that only where it closes each of these:
     connector reaped, not only until a handle drops. A grant that overlaps, contains or lies
     within a path another placement holds is refused (`grant_overlap`), unless both
     references state their grants are shared (`share_access`); so is a write grant over a path
-    the provider lets every connector read.
+    the provider lets every connector read. What only connectors told to stop still hold, their
+    placement dropped, is waited for instead, within the connect deadline, as they release it
+    once reaped: a pipeline dropped and placed again at once meets its own connector ending.
     A write grant over a program another placement runs is refused (`grant_covers`), and so is
     a placement whose program lies where a held grant may write (`program_exposed`), whichever
     came first, shared or not. A program with more than one name, a hard link, counts as

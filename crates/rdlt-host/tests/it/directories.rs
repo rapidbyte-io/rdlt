@@ -182,6 +182,31 @@ mod confined {
         drop(running);
     }
 
+    #[tokio::test]
+    async fn a_grant_a_stopped_connector_still_holds_is_granted_once_it_has_ended() {
+        let Some(sandbox) = sandboxed() else { return };
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let tree = directory_connector(root.path(), "lingering", "");
+        // It ends a while after its connector does, as one that takes its time to stop.
+        let launcher = format!(
+            "#!/bin/sh\n'{}' \"$@\"\nsleep 0.3\n",
+            tree.join("libexec/scripted").display()
+        );
+        std::fs::write(tree.join("bin/rdlt-connector"), launcher).expect("the launcher writes");
+        let data = tempfile::tempdir().expect("a temporary directory");
+        private_dir(data.path());
+        let writing = scripted().path(&tree).write(data.path().join("a"));
+        private_dir(&data.path().join("a"));
+        let sandbox = sandbox.writable(data.path());
+        let first = sandbox
+            .source(&writing, &serde_json::json!({}))
+            .await
+            .expect("placed");
+        drop(first);
+        let again = sandbox.source(&writing, &serde_json::json!({})).await;
+        again.expect("placed again once the first, told to stop, has ended");
+    }
+
     /// The system's Python 3, where it is there; it must be where `RDLT_REQUIRE_SYSTEM_PYTHON`
     /// says so.
     fn system_python() -> Option<&'static str> {
