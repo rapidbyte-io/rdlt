@@ -1,6 +1,9 @@
 //! The interpreter an install is asked for, and the environment it makes with it, each process
 //! a group of its own that dies with the install.
 
+#[cfg(test)]
+mod tests;
+
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -27,8 +30,14 @@ pub(super) struct Facts {
 const FACTS: &str = include_str!("facts.py");
 
 /// The check that the environment holds every package its packages need, run by its
-/// interpreter with no `site`, its packages' directory put on the path by hand.
+/// interpreter with no `site` and the environment's directory, whose packages' directories it
+/// puts on the path by hand: with no `site`, Python before 3.14 knows no environment of its own,
+/// and a distribution's default scheme may name its own directories.
 const CHECK: &str = include_str!("check.py");
+
+/// What the check exits with where the environment's pip does not import, so the check did not
+/// run.
+const CHECK_UNRUN: i32 = 100;
 
 /// A child leading a process group of its own: dropped before it ends, as an install dropped on a
 /// signal drops it, it is killed with every process of its group.
@@ -50,19 +59,23 @@ impl Drop for Group {
 /// Its output reaches no terminal of its own: a group of its own is not the terminal's, and with
 /// `tostop` set a write to it would stop the child for ever.
 async fn ran(command: &mut Command) -> bool {
+    status(command).await.is_some_and(|status| status.success())
+}
+
+/// What `command` exited with, run as [`ran`] runs it; none where it did not start or was ended by
+/// a signal.
+async fn status(command: &mut Command) -> Option<std::process::ExitStatus> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0)
         .kill_on_drop(true);
-    let Ok(mut child) = command.spawn() else {
-        return false;
-    };
+    let mut child = command.spawn().ok()?;
     let (output, errors) = (child.stdout.take(), child.stderr.take());
     let mut group = Group(child);
     let (ended, (), ()) = tokio::join!(group.0.wait(), copied(output), copied(errors));
-    ended.is_ok_and(|status| status.success())
+    ended.ok()
 }
 
 /// Copies what a child writes to `from` to this process's standard error, until it closes.
@@ -183,16 +196,18 @@ pub(super) async fn installed(
             what: "the wheel and the packages it needs",
         });
     }
-    if requirements.is_some() {
-        let mut check = Command::new(&python);
-        check.args(["-I", "-S", "-c", CHECK]);
-        if !ran(&mut check).await {
-            return Err(InstallError::PipFailed {
-                what: "a package the wheel needs and the requirements leave out",
-            });
-        }
+    if requirements.is_none() {
+        return Ok(());
     }
-    Ok(())
+    let mut check = Command::new(&python);
+    check.args(["-I", "-S", "-c", CHECK]).arg(environment);
+    match status(&mut check).await.and_then(|status| status.code()) {
+        Some(0) => Ok(()),
+        Some(CHECK_UNRUN) => Err(InstallError::CheckUnrun { python }),
+        _ => Err(InstallError::PipFailed {
+            what: "a package the wheel needs and the requirements leave out",
+        }),
+    }
 }
 
 /// A requirements file naming the wheel, `direct`, by the hash its bytes were read with.
