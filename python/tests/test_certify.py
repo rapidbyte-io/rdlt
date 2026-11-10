@@ -26,7 +26,11 @@ sys.path.append({tests!r})
 from rdlt.testing import certify_source
 from tests.connectors.tickets import Tickets
 
-test_certify = certify_source(Tickets, config={{"pages": 6, "token": "t0ken"}})
+# Enough pages for its installed launcher's kills to land as it loads, so every clause that
+# applies is observed.
+test_certify = certify_source(
+    Tickets, config={{"pages": 400, "token": "t0ken"}}, launcher={launcher!r}
+)
 """
 
 FORGETFUL = """
@@ -58,13 +62,30 @@ class Forgetful:
 test_certify = certify_source(Forgetful, config={{"pages": 6}})
 """
 
+ROWLESS = """
+import pyarrow as pa
+
+import rdlt
+from rdlt.testing import certify_transform
+
+@rdlt.transform()
+def unchanged(batch):
+    return batch
+
+empty = pa.record_batch({"n": pa.array([], pa.int64())})
+test_certify = certify_transform(unchanged, inputs=[empty])
+"""
+
 
 def test_each_clause_is_a_test_of_its_own(pytester: pytest.Pytester) -> None:
-    pytester.makepyfile(test_tickets=textwrap.dedent(CERTIFIED.format(tests=str(TESTS))))
+    launcher = tickets_launcher(pytester.path / "launchers")
+    certified = CERTIFIED.format(tests=str(TESTS), launcher=str(launcher))
+    pytester.makepyfile(test_tickets=textwrap.dedent(certified))
     result = pytester.runpytest_subprocess("-v")
-    result.stdout.fnmatch_lines(
-        ["*test_certify[[]S-RESUME[]] PASSED*", "*test_certify[[]K-SOURCE[]] *"]
-    )
+    result.stdout.fnmatch_lines(["*test_certify[[]S-RESUME[]] PASSED*"])
+    result.stdout.fnmatch_lines(["*test_certify[[]K-SOURCE[]] PASSED*"])
+    # The tickets connector tells nothing of where it stands outside the engine.
+    result.stdout.fnmatch_lines(["*test_certify[[]S-ACK[]] SKIPPED*"])
     assert result.ret == pytest.ExitCode.OK
 
 
@@ -81,6 +102,16 @@ def test_a_launcher_that_cannot_start_fails_the_kill_clause_alone(tmp_path: Path
     )
     assert certification.result("S-RESUME").outcome == "passed"
     assert certification.result("K-SOURCE").outcome == "failed"
+
+
+def test_an_unobserved_clause_fails_saying_it_went_unobserved(pytester: pytest.Pytester) -> None:
+    pytester.makepyfile(test_rowless=textwrap.dedent(ROWLESS))
+    result = pytester.runpytest_subprocess("-v")
+    result.stdout.fnmatch_lines(["*test_certify[[]T-REPLAY[]] FAILED*"])
+    # A transform with no keys to pass is not held to the clause about them.
+    result.stdout.fnmatch_lines(["*test_certify[[]T-KEYS[]] SKIPPED*"])
+    result.stdout.fnmatch_lines(["*T-REPLAY: *", "*went unobserved: no input holds a row*"])
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
 
 
 def test_a_launcher_s_kill_clause_kills_the_installed_connector(tmp_path: Path) -> None:

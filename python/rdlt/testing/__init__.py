@@ -25,7 +25,8 @@ class ClauseResult:
     clause: str
     statement: str
     outcome: str
-    """`passed`, `failed`, `inapplicable` or `unobserved`."""
+    """`passed`, `failed`, `inapplicable` (it does not apply, by what was declared) or
+    `unobserved` (it applies, and what it requires was not seen)."""
     reason: str | None
     note: str | None
 
