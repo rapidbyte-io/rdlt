@@ -32,7 +32,7 @@ use tokio_util::sync::CancellationToken;
 
 pub use refusals::Log;
 
-use super::args::{Failure, Listen};
+use super::args::{Failure, Listen, failure};
 use super::{Hosted, Served, serve_until};
 use crate::limits::{ListenLimits, UnfairSessions};
 use admission::{Admitted, Origin, Unauthenticated};
@@ -382,16 +382,4 @@ fn announce(address: SocketAddr) -> Result<(), Failure> {
     writeln!(stdout, "listening on {address}")
         .and_then(|()| stdout.flush())
         .map_err(|error| failure("announcing the address", &error))
-}
-
-/// `what` failed with `error`, with every cause of `error`.
-fn failure(what: &str, error: &dyn std::error::Error) -> Failure {
-    use std::fmt::Write as _;
-    let mut message = format!("{what} failed: {error}");
-    let mut source = error.source();
-    while let Some(cause) = source {
-        write!(message, ": {cause}").ok();
-        source = cause.source();
-    }
-    message.into()
 }
