@@ -33,7 +33,8 @@ use crate::ui::{self, Clause, Std, Ui};
 /// Certifies a connector against the protocol's conformance clauses.
 #[derive(Debug, clap::Args)]
 pub(crate) struct CertifyArgs {
-    /// The connector: its binary's path, or the `grpcs://host:port` endpoint it listens at.
+    /// The connector: its binary's path, a directory connector's, or the `grpcs://host:port`
+    /// endpoint it listens at.
     #[arg(required_unless_present = "clauses")]
     target: Option<String>,
     /// Certify this role alone; by default, every role the connector serves.
@@ -508,10 +509,11 @@ fn target(args: &CertifyArgs, host: &HostArgs) -> Result<Target, Ended> {
         ));
     }
     let path = Path::new(named);
-    if !path.is_file() {
+    // A directory is a directory connector, which the host finds the launcher of.
+    if !path.is_file() && !path.is_dir() {
         // Not repeated: what was typed may be an endpoint mistyped, with a credential in it.
-        let message = "the connector named is neither a binary's path nor an endpoint, \
-                       `grpcs://host:port`";
+        let message = "the connector named is neither a binary's or a directory connector's \
+                       path nor an endpoint, `grpcs://host:port`";
         return Err(Ended(Exit::Io, message.to_owned()));
     }
     let executable = path

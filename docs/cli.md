@@ -699,7 +699,7 @@ Usage: certify [OPTIONS] [TARGET]
 
 Arguments:
   [TARGET]
-          The connector: its binary's path, or the `grpcs://host:port` endpoint it listens at
+          The connector: its binary's path, a directory connector's, or the `grpcs://host:port` endpoint it listens at
 
 Options:
       --role <ROLE>
