@@ -45,7 +45,15 @@ pub(crate) struct Binary {
     /// Whether another name led to the file when it was opened.
     linked: bool,
     /// The directory connector it is the launcher of, where it is one's.
-    tree: Option<PathBuf>,
+    tree: Option<Tree>,
+}
+
+/// A directory connector's tree: where it lies, and the directory opened and checked there, which
+/// is what a lease holds and a sandbox binds, whatever its path names later.
+#[derive(Debug)]
+pub(crate) struct Tree {
+    pub(crate) path: PathBuf,
+    pub(crate) directory: File,
 }
 
 /// The flags of every open: nothing outlives an exec, no pipe is waited on, no terminal taken.
@@ -146,7 +154,7 @@ impl Binary {
             .metadata()
             .map_err(|error| Unfit::Absent(Some(error)))?;
         if metadata.is_dir() {
-            Self::launcher_in(&file, &path)
+            Self::launcher_in(file, &path)
         } else {
             Self::checked(file, path)
         }
@@ -156,14 +164,14 @@ impl Binary {
     /// `bin/rdlt-connector`, reached through no link, the directory and `bin` no other user's
     /// to write; the tree is known by where it lies, every link resolved, as its launcher names
     /// its interpreter.
-    fn launcher_in(directory: &File, path: &Path) -> Result<Self, Unfit> {
+    fn launcher_in(directory: File, path: &Path) -> Result<Self, Unfit> {
         let absent = |error: rustix::io::Errno| Unfit::Absent(Some(error.into()));
-        private(directory, path)?;
+        private(&directory, path)?;
         let listing = OFlags::RDONLY
             .union(OFlags::DIRECTORY)
             .union(OFlags::CLOEXEC)
             .union(OFlags::NOFOLLOW);
-        let bin = rustix::fs::openat(directory, "bin", listing, Mode::empty()).map_err(absent)?;
+        let bin = rustix::fs::openat(&directory, "bin", listing, Mode::empty()).map_err(absent)?;
         let bin = File::from(bin);
         private(&bin, &path.join("bin"))?;
         let unfollowed = OPEN.union(OFlags::NOFOLLOW);
@@ -171,8 +179,11 @@ impl Binary {
             .map_err(absent)?;
         let found = path.join("bin").join("rdlt-connector");
         let mut binary = Self::checked(File::from(launcher), found)?;
-        let lies = located(directory, path).map_err(|error| Unfit::Absent(Some(error)))?;
-        binary.tree = Some(lies);
+        let lies = located(&directory, path).map_err(|error| Unfit::Absent(Some(error)))?;
+        binary.tree = Some(Tree {
+            path: lies,
+            directory,
+        });
         Ok(binary)
     }
 
@@ -183,8 +194,8 @@ impl Binary {
 
     /// The directory connector the binary is the launcher of, where it is one's: its tree, which
     /// a sandbox binds read only and no root that may be written may hold or lie within.
-    pub(crate) fn tree(&self) -> Option<&Path> {
-        self.tree.as_deref()
+    pub(crate) fn tree(&self) -> Option<&Tree> {
+        self.tree.as_ref()
     }
 
     /// The open file.
