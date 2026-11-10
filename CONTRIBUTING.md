@@ -41,9 +41,15 @@ To add or update a tool:
 4. Run `cargo xtask tools`, which fails on a tool with no download or checksum for a platform,
    then `mise install --locked`, and commit both files.
 
-To update mise in CI, set `SETUP_MISE_VERSION` in both workflows, which Renovate proposes, and
+To update mise in CI, set `SETUP_MISE_VERSION` in every workflow, which Renovate proposes, and
 the two checksums to those of the `mise-v<version>-linux-x64` and `mise-v<version>-macos-arm64`
 binaries in the release's `SHASUMS256.txt`.
+
+`release.yml` holds uv for its arm64 Linux runner, which `mise.lock` does not cover, by
+`SETUP_UV_VERSION` and `SETUP_UV_SHA256_LINUX_ARM64`. To update it, set the version and take the
+checksum from the release's `uv-aarch64-unknown-linux-gnu.tar.gz.sha256`, after checking it
+against the archive. `cargo xtask tools` fails while a workflow's `SETUP_<TOOL>_VERSION` differs
+from the version `mise.toml` names, so updating uv in `mise.toml` means updating both here too.
 
 Actions are pinned to commit SHAs with their version in a comment; `just pins`, part of
 `just lint`, checks with `pinact` that each SHA is the commit of the version beside it. A GitHub
@@ -52,6 +58,33 @@ token in `GITHUB_TOKEN` keeps it within the API's rate limit.
 Renovate proposes each update seven days after its release. It does not update transitive
 crates: run `cargo update` for those, and when the nightly advisory check names one. A lockfile
 behind its manifests fails `just lint`, so commit the lockfile cargo resolves with the change.
+
+## Releasing
+
+`release.yml` publishes the Python package to PyPI from a tag `v<version>`, the version
+`Cargo.toml` names. On a pull request that changes it, and on a run by hand, it builds, tries and
+checks every file it would publish, and publishes none
+([ADR 0048](docs/adr/0048-supply-chain-and-ci.md)). The workflow's file does not gate publishing
+alone; before the first tag, the owner sets what does, outside the tree:
+
+1. On PyPI, a trusted publisher for `rdlt`: this repository, the workflow `release.yml` and the
+   environment `pypi`, as a pending publisher until the first upload makes the project.
+2. In the repository, the environment `pypi`, admitting only tags that match `v*`, and a
+   reviewer who approves each run where one is wanted.
+3. A ruleset that lets only the maintainers create tags that match `v*`.
+
+For each release:
+
+1. Set `version` in `Cargo.toml`'s `[workspace.package]`, through a pull request. On the first
+   release, the same pull request says the wheel is published, in the README's Python section
+   and its Status and limits, and in `python/README.md`, which PyPI shows: `pip install rdlt`
+   first, the install from the repository for changes not yet released. The version is a
+   release's, `1.2.3`: a prerelease, `1.2.3-rc.1`, is refused, since Cargo writes it so and
+   maturin names its files `1.2.3rc1`, which the check of the files does not match.
+2. Once it has merged, run the workflow by hand on `main` (`gh workflow run release.yml`), which
+   publishes nothing.
+3. Tag the merged commit `v<version>` and push the tag. The run publishes once the environment
+   admits it.
 
 ## Vocabulary
 
