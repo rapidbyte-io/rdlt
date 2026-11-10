@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::policy;
+use super::{document, policy};
 use crate::args::HostArgs;
 
 fn paths(given: &[&str]) -> Vec<PathBuf> {
@@ -78,4 +78,24 @@ async fn a_host_file_cannot_be_trusting_unless_it_says_so() {
         ..HostArgs::default()
     };
     assert_eq!(policy(&plain).await.unwrap_err().exit, crate::Exit::Io);
+}
+
+/// Only the pipeline's document is what `rdlt init` writes: a host file that is not there, read
+/// with the same code, is not said to be missing in the same words.
+#[tokio::test]
+async fn only_a_document_that_is_not_there_is_said_to_be_missing() {
+    let directory = tempfile::tempdir().unwrap();
+    let absent = directory.path().join("absent.yaml");
+    let missing = document(&absent).await.unwrap_err();
+    assert!(missing.file_not_found, "{missing:?}");
+    let not_a_file = document(directory.path()).await.unwrap_err();
+    assert!(!not_a_file.file_not_found, "{not_a_file:?}");
+    let args = HostArgs {
+        file: Some(absent),
+        ..HostArgs::default()
+    };
+    let host_file = policy(&args).await.unwrap_err();
+    let code = host_file.report.as_ref().and_then(|report| report.code);
+    assert_eq!(code.map(rdlt::Code::as_str), Some("document_unreadable"));
+    assert!(!host_file.file_not_found, "{host_file:?}");
 }
