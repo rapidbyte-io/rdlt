@@ -14,7 +14,7 @@ use rdlt::{Interrupts, StopsSpawned};
 use tokio::runtime::{Builder, Runtime};
 
 use crate::Exit;
-use crate::args::{Cli, ConnectorAction, HostArgs, Lang, StateAction, Verb};
+use crate::args::{Cli, ConnectorAction, HostArgs, StateAction, Verb};
 use crate::output::{self, Failure, Mode};
 use crate::stopping::{self, STOPPING};
 use crate::ui::{Asked, Ui};
@@ -155,13 +155,8 @@ async fn other(verb: Verb, host: HostArgs, mode: Mode, ui: &Ui) -> Result<Exit, 
             Ok(Exit::Success)
         }
         Verb::Connector {
-            action:
-                ConnectorAction::New {
-                    name,
-                    lang: Lang::Rust,
-                    into,
-                },
-        } => crate::connector::new(&name, &into, mode, ui).await,
+            action: ConnectorAction::New { name, lang, into },
+        } => crate::connector::new(&name, lang, &into, mode, ui).await,
         Verb::Connector {
             action: ConnectorAction::Install(install),
         } => crate::connector::install(install, &host, mode, ui).await,

@@ -258,4 +258,5 @@ pub(crate) struct InstallArgs {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum Lang {
     Rust,
+    Python,
 }

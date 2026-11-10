@@ -49,7 +49,14 @@ python-packages = ["rdlt"]
 testpaths = ["python/tests"]
 timeout = 120
 # The installed package is the one tested: pytest puts no source directory before it on the path.
-addopts = ["--strict-markers", "--strict-config", "--import-mode=importlib", "-ra"]
+addopts = [
+  "--strict-markers",
+  "--strict-config",
+  "--import-mode=importlib",
+  "-ra",
+  "-m",
+  "not network",
+]
 markers = ["network: installs from PyPI, with a wheel of this tree built"]
 xfail_strict = true
 
