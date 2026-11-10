@@ -21,6 +21,7 @@ rdlt-certify.workspace = true
 rdlt-connector = { workspace = true, features = ["wire"] }
 rdlt-host.workspace = true
 rdlt-wire.workspace = true
+rustix = { workspace = true, features = ["fs", "process"] }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
@@ -30,6 +31,7 @@ tokio = { workspace = true, features = [
   "io-std",
   "io-util",
   "macros",
+  "process",
   "rt-multi-thread",
   "signal",
   "time",
@@ -49,7 +51,7 @@ rdlt-testkit.workspace = true
 rusqlite.workspace = true
 schemars.workspace = true
 sha2.workspace = true
-tokio = { workspace = true, features = ["net", "process", "test-util"] }
+tokio = { workspace = true, features = ["net", "test-util"] }
 vt100.workspace = true
 
 [lints]

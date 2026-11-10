@@ -1,0 +1,204 @@
+//! The interpreter an install is asked for, and the environment it makes with it, each process
+//! a group of its own that dies with the install.
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+
+use rdlt_host::Bubblewrap;
+use tokio::io::AsyncWriteExt as _;
+use tokio::process::{Child, Command};
+
+use super::wheel::Wheel;
+use super::{InstallError, io_error};
+
+/// What an interpreter says it is: its version, and where its executable, the base executable an
+/// environment it makes links to, and its standard library lie.
+#[derive(serde::Deserialize)]
+pub(super) struct Facts {
+    version: (u32, u32, u32),
+    /// Every link resolved.
+    executable: PathBuf,
+    /// As an environment's interpreter names it.
+    base: PathBuf,
+    /// Every link resolved.
+    stdlib: PathBuf,
+}
+
+/// The facts query, run by the interpreter asked.
+const FACTS: &str = include_str!("facts.py");
+
+/// The check that the environment holds every package its packages need, run by its
+/// interpreter with no `site`, its packages' directory put on the path by hand.
+const CHECK: &str = include_str!("check.py");
+
+/// A child leading a process group of its own: dropped before it ends, as an install dropped on a
+/// signal drops it, it is killed with every process of its group.
+struct Group(Child);
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        // A child reaped has no id, and its group's number may be another's by then.
+        let pid = self.0.id().and_then(|id| i32::try_from(id).ok());
+        if let Some(pid) = pid.and_then(rustix::process::Pid::from_raw) {
+            rustix::process::kill_process_group(pid, rustix::process::Signal::KILL).ok();
+        }
+    }
+}
+
+/// Whether `command` ran and succeeded, what it prints for a person going to standard error, so
+/// standard output holds the command line's result alone.
+async fn ran(command: &mut Command) -> bool {
+    command
+        .stdin(Stdio::null())
+        .stdout(std::io::stderr())
+        .process_group(0)
+        .kill_on_drop(true);
+    let Ok(child) = command.spawn() else {
+        return false;
+    };
+    let mut group = Group(child);
+    group.0.wait().await.is_ok_and(|status| status.success())
+}
+
+/// What `python` says it is, once it is seen to be 3.11 or later.
+pub(super) async fn facts(python: &Path) -> Result<Facts, InstallError> {
+    let failed = || InstallError::InterpreterFailed {
+        python: python.to_owned(),
+        asked: "saying what interpreter it is",
+    };
+    let output = Command::new(python)
+        .args(["-I", "-S", "-c", FACTS])
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|_| failed())?;
+    let facts: Facts = serde_json::from_slice(&output.stdout).map_err(|_| failed())?;
+    if facts.version < (3, 11, 0) {
+        let (major, minor, micro) = facts.version;
+        return Err(InstallError::InterpreterTooOld {
+            python: python.to_owned(),
+            found: format!("{major}.{minor}.{micro}"),
+        });
+    }
+    Ok(facts)
+}
+
+/// Refuses, on Linux, an interpreter that lies where a sandbox does not show it, saying how to
+/// serve `module`'s `attribute` without an install.
+pub(super) fn reachable(facts: &Facts, module: &str, attribute: &str) -> Result<(), InstallError> {
+    if cfg!(not(target_os = "linux")) {
+        return Ok(());
+    }
+    let paths = [&facts.executable, &facts.base, &facts.stdlib];
+    let outside = paths.into_iter().find(|path| {
+        !Bubblewrap::SYSTEM
+            .iter()
+            .any(|system| path.starts_with(system))
+    });
+    match outside {
+        None => Ok(()),
+        Some(path) => {
+            let head = attribute
+                .split_once('.')
+                .map_or(attribute, |(head, _)| head);
+            Err(InstallError::InterpreterUnreachable {
+                path: path.clone(),
+                serving: format!(
+                    "from rdlt.connector import serve; from {module} import {head}; \
+                     raise SystemExit(serve({attribute}))"
+                ),
+            })
+        }
+    }
+}
+
+/// Makes the environment at `environment` with `python`'s `venv`, before anything is installed
+/// in it.
+pub(super) async fn made(python: &Path, environment: &Path) -> Result<(), InstallError> {
+    let mut venv = Command::new(python);
+    venv.args(["-I", "-m", "venv"]).arg(environment);
+    if ran(&mut venv).await {
+        Ok(())
+    } else {
+        Err(InstallError::VenvFailed {
+            python: python.to_owned(),
+        })
+    }
+}
+
+/// Installs `wheel`, and what it needs, into `environment` in one run of its pip, which starts
+/// before anything of theirs is there: binaries only, so no build backend runs, and with
+/// `requirements` every package hashed, the wheel among them, and none but theirs.
+pub(super) async fn installed(
+    environment: &Path,
+    wheel: &Wheel,
+    requirements: Option<&Path>,
+) -> Result<(), InstallError> {
+    let python = environment.join("bin/python");
+    let mut pip = Command::new(&python);
+    pip.args([
+        "-I",
+        "-m",
+        "pip",
+        "--no-input",
+        "--disable-pip-version-check",
+    ])
+    .args(["install", "--only-binary=:all:"]);
+    // A direct reference to the file, which no index is asked for.
+    let direct = format!("{} @ {}", wheel.name, wheel.uri);
+    // Held until pip has read it.
+    let pinned = match requirements {
+        None => {
+            pip.arg(&direct);
+            None
+        }
+        Some(requirements) => {
+            let pinned = pinned(&direct, &wheel.sha256).await?;
+            pip.args(["--require-hashes", "--no-deps", "-r"])
+                .arg(requirements)
+                .arg("-r")
+                .arg(pinned.path());
+            Some(pinned)
+        }
+    };
+    let installing = ran(&mut pip).await;
+    drop(pinned);
+    if !installing {
+        return Err(InstallError::PipFailed {
+            what: "the wheel and the packages it needs",
+        });
+    }
+    if requirements.is_some() {
+        let mut check = Command::new(&python);
+        check.args(["-I", "-S", "-c", CHECK]);
+        if !ran(&mut check).await {
+            return Err(InstallError::PipFailed {
+                what: "a package the wheel needs and the requirements leave out",
+            });
+        }
+    }
+    Ok(())
+}
+
+/// A requirements file naming the wheel, `direct`, by the hash its bytes were read with.
+async fn pinned(direct: &str, sha256: &str) -> Result<tempfile::NamedTempFile, InstallError> {
+    let pinned = tempfile::Builder::new()
+        .prefix("rdlt-install-")
+        .suffix(".txt")
+        .tempfile()
+        .map_err(io_error("making the wheel's requirements file"))?;
+    let mut file = tokio::fs::File::from_std(
+        pinned
+            .reopen()
+            .map_err(io_error("opening the wheel's requirements file"))?,
+    );
+    let line = format!("{direct} --hash=sha256:{sha256}\n");
+    file.write_all(line.as_bytes())
+        .await
+        .map_err(io_error("writing the wheel's requirements file"))?;
+    file.flush()
+        .await
+        .map_err(io_error("writing the wheel's requirements file"))?;
+    Ok(pinned)
+}
