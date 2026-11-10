@@ -10,6 +10,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use pyo3::{FromPyObject, Py, PyAny, PyErr, Python, pyclass, pymethods};
 
+use crate::destination::NativeDestinationFactory;
 use crate::secrets::PythonSecrets;
 use crate::source::NativeSourceFactory;
 use crate::transform::NativeTransform;
@@ -32,6 +33,8 @@ pub(crate) struct Settings {
     trust_binaries: bool,
     #[pyo3(attribute("_sources"))]
     sources: Vec<Py<NativeSourceFactory>>,
+    #[pyo3(attribute("_destinations"))]
+    destinations: Vec<Py<NativeDestinationFactory>>,
     #[pyo3(attribute("_native_transforms"))]
     transforms: Vec<(String, Py<NativeTransform>)>,
 }
@@ -116,6 +119,9 @@ impl NativeHost {
         }
         for source in &settings.sources {
             host = host.source_factory(Arc::from(source.get().factory()));
+        }
+        for destination in &settings.destinations {
+            host = host.destination_factory(Arc::from(destination.get().factory()));
         }
         for (name, transform) in &settings.transforms {
             host = host.transform(name.clone(), transform.get().transform());

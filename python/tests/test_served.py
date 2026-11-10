@@ -13,8 +13,9 @@ import pytest
 
 import rdlt
 from rdlt.connector import serve
+from tests.connectors import pysqlite
 from tests.connectors.tickets import Tickets
-from tests.launchers import TESTS, tickets_launcher
+from tests.launchers import TESTS, pysqlite_launcher, tickets_launcher
 
 
 @pytest.fixture
@@ -48,6 +49,28 @@ def test_a_host_spawns_and_loads_a_served_python_connector(
     assert built.build(host).run().report.rows == 40
     with sqlite3.connect(tmp_path / "out.db") as database:
         assert database.execute('SELECT count(*) FROM "tickets"').fetchone() == (40,)
+
+
+def test_a_host_spawns_and_loads_into_a_served_python_destination(
+    tmp_path: Path, connectors: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    served = pysqlite_launcher(tmp_path_factory.mktemp("launchers")).parent
+    host = rdlt.Host(connectors=[connectors, served], writable=[tmp_path], trust_binaries=True)
+    path = tmp_path / "served.db"
+    built = rdlt.pipeline(
+        "served-pysqlite",
+        source=rdlt.Connector(
+            "io.rapidbyte.generator",
+            config={"seed": 3, "streams": [{"name": "rows", "rows": 40}]},
+        ),
+        destination=rdlt.Connector(
+            "io.example.pysqlite", config={"path": str(path)}, access=rdlt.Access(write=[tmp_path])
+        ),
+        streams=[rdlt.stream("rows")],
+        commit=rdlt.Commit(rows=10),
+    )
+    built.build(host).run()
+    assert pysqlite.published(str(path), "rows") == 40
 
 
 @pytest.mark.parametrize(

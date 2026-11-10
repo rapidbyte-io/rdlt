@@ -4,9 +4,13 @@
 
 use std::path::Path;
 use std::sync::Once;
+use std::time::Duration;
 
 use pyo3::types::{PyAnyMethods as _, PyDict, PyDictMethods as _, PyModule};
 use pyo3::{PyErr, Python};
+
+use crate::run::NativeRun;
+use crate::runtime;
 
 /// The interpreter the crate was built against: `PYO3_PYTHON`, the development environment's.
 const EXECUTABLE: Option<&str> = option_env!("RDLT_PYTHON_EXECUTABLE");
@@ -47,4 +51,19 @@ fn prepare(py: Python<'_>) -> Result<(), PyErr> {
     crate::register(&module)?;
     sys.getattr("modules")?.set_item("rdlt._native", module)?;
     Ok(())
+}
+
+/// The run's outcome, once it ends, within a minute.
+pub(crate) fn ended_within(py: Python<'_>, run: &NativeRun) -> (String, Option<String>) {
+    let mut ended = run.ended();
+    let runtime = runtime::get(py).expect("the runtime starts");
+    py.detach(|| {
+        runtime.block_on(async move {
+            tokio::time::timeout(Duration::from_secs(60), ended.wait_for(Option::is_some))
+                .await
+                .expect("within 60 s")
+                .expect("the run's driver answers");
+        });
+    });
+    run.wait(py).expect("the run's outcome")
 }

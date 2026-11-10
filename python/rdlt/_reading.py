@@ -209,6 +209,11 @@ def connected(
     return source, [(stream.spec, stream) for stream in source.streams]
 
 
+def method(target: object, name: str, arguments: tuple[object, ...]) -> object:
+    """`target`'s method `name`, called with `arguments`."""
+    return getattr(target, name)(*arguments)
+
+
 def checked(source: _Source) -> None:
     """Checks that `source` can read."""
     source.check()

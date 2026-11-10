@@ -6,8 +6,8 @@ use rdlt_certify::{
     Outcome, Probe, Target, Unprobed, Verdict, certify_destination, certify_source,
 };
 use rdlt_connector::serve::Served;
-use rdlt_connector::{BoxFuture, ConnectorId, TableRef, source_factory};
-use rdlt_connector_reference::{GeneratorSource, MemorySource, sqlite};
+use rdlt_connector::{BoxFuture, ConnectorId, TableRef, destination_factory, source_factory};
+use rdlt_connector_reference::{GeneratorSource, MemorySource, SqliteDestination, sqlite};
 use rdlt_host::{ConnectorRef, Local};
 use serde_json::json;
 
@@ -98,6 +98,27 @@ async fn a_kill_target_takes_the_kill_clause_from_a_connector_served_in_process(
     report.assert_passed();
     // Served in process, the source would be cut; spawned, it is killed.
     let note = report.note("K-SOURCE").expect("a note");
+    assert!(note.starts_with("killed: "), "{report}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kill_target_takes_the_kill_clause_from_a_destination_served_in_process() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("certify.db");
+    let id = ConnectorId::parse("io.rapidbyte.sqlite").expect("a valid id");
+    let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
+    let installed = Target::spawned(
+        local,
+        ConnectorRef::new(id).path(example("serve_reference")),
+    );
+    let served = Served::new().with_destination(destination_factory::<SqliteDestination>());
+    let target = Target::served(served)
+        .credit_watch(crate::BRIEF)
+        .kill_target(installed);
+    let report = certify_destination(&target, json!({ "path": path }), &SqliteProbe(path)).await;
+    report.assert_passed();
+    // Served in process, the destination would be cut; spawned, it is killed.
+    let note = report.note("K-DESTINATION").expect("a note");
     assert!(note.starts_with("killed: "), "{report}");
 }
 

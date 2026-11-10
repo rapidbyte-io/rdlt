@@ -194,6 +194,16 @@ const FAILURES: &[(&str, ConnectorErrorKind, &str)] = &[
         "__main__.deadline_exceeded",
     ),
     (
+        "raise Fenced('a newer session holds it')",
+        ConnectorErrorKind::Fenced,
+        "fenced",
+    ),
+    (
+        "raise Fenced('it expects another landed', code='commit_stale')",
+        ConnectorErrorKind::Fenced,
+        "commit_stale",
+    ),
+    (
         "raise TimeoutError()",
         ConnectorErrorKind::Transient,
         "timeout_error",

@@ -215,6 +215,7 @@ fn declared(
         "auth" => ConnectorErrorKind::Auth,
         "data" => ConnectorErrorKind::Data,
         "unsupported" => ConnectorErrorKind::Unsupported,
+        "fenced" => ConnectorErrorKind::Fenced,
         _ => ConnectorErrorKind::Internal,
     };
     let code = value

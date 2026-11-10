@@ -50,6 +50,9 @@ class ClauseItem(pytest.Item):
     def runtest(self) -> None:
         """Runs the clause, reading its result from the certification's one run."""
         result = self.certification.result(self.clause)
+        if result.note is not None:
+            # A kill clause's note says whether a process was killed or a connection cut.
+            self.add_report_section("call", "note", result.note)
         if result.outcome in {"failed", "unobserved"}:
             raise ClauseFailed(result)
         if result.outcome == "inapplicable":

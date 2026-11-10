@@ -12,7 +12,6 @@ use rdlt_connector_reference::MemoryDestination;
 use super::NativeSourceFactory;
 use crate::embedded;
 use crate::pipeline::NativePipeline;
-use crate::run::NativeRun;
 use crate::runtime;
 
 /// A source object, `connect`, whose streams `body` defines.
@@ -45,22 +44,7 @@ fn loaded(py: Python<'_>, store: &str, read: &str, body: &str) -> (String, Optio
     });
     let builder = rdlt::Pipeline::from_text(&document.to_string(), "<python>").unwrap();
     let pipeline = NativePipeline::built(py, builder, Arc::new(host)).unwrap();
-    ended_within(py, &pipeline.start(py).unwrap())
-}
-
-/// The run's outcome, once it ends, within a minute.
-fn ended_within(py: Python<'_>, run: &NativeRun) -> (String, Option<String>) {
-    let mut ended = run.ended();
-    let runtime = runtime::get(py).unwrap();
-    py.detach(|| {
-        runtime.block_on(async move {
-            tokio::time::timeout(Duration::from_secs(60), ended.wait_for(Option::is_some))
-                .await
-                .expect("within 60 s")
-                .expect("the run's driver answers");
-        });
-    });
-    run.wait(py).unwrap()
+    embedded::ended_within(py, &pipeline.start(py).unwrap())
 }
 
 fn published_rows(store: &str, table: &str) -> usize {
