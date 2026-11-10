@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gc
-import os
 import subprocess
 import sys
 import textwrap
@@ -18,16 +17,7 @@ import pytest
 
 import rdlt
 from tests.documents import generated
-
-NO_SANDBOX = ("sandbox_missing", "sandbox_unavailable", "sandbox_unsupported")
-"""The codes a build answers with where no sandbox can be made here."""
-
-
-def without_sandbox(why: str) -> None:
-    """Skips a test that needs a sandbox, or fails it where one is required: CI must not skip."""
-    if os.environ.get("RDLT_REQUIRE_SANDBOX", "0") != "0":
-        pytest.fail(f"a sandbox is required here, and none can be made: {why}")
-    pytest.skip(f"no sandbox here: {why}")
+from tests.sandboxes import NO_SANDBOX, without_sandbox
 
 
 def test_a_document_builds_and_checks_against_the_host(tmp_path: Path, connectors: Path) -> None:
