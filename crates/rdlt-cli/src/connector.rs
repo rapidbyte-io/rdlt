@@ -215,11 +215,6 @@ impl From<InstallError> for Failure {
             message.push_str(&source.to_string());
             cause = source.source();
         }
-        Self {
-            exit,
-            message,
-            report: None,
-            file_not_found: false,
-        }
+        Self::coded(exit, error.code(), message)
     }
 }

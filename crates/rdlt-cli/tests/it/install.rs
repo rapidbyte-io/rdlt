@@ -47,6 +47,24 @@ async fn a_refused_install_exits_2_as_config_and_an_unwritable_directory_74() {
     assert_eq!(said["error"]["kind"], "io", "{said}");
 }
 
+#[tokio::test]
+async fn a_refusal_says_its_code_in_json_where_an_error_report_says_its_own() {
+    let scratch = Scratch::new();
+    let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
+    std::fs::write(&wheel, "").unwrap();
+    let facts = r#"{"version": [3, 14, 0], "executable": "/usr/bin/python3.14", "base": "/usr/bin/python3", "stdlib": "/usr/lib/python3.14"}"#;
+    let python = fake_python(&scratch.path().join("python3"), facts);
+    let connectors = scratch.path().join("data/rdlt/connectors");
+    std::fs::create_dir_all(&connectors).unwrap();
+    std::fs::write(connectors.join("rdlt-connector-tickets"), "a native binary").unwrap();
+    let refused = installing(&scratch, &wheel, &python).await;
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let said: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(said["error"]["kind"], "config", "{said}");
+    assert_eq!(said["error"]["code"], "name_taken", "{said}");
+    assert!(said["error"]["message"].is_string(), "{said}");
+}
+
 /// The system's Python 3, 3.11 or later with `venv`, where it is there; it must be where
 /// `RDLT_REQUIRE_SYSTEM_PYTHON` says so.
 fn system_python() -> Option<PathBuf> {

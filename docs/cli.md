@@ -962,7 +962,7 @@ Options:
 ```text
 Installs a Python connector's wheel as a directory connector, an environment of its own.
 
-The environment is made in the first connector directory with Python 3.11 or later, and holds the connector's packages and its launcher, `bin/rdlt-connector`; none of the connector's code runs while it is installed. Installing a connector again replaces its tree, and only a tree an install of that connector made: a pipeline running it then fails, its files gone with the tree replaced, and is run again once the install is done. The tree's `bin/pip` and other scripts name the directory the environment was made in, so run its packages' tools as `<tree>/bin/python -m pip`.
+The environment is made in the first connector directory with Python 3.11 or later, and holds the connector's packages and its launcher, `bin/rdlt-connector`; none of the connector's code runs while it is installed. Installing a connector again replaces its tree, and only a tree an install of that connector made: a pipeline running it then fails, its files gone with the tree replaced, and is run again once the install is done. The tree's `bin/pip` and other scripts name the directory the environment was made in, so run its packages' tools as `<tree>/bin/python -m pip`. While it runs, an install holds `.rdlt-install.lock` in the connector directory, a file of its own, and it records the connector's id in the tree as `rdlt-connector.id`.
 
 Usage: install [OPTIONS] <WHEEL>
 
@@ -1178,9 +1178,10 @@ standard error holds notes.
   error report: `{"kind", "origin", "stream", "code", "connector_code", "message",
   "causes", "retryable"}`, `kind` one of `config`, `schema`, `source`, `destination`,
   `transform`, `fenced`, `memory`, `internal`, `cancelled`. A failure of the command line's own
-  is `{"kind", "message"}`, `kind` one of `usage`, `config`, `io`, `signal`: `config`
-  for a connector `connector install` refuses, and `signal` for a verb a signal stopped before
-  it had a result to print.
+  is `{"kind", "message"}`, `kind` one of `usage`, `config`, `io`, `signal`, the last for a
+  verb a signal stopped before it had a result to print. A refusal of `connector install` adds
+  its `code`, where an error report has its own: `kind` `config`, or `io` for a file it could
+  not read or write.
 - A usage error under an explicit `--output json` has that second form on standard output; under
   `auto` off a terminal, and in plain text, it is the usual message on standard error.
 - A failure to write events or a report after the run ended is the run's `error` where the run
