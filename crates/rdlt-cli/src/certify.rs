@@ -313,7 +313,7 @@ impl Printed<'_> {
     }
 }
 
-/// `report` in full, its lines scrubbed by [`print`], for a terminal nothing is animated on.
+/// `report` in full, each line scrubbed as it is made, for a terminal nothing is animated on.
 fn whole_report(report: &Report, role: rdlt_connector::Role, ui: &Ui) -> String {
     let mut text = String::new();
     for result in &report.results {
@@ -378,7 +378,7 @@ impl<'a> Watch<'a> {
             for result in results.iter().skip(self.shown) {
                 let took = self.took();
                 let line = ui::kept_line(result, Some(took), self.ui);
-                if !self.ui.above(Std::Out, &redactions().scrubbed(line)) {
+                if !self.ui.above(Std::Out, &line) {
                     break;
                 }
                 self.shown += 1;
@@ -393,8 +393,7 @@ impl<'a> Watch<'a> {
         let missed = report.results.iter().skip(self.shown);
         let lines = missed.map(|result| ui::kept_line(result, None, self.ui));
         for line in lines.chain([ui::verdict_line(report, self.role, self.ui)]) {
-            self.ui
-                .above_waiting(Std::Out, &redactions().scrubbed(line));
+            self.ui.above_waiting(Std::Out, &line);
         }
     }
 
@@ -407,8 +406,7 @@ impl<'a> Watch<'a> {
         }
         for result in results.iter().skip(self.shown) {
             let line = ui::kept_line(result, None, self.ui);
-            self.ui
-                .above_waiting(Std::Out, &redactions().scrubbed(line));
+            self.ui.above_waiting(Std::Out, &line);
         }
     }
 
