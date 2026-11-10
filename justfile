@@ -40,10 +40,11 @@ python-develop: python-env
     VIRTUAL_ENV="{{ justfile_directory() }}/.venv" maturin develop --uv
 
 # The Python package's static checks: ruff's format and lint, pyright strict over the package,
-# its tests and its examples, and stubtest of the native module's stub against the module built
+# its tests and its examples and the connector template `rdlt connector new` writes, and stubtest
+# of the native module's stub against the module built
 python-checks: python-develop
-    ruff format --check
-    ruff check
+    ruff format --check . crates/rdlt-cli/templates/python
+    ruff check . crates/rdlt-cli/templates/python
     pyright
     .venv/bin/python -m mypy.stubtest rdlt._native
 
@@ -56,22 +57,10 @@ connectors-build:
 python-test *args: python-develop connectors-build
     .venv/bin/python -m pytest {{ args }}
 
-# The Python package's tests that install from PyPI, with a wheel of this tree built: a connector
-# `rdlt connector new` scaffolds, built, installed as a directory connector, placed, run and
-# certified with its kill clause spawning the installed launcher
-python-network: python-develop connectors-build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo build --package rdlt-cli
-    rm -rf target/wheels
-    # The wheel is built without `.venv`, which the exported PYO3_PYTHON names
-    PYO3_PYTHON="$(mise which python)" maturin build --release --out target/wheels --interpreter "$(mise which python)"
-    .venv/bin/python -m pytest -m network
-
-# Build the release wheel and test it as it ships: installed with the test dependencies into an
-# environment of its own on CPython `version`, which uv installs from the downloads its release
-# names, never the editable package
-python-wheel version: connectors-build
+# Build the release wheel and install it as it ships, with the test dependencies, into an
+# environment of its own, `target/wheel-env`, on CPython `version`, which uv installs from the
+# downloads its release names, never the editable package
+python-wheel-env version: connectors-build
     #!/usr/bin/env bash
     set -euo pipefail
     rm -rf target/wheels target/wheel-env
@@ -84,7 +73,17 @@ python-wheel version: connectors-build
     uv pip install --python target/wheel-env/bin/python target/wheels/*.whl
     # The tests must read the wheel, not the source tree beside it
     target/wheel-env/bin/python -c 'import pathlib, rdlt; assert "site-packages" in pathlib.Path(rdlt.__file__).parts'
+
+# Test the release wheel as it ships, installed in an environment of its own on CPython `version`
+python-wheel version: (python-wheel-env version)
     target/wheel-env/bin/python -m pytest -p no:cacheprovider
+
+# The Python package's tests that install from PyPI, against the release wheel on CPython
+# `version`: a connector `rdlt connector new` scaffolds, built, installed as a directory connector
+# with the wheel, placed, run and certified with its kill clause spawning the installed launcher
+python-network version="3.14": (python-wheel-env version)
+    cargo build --package rdlt-cli
+    target/wheel-env/bin/python -m pytest -p no:cacheprovider -m network
 
 # Run every static check CI runs
 lint: checks pins
