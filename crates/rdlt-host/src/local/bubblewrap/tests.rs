@@ -42,12 +42,17 @@ fn holds(arguments: &[String], sequence: &[&str]) -> bool {
     })
 }
 
-/// Only the scratch directory `TMPDIR` names, and what is granted, may be written.
+/// Only the scratch directory `TMPDIR` names, the shared memory, and what is granted, may be
+/// written.
 #[test]
-fn nothing_but_its_scratch_and_its_grants_is_writable() {
+fn nothing_but_its_scratch_its_shared_memory_and_its_grants_is_writable() {
     let arguments = arguments(&[], NetworkAccess::Denied);
     assert!(holds(&arguments, &["--dir", "/tmp"]));
     assert!(holds(&arguments, &["--tmpfs", super::SCRATCH]));
+    assert!(holds(
+        &arguments,
+        &["--dev", "/dev", "--tmpfs", super::SHARED_MEMORY]
+    ));
     assert!(holds(&arguments, &["--setenv", "TMPDIR", super::SCRATCH]));
     // Its root and its `/dev` are read only once every bind has made its mount point there.
     assert!(holds(&arguments, &["--remount-ro", "/"]));

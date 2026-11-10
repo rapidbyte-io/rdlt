@@ -136,4 +136,30 @@ mod confined {
             .await
             .expect("placed");
     }
+
+    /// The system's Python 3, where it is there; it must be where `RDLT_REQUIRE_SYSTEM_PYTHON`
+    /// says so.
+    fn system_python() -> Option<&'static str> {
+        let python = "/usr/bin/python3";
+        let there = Path::new(python).is_file();
+        let required =
+            std::env::var_os("RDLT_REQUIRE_SYSTEM_PYTHON").is_some_and(|value| value == "1");
+        assert!(there || !required, "{python} is required here");
+        there.then_some(python)
+    }
+
+    #[tokio::test]
+    async fn a_sandboxed_python_connector_makes_multiprocessing_s_shared_memory() {
+        let Some(sandbox) = sandboxed() else { return };
+        let Some(python) = system_python() else {
+            return;
+        };
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let queue = "import multiprocessing; q = multiprocessing.Queue(); q.put(1); assert q.get(timeout=5) == 1";
+        let body = format!("{python} -I -c '{queue}' >&2 || exit 9");
+        directory_connector(root.path(), "scripted", &body);
+        placed(&sandbox.connectors(root.path()), &reference("scripted"))
+            .await
+            .expect("placed");
+    }
 }

@@ -60,9 +60,11 @@ anything runs; none is ignored.
   trusted, and in no other way.
   - `Bubblewrap`, on Linux: a connector sees the system directories read only, a directory
     connector its own tree read only too, a private
-    scratch directory named only by `TMPDIR`, and what it was granted: nothing else is written,
-    so a write to `/tmp`, `/var/tmp`, `/dev/shm` or its root fails unless a grant makes the path
-    writable, rather than land somewhere gone with the process; nothing of a home directory, no
+    scratch directory named only by `TMPDIR`, a private `/dev/shm` for shared memory, and what
+    it was granted: nothing else is written, so a write to `/tmp`, `/var/tmp` or its root fails
+    unless a grant makes the path writable, rather than land somewhere gone with the process;
+    what is written to the scratch directory and `/dev/shm` is memory, gone with the sandbox;
+    nothing of a home directory, no
     process of the host's,
     only the environment stated, no network unless granted, and no user namespace of its own
     making; it ends with its host. Its arguments and environment reach the launcher through a
@@ -157,7 +159,8 @@ Not guaranteed:
   given; the engine confines a connector, it does not vouch for it.
 - **A connector's own resources.** The processor time, memory and disk of a local
   connector's process are the sandbox's or the operator's to limit, with control groups or a
-  container; its private scratch directory, which `TMPDIR` names, is memory.
+  container; its private scratch directory, which `TMPDIR` names, and its `/dev/shm` are
+  memory.
 - **What a network grant reaches**: the host's network namespace, as above.
 - **What a read grant reaches beyond reading**: a connector may connect to a Unix socket
   beneath a path it may only read, such as a session bus or an agent's socket under
