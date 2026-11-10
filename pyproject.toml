@@ -99,13 +99,15 @@ ignore = ["D105", "D107", "PLR0913", "TRY003"]
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
+# The connector template is a project of its own, where `rdlt` sorts as a third party's.
+"crates/rdlt-cli/templates/python/**" = ["I001"]
 "python/examples/**" = ["T201"]
 "python/rdlt/_native.pyi" = ["A002"]
 "python/tests/**" = ["D103", "PLR2004", "S101", "S603", "S608"]
 
 [tool.pyright]
-include = ["python"]
-extraPaths = ["python"]
+include = ["python", "crates/rdlt-cli/templates/python"]
+extraPaths = ["python", "crates/rdlt-cli/templates/python/src"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
 venvPath = "."

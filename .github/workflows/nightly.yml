@@ -465,5 +465,6 @@ jobs:
         env:
           NIGHT: ${{ inputs.night }}
           RDLT_REQUIRE_SANDBOX: "1"
+          RDLT_REQUIRE_SYSTEM_PYTHON: "1"
           NEXTEST_TEST_THREADS: "2"
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold

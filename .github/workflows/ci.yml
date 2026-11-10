@@ -138,8 +138,9 @@ jobs:
       # wheel and PyPI's packages, placed in the sandbox, run and certified.
       - if: runner.os == 'Linux'
         timeout-minutes: 20
-        run: just python-network
+        run: just python-network "${PYTHON}"
         env:
+          PYTHON: ${{ matrix.python }}
           RDLT_REQUIRE_SANDBOX: "1"
 
   # The simulation's integration tests, built once in its profile into the archive every shard
@@ -242,6 +243,7 @@ jobs:
       - run: just coverage
         env:
           RDLT_REQUIRE_SANDBOX: "1"
+          RDLT_REQUIRE_SYSTEM_PYTHON: "1"
       - run: just miri
 
   # Each hot path's instructions and allocations on this change and on the base it merges into,

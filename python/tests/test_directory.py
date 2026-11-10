@@ -68,7 +68,7 @@ def requirements(tmp_path: Path) -> Path:
         cwd=REPOSITORY,
         timeout=60,
     ).stdout
-    (wheel,) = (REPOSITORY / "target" / "wheels").glob("rdlt-*.whl")
+    (wheel,) = (REPOSITORY / "target" / "wheels").glob("*/rdlt-*.whl")
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
     path = tmp_path / "requirements.txt"
     path.write_text(f"{exported}\nrdlt @ {wheel.as_uri()} --hash=sha256:{digest}\n")
