@@ -186,7 +186,8 @@ This record decides what holds each statement, and says where a check ends.
     outside the tree. PyPI's trusted publisher accepts only an identity token minted for
     `release.yml` in the `pypi` environment, so no other workflow publishes; the environment
     admits only `v*` tags, and may require a reviewer to approve each run; and a ruleset lets
-    only the maintainers create `v*` tags.
+    only the maintainers create, update or delete `v*` tags, so no one else can move a release's
+    tag onto a commit whose `release.yml` they changed.
   - No checkout persists the token. The tool installer and the wheel builder are given none:
     mise installs from the lockfile's URLs, and maturin-action from maturin's release.
   - What `publish` runs is held to commits: `actions/attest-build-provenance`, which calls

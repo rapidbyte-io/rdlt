@@ -257,12 +257,13 @@ if __name__ == "__main__":
     print(f"{outcome.report.status.value}: committed {outcome.report.rows} rows")
 ```
 
-Run it twice, with the connectors' directory and a directory for the database:
+Run it twice from the repository's root, with the connectors' directory and a directory for the
+database:
 
 ```console
-$ python quickstart.py ~/.local/share/rdlt/connectors .
+$ python python/examples/quickstart.py ~/.local/share/rdlt/connectors .
 succeeded: committed 30 rows
-$ python quickstart.py ~/.local/share/rdlt/connectors .
+$ python python/examples/quickstart.py ~/.local/share/rdlt/connectors .
 succeeded: committed 0 rows
 ```
 

@@ -62,25 +62,39 @@ behind its manifests fails `just lint`, so commit the lockfile cargo resolves wi
 ## Releasing
 
 `release.yml` publishes the Python package to PyPI from a tag `v<version>`, the version
-`Cargo.toml` names. On a pull request that changes it, and on a run by hand, it builds, tries and
-checks every file it would publish, and publishes none
-([ADR 0048](docs/adr/0048-supply-chain-and-ci.md)). The workflow's file does not gate publishing
-alone; before the first tag, the owner sets what does, outside the tree:
+`Cargo.toml` names. On a pull request that changes it, and on a run by hand, it does everything
+but publish ([ADR 0048](docs/adr/0048-supply-chain-and-ci.md)): it builds every file, runs a
+pipeline on each wheel installed on its interpreter, and checks the set by name. The sdist is
+built and checked by name alone, never installed or tested. The workflow's file does not gate
+publishing alone; before the first tag, the owner sets what does, outside the tree:
 
 1. On PyPI, a trusted publisher for `rdlt`: this repository, the workflow `release.yml` and the
    environment `pypi`, as a pending publisher until the first upload makes the project.
 2. In the repository, the environment `pypi`, admitting only tags that match `v*`, and a
    reviewer who approves each run where one is wanted.
-3. A ruleset that lets only the maintainers create tags that match `v*`.
+3. A ruleset that lets only the maintainers create, update or delete tags that match `v*`. A tag
+   anyone else could move onto a commit whose `release.yml` they changed would run that workflow,
+   which may ask for the trusted publisher's token.
 
 For each release:
 
-1. Set `version` in `Cargo.toml`'s `[workspace.package]`, through a pull request. On the first
-   release, the same pull request says the wheel is published, in the README's Python section
-   and its Status and limits, and in `python/README.md`, which PyPI shows: `pip install rdlt`
-   first, the install from the repository for changes not yet released. The version is a
-   release's, `1.2.3`: a prerelease, `1.2.3-rc.1`, is refused, since Cargo writes it so and
-   maturin names its files `1.2.3rc1`, which the check of the files does not match.
+1. Through a pull request, set the version in the root `Cargo.toml`, both in
+   `[workspace.package]` and in each workspace crate's entry of `[workspace.dependencies]`, which
+   Cargo refuses to see differ, and commit both lockfiles as Cargo updates them. From `0.0.0` to
+   `1.2.3`:
+
+   ```sh
+   sed -i -E '/^(version|rdlt[a-z-]*) = /s/"0\.0\.0"/"1.2.3"/' Cargo.toml
+   cargo metadata --format-version 1 > /dev/null
+   cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
+   git add Cargo.toml Cargo.lock fuzz/Cargo.lock
+   ```
+
+   On the first release, the same pull request says the wheel is published, in the README's Python
+   section and its Status and limits, and in `python/README.md`, which PyPI shows:
+   `pip install rdlt` first, the install from the repository for changes not yet released. The
+   version is a release's, `1.2.3`: a prerelease, `1.2.3-rc.1`, is refused, since Cargo writes it
+   so and maturin names its files `1.2.3rc1`, which the check of the files does not match.
 2. Once it has merged, run the workflow by hand on `main` (`gh workflow run release.yml`), which
    publishes nothing.
 3. Tag the merged commit `v<version>` and push the tag. The run publishes once the environment
