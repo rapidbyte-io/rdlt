@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rdlt-connector-greetings"
+version = "0.1.0"
+description = "The greetings connector"
+requires-python = ">=3.11"
+dependencies = ["rdlt"]
+
+[project.entry-points."rdlt.connectors"]
+"io.example.greetings" = "rdlt_connector_greetings:Greetings"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rdlt_connector_greetings"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
