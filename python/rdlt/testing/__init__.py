@@ -64,7 +64,9 @@ def certify_source(
     """The source clauses, and the protocol's, against `connector`.
 
     It is served over an in-process socket pair; the kill clause spawns `launcher`, the installed
-    connector, where it is given, and cuts the in-process connections otherwise.
+    connector, where it is given, and cuts the in-process connections otherwise. The kill clause
+    observes a kill only in a load that outlasts several commits, about a megabyte of rows, and a
+    smaller one leaves it unobserved, which fails its test.
     """
     made = factory(connector)
     return Certification(
