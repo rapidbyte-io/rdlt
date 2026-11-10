@@ -7,7 +7,7 @@ Certifies a connector, from its binary or at its endpoint, against the protocol'
 Usage: rdlt certify [OPTIONS] [TARGET]
 
 Arguments:
-  [TARGET]  The connector: its binary's path, or the `grpcs://host:port` endpoint it listens at
+  [TARGET]  The connector: its binary's path, a directory connector's, or the `grpcs://host:port` endpoint it listens at
 
 Options:
       --role <ROLE>             Certify this role alone; by default, every role the connector serves [possible values: source, destination]
