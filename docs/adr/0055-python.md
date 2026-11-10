@@ -44,6 +44,20 @@ script that started a run and returned.
   open: the host and the builder, the pipeline, its runs and their events, and a detached run until
   it ends. A connector's instances are kept by the placement of its class that the host or the
   builder holds, never by the class, which lives as long as its module.
+- **A Python connector a host spawns is a directory connector with an environment of its own.**
+  `rdlt connector install` makes one virtual environment per connector, with the interpreter the
+  operator names, in the first connector directory: it installs the wheel, every package hashed
+  where a requirements file is given, and writes the launcher, `bin/rdlt-connector`, which
+  imports the wheel's one `rdlt.connectors` entry point and serves it, run by the environment's
+  interpreter with `-I`, so no `PYTHON*` variable, user site-packages or script directory reaches
+  it. The tree is made beside the connectors and renamed into place, its write taken away from
+  group and others. The host hashes the launcher, whose first line names the interpreter, and
+  holds the interpreter by its path, as any script's; the installed packages are the operator's
+  files, as a native binary's shared libraries are. The environment's interpreter is a link to
+  its base installation, which a sandbox shows only in the system's directories, so on Linux an
+  interpreter elsewhere, as uv, pyenv or mise install beneath a home directory, is refused
+  (`interpreter_unreachable`); such a connector runs remotely, its launcher serving `--listen`.
+  A connector the host spawns needs nothing written but its scratch directory and `/dev/shm`.
 - **A thread that goes away is told, not inferred.** A read's end is said by `finished` or
   `failed`, and a call's by its answer; a read whose channel closes without a word fails, so a
   thread that died never reads as a finished partition.

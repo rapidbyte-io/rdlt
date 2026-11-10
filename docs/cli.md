@@ -18,7 +18,7 @@ Commands:
   schema       Prints the document's JSON Schema, or a connector's configuration schema
   connectors   Lists what the host can place
   certify      Certifies a connector, from its binary or at its endpoint, against the protocol's clauses
-  connector    Makes connector projects
+  connector    Makes connector projects, and installs connectors
   completions  Prints shell completions
   help         Print this message or the help of the given subcommand(s)
 
@@ -806,13 +806,14 @@ Examples:
 ## `rdlt connector`
 
 ```text
-Makes connector projects
+Makes connector projects, and installs connectors
 
 Usage: connector [OPTIONS] <COMMAND>
 
 Commands:
-  new   Writes a connector project whose certify test passes on its first run
-  help  Print this message or the help of the given subcommand(s)
+  new      Writes a connector project whose certify test passes on its first run
+  install  Installs a Python connector's wheel as a directory connector, an environment of its own
+  help     Print this message or the help of the given subcommand(s)
 
 Options:
       --host <PATH>
@@ -956,6 +957,85 @@ Options:
 
 ```
 
+## `rdlt connector install`
+
+```text
+Installs a Python connector's wheel as a directory connector, an environment of its own.
+
+The environment is made in the first connector directory with Python 3.11 or later, and holds the connector's packages and its launcher, `bin/rdlt-connector`.
+
+Usage: install [OPTIONS] <WHEEL>
+
+Arguments:
+  <WHEEL>
+          The connector's wheel, naming one `rdlt.connectors` entry point: its connector's id and class
+
+Options:
+      --python <PATH>
+          The interpreter the environment is made with, by default `python3` on the path; on Linux one in the system's directories, which the sandbox shows
+
+      --requirements <FILE>
+          A requirements file holding, each with its hash, every package the wheel needs: only those are installed
+
+      --host <PATH>
+          The operator's host file; by default `$XDG_CONFIG_HOME/rdlt/host.yaml`, where it exists
+
+      --connectors <DIR>
+          A directory local connectors are found in; by default `$XDG_DATA_HOME/rdlt/connectors`
+
+      --trust-binaries
+          Runs local connectors with your own access, in no sandbox
+
+      --writable <PATH>
+          A root a document may let its connectors write beneath
+
+      --readable <PATH>
+          A root a document may let its connectors read beneath
+
+      --allow-network
+          Lets a document let its sandboxed connectors share this host's network, its loopback services included
+
+      --allow-env <NAME>
+          An environment variable a configuration's `${env:NAME}` may reach
+
+      --allow-files <DIR>
+          A private directory a configuration's `${file:/path}` may reach beneath
+
+      --tls-cert <PATH>
+          The host's certificate chain, in PEM, for remote connectors
+
+      --tls-key <PATH>
+          The host's private key, in PEM
+
+      --tls-ca <PATH>
+          The CA bundle remote connectors' certificates chain to, in PEM
+
+      --output <OUTPUT>
+          How results print: plain on a terminal and JSON elsewhere, or as named
+          
+          [default: auto]
+          [possible values: auto, plain, json]
+
+      --log-level <LEVEL>
+          The least level logged to standard error; `RUST_LOG`, where set, wins
+          
+          [default: warn]
+          [possible values: off, error, warn, info, debug, trace]
+
+      --color <WHEN>
+          When output is coloured: where it is written to a terminal, always, or never
+          
+          [default: auto]
+          [possible values: auto, always, never]
+
+  -q, --quiet
+          Prints only results and failures: no progress, notes or event lines
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+```
+
 ## `rdlt completions`
 
 ```text
@@ -1035,7 +1115,7 @@ Options:
 |---|---|
 | 0 | success |
 | 1 | certify findings: a clause failed, or one that applies was not observed |
-| 2 | config: the document, the host's policy, a placement, a connector the host has none of, or a secret reference |
+| 2 | config: the document, the host's policy, a placement, a connector the host has none of or cannot install, or a secret reference |
 | 3 | schema: data does not fit its table's schema under its policy |
 | 4 | source: the source failed |
 | 5 | destination: the destination failed |
@@ -1088,9 +1168,9 @@ standard error holds notes.
 
 - A verb that succeeds prints one JSON value, its result: `check`'s report, `discover`'s
   catalog, `schema`'s schema, `connectors` as `{"local", "sandboxed", "remote"}`, `init` and
-  `connector new` as `{"wrote": <path>}`, `state reset` as `{"streams", "dropped", "epoch"}`,
-  `certify` as `{"verdict", "passed", "reports"}`, `verdict` one of `passed`, `failed`,
-  `incomplete`.
+  `connector new` as `{"wrote": <path>}`, `connector install` as `{"installed": <path>}`,
+  `state reset` as `{"streams", "dropped", "epoch"}`, `certify` as
+  `{"verdict", "passed", "reports"}`, `verdict` one of `passed`, `failed`, `incomplete`.
 - `run` prints `{"report": <report>, "error": <failure or null>}`. With `--events -` it prints
   the events as NDJSON instead, one object a line, and then
   `{"outcome": {"report": <report>, "error": <failure or null>}}`.
@@ -1098,8 +1178,9 @@ standard error holds notes.
   error report: `{"kind", "origin", "stream", "code", "connector_code", "message",
   "causes", "retryable"}`, `kind` one of `config`, `schema`, `source`, `destination`,
   `transform`, `fenced`, `memory`, `internal`, `cancelled`. A failure of the command line's own
-  is `{"kind", "message"}`, `kind` one of `usage`, `io`, `signal`; the last for a
-  verb a signal stopped before it had a result to print.
+  is `{"kind", "message"}`, `kind` one of `usage`, `config`, `io`, `signal`: `config`
+  for a connector `connector install` refuses, and `signal` for a verb a signal stopped before
+  it had a result to print.
 - A usage error under an explicit `--output json` has that second form on standard output; under
   `auto` off a terminal, and in plain text, it is the usual message on standard error.
 - A failure to write events or a report after the run ended is the run's `error` where the run

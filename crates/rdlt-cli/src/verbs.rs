@@ -162,6 +162,9 @@ async fn other(verb: Verb, host: HostArgs, mode: Mode, ui: &Ui) -> Result<Exit, 
                     into,
                 },
         } => crate::connector::new(&name, &into, mode, ui).await,
+        Verb::Connector {
+            action: ConnectorAction::Install(install),
+        } => crate::connector::install(install, &host, mode, ui).await,
         Verb::Run { .. } => unreachable!("a run is dispatched before the other verbs"),
         Verb::Certify(_) => unreachable!("certification is dispatched before any verb runs"),
     }

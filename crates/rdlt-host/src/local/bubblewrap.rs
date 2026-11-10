@@ -35,11 +35,6 @@ const SCRATCH: &str = "/.rdlt-scratch";
 #[cfg(any(target_os = "linux", test))]
 const SHARED_MEMORY: &str = "/dev/shm";
 
-/// The directories of the host a dynamically linked program needs to start, each given read
-/// only where it exists, or as the link it is.
-#[cfg(any(target_os = "linux", test))]
-const SYSTEM: [&str; 6] = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32"];
-
 /// The files of the host a dynamically linked program needs to start, each given read only
 /// where it exists.
 #[cfg(any(target_os = "linux", test))]
@@ -85,6 +80,10 @@ impl Default for Bubblewrap {
 }
 
 impl Bubblewrap {
+    /// The directories of the host a dynamically linked program needs to start, which a
+    /// sandboxed connector sees, each given read only where it exists, or as the link it is.
+    pub const SYSTEM: [&str; 6] = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32"];
+
     /// Bubblewrap at `/usr/bin/bwrap`.
     pub fn new() -> Self {
         Self::default()
@@ -117,7 +116,7 @@ impl Bubblewrap {
             flag(only, &[]);
         }
         flag("--hostname", &["rdlt-connector".as_ref()]);
-        for system in SYSTEM.map(Path::new) {
+        for system in Self::SYSTEM.map(Path::new) {
             match std::fs::symlink_metadata(system) {
                 Ok(found) if found.is_symlink() => {
                     if let Ok(target) = std::fs::read_link(system) {
