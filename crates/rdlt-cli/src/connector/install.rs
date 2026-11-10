@@ -65,6 +65,11 @@ pub(crate) enum InstallError {
     VenvFailed { python: PathBuf },
     #[error("pip could not install {what}")]
     PipFailed { what: &'static str },
+    #[error(
+        "{} could not check the environment's packages: its pip does not import",
+        python.display()
+    )]
+    CheckUnrun { python: PathBuf },
     #[error("the wheel names {found} rdlt.connectors entry points; a connector's wheel names one")]
     EntryPoints { found: usize },
     #[error("the entry point {target:?} names no attribute of a module")]
@@ -108,7 +113,7 @@ impl InstallError {
             Self::InterpreterTooOld { .. } => "interpreter_too_old",
             Self::InterpreterUnreachable { .. } => "interpreter_unreachable",
             Self::VenvFailed { .. } => "venv_failed",
-            Self::PipFailed { .. } => "pip_failed",
+            Self::PipFailed { .. } | Self::CheckUnrun { .. } => "pip_failed",
             Self::EntryPoints { .. } | Self::EntryPointTarget { .. } => "entry_points",
             Self::ConnectorId { .. } => "connector_id",
             Self::ShebangTooLong { .. } => "shebang_too_long",
