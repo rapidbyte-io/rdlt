@@ -99,6 +99,11 @@ impl Redactions {
         WITHHELD.to_owned()
     }
 
+    /// Whether `text` holds a secret, or a part of one that scrubbing it would replace.
+    pub(crate) fn holds(&self, text: &str) -> bool {
+        self.scrubbed(text.to_owned()) != text
+    }
+
     /// `text`, whose beginning was dropped when `dropped`, scrubbed as [`scrubbed`]
     /// scrubs: with the end of a secret it starts with replaced too.
     ///

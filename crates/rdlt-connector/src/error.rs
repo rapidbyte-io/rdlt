@@ -287,6 +287,34 @@ impl ConnectorError {
     }
 }
 
+/// What a connector's host refused of its answer, which the host gives as the cause of the error
+/// it answers with in the connector's place: its code is the host's, never the connector's.
+///
+/// No connector a host placed can give one: a host keeps a connector's causes only as text
+/// ([`ConnectorError::received`]), and a cause crosses no wire as the error it was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("refused by the connector's host as {code}")]
+pub struct HostRefusal {
+    code: &'static str,
+}
+
+impl HostRefusal {
+    /// A refusal coded `code`, one of the host's.
+    pub const fn new(code: &'static str) -> Self {
+        Self { code }
+    }
+
+    /// The host's code.
+    pub const fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// The refusal `error` is the host's answer with, where it is one.
+    pub fn of(error: &ConnectorError) -> Option<Self> {
+        StdError::source(error)?.downcast_ref::<Self>().copied()
+    }
+}
+
 /// A cause of a connector's error, as the text a host keeps of it.
 #[derive(Debug, thiserror::Error)]
 #[error("{text}")]

@@ -1,5 +1,6 @@
 //! A connector placed in process, whose errors and panics reach the engine as a host keeps a
-//! connector's: scrubbed of the secrets it was sent, shown, and bounded, causes included.
+//! connector's: scrubbed of the secrets it was sent, shown, and bounded, causes included; and
+//! whose catalog and plans name nothing by one.
 
 use std::any::Any;
 use std::future::{Future, poll_fn};
@@ -15,7 +16,7 @@ use rdlt_connector::{
     TableChange, TableRef, WriteStats,
 };
 
-use crate::secrets::Redactions;
+use crate::secrets::{Redactions, named_catalog, named_plan};
 
 #[cfg(test)]
 mod tests;
@@ -74,7 +75,10 @@ impl Source for Guarded<Box<dyn Source>> {
 
     fn discover(&self) -> BoxFuture<'_, Result<Catalog>> {
         let Self { inner, redactions } = self;
-        Box::pin(answered(async move { inner.discover().await }, redactions))
+        Box::pin(async move {
+            let catalog = answered(async move { inner.discover().await }, redactions).await?;
+            named_catalog(catalog, redactions)
+        })
     }
 
     fn plan<'a>(
@@ -83,10 +87,10 @@ impl Source for Guarded<Box<dyn Source>> {
         state: &'a StreamState,
     ) -> BoxFuture<'a, Result<PartitionPlan>> {
         let Self { inner, redactions } = self;
-        Box::pin(answered(
-            async move { inner.plan(stream, state).await },
-            redactions,
-        ))
+        Box::pin(async move {
+            let plan = answered(async move { inner.plan(stream, state).await }, redactions).await?;
+            named_plan(plan, redactions)
+        })
     }
 
     fn read(&self, request: ReadRequest, sink: PartitionSink) -> BoxFuture<'_, Result<()>> {

@@ -126,6 +126,12 @@ anything runs; none is ignored.
   `rdlt certify`'s reports, and so is each line of a secret that holds line ends and at least 8
   characters other than whitespace, wherever it is found. It is not written to state by the
   engine. A literal value in a configuration is not a secret and is not scrubbed.
+- A name is never scrubbed, since that would rename what it names. The names in a source's
+  catalog and partition plans are checked instead: where a stream's, a namespace's, a column's
+  or a partition's name contains a resolved secret, which every report, event, metric, span and
+  table would then show, the host refuses the catalog or plan as a configuration error with its
+  own code, `named_by_secret`, which no connector can give; for a connector in process and one
+  out of it alike.
 - A text is scrubbed until nothing of a secret is left in it: where a `***` completes a secret,
   or the part of one at a cut, with what is around it, that is replaced too. It is scrubbed in
   at most 4 steps, each a pass over the text, the last finding nothing; a text that 4 steps do
@@ -157,6 +163,9 @@ Not guaranteed:
 - **A secret a connector transforms** before it prints it; the process's panic hook, which
   sees an in-process connector's panic, its message as it was raised, before the host scrubs
   it; and the memory of the transport a configuration crosses.
+- **Names the check does not see**: a field name that first appears in a read's batches, as a
+  schema drifts, which reaches `SchemaChanged` events and the destination's columns; and a
+  timestamp's time-zone text.
 - **macOS local placement**, beyond the checks on the binary: no sandbox and no digest.
 
 ADR 0043 records these.

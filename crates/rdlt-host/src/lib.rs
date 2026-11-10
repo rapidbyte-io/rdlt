@@ -43,8 +43,8 @@ pub use remote::{
     RemoteDestination, RemoteSource,
 };
 pub use secrets::{
-    Config, EnvSecrets, Redactions, ReferenceFault, SecretError, SecretFault, SecretKind,
-    SecretReference, SecretResolver, Secrets,
+    Config, EnvSecrets, NAMED_BY_SECRET, Redactions, ReferenceFault, SecretError, SecretFault,
+    SecretKind, SecretReference, SecretResolver, Secrets,
 };
 pub use supervise::TLS;
 pub use trace::TraceParent;

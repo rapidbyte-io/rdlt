@@ -4,7 +4,7 @@ use std::time::Duration;
 use proptest::prelude::*;
 use rdlt_connector::limits::{MAX_ERROR_CODE_BYTES, MAX_ERROR_TEXT_BYTES};
 use rdlt_connector::text::CUT;
-use rdlt_connector::{ConnectorError, ConnectorErrorKind, StreamName};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, HostRefusal, StreamName};
 
 use super::{Error, ErrorKind, Origin, Side, codes, shown};
 use crate::scope::ScopeError;
@@ -393,6 +393,32 @@ fn a_connector_s_code_is_never_the_engine_s() {
             );
         }
     }
+}
+
+#[test]
+fn a_host_s_refusal_is_coded_as_the_host_s_and_a_connector_s_code_as_the_connector_s() {
+    let refused = ConnectorError::new(ConnectorErrorKind::Config, "refused")
+        .with_source(HostRefusal::new("named_by_secret"));
+    let error = Error::connector(Side::Source, "discovering", refused);
+    let code = error.code().map(codes::Code::as_str);
+    assert_eq!(
+        (code, error.connector_code()),
+        (Some("named_by_secret"), None)
+    );
+    assert_eq!(error.kind(), ErrorKind::Config);
+    let report = error.report();
+    assert_eq!(
+        report.code.map(codes::Code::as_str),
+        Some("named_by_secret")
+    );
+    // A connector that says the host's code says only its own.
+    let forged =
+        ConnectorError::new(ConnectorErrorKind::Config, "refused").with_code("named_by_secret");
+    let error = Error::connector(Side::Source, "discovering", forged);
+    assert_eq!(
+        (error.code(), error.connector_code()),
+        (None, Some("named_by_secret"))
+    );
 }
 
 #[test]

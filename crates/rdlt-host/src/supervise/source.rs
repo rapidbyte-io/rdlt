@@ -1,4 +1,5 @@
-//! A spawned source, whose transport errors carry the connector's last words.
+//! A spawned source, whose transport errors carry the connector's last words, and whose catalog
+//! and plans name nothing by a secret it was sent.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use rdlt_connector::{
 
 use super::{Supervisor, Words};
 use crate::remote::{CALLS, RemoteSource};
+use crate::secrets::{named_catalog, named_plan};
 
 /// A spawned source, respawned when lost.
 pub(crate) struct SupervisedSource(pub(crate) Arc<Supervisor>);
@@ -32,7 +34,8 @@ impl Source for SupervisedSource {
     fn discover(&self) -> BoxFuture<'_, rdlt_connector::Result<Catalog>> {
         Box::pin(async move {
             let (source, words) = self.source().await?;
-            words.explain(source.discover().await).await
+            let catalog = words.explain(source.discover().await).await?;
+            named_catalog(catalog, &words.redactions)
         })
     }
 
@@ -43,7 +46,8 @@ impl Source for SupervisedSource {
     ) -> BoxFuture<'a, rdlt_connector::Result<PartitionPlan>> {
         Box::pin(async move {
             let (source, words) = self.source().await?;
-            words.explain(source.plan(stream, state).await).await
+            let plan = words.explain(source.plan(stream, state).await).await?;
+            named_plan(plan, &words.redactions)
         })
     }
 

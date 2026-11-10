@@ -1,6 +1,7 @@
 //! A connector's configuration as its host holds it: secret material, whose secret values are
 //! references resolved at the last moment before the connector, once verified, is sent it.
 
+mod named;
 mod redact;
 mod reference;
 mod resolve;
@@ -11,6 +12,8 @@ use std::fmt;
 
 use zeroize::{Zeroize as _, Zeroizing};
 
+pub use named::NAMED_BY_SECRET;
+pub(crate) use named::{catalog as named_catalog, plan as named_plan};
 pub(crate) use redact::DROPPED;
 pub use redact::Redactions;
 pub use reference::ReferenceFault;

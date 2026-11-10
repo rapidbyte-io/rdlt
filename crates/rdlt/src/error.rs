@@ -8,7 +8,7 @@ use std::fmt;
 use std::time::Duration;
 
 use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_CODE_BYTES, MAX_ERROR_TEXT_BYTES};
-use rdlt_connector::{ConnectorError, ConnectorErrorKind, Role, text};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, HostRefusal, Role, text};
 use rdlt_engine::{Code, ErrorKind, ErrorReport, Origin};
 use rdlt_host::{ProviderError, SecretError};
 
@@ -160,18 +160,30 @@ impl Error {
         Self::built(ErrorKind::Config, origin, code, message, None)
     }
 
-    /// `error`, which the connector of `role` answered `context` with.
+    /// `error`, which the connector of `role` answered `context` with: coded as its host's
+    /// where its host refused the answer, else as a connector's failure.
     pub(crate) fn connector(role: Role, context: &str, error: ConnectorError) -> Self {
         let (origin, failed) = side(role);
+        let noun = noun(role);
+        let (code, message) = match HostRefusal::of(&error) {
+            Some(refusal) => (
+                Code::new(refusal.code()),
+                format!("{context}: the host refused the {noun}'s answer"),
+            ),
+            None => (
+                codes::CONNECTOR_FAILED,
+                format!("{context}: the {noun} failed"),
+            ),
+        };
         Self(Box::new(Inner::Built(Built {
             kind: classed(error.kind(), failed),
             origin,
-            code: Some(codes::CONNECTOR_FAILED),
+            code: Some(code),
             connector_code: error
                 .code()
                 .map(|code| text::shown(code, MAX_ERROR_CODE_BYTES)),
             stream: None,
-            message: format!("{context}: the {} failed", noun(role)),
+            message,
             retryable: error.is_retryable(),
             source: Some(Box::new(error)),
         })))
