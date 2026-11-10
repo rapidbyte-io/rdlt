@@ -1001,11 +1001,21 @@ async fn what_a_connector_says_cannot_steer_the_terminal() {
 
 /// `rdlt certify` of the generator source, with configuration `config` and `args`.
 fn certifying(scratch: &Scratch, config: &str, args: &[&str]) -> Command {
+    certifying_target(scratch, &example("serve_source"), config, args)
+}
+
+/// `rdlt certify` of the source `target`, with configuration `config` and `args`.
+fn certifying_target(
+    scratch: &Scratch,
+    target: &std::path::Path,
+    config: &str,
+    args: &[&str],
+) -> Command {
     let file = scratch.document("config.json", config);
     let mut command = Command::new(env!("CARGO_BIN_EXE_rdlt"));
     command
         .arg("certify")
-        .arg(example("serve_source"))
+        .arg(target)
         .args(["--role", "source", "--trust-binaries", "--config-file"])
         .arg(file)
         .args(["--env", "LLVM_PROFILE_FILE"])
@@ -1032,16 +1042,33 @@ fn certifying_on_a_terminal(
     Screened::started(certifying(scratch, config, args), size)
 }
 
-/// A certification says each clause as it finishes, and a verdict, and leaves no spinner.
+/// The generator source behind a launcher that waits two seconds the first time it starts: the
+/// certification's first clause, which waits on that start, takes that long at least.
+fn slow_to_start(scratch: &Scratch) -> std::path::PathBuf {
+    let launcher = scratch.path().join("slow-to-start");
+    let script = format!(
+        "#!/bin/sh\nif [ ! -e '{started}' ]; then : > '{started}'; sleep 2; fi\nexec '{binary}' \"$@\"\n",
+        started = scratch.path().join("started").display(),
+        binary = example("serve_source").display(),
+    );
+    std::fs::write(&launcher, script).expect("the launcher is written");
+    let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&launcher, mode).expect("the launcher is executable");
+    launcher
+}
+
+/// A certification says each clause as it finishes, with how long one that took seconds took,
+/// and a verdict, and leaves no spinner.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_certification_at_a_terminal_says_each_clause_as_it_finishes_and_a_verdict() {
     let scratch = Scratch::new();
-    let mut running = certifying_on_a_terminal(
+    let command = certifying_target(
         &scratch,
+        &slow_to_start(&scratch),
         r#"{"seed": 7, "streams": [{"name": "events", "rows": 5}]}"#,
         &["--require", "partial"],
-        STANDARD,
     );
+    let mut running = Screened::started(command, STANDARD);
     running
         .until("the spinner names the clause", |screen| {
             screen.contents().contains("Certifying the source: P-")
@@ -1064,9 +1091,14 @@ async fn a_certification_at_a_terminal_says_each_clause_as_it_finishes_and_a_ver
         !text.contains("Certifying the source"),
         "the spinner is cleared: {text}"
     );
-    // The default credit watch takes seconds, and only a clause that took seconds says so.
-    let timed = regex::Regex::new(r"✓ P-CREDIT\s+\d+s").expect("a pattern that parses");
-    assert!(timed.is_match(&text), "{text}");
+    // The first clause waited two seconds on the connector's first start, and a time shows from
+    // a second on: a second's margin, whatever the machine's speed or the ticks' timing.
+    let first = text
+        .lines()
+        .find(|line| line.trim_start().starts_with(['✓', '✗', '–']))
+        .expect("a clause's line");
+    let timed = regex::Regex::new(r"\s\d+s$").expect("a pattern that parses");
+    assert!(timed.is_match(first.trim_end()), "{first:?} in {text}");
 }
 
 /// A role the connector does not serve says nothing as it is found, as its report may never print.
