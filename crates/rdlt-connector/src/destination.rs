@@ -25,11 +25,11 @@ use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec};
 use crate::state::StateRecord;
 use crate::types::{Field, LogicalType};
 
-pub use adapter::destination_factory;
+pub use adapter::{destination_factory, destination_factory_from};
 #[cfg(feature = "certify")]
 pub use read_back::{PublishedReader, PublishedRows, ReadBack, Reading};
 #[cfg(feature = "certify")]
-pub use readable::readable_destination_factory;
+pub use readable::{readable_destination_factory, readable_destination_factory_from};
 
 /// Who is opening a destination session.
 #[derive(Clone, Debug, PartialEq, Eq)]

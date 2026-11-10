@@ -331,3 +331,109 @@ fn a_table_ref_lacking_any_member_it_writes_is_refused() {
         every_member_required::<TableRef>(&serde_json::to_value(&table).unwrap());
     }
 }
+
+mod described {
+    use serde_json::json;
+
+    use super::{Recorder, context, journal};
+    use crate::capabilities::Capabilities;
+    use crate::destination_factory_from;
+    use crate::id::{ConnectorId, Epoch};
+    use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec};
+
+    fn spec() -> ConnectorSpec {
+        ConnectorSpec {
+            id: ConnectorId::parse("io.example.described").expect("a valid id"),
+            version: "2.0.0".to_owned(),
+            config_schema: json!({ "type": "object" }),
+        }
+    }
+
+    /// What connects the recorder writing to `journal`, from the whole configuration.
+    fn connect(
+        journal: &'static str,
+    ) -> impl Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, crate::Result<Recorder>>
+    + Send
+    + Sync
+    + 'static {
+        move |config, _context| {
+            Box::pin(async move {
+                assert_eq!(config, json!({ "given": true }), "the whole configuration");
+                Ok(Recorder {
+                    journal: super::journal(journal),
+                    fail_discard: false,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_described_destination_answers_its_spec_and_opens_its_connector_s_session() {
+        let factory = destination_factory_from(spec(), connect("described"));
+        assert_eq!(factory.spec(), &spec());
+        assert!(!factory.reads_back());
+        let destination = factory
+            .connect(json!({ "given": true }), ConnectContext::new())
+            .await
+            .expect("it connects");
+        assert_eq!(destination.capabilities(), &Capabilities::minimal());
+        let opened = destination.open(&context()).await.expect("it opens");
+        assert_eq!(opened.epoch, Epoch(3));
+        assert_eq!(*journal("described").lock(), ["open orders", "discard"]);
+    }
+
+    #[cfg(feature = "certify")]
+    mod readable {
+        use std::sync::Arc;
+
+        use arrow_array::{Int64Array, RecordBatch};
+        use serde_json::json;
+
+        use super::super::{Recorder, journal, table};
+        use super::{connect, spec};
+        use crate::capabilities::Capabilities;
+        use crate::destination::{PublishedRows, ReadBack, TableRef};
+        use crate::readable_destination_factory_from;
+        use crate::spec::ConnectContext;
+
+        impl ReadBack for Recorder {
+            async fn published(&self, table: &TableRef, rows: PublishedRows) -> crate::Result<()> {
+                self.journal
+                    .lock()
+                    .push(format!("published {}", table.name));
+                let ids = Arc::new(Int64Array::from(vec![1, 2]));
+                let batch = RecordBatch::try_from_iter([("id", ids as _)]).expect("a valid batch");
+                rows.send(batch).await
+            }
+        }
+
+        #[tokio::test]
+        async fn a_described_readable_destination_reads_back_through_its_connector() {
+            let factory = readable_destination_factory_from(spec(), connect("described_read"));
+            assert_eq!(factory.spec(), &spec());
+            assert!(factory.reads_back());
+            let (destination, reader) = factory
+                .connect_reading(json!({ "given": true }), ConnectContext::new())
+                .await
+                .expect("it connects reading");
+            assert_eq!(destination.capabilities(), &Capabilities::minimal());
+            let read = PublishedRows::gather(reader.as_ref(), &table()).await;
+            let rows: usize = read
+                .expect("it reads back")
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum();
+            assert_eq!(rows, 2);
+            destination.check().await.expect("it checks");
+            let connected = factory
+                .connect(json!({ "given": true }), ConnectContext::new())
+                .await
+                .expect("it connects");
+            connected.check().await.expect("it checks");
+            assert_eq!(
+                *journal("described_read").lock(),
+                ["published orders", "check", "check"]
+            );
+        }
+    }
+}

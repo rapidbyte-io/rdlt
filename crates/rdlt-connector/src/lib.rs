@@ -128,11 +128,12 @@ pub use destination::{
     ChangeColumns, Deletion, Destination, DestinationConnector, DestinationFactory,
     DestinationSession, DestinationWriter, HistoryColumns, MergeKey, OpenContext, Opened,
     OpenedSession, RootKey, Session, TableChange, TableRef, TableWriter, WriteStats,
-    destination_factory,
+    destination_factory, destination_factory_from,
 };
 #[cfg(feature = "certify")]
 pub use destination::{
     PublishedReader, PublishedRows, ReadBack, Reading, readable_destination_factory,
+    readable_destination_factory_from,
 };
 pub use emitter::Emitter;
 pub use error::{
