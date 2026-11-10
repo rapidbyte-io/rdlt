@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ASCII, Asked, Brush, Found, Looks, Tone, UNICODE, Ui, counted, fit, short_id, wrapped,
+};
+use crate::args::Color;
 
 type Vars = &'static [(&'static str, &'static str)];
 

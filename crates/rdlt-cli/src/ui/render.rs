@@ -13,6 +13,26 @@ use super::live::rate;
 use super::{Tone, Ui, counted, fit, short_id, wrapped};
 use crate::output::shown;
 
+/// A local connector the host finds: its binary's file name, and its path.
+pub(crate) struct LocalConnector {
+    pub(crate) name: String,
+    pub(crate) path: String,
+}
+
+/// How the host runs local connectors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sandboxing {
+    Sandboxed,
+    Trusted,
+}
+
+/// Whether the host reaches remote connectors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Remotes {
+    Reached,
+    NotReached,
+}
+
 /// One column of a table's rows, its cells already shown.
 struct Column<'a> {
     header: &'a str,
@@ -171,19 +191,19 @@ pub(crate) fn catalog(catalog: &rdlt::Catalog, ui: &Ui) -> String {
 
 /// `connectors`' table, then the sandbox and the remote lines.
 pub(crate) fn connectors(
-    local: &[(String, String)],
-    sandboxed: bool,
-    remote: bool,
+    local: &[LocalConnector],
+    sandboxing: Sandboxing,
+    remotes: Remotes,
     ui: &Ui,
 ) -> String {
     let columns = [
         Column {
             header: "CONNECTOR",
-            cells: local.iter().map(|(name, _)| shown(name)).collect(),
+            cells: local.iter().map(|found| shown(&found.name)).collect(),
         },
         Column {
             header: "PATH",
-            cells: local.iter().map(|(_, path)| shown(path)).collect(),
+            cells: local.iter().map(|found| shown(&found.path)).collect(),
         },
     ];
     let mut text = if local.is_empty() {
@@ -191,15 +211,13 @@ pub(crate) fn connectors(
     } else {
         table(&columns, ui)
     };
-    let local = if sandboxed {
-        "in the sandbox"
-    } else {
-        "trusted, in no sandbox"
+    let local = match sandboxing {
+        Sandboxing::Sandboxed => "in the sandbox",
+        Sandboxing::Trusted => "trusted, in no sandbox",
     };
-    let remote = if remote {
-        "are reached over mutual TLS"
-    } else {
-        "are not reached"
+    let remote = match remotes {
+        Remotes::Reached => "are reached over mutual TLS",
+        Remotes::NotReached => "are not reached",
     };
     text.push('\n');
     text.push_str(&wrapped_block(&[

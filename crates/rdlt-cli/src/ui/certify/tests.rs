@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use rdlt_certify::{Clause, ClauseResult, Outcome, Report};
 
-use super::*;
+use super::{kept_line, verdict_line};
+use crate::ui::Ui;
 
 fn passed() -> ClauseResult {
     ClauseResult {

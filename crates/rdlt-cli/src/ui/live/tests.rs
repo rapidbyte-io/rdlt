@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use rdlt::{
     Counters, MemoryHeld, OpenWaits, Partitions, Phase, PipelineId, Report, RunStatus, Status,
-    StreamReport,
+    Step, StreamReport,
 };
 
-use super::*;
+use super::{RunProgress, RunTitle, Size, Stop, View, clock, counts, phase_words, rate, step_word};
 use crate::args::Color;
-use crate::ui::{ASCII, Asked, Found, UNICODE};
+use crate::ui::{ASCII, Asked, Found, Looks, UNICODE};
 
 fn status(streams: &[(&str, u64)], phase: Phase, partitions: Partitions) -> Status {
     let report = Report {

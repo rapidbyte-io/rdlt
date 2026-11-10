@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use indicatif::{HumanBytes, HumanDuration};
 use rdlt::{Counters, PipelineId, Report, RunStatus, StreamReport};
 
-use super::*;
+use super::{Column, run_summary, table, took};
+use crate::ui::Ui;
 
 fn report(streams: &[(&str, u64)]) -> Report {
     Report {

@@ -11,7 +11,7 @@ mod tests;
 use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -67,7 +67,7 @@ pub(super) struct Painter {
 impl Painter {
     /// Starts the painter; none where the thread cannot start, and nothing is animated then.
     pub(super) fn start(looks: Looks) -> Option<Self> {
-        let (sender, receiver) = sync_channel(WAITING);
+        let (sender, receiver) = mpsc::sync_channel(WAITING);
         let (done, ended) = oneshot::channel();
         let thread = std::thread::Builder::new()
             .name("rdlt-painter".to_owned())
@@ -335,7 +335,7 @@ impl Painter {
     /// A painter whose queue holds one update and has only the returned reader to empty it,
     /// `lost` log lines already lost.
     pub(super) fn of_queue(lost: u64) -> (Self, Queue) {
-        let (sender, receiver) = sync_channel(1);
+        let (sender, receiver) = mpsc::sync_channel(1);
         let (_done, ended) = oneshot::channel();
         let painter = Self {
             sender,

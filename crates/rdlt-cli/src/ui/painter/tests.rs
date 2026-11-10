@@ -1,9 +1,16 @@
-use std::sync::mpsc::Receiver;
+use std::io::Write as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use super::*;
+use tokio::sync::oneshot;
+
+use super::{Live, Paint, Painter, Std, frame_of};
 use crate::args::Color;
-use crate::ui::{Asked, Found};
+use crate::output::FINISHING;
+use crate::ui::live::View;
+use crate::ui::{Asked, Found, Looks};
 
 fn looks() -> Looks {
     let asked = Asked {
@@ -18,7 +25,7 @@ fn looks() -> Looks {
 /// A painter whose queue nothing reads, as one whose thread is stuck on the terminal is; the
 /// receiver, kept by the caller, holds the queue full.
 fn stuck_painter() -> (Painter, Receiver<Paint>) {
-    let (sender, receiver) = sync_channel(0);
+    let (sender, receiver) = mpsc::sync_channel(0);
     let (_done, ended) = oneshot::channel();
     let thread = std::thread::spawn(|| {});
     let painter = Painter {
