@@ -291,7 +291,7 @@ impl Local {
             });
         }
         let confinement = self.confinement(reference)?;
-        let lease = self.lease(reference, &found, confinement.is_some())?;
+        let lease = self.lease(reference, &found, confinement.is_some()).await?;
         Ok(Launch {
             id: reference.id.clone(),
             binary,
@@ -352,8 +352,9 @@ impl Local {
     /// What a placement of `reference`, run from `binary`, holds while it lives: the programs
     /// it runs, the directory connector's tree it launches, and, where it is `confined`, what it
     /// is given, each path opened once and checked against the roots, what is guarded, and what
-    /// other placements hold now.
-    fn lease(
+    /// other placements hold now; what only connectors told to stop still hold is waited for,
+    /// within the connect deadline, as they release it once reaped.
+    async fn lease(
         &self,
         reference: &ConnectorRef,
         binary: &Binary,
@@ -376,7 +377,8 @@ impl Local {
             tree: binary.tree(),
         };
         self.leases
-            .take(&claim)
+            .take_within(&claim, self.options.deadlines.connect)
+            .await
             .map_err(|source| ProviderError::Sandbox {
                 id: reference.id.clone(),
                 source,

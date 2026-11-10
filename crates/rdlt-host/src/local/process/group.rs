@@ -25,7 +25,7 @@ use rustix::process::{
 use tokio_util::sync::CancellationToken;
 
 use super::Ended;
-use crate::local::grants::Lease;
+use crate::local::grants::Holding;
 use crate::local::sandbox::Stops;
 pub use interrupts::Interrupts;
 pub(super) use registry::reserve;
@@ -112,8 +112,8 @@ pub(super) struct Starting {
     pub(super) terms: Terms,
     pub(super) killed: Option<CancellationToken>,
     pub(super) exit: Arc<Ended<ExitStatus>>,
-    /// What its placement holds, released by this connector once it is reaped.
-    pub(super) lease: Arc<Lease>,
+    /// What its placement holds, which this connector holds too until it is reaped.
+    pub(super) lease: Holding,
     /// Its place among the groups this process may own, which its group takes once listed.
     pub(super) slot: registry::Slot,
 }

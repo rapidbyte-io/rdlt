@@ -81,17 +81,19 @@ anything runs; none is ignored.
     executable's directory, a directory the host keeps its log, state or secrets in, or one a
     secret resolver reads. The placement is refused otherwise. Where a binary, interpreter or
     launcher has a second name, a hard link, no root on its file system may be written.
-  - Each path granted is opened once, checked by what was opened, and bound by its descriptor
-    at every spawn of the placement, so a link changed after the check changes nothing. No
-    other connector of the process may hold a path within, above or equal to it while its
-    connector lives, until reaped, unless both state their grants are shared; no grant may
-    write a program a placement runs, its launcher among them, and no placement runs a program
-    a held grant may write. A program with a second name counts as written by every write grant
-    on its file system, since a directory grant does not list what it holds; no connector is
-    spawned again whose binary, interpreter or launcher was given a second name after it was
-    placed. The binary and the launcher are checked by the file that runs, the interpreter by its
-    path, which the kernel runs. A launcher whose one name is moved elsewhere is beyond this:
-    moving it needs write access to its directory, which no root that may be written may hold.
+  - Each path granted is opened once, checked by what was opened, and bound by its descriptor at
+    every spawn of the placement, so a link changed after the check changes nothing. No other
+    connector of the process may hold a path within, above or equal to it while its connector
+    lives, until reaped, unless both state their grants are shared, and a placement that meets
+    only connectors told to stop, their placement dropped, waits within its connect deadline for
+    them to be reaped; no grant may write a program a placement runs, its launcher among them,
+    and no placement runs a program a held grant may write. A program with a second name counts
+    as written by every write grant on its file system, since a directory grant does not list
+    what it holds; no connector is spawned again whose binary, interpreter or launcher was given
+    a second name after it was placed. The binary and the launcher are checked by the file that
+    runs, the interpreter by its path, which the kernel runs. A launcher whose one name is moved
+    elsewhere is beyond this: moving it needs write access to its directory, which no root that
+    may be written may hold.
   - **The network grant** shares the host's network namespace: every interface and route, the
     host's loopback services, and the abstract Unix sockets of that namespace, such as a
     session's buses. Grant it only to a connector you would let reach those.

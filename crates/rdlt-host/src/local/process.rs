@@ -196,7 +196,7 @@ impl Process {
             },
             killed: killed.clone(),
             exit: Arc::clone(&exit),
-            lease: Arc::clone(&launch.lease),
+            lease: launch.lease.holding(),
             slot,
         };
         // Owned from here on by its thread: whatever fails next, the connector does not

@@ -16,9 +16,11 @@ use std::io;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Weak};
+use std::time::Duration;
 
 use parking_lot::Mutex;
+use tokio::sync::Notify;
 
 pub(crate) use opened::{Chain, Opened, located};
 
@@ -34,6 +36,9 @@ struct Held {
     /// What it runs: its binary, a script's interpreter, and the sandbox's launcher.
     programs: Vec<Program>,
     shared: bool,
+    /// Alive while the placement that took it is: once it is not, only connectors told to stop
+    /// hold what it holds, each until it is reaped.
+    placed: Weak<()>,
 }
 
 /// What the placements of a process hold: one registry for the whole process, whichever
@@ -42,6 +47,8 @@ struct Held {
 pub(crate) struct Leases {
     held: Arc<Mutex<Vec<Held>>>,
     next: Arc<AtomicU64>,
+    /// Told each time what a placement held is released.
+    released: Arc<Notify>,
 }
 
 /// A path granted, opened once: what a sandbox binds, at the path the grant names.
@@ -55,23 +62,50 @@ pub(crate) struct Bound {
     pub(crate) write: bool,
 }
 
-/// What a placement holds, until it is dropped: the placement, and each connector spawned
-/// from it until that connector is reaped, hold it.
+/// What a placement holds: held while the placement is, and while each connector spawned from
+/// it holds its [`Holding`], until that connector is reaped.
 #[derive(Debug)]
 pub(crate) struct Lease {
-    leases: Leases,
-    id: u64,
+    /// The placement's own, dropped before `holding`: once it is, what the lease holds is held
+    /// by connectors told to stop alone, each until it is reaped.
+    _placed: Arc<()>,
+    holding: Holding,
     /// What the connector is granted, the paths it reads first.
     pub(crate) bound: Vec<Bound>,
 }
 
+/// What a lease holds, held by its placement and by each connector spawned from it until that
+/// connector is reaped, and released once none holds it.
+#[derive(Clone, Debug)]
+pub(crate) struct Holding(Arc<Entry>);
+
+/// A lease's place in its registry.
+#[derive(Debug)]
+struct Entry {
+    leases: Leases,
+    id: u64,
+}
+
+impl Drop for Entry {
+    fn drop(&mut self) {
+        self.leases.held.lock().retain(|held| held.id != self.id);
+        self.leases.released.notify_waiters();
+    }
+}
+
 impl Lease {
+    /// What a connector spawned from the placement holds until it is reaped.
+    pub(crate) fn holding(&self) -> Holding {
+        self.holding.clone()
+    }
+
     /// A program its placement runs that was held as having one name and has another now, by
     /// the name it is run by; not `binary`, which is run from the file placed, whatever its
     /// name leads to now.
     pub(crate) fn exposed(&self, binary: &Path) -> Option<PathBuf> {
-        let held = self.leases.held.lock();
-        let held = held.iter().find(|held| held.id == self.id)?;
+        let Entry { leases, id } = &*self.holding.0;
+        let held = leases.held.lock();
+        let held = held.iter().find(|held| held.id == *id)?;
         let named = |path: &Path| std::fs::metadata(path).is_ok_and(|now| now.nlink() > 1);
         held.programs
             .iter()
@@ -81,10 +115,20 @@ impl Lease {
     }
 }
 
-impl Drop for Lease {
-    fn drop(&mut self) {
-        let mut held = self.leases.held.lock();
-        held.retain(|held| held.id != self.id);
+/// Why a claim was not held: the first path refused, and whether only what placements that are
+/// gone hold refused it, which their connectors, told to stop, release once they are reaped.
+#[derive(Debug)]
+struct Refused {
+    error: SandboxError,
+    ending: bool,
+}
+
+impl From<SandboxError> for Refused {
+    fn from(error: SandboxError) -> Self {
+        Self {
+            error,
+            ending: false,
+        }
     }
 }
 
@@ -169,12 +213,52 @@ impl Leases {
         PROCESS.clone()
     }
 
-    /// Holds what `claim` asks for, once each path is seen to lie where it may.
+    /// Holds what `claim` asks for as `claimed` does, refused at once whatever refuses it.
+    #[cfg(test)]
+    pub(crate) fn take(&self, claim: &Claim<'_>) -> Result<Lease, SandboxError> {
+        self.claimed(claim).map_err(|refused| refused.error)
+    }
+
+    /// Holds what `claim` asks for as `claimed` does, waiting up to `patience` while only what
+    /// placements that are gone hold refuses it: their connectors, told to stop, release it once
+    /// they are reaped.
     ///
     /// # Errors
     ///
-    /// A [`SandboxError`] naming the first path that may not be held.
-    pub(crate) fn take(&self, claim: &Claim<'_>) -> Result<Lease, SandboxError> {
+    /// A [`SandboxError`] naming the first path that may not be held, once nothing is left to
+    /// wait for or `patience` has passed.
+    pub(crate) async fn take_within(
+        &self,
+        claim: &Claim<'_>,
+        patience: Duration,
+    ) -> Result<Lease, SandboxError> {
+        let until = tokio::time::Instant::now().checked_add(patience);
+        loop {
+            // Asked for before the claim is tried, so a release after the try is not missed.
+            let mut released = std::pin::pin!(self.released.notified());
+            released.as_mut().enable();
+            match self.claimed(claim) {
+                Err(Refused {
+                    error,
+                    ending: true,
+                }) => {
+                    let waited = if let Some(until) = until {
+                        tokio::time::timeout_at(until, released).await.is_ok()
+                    } else {
+                        released.await;
+                        true
+                    };
+                    if !waited {
+                        return Err(error);
+                    }
+                }
+                claimed => return claimed.map_err(|refused| refused.error),
+            }
+        }
+    }
+
+    /// Holds what `claim` asks for, once each path is seen to lie where it may.
+    fn claimed(&self, claim: &Claim<'_>) -> Result<Lease, Refused> {
         let read_roots = all_opened(&claim.roots.read)?;
         let write_roots = all_opened(&claim.roots.write)?;
         let mut programs = claim.programs.to_vec();
@@ -203,7 +287,8 @@ impl Leases {
         if let Some((path, _)) = outside {
             return Err(SandboxError::Outside {
                 path: path.to_path_buf(),
-            });
+            }
+            .into());
         }
         let shared = all_opened(claim.shared_reads)?;
         let read_by_all = writes.iter().find(|(_, write)| {
@@ -214,7 +299,8 @@ impl Leases {
         if let Some((path, _)) = read_by_all {
             return Err(SandboxError::Overlap {
                 path: path.to_path_buf(),
-            });
+            }
+            .into());
         }
         // The operator's, as the system's directories are: no root need let it be read. A
         // trusted connector's reads are held and bound nowhere.
@@ -223,19 +309,33 @@ impl Leases {
     }
 
     /// Holds `reads` and `writes`, and `programs`, those `claim` runs, unless what another
-    /// placement holds now refuses them.
+    /// placement holds now refuses them: refused at once where that placement is still there,
+    /// and as ending where only connectors told to stop hold it.
     fn held(
         &self,
         claim: &Claim<'_>,
         programs: Vec<Program>,
         reads: Vec<(&Path, Opened)>,
         writes: Vec<(&Path, Opened)>,
-    ) -> Result<Lease, SandboxError> {
+    ) -> Result<Lease, Refused> {
         let mut held = self.held.lock();
+        let mut ending = None;
         for other in held.iter() {
-            refused_by(other, claim, &programs, &reads, &writes)?;
+            if let Err(error) = refused_by(other, claim, &programs, &reads, &writes) {
+                if other.placed.strong_count() > 0 {
+                    return Err(error.into());
+                }
+                ending.get_or_insert(error);
+            }
+        }
+        if let Some(error) = ending {
+            return Err(Refused {
+                error,
+                ending: true,
+            });
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let placed = Arc::new(());
         held.push(Held {
             id,
             read: reads.iter().map(|(_, read)| read.chain.clone()).collect(),
@@ -245,6 +345,7 @@ impl Leases {
                 .collect(),
             programs,
             shared: claim.access.shared,
+            placed: Arc::downgrade(&placed),
         });
         let bound = |write: bool| {
             move |(at, opened): (&Path, Opened)| Bound {
@@ -259,8 +360,11 @@ impl Leases {
             .chain(writes.into_iter().map(bound(true)))
             .collect();
         Ok(Lease {
-            leases: self.clone(),
-            id,
+            _placed: placed,
+            holding: Holding(Arc::new(Entry {
+                leases: self.clone(),
+                id,
+            })),
             bound,
         })
     }
