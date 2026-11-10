@@ -16,9 +16,10 @@ fn private_dir(path: &Path) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("its mode");
 }
 
-/// A directory connector `rdlt-connector-<name>` in `root`, whose launcher runs `body` and then
-/// the scripted connector, copied into the tree.
+/// A directory connector `rdlt-connector-<name>` in `root`, which is made this user's alone too,
+/// whose launcher runs `body` and then the scripted connector, copied into the tree.
 fn directory_connector(root: &Path, name: &str, body: &str) -> PathBuf {
+    private_dir(root);
     let tree = root.join(format!("rdlt-connector-{name}"));
     private_dir(&tree);
     for dir in ["bin", "libexec", "share"] {
@@ -143,6 +144,7 @@ mod confined {
         let Some(sandbox) = sandboxed() else { return };
         let temporary = tempfile::tempdir().expect("a temporary directory");
         let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
+        private_dir(&root);
         let real = root.join("real");
         private_dir(&real);
         // The launcher names its tree where it lies, as an install writes it.
@@ -172,6 +174,7 @@ mod confined {
             .await
             .expect("placed");
         let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        private_dir(elsewhere.path());
         let writing = crate::process::scripted_in(elsewhere.path()).write(tree.join("share"));
         let refused = placed(&sandbox.writable(&tree), &writing).await;
         let refused = refused.expect_err("a grant within the running connector's tree");

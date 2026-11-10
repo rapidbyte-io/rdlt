@@ -124,6 +124,7 @@ fn a_tree_put_where_a_checked_one_was_is_never_bound() {
 
     let temporary = tempfile::tempdir().expect("a temporary directory");
     let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).expect("its mode");
     let tree = |at: &std::path::Path| {
         std::fs::create_dir_all(at.join("bin")).expect("a tree");
         for directory in [at.to_owned(), at.join("bin")] {
