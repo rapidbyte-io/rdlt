@@ -214,6 +214,45 @@ fn what_a_signal_cuts_short_says_nothing_of_a_held_role_or_off_the_live_view() {
     );
 }
 
+/// Each clause found is shown once and in order, however many ticks see it, the painter taking one
+/// update at a time.
+#[test]
+fn each_clause_found_is_shown_once_however_many_ticks_see_it() {
+    let (ui, queue) = Ui::queued();
+    let observed = rdlt_certify::Observed::new();
+    let ids = ["P-ONE", "P-TWO", "P-THREE"];
+    for id in ids {
+        observed.tell(ClauseResult {
+            clause: Clause {
+                id,
+                statement: "a statement",
+                unless: "",
+            },
+            outcome: Outcome::Passed,
+            note: None,
+        });
+    }
+    // The reader ends once the painter's queue is dropped below, having read all there was.
+    let reading = std::thread::spawn(move || queue.lines(10, std::time::Duration::from_secs(60)));
+    let mut watch = Watch::new(&ui, Mode::Plain, rdlt_connector::Role::Source);
+    let waited = std::time::Instant::now();
+    while watch.shown < ids.len() && waited.elapsed() < std::time::Duration::from_secs(30) {
+        watch.tick(&observed);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    for _ in 0..5 {
+        watch.tick(&observed);
+    }
+    drop(watch);
+    drop(ui);
+    let lines = reading.join().expect("the reader ends");
+    let shown: Vec<&str> = lines
+        .iter()
+        .filter_map(|line| ids.into_iter().find(|id| line.contains(id)))
+        .collect();
+    assert_eq!(shown, ids, "{lines:?}");
+}
+
 /// A secret wider than a line, which a wrap would split where no scrub could find either half.
 const WIDE_SECRET: &str = "hunter2-CANARY-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\
      0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuv\

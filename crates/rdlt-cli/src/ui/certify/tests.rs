@@ -27,6 +27,11 @@ fn a_clause_shows_its_time_only_from_a_second_and_in_whole_seconds() {
         "  ✓ P-ORDER",
         "under a second is the sampling's"
     );
+    assert_eq!(
+        line(Some(Duration::from_secs(1))),
+        "  ✓ P-ORDER  1s",
+        "from a second on"
+    );
     assert_eq!(line(Some(Duration::from_millis(2_500))), "  ✓ P-ORDER  2s");
 }
 
