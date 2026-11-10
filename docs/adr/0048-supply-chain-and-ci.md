@@ -113,7 +113,7 @@ This record decides what holds each statement, and says where a check ends.
     workflow states for each runner platform. The tool caches have new keys.
   - Locked mode is not a project setting: mise would apply it to a contributor's own tools. A
     plain `mise install` still verifies the lockfile's checksums.
-  - valgrind is the exception, and it is not locked. The `instructions` job installs whatever
+  - valgrind is one exception, and it is not locked. The `instructions` job installs whatever
     version the runner image's Ubuntu archive holds, with `apt-get`, since mise has no release
     archive of it to lock; the gate refuses one older than 3.22 and prints the version it ran. It
     compares two builds it makes under that one valgrind, so a version change moves both sides
@@ -121,11 +121,35 @@ This record decides what holds each statement, and says where a check ends.
     under callgrind, not from gungraun: gungraun counts only the benchmark function's thread
     unless the code calls valgrind's client requests, through a crate built with bindgen and
     libclang, and its runner would be one more locked tool held to the library's version.
-  - Kani's frontend is the other exception. Kani's release bundle is locked like any tool and
+  - Kani's frontend is a second exception. Kani's release bundle is locked like any tool and
     holds its driver, compiler and solvers; `cargo-kani`, which installs a bundle, is built from
     crates.io alone. `just kani` does its setup instead: rustup installs the nightly the bundle
     names, as it installs the repository's own toolchains, held to the bundle's `rustc-version`,
     and a link in the bundle's install names that toolchain (ADR 0052).
+  - The release's wheels are a third. Linux's are built in pypa's `manylinux_2_28`
+    containers, for aarch64 too, which `mise.lock`'s two platforms cannot hold, by
+    `PyO3/maturin-action`, held to its commit. It pulls each container by the `latest` tag pypa
+    moves, and inside it fetches and runs what no lock holds: rustup by `curl | sh` from
+    sh.rustup.rs where the image has none, unchecked, and with it the toolchain
+    `rust-toolchain.toml` names; maturin, at the version the workflow reads from `mise.toml`,
+    from maturin's GitHub release, unchecked; uv by `curl | sh` and patchelf by
+    `uv tool install` where the image lacks them; and `pip install --user cffi`, unpinned. The
+    build takes the container's interpreters. macOS's, x86-64's too, are built by the same
+    action on the arm64 runner, with interpreters uv installs.
+  - The action passes the container every variable whose name begins `ACTIONS_`, `CARGO_`,
+    `GITHUB_` or `RUST`, among a few more, and on macOS the build has the action's whole
+    environment, so the build, its scripts and what it fetches hold `ACTIONS_RUNTIME_TOKEN`,
+    with which they can write the run's artifacts and caches. The release reads no cache, and
+    publishes only the files its `files` job checked, by name and number.
+  - The sdist needs no container, so the locked maturin builds it, as it builds every wheel the
+    pull-request and nightly workflows test; only the release's wheels are built by the action.
+  - mise runs on its two locked platforms alone. The release's x86-64 macOS wheels are tried on the
+    arm64 runner, on x86-64 interpreters under Rosetta, which the runner image installs; the leg
+    fails where Rosetta is missing. The arm64 Linux runner, which `mise.lock` does not cover, takes
+    uv's archive by the version and SHA-256 the workflow names, a version `cargo xtask tools` holds
+    to the one `mise.toml` names. The checksum is the one uv's release publishes in the archive's
+    `.sha256` file, which GitHub's digest of the asset and the archive downloaded when it was set
+    agree with; the runner refuses other bytes.
 - **AWS-LC is built from its locked source, with the C compiler alone.**
   - aws-lc-rs, rustls's provider (ADR 0018), links AWS-LC, which `aws-lc-sys` compiles from the
     C and assembly its crate ships, with `cc`, against bindings it ships for Linux and macOS. Off
@@ -150,9 +174,25 @@ This record decides what holds each statement, and says where a check ends.
   maintenance is off, because Renovate cannot apply the wait to what cargo resolves, so
   transitive crates are updated by hand.
 - **Workflows hold the least they need.**
-  - The token can read the repository and nothing else, in both workflows.
-  - No checkout persists it. The tool installer is given none: it installs from the lockfile's
-    URLs.
+  - The token can read the repository and nothing else, in every workflow, but the release's
+    `publish` job's, which reads nothing of it: it may mint identity tokens, with which it
+    attests the files it publishes and publishes them to PyPI by trusted publishing, and write
+    the attestations, and nothing else. It runs on a tag alone, in the `pypi` environment, and
+    builds nothing: it takes the files `files` checked, the release's nine, named for the tag's
+    version. A pull request that changes the release's workflow, or a run by hand, builds,
+    tries and checks those files and publishes none.
+  - What the workflow says gates publishing only as far as it is the workflow that runs: a
+    tag's run is the tagged commit's, which whoever may push a tag can change. What holds is
+    outside the tree. PyPI's trusted publisher accepts only an identity token minted for
+    `release.yml` in the `pypi` environment, so no other workflow publishes; the environment
+    admits only `v*` tags, and may require a reviewer to approve each run; and a ruleset lets
+    only the maintainers create `v*` tags.
+  - No checkout persists the token. The tool installer and the wheel builder are given none:
+    mise installs from the lockfile's URLs, and maturin-action from maturin's release.
+  - What `publish` runs is held to commits: `actions/attest-build-provenance`, which calls
+    `actions/attest` at a commit of its own, and `pypa/gh-action-pypi-publish`, which runs the
+    container image pypa publishes on GitHub's registry under the name of that commit, a tag
+    that no digest holds.
   - `just lint` is `just checks`, which builds and runs the workspace's and its dependencies'
     code, and `just pins`. In CI the `lint` job runs the first with no credential. A job of its
     own, `pins`, runs the second and is the only place the token goes, to stay within GitHub's
@@ -211,6 +251,10 @@ This record decides what holds each statement, and says where a check ends.
 - The nightly advisory job builds xtask, about two minutes.
 - Each job logs the installer's warning that it has no token.
 - Restricting which actions the repository may run is a repository setting, outside the tree,
-  and left to the owner.
+  and left to the owner. So are what gates publishing: PyPI's trusted publisher, the `pypi`
+  environment with the tags it admits and who approves its runs, and the ruleset on `v*` tags.
+  CONTRIBUTING.md lists them, in its steps for a release.
+- A release's Linux wheels are built in whatever pypa's containers held under `latest` that day,
+  so the same tag built again can differ.
 - A test of `rdlt-python` embeds the development environment's interpreter, `.venv`, which
   `just python-env` makes; every job that builds the whole workspace installs Python and uv first.

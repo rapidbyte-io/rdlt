@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use super::{PLATFORMS, UNBUILT, Unlocked, check};
+use super::{Drifted, PLATFORMS, UNBUILT, Unlocked, check, drifted};
 
 const SHA256: &str = "sha256:8fe196b894ccf9072f98d4e1013a180306e17d244830b03986ee5e8eabeb6156";
 const BLAKE3: &str = "blake3:4871fab0e60275a1eb46e7190726e144f56c9a9527f59b0d1da5a042baead8e2";
@@ -322,4 +322,42 @@ fn an_npm_tool_is_held_by_its_package_lockfile_and_each_package_integrity() {
         &reading(unhashed),
     );
     assert_eq!(without.unwrap(), unheld, "a package without its integrity");
+}
+
+fn workflow(env: &str) -> Vec<(String, String)> {
+    let text = format!("name: Release\nenv:\n{env}jobs: {{}}\n");
+    vec![(".github/workflows/release.yml".to_owned(), text)]
+}
+
+#[test]
+fn a_tool_a_workflow_holds_at_mise_s_version_passes() {
+    let held = workflow("  SETUP_JUST_VERSION: \"1.58.0\"\n  SETUP_JUST_SHA256: abc\n");
+    assert_eq!(drifted(CONFIG, &held).unwrap(), vec![]);
+}
+
+#[test]
+fn a_tool_a_workflow_holds_at_another_version_or_mise_does_not_name_is_reported() {
+    let other = workflow("  SETUP_JUST_VERSION: \"1.59.0\"\n");
+    let expected = vec![Drifted {
+        workflow: ".github/workflows/release.yml".to_owned(),
+        tool: "just".to_owned(),
+        held: "1.59.0".to_owned(),
+        named: Some("1.58.0".to_owned()),
+    }];
+    assert_eq!(drifted(CONFIG, &other).unwrap(), expected);
+    let unnamed = workflow("  SETUP_TYPOS_VERSION: \"1.50.2\"\n");
+    let expected = vec![Drifted {
+        workflow: ".github/workflows/release.yml".to_owned(),
+        tool: "typos".to_owned(),
+        held: "1.50.2".to_owned(),
+        named: None,
+    }];
+    assert_eq!(drifted(CONFIG, &unnamed).unwrap(), expected);
+}
+
+// mise.toml names no version of mise itself, which every workflow installs by its own.
+#[test]
+fn the_mise_a_workflow_installs_is_its_own() {
+    let mise = workflow("  SETUP_MISE_VERSION: \"2026.10.21\"\n");
+    assert_eq!(drifted(CONFIG, &mise).unwrap(), vec![]);
 }

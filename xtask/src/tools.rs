@@ -1,4 +1,5 @@
-//! `cargo xtask tools`: checks that every tool `mise.toml` names is locked to the bytes it installs.
+//! `cargo xtask tools`: checks that every tool `mise.toml` names is locked to the bytes it installs,
+//! and that a workflow holding one apart from mise holds it at the version `mise.toml` names.
 
 #[cfg(test)]
 mod tests;
@@ -6,8 +7,10 @@ mod tests;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::LazyLock;
 
 use anyhow::Context as _;
+use regex::Regex;
 use toml::{Table, Value};
 
 /// The platforms tools are installed on: CI's runners and the machines the project is built on.
@@ -36,6 +39,26 @@ pub(crate) enum Unlocked {
     Packages { tool: String },
 }
 
+/// A tool a workflow holds apart from mise, by `SETUP_<TOOL>_VERSION`, at another version than
+/// `mise.toml` names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Drifted {
+    /// The workflow, by its path from the repository root.
+    pub(crate) workflow: String,
+    /// The tool, as `mise.toml` names it.
+    pub(crate) tool: String,
+    /// The version the workflow holds.
+    pub(crate) held: String,
+    /// The version `mise.toml` names, none where it names no such tool.
+    pub(crate) named: Option<String>,
+}
+
+/// A workflow's `SETUP_<TOOL>_VERSION: "<version>"`, the tool's name in upper case.
+static SETUP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?m)^\s*SETUP_([A-Z0-9_]+)_VERSION:\s*"([^"]*)""#)
+        .expect("the pattern is a valid regular expression")
+});
+
 /// Digest algorithms a checksum may use, each with the length of its digest in hex digits.
 const DIGESTS: &[(&str, usize)] = &[("sha256:", 64), ("blake3:", 64)];
 
@@ -54,12 +77,8 @@ pub(crate) fn check(
     let locked = tools_of(&lock)?.unwrap_or(&empty);
     let mut all = Vec::new();
     for (tool, wanted) in tools {
-        let version = match wanted {
-            Value::String(version) => Some(version.as_str()),
-            Value::Table(options) => options.get("version").and_then(Value::as_str),
-            _ => None,
-        }
-        .with_context(|| format!("mise.toml names no version of {tool}"))?;
+        let version =
+            version_of(wanted).with_context(|| format!("mise.toml names no version of {tool}"))?;
         let Some(entries) = locked.get(tool).and_then(Value::as_array) else {
             all.push(Unlocked::Missing { tool: tool.clone() });
             continue;
@@ -91,6 +110,46 @@ pub(crate) fn check(
         }
     }
     Ok(all)
+}
+
+/// Every tool the workflows `workflows`, each its path and text, hold apart from mise at another
+/// version than the configuration `config` names; mise itself, which `mise.toml` names no version
+/// of, is each workflow's own.
+pub(crate) fn drifted(
+    config: &str,
+    workflows: &[(String, String)],
+) -> anyhow::Result<Vec<Drifted>> {
+    let config: Table = config.parse().context("reading mise.toml")?;
+    let empty = Table::new();
+    let tools = tools_of(&config)?.unwrap_or(&empty);
+    let mut all = Vec::new();
+    for (workflow, text) in workflows {
+        for held in SETUP.captures_iter(text) {
+            if &held[1] == "MISE" {
+                continue;
+            }
+            let tool = held[1].to_lowercase().replace('_', "-");
+            let named = tools.get(&tool).and_then(version_of);
+            if named != Some(&held[2]) {
+                all.push(Drifted {
+                    workflow: workflow.clone(),
+                    tool,
+                    held: held[2].to_owned(),
+                    named: named.map(str::to_owned),
+                });
+            }
+        }
+    }
+    Ok(all)
+}
+
+/// The version a `mise.toml` entry names: the entry itself, or its `version`.
+fn version_of(wanted: &Value) -> Option<&str> {
+    match wanted {
+        Value::String(version) => Some(version.as_str()),
+        Value::Table(options) => options.get("version").and_then(Value::as_str),
+        _ => None,
+    }
 }
 
 /// What the lockfile entry `entry` of `tool` lacks for `platform`: a download, or its digest.
@@ -187,9 +246,53 @@ pub(crate) fn run(root: &Path) -> anyhow::Result<ExitCode> {
             ),
         }
     }
-    Ok(if unlocked.is_empty() {
+    let drifted = drifted(&read("mise.toml")?, &workflows(root)?)?;
+    for tool in &drifted {
+        let Drifted {
+            workflow,
+            tool,
+            held,
+            named,
+        } = tool;
+        match named {
+            Some(named) => {
+                println!("error: {workflow} holds {tool} at {held}, mise.toml names {named}");
+            }
+            None => {
+                println!("error: {workflow} holds {tool} at {held}, which mise.toml does not name");
+            }
+        }
+    }
+    Ok(if unlocked.is_empty() && drifted.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Every workflow of the repository at `root`, its path from the root and its text, in order.
+fn workflows(root: &Path) -> anyhow::Result<Vec<(String, String)>> {
+    let dir = root.join(".github/workflows");
+    let listing = fs::read_dir(&dir).with_context(|| format!("listing {}", dir.display()))?;
+    let mut all = Vec::new();
+    for entry in listing {
+        let path = entry
+            .with_context(|| format!("listing {}", dir.display()))?
+            .path();
+        if path
+            .extension()
+            .is_some_and(|ext| ext == "yml" || ext == "yaml")
+        {
+            let text =
+                fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            all.push((relative, text));
+        }
+    }
+    all.sort();
+    Ok(all)
 }

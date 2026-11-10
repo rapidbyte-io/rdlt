@@ -1,0 +1,284 @@
+name: Release
+
+# A tag `v<version>` builds the Python package's files, tries each wheel, checks the set and
+# publishes it; a pull request that changes this workflow, or a run by hand, does all of that but
+# publish.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: [.github/workflows/release.yml]
+  workflow_dispatch:
+
+# Every job's token can read the repository and nothing else, but `publish`'s, which reads
+# nothing of it and may mint the identity tokens that attest the files and publish them.
+permissions:
+  contents: read
+
+# One run at a time for each ref; only a pull request's is cancelled by a newer one.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The mise release the jobs install their tools with, and the SHA-256 of its binary on each
+  # runner's platform.
+  SETUP_MISE_VERSION: "2026.10.21"
+  SETUP_MISE_SHA256_LINUX: ccfe12d7a62c6fb9def2a20db1f210f13a51de881f21fd8c85db4b6312405d07
+  SETUP_MISE_SHA256_MACOS: b20d30788a819fade398a1cb92aee56c383e3c34324162ec39fb8567dee79ba6
+  # mise installs a tool only as mise.lock holds it: its version, download and checksum.
+  MISE_LOCKED: "1"
+  # mise.lock holds no Linux arm64 tool: that runner takes uv's archive of this version, which
+  # must have this SHA-256, as its release's `.sha256` file and GitHub's digest of it say.
+  SETUP_UV_VERSION: "0.13.7"
+  SETUP_UV_SHA256_LINUX_ARM64: 71279f8d3c67241e807b9d8db872d1bf541579fb9f08b7d1eb1682196d1e57dc
+
+jobs:
+  # Each platform's abi3 wheel, for CPython 3.11 and later, and its free-threaded 3.14 wheel,
+  # since free-threaded CPython loads no abi3 wheel, each tried by running a pipeline on the
+  # interpreters `try` names. Linux's are built in pypa's manylinux_2_28 containers, with their
+  # interpreters, on a runner of each architecture; macOS's on the arm64 runner, whose x86-64
+  # wheels are tried on x86-64 interpreters under Rosetta.
+  wheels:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64
+            manylinux: "2_28"
+            machine: x86_64
+            try: { abi3: "3.11", free-threaded: "3.14t" }
+          - os: ubuntu-24.04-arm
+            target: aarch64
+            manylinux: "2_28"
+            machine: aarch64
+            try: { abi3: "3.11", free-threaded: "3.14t" }
+          - os: macos-15
+            target: aarch64-apple-darwin
+            manylinux: "off"
+            machine: arm64
+            try: { abi3: cpython-3.11-macos-aarch64-none, free-threaded: cpython-3.14t-macos-aarch64-none }
+          - os: macos-15
+            target: x86_64-apple-darwin
+            manylinux: "off"
+            machine: x86_64
+            try: { abi3: cpython-3.11-macos-x86_64-none, free-threaded: cpython-3.14t-macos-x86_64-none }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag names the version being released
+        if: github.event_name == 'push'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          test "${GITHUB_REF_NAME}" = "v${version}"
+      # maturin-action writes it into a shell script, unquoted: only a version passes.
+      - name: The maturin mise.toml names
+        id: maturin
+        run: |
+          version=$(sed -n 's/^maturin = "\([^"]*\)".*/\1/p' mise.toml)
+          if [[ ! "${version}" =~ ^[0-9]+(\.[0-9]+){2}$ ]]; then
+            echo "mise.toml names no maturin version: '${version}'" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        if: runner.os == 'macOS' || runner.arch == 'X64'
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
+          install_args: --locked uv
+          cache: false
+      - name: uv, held to its checksum
+        if: runner.os == 'Linux' && runner.arch == 'ARM64'
+        run: |
+          archive=uv-aarch64-unknown-linux-gnu.tar.gz
+          curl --proto '=https' --tlsv1.2 -sSfL -o "${RUNNER_TEMP}/${archive}" \
+            "https://github.com/astral-sh/uv/releases/download/${SETUP_UV_VERSION}/${archive}"
+          echo "${SETUP_UV_SHA256_LINUX_ARM64}  ${RUNNER_TEMP}/${archive}" | sha256sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/uv-aarch64-unknown-linux-gnu" >> "$GITHUB_PATH"
+      - name: x86-64 programs run here, under Rosetta
+        if: runner.os == 'macOS' && matrix.machine == 'x86_64'
+        run: |
+          if ! arch -x86_64 /usr/bin/true; then
+            echo "this runner has no Rosetta: its x86-64 wheels cannot be tried" >&2
+            exit 1
+          fi
+      # The macOS builds name the runner's own; each leg tries its wheels on `try`'s.
+      - name: The interpreters uv installs
+        env:
+          TRY_ABI3: ${{ matrix.try.abi3 }}
+          TRY_FREE_THREADED: ${{ matrix.try.free-threaded }}
+        run: |
+          uv python install "${TRY_ABI3}" "${TRY_FREE_THREADED}"
+          if [[ "${RUNNER_OS}" == macOS ]]; then
+            uv python install cpython-3.11-macos-aarch64-none cpython-3.14t-macos-aarch64-none
+            {
+              echo "ABI3_PYTHON=$(uv python find cpython-3.11-macos-aarch64-none)"
+              echo "FREE_THREADED_PYTHON=$(uv python find cpython-3.14t-macos-aarch64-none)"
+            } >> "$GITHUB_ENV"
+          fi
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: ${{ steps.maturin.outputs.version }}
+          token: ""
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist --interpreter ${{ env.ABI3_PYTHON || 'python3.11' }}
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: ${{ steps.maturin.outputs.version }}
+          token: ""
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist --interpreter ${{ env.FREE_THREADED_PYTHON || '/opt/python/cp314-cp314t/bin/python3.14t' }}
+      # Each wheel, installed on its interpreter beside the locked test dependencies, runs a
+      # pipeline. The connector is built for the runner, apart from the containers' target
+      # directory, which they leave owned by root.
+      - name: Each wheel runs a pipeline
+        env:
+          TRY_ABI3: ${{ matrix.try.abi3 }}
+          TRY_FREE_THREADED: ${{ matrix.try.free-threaded }}
+          MACHINE: ${{ matrix.machine }}
+        run: |
+          export CARGO_TARGET_DIR="${RUNNER_TEMP}/target"
+          cargo build --locked --package rdlt-connector-reference --features test-connectors --bin rdlt-connector-memory
+          connectors="${RUNNER_TEMP}/connectors"
+          mkdir -p "${connectors}"
+          cp "${CARGO_TARGET_DIR}/debug/rdlt-connector-memory" "${connectors}/"
+          for wheel in dist/*.whl; do
+            case "${wheel}" in
+              *-cp314t-*) python="${TRY_FREE_THREADED}" ;;
+              *) python="${TRY_ABI3}" ;;
+            esac
+            environment="${RUNNER_TEMP}/try-${python}"
+            uv venv --python "${python}" "${environment}"
+            machine=$("${environment}/bin/python" -c 'import platform; print(platform.machine())')
+            if [[ "${machine}" != "${MACHINE}" ]]; then
+              echo "${python} runs on ${machine}, not ${MACHINE}" >&2
+              exit 1
+            fi
+            VIRTUAL_ENV="${environment}" uv sync --locked --active --only-group dev
+            uv pip install --python "${environment}/bin/python" --no-deps "${wheel}"
+            "${environment}/bin/python" -I python/tests/smoke.py "${connectors}"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheels-${{ matrix.target }}
+          path: dist
+          retention-days: 7
+          if-no-files-found: error
+
+  # The sdist needs no container, so the locked maturin builds it.
+  sdist:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
+          install_args: --locked maturin
+          cache: false
+      - run: maturin sdist --out dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdist
+          path: dist
+          retention-days: 7
+          if-no-files-found: error
+
+  # The release's nine files and nothing else, named for its version: the tag's, or on another
+  # run the sdist's. `publish` takes this artifact alone.
+  files:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sdist
+          path: dist
+      - name: dist holds the release's files and nothing else
+        run: |
+          shopt -s nullglob
+          if [[ "${GITHUB_EVENT_NAME}" == push ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            sdists=(dist/rdlt-*.tar.gz)
+            if [[ "${#sdists[@]}" -ne 1 ]]; then
+              echo "dist holds ${#sdists[@]} sdists" >&2
+              exit 1
+            fi
+            version="${sdists[0]#dist/rdlt-}"
+            version="${version%.tar.gz}"
+          fi
+          expected=(
+            "rdlt-${version}.tar.gz"
+            "rdlt-${version}-cp311-abi3-manylinux_2_28_x86_64.whl"
+            "rdlt-${version}-cp314-cp314t-manylinux_2_28_x86_64.whl"
+            "rdlt-${version}-cp311-abi3-manylinux_2_28_aarch64.whl"
+            "rdlt-${version}-cp314-cp314t-manylinux_2_28_aarch64.whl"
+            "rdlt-${version}-cp311-abi3-macosx_*_arm64.whl"
+            "rdlt-${version}-cp314-cp314t-macosx_*_arm64.whl"
+            "rdlt-${version}-cp311-abi3-macosx_*_x86_64.whl"
+            "rdlt-${version}-cp314-cp314t-macosx_*_x86_64.whl"
+          )
+          for name in "${expected[@]}"; do
+            # A name may hold a glob, for macOS's deployment target.
+            # shellcheck disable=SC2206
+            found=(dist/${name})
+            if [[ "${#found[@]}" -ne 1 || ! -f "${found[0]}" ]]; then
+              echo "dist does not hold one file named ${name}" >&2
+              exit 1
+            fi
+          done
+          held=$(find dist -mindepth 1 | wc -l)
+          if [[ "${held}" -ne "${#expected[@]}" ]]; then
+            echo "dist holds ${held} entries, not ${#expected[@]}:" >&2
+            find dist -mindepth 1 >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: dist
+          retention-days: 7
+          if-no-files-found: error
+
+  # Builds nothing: it attests the files `files` checked and publishes them to PyPI by trusted
+  # publishing, which takes no secret, from the `pypi` environment.
+  publish:
+    if: github.event_name == 'push'
+    needs: [files]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
