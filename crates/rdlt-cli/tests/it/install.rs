@@ -18,6 +18,20 @@ fn fake_python(path: &Path, facts: &str) -> PathBuf {
     path.to_owned()
 }
 
+/// The facts of the system's Python 3.14, as the fakes below answer them.
+const FACTS: &str = r#"{"version": [3, 14, 0], "executable": "/usr/bin/python3.14", "base": "/usr/bin/python3", "stdlib": "/usr/lib/python3.14"}"#;
+
+/// As [`fake_python`], answering the system's facts, and running `making`, shell, when asked to
+/// make an environment, which it does not make.
+fn fake_python_making(path: &Path, making: &str) -> PathBuf {
+    let python = fake_python(path, FACTS);
+    let answering = std::fs::read_to_string(&python).expect("the script reads");
+    let step = format!("#!/bin/sh\nif [ \"$2\" = -m ]; then {making}; exit 0; fi\n");
+    let script = answering.replacen("#!/bin/sh\n", &step, 1);
+    std::fs::write(&python, script).expect("the script writes");
+    python
+}
+
 /// `connector install` of `wheel` with `python`, as JSON, its host the scratch's XDG directories'.
 async fn installing(scratch: &Scratch, wheel: &Path, python: &Path) -> std::process::Output {
     let mut install = scratch.bare_command(&["connector", "install", "--output", "json"]);
@@ -146,15 +160,8 @@ async fn a_signal_ends_an_install_with_every_process_it_started_and_leaves_nothi
     std::fs::write(&wheel, "").unwrap();
     // Asked to make the environment, it leaves a process of its own that would outlive it.
     let started = scratch.path().join("started");
-    let facts = r#"{"version": [3, 14, 0], "executable": "/usr/bin/python3.14", "base": "/usr/bin/python3", "stdlib": "/usr/lib/python3.14"}"#;
-    let python = fake_python(&scratch.path().join("python3"), facts);
-    let answering = std::fs::read_to_string(&python).unwrap();
-    let making = format!(
-        "#!/bin/sh\nif [ \"$2\" = -m ]; then sleep 1000 & echo $! > '{}'; wait; exit 0; fi\n",
-        started.display()
-    );
-    let script = answering.replacen("#!/bin/sh\n", &making, 1);
-    std::fs::write(&python, script).unwrap();
+    let making = format!("sleep 1000 & echo $! > '{}'; wait", started.display());
+    let python = fake_python_making(&scratch.path().join("python3"), &making);
     let mut install = scratch.bare_command(&["connector", "install", "--output", "json"]);
     install.arg(&wheel).arg("--python").arg(&python);
     let child = install.spawn().expect("rdlt starts");
@@ -189,4 +196,88 @@ async fn a_signal_ends_an_install_with_every_process_it_started_and_leaves_nothi
     gone.await
         .expect("the process the install's child started is killed with it");
     assert!(staged(&connectors).is_empty(), "{:?}", staged(&connectors));
+}
+
+#[tokio::test]
+async fn what_the_environment_s_making_says_reaches_standard_error_and_nothing_else() {
+    let scratch = Scratch::new();
+    let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
+    std::fs::write(&wheel, "").unwrap();
+    let making = "echo said-on-its-output; echo said-on-its-errors >&2";
+    let python = fake_python_making(&scratch.path().join("python3"), making);
+    // The environment is not made, so pip is not there to run.
+    let refused = installing(&scratch, &wheel, &python).await;
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        said.contains("said-on-its-output") && said.contains("said-on-its-errors"),
+        "{said}"
+    );
+    let printed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(printed["error"]["code"], "pip_failed", "{printed}");
+}
+
+/// On a terminal that stops a process of a background group as it writes, as `stty tostop`
+/// makes one, an install whose children write ends, since they write to it through no terminal.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_install_ends_on_a_terminal_that_stops_what_writes_from_the_background() {
+    use std::io::{Read as _, Write as _};
+
+    use nix::sys::termios::{self, LocalFlags, SetArg};
+
+    // Makes the terminal its controlling one, the group it leads the terminal's.
+    let setsid = Path::new("/usr/bin/setsid");
+    if !setsid.is_file() {
+        writeln!(std::io::stderr(), "skipped: no {} here", setsid.display()).ok();
+        return;
+    }
+    let scratch = Scratch::new();
+    let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
+    std::fs::write(&wheel, "").unwrap();
+    let making = "echo said-on-its-output; echo said-on-its-errors >&2";
+    let python = fake_python_making(&scratch.path().join("python3"), making);
+    let opened = nix::pty::openpty(None, None).expect("a pseudo-terminal");
+    let mut attributes = termios::tcgetattr(&opened.slave).expect("its attributes");
+    attributes.local_flags.insert(LocalFlags::TOSTOP);
+    termios::tcsetattr(&opened.slave, SetArg::TCSANOW, &attributes).expect("tostop is set");
+    let terminal = || std::process::Stdio::from(opened.slave.try_clone().expect("a descriptor"));
+    let mut install = tokio::process::Command::new(setsid);
+    install
+        .args(["--ctty", "--wait"])
+        .arg(env!("CARGO_BIN_EXE_rdlt"))
+        .args(["connector", "install", "--output", "json"])
+        .arg(&wheel)
+        .arg("--python")
+        .arg(&python)
+        .current_dir(scratch.path())
+        .env("XDG_CONFIG_HOME", scratch.path().join("config"))
+        .env("XDG_DATA_HOME", scratch.path().join("data"))
+        .env(
+            "LLVM_PROFILE_FILE",
+            std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
+        )
+        .env_remove("RUST_LOG")
+        .stdin(terminal())
+        .stdout(terminal())
+        .stderr(terminal())
+        .kill_on_drop(true);
+    let mut child = install.spawn().expect("rdlt starts");
+    // The terminal ends for its reader once no descriptor of this process holds it either.
+    drop(install);
+    drop(opened.slave);
+    let mut master = std::fs::File::from(opened.master);
+    let reading = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        // The terminal answers an error once its last writer is gone.
+        master.read_to_end(&mut seen).ok();
+        seen
+    });
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait()).await;
+    let status = ended
+        .expect("it ends: no child of it is stopped writing to the terminal")
+        .expect("it ends");
+    assert_eq!(status.code(), Some(2), "{status:?}");
+    let seen = String::from_utf8_lossy(&reading.join().expect("the terminal is read")).into_owned();
+    assert!(seen.contains("said-on-its-output"), "{seen}");
 }

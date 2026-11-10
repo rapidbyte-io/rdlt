@@ -44,19 +44,34 @@ impl Drop for Group {
     }
 }
 
-/// Whether `command` ran and succeeded, what it prints for a person going to standard error, so
-/// standard output holds the command line's result alone.
+/// Whether `command` ran and succeeded, what it prints for a person copied to standard error as it
+/// comes, so standard output holds the command line's result alone.
+///
+/// Its output reaches no terminal of its own: a group of its own is not the terminal's, and with
+/// `tostop` set a write to it would stop the child for ever.
 async fn ran(command: &mut Command) -> bool {
     command
         .stdin(Stdio::null())
-        .stdout(std::io::stderr())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .process_group(0)
         .kill_on_drop(true);
-    let Ok(child) = command.spawn() else {
+    let Ok(mut child) = command.spawn() else {
         return false;
     };
+    let (output, errors) = (child.stdout.take(), child.stderr.take());
     let mut group = Group(child);
-    group.0.wait().await.is_ok_and(|status| status.success())
+    let (ended, (), ()) = tokio::join!(group.0.wait(), copied(output), copied(errors));
+    ended.is_ok_and(|status| status.success())
+}
+
+/// Copies what a child writes to `from` to this process's standard error, until it closes.
+async fn copied(from: Option<impl tokio::io::AsyncRead + Unpin>) {
+    if let Some(mut from) = from {
+        tokio::io::copy(&mut from, &mut tokio::io::stderr())
+            .await
+            .ok();
+    }
 }
 
 /// What `python` says it is, once it is seen to be 3.11 or later.
