@@ -1191,11 +1191,20 @@ async fn a_credit_watch_outside_one_to_a_thousand_ms_is_a_usage_error() {
 fn directory_connector(root: &std::path::Path, name: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let tree = std::fs::canonicalize(root)
-        .expect("it resolves")
-        .join("rdlt-connector-tree");
-    std::fs::create_dir_all(tree.join("bin")).expect("a directory");
-    std::fs::create_dir_all(tree.join("libexec")).expect("a directory");
+    let root = std::fs::canonicalize(root).expect("it resolves");
+    let tree = root.join("rdlt-connector-tree");
+    // Of this user's alone whatever the umask, as the host takes a tree and the directories on
+    // the way to it.
+    for directory in [
+        root.clone(),
+        tree.clone(),
+        tree.join("bin"),
+        tree.join("libexec"),
+    ] {
+        std::fs::create_dir_all(&directory).expect("a directory");
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755))
+            .expect("its mode is set");
+    }
     let held = tree.join("libexec").join(name);
     std::fs::copy(example(name), &held).expect("the binary copies");
     let launcher = tree.join("bin/rdlt-connector");

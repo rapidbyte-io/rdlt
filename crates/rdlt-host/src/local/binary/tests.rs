@@ -477,6 +477,7 @@ fn a_directory_s_launcher_is_its_binary_and_the_directory_its_tree() {
     let temporary = tempfile::tempdir().expect("a temporary directory");
     // Resolved, so the tree found is the path written here.
     let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
+    std::fs::set_permissions(&root, PermissionsExt::from_mode(0o755)).expect("its mode is set");
     let tree = dir(&root, "rdlt-connector-tree");
     let launcher = dir(&tree, "bin").join("rdlt-connector");
     file(&launcher, b"#!/bin/sh\n", 0o755);
@@ -498,6 +499,7 @@ fn a_directory_s_launcher_is_its_binary_and_the_directory_its_tree() {
 fn a_tree_reached_through_a_link_is_known_by_where_it_lies() {
     let temporary = tempfile::tempdir().expect("a temporary directory");
     let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
+    std::fs::set_permissions(&root, PermissionsExt::from_mode(0o755)).expect("its mode is set");
     let tree = dir(&root, "rdlt-connector-tree");
     file(
         &dir(&tree, "bin").join("rdlt-connector"),
