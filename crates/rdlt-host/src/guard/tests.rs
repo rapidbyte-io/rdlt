@@ -196,3 +196,122 @@ async fn a_session_a_guarded_destination_opens_is_guarded_too() {
     let closed = opened.session.close().await.expect_err("it fails");
     assert_eq!(closed.to_string(), "closing with ***");
 }
+
+/// A destination whose check panics as its function does.
+struct Panicking(fn());
+
+impl rdlt_connector::Destination for Panicking {
+    fn capabilities(&self) -> &rdlt_connector::Capabilities {
+        unreachable!("no test asks")
+    }
+
+    fn check(&self) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        Box::pin(async move {
+            (self.0)();
+            Ok(())
+        })
+    }
+
+    fn open<'a>(
+        &'a self,
+        _context: &'a rdlt_connector::OpenContext,
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<rdlt_connector::OpenedSession>> {
+        unreachable!("no test asks")
+    }
+}
+
+/// What the check of a guarded destination that `panics`, sent `hunter2`, unwinds with.
+async fn unwound_with(panics: fn()) -> Box<dyn std::any::Any + Send> {
+    use rdlt_connector::Destination as _;
+    let redactions = Redactions::new();
+    redactions.add("hunter2");
+    let guarded = super::Guarded {
+        inner: Box::new(Panicking(panics)) as Box<dyn rdlt_connector::Destination>,
+        redactions,
+    };
+    let joined = tokio::spawn(async move { guarded.check().await }).await;
+    joined.expect_err("the check panics").into_panic()
+}
+
+fn formatted() {
+    let secret = String::from("hunter2");
+    panic!("checking with {secret}");
+}
+
+fn literal() {
+    panic!("checking with hunter2");
+}
+
+fn coded() {
+    std::panic::panic_any(7_u8);
+}
+
+#[tokio::test]
+async fn a_panic_unwinds_on_without_the_secrets_its_connector_was_sent() {
+    for panics in [formatted as fn(), literal] {
+        let payload = unwound_with(panics).await;
+        let said = payload.downcast_ref::<String>().map(String::as_str);
+        assert_eq!(said, Some("checking with ***"));
+    }
+    let payload = unwound_with(coded).await;
+    assert_eq!(
+        payload.downcast_ref::<u8>(),
+        Some(&7),
+        "a payload of no text is kept"
+    );
+}
+
+/// A source written by hand whose check panics before it makes the future it answers with.
+struct PanicsEagerly;
+
+impl rdlt_connector::Source for PanicsEagerly {
+    fn check(&self) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        formatted();
+        Box::pin(async { Ok(()) })
+    }
+
+    fn discover(
+        &self,
+    ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<rdlt_connector::Catalog>> {
+        unreachable!("no test asks")
+    }
+
+    fn plan<'a>(
+        &'a self,
+        _stream: &'a rdlt_connector::StreamName,
+        _state: &'a rdlt_connector::StreamState,
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<rdlt_connector::PartitionPlan>> {
+        unreachable!("no test asks")
+    }
+
+    fn read(
+        &self,
+        _request: rdlt_connector::ReadRequest,
+        _sink: rdlt_connector::PartitionSink,
+    ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        unreachable!("no test asks")
+    }
+
+    fn committed<'a>(
+        &'a self,
+        _stream: &'a rdlt_connector::StreamName,
+        _cursors: &'a [(rdlt_connector::PartitionId, rdlt_connector::Cursor)],
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<()>> {
+        unreachable!("no test asks")
+    }
+}
+
+#[tokio::test]
+async fn a_panic_before_a_call_s_future_unwinds_on_scrubbed_too() {
+    use rdlt_connector::Source as _;
+    let redactions = Redactions::new();
+    redactions.add("hunter2");
+    let guarded = super::Guarded {
+        inner: Box::new(PanicsEagerly) as Box<dyn rdlt_connector::Source>,
+        redactions,
+    };
+    let joined = tokio::spawn(async move { guarded.check().await }).await;
+    let payload = joined.expect_err("the check panics").into_panic();
+    let said = payload.downcast_ref::<String>().map(String::as_str);
+    assert_eq!(said, Some("checking with ***"));
+}

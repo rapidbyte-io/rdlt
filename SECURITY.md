@@ -121,7 +121,8 @@ anything runs; none is ignored.
   host has checked: its id and version, and its binary's digest or its certificate's name. A
   connector receives only its own configuration.
 - A resolved secret is replaced by `***` in that connector's errors, its last words and its
-  logged output, whichever start of it said it, in an engine's report of them, and in
+  logged output, whichever start of it said it, in the message of an in-process connector's
+  panic, which unwinds on with it replaced, in an engine's report of them, and in
   `rdlt certify`'s reports, and so is each line of a secret that holds line ends and at least 8
   characters other than whitespace, wherever it is found. It is not written to state by the
   engine. A literal value in a configuration is not a secret and is not scrubbed.
@@ -153,8 +154,9 @@ Not guaranteed:
   `/run/user`. Grant no such directory to a connector you would not let reach those.
 - **Programs mounted into a grant**: a bind mount of a program within a granted path, or a
   mount beneath one, is not seen; what is mounted within a grant is the operator's.
-- **A secret a connector transforms** before it prints it, or that trusted in-process code
-  panics with; and the memory of the transport a configuration crosses.
+- **A secret a connector transforms** before it prints it; the process's panic hook, which
+  sees an in-process connector's panic, its message as it was raised, before the host scrubs
+  it; and the memory of the transport a configuration crosses.
 - **macOS local placement**, beyond the checks on the binary: no sandbox and no digest.
 
 ADR 0043 records these.

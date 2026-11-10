@@ -158,7 +158,9 @@ forever, `#[non_exhaustive]` everywhere) are adapted below.
   no async form, through `std::thread::Builder` with a name, and is owned and joined.
 - **`catch_unwind` only contains a panic at a boundary**, turning it into an error: a task in a
   `TaskScope`, a job on the compute pool, Arrow's readers decoding a hostile frame, a simulation
-  seed. A crate that catches a panic refuses to compile with `panic = "abort"` (`cargo xtask lint`
+  seed. The host's in-process connectors are the only place a panic is caught and let go on: its
+  message is scrubbed of the connector's secrets, and the panic unwinds on to the engine's catch.
+  A crate that catches a panic refuses to compile with `panic = "abort"` (`cargo xtask lint`
   checks its root). A caught panic is still a bug and fails the run, call or seed it happened in;
   nothing relies on it for correctness.
 
