@@ -21,6 +21,7 @@
 [![unsafe](https://img.shields.io/badge/unsafe-one%20audited%20crate-6f42c1)](docs/adr/0048-supply-chain-and-ci.md)
 
 [Quick start](#quick-start) ·
+[Python](#python) ·
 [Embedding](#embedding-rdlt) ·
 [Connectors](#writing-a-connector) ·
 [Certification](#certifying-a-connector) ·
@@ -77,8 +78,8 @@ The engine core, the connector contract and SDK, the wire protocol, placement, s
 certification are in place, with the [reference connectors](#reference-connectors). These are not
 here yet:
 
-- A published crate. A project depends on the repository, as the [quick start](#quick-start)
-  shows.
+- A published crate or wheel. A project depends on the repository, as the
+  [quick start](#quick-start) shows.
 - Connectors beyond the reference ones, and `sqlgen` dialects beyond SQLite.
 - Windows. `rdlt-host`, `rdlt-certify`, a connector binary built on `rdlt_connector::serve` and the
   reference connectors need a Unix, and CI tests Linux and macOS. The sandbox and the hashing of
@@ -192,6 +193,115 @@ The second run commits nothing: each partition resumes from the cursor the first
 into `demo.db` in the same transaction as its rows. With the `sqlite3` command-line tool,
 `sqlite3 demo.db .tables` shows the `events` table beside the destination's bookkeeping, the
 `_rdlt_*` tables.
+
+## Python
+
+The `rdlt` Python package runs the same pipelines from Python, with the same words, checks,
+errors and events, and runs Python functions inside the engine as sources and transforms. Python
+connectors are written on the Rust SDK and certified in pytest. It needs CPython 3.11 or newer,
+or free-threaded CPython 3.14, on Linux or macOS ([ADR 0055](docs/adr/0055-python.md)).
+
+No wheel is published yet. `pip` builds one from the repository, with the Rust toolchain and C
+compiler the [quick start](#quick-start) names:
+
+```sh
+pip install "rdlt @ git+https://github.com/rapidbyte-io/rdlt"
+```
+
+[`python/examples/quickstart.py`](python/examples/quickstart.py), which a test runs, loads a
+Python function's rows into SQLite through the reference SQLite connector, installed as
+[From the command line](#from-the-command-line) shows. A resource is a function that yields
+rows, as dicts or lists of them, Arrow batches or anything that exports Arrow, and checkpoints:
+each the cursor a run resumes from once the rows before it are committed.
+
+```python
+"""rdlt's Python quick start: a Python function's rows into SQLite, exactly once."""
+
+from __future__ import annotations
+
+import sys
+from collections.abc import Iterator
+from pathlib import Path
+
+import rdlt
+
+
+class Since(rdlt.Cursor):
+    """Where `users` resumes: the last page committed."""
+
+    after: int = -1
+
+
+@rdlt.resource(primary_key="id", write=rdlt.merge("id"), cursor=Since)
+def users(since: Since) -> Iterator[object]:
+    """Three pages of ten users, each followed by the checkpoint after it."""
+    for page in range(since.after + 1, 3):
+        yield [{"id": page * 10 + n, "name": f"user {page * 10 + n}"} for n in range(10)]
+        yield rdlt.checkpoint(Since(after=page))
+
+
+def main(connectors: Path, data: Path) -> rdlt.Outcome:
+    """Loads `users` into `users.db` in `data`, with the SQLite connector in `connectors`."""
+    # Sandboxed on Linux, where the connector may write in `data` alone; macOS has no sandbox.
+    host = rdlt.Host(connectors=connectors, writable=data, trust_binaries=sys.platform == "darwin")
+    sqlite = rdlt.Connector(
+        "io.rapidbyte.sqlite",
+        config={"path": str(data / "users.db")},
+        access=rdlt.Access(write=data),
+    )
+    return rdlt.pipeline("users", source=users, destination=sqlite).build(host).run()
+
+
+if __name__ == "__main__":
+    outcome = main(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve())
+    print(f"{outcome.report.status.value}: committed {outcome.report.rows} rows")
+```
+
+Run it twice, with the connectors' directory and a directory for the database:
+
+```console
+$ python quickstart.py ~/.local/share/rdlt/connectors .
+succeeded: committed 30 rows
+$ python quickstart.py ~/.local/share/rdlt/connectors .
+succeeded: committed 0 rows
+```
+
+The second run commits nothing: `users` resumes from the cursor the first run committed with its
+rows. On Linux without bubblewrap the build raises `rdlt.ConfigError` coded `sandbox_missing`, and
+where bubblewrap cannot make a sandbox it is coded `sandbox_unavailable`, as on Ubuntu 24.04, whose
+AppArmor lets a program make an unprivileged user namespace only where a profile names it
+([`.github/sandbox.sh`](.github/sandbox.sh) adds one for bubblewrap). Install bubblewrap, allow it
+the namespace, or pass `trust_binaries=True` to run the connector with your own access.
+
+**Transforms.** `@rdlt.transform()` makes a function from a pyarrow `RecordBatch` to a batch a
+transform, and `@rdlt.filter()` makes one that answers which rows to keep, as a boolean array.
+`rdlt.stream("users", transform=[...])` runs them in order, on the engine's compute pool. A
+document names a transform its host registered with `host.transform("name", function)` as
+`{"code": "name"}`, and `rdlt.testing.certify_transform` runs the transform clauses against one.
+
+**Connectors.** `rdlt.connector` writes a connector as a class. `@source` takes its
+configuration, a pydantic model in which a credential is a `Secret`, and `@stream` methods that
+yield rows and checkpoints. `@destination` takes its configuration and capabilities, and an `open`
+answering a session whose table writers stage what a commit publishes; a session's calls, its
+writers' included, reach the class one at a time, so it needs no lock of its own. Failure classes,
+such as `Transient` and `RateLimited(after=)`, say what kind of failure the connector met.
+Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, beneath it.
+`rdlt.local(Tickets, config=...)` places a class `Tickets` in process, and a launcher ending in
+`raise SystemExit(rdlt.connector.serve(Tickets))` serves it as a connector binary.
+`test_certify = rdlt.testing.certify_source(Tickets, config=...)` in a test module, or
+`certify_destination`, makes each clause a pytest test, `test_certify[S-RESUME]`.
+
+**The GIL** is held for Python's own calls alone. Each partition of a Python source reads on a
+thread of its own and releases the GIL while it waits for the engine, and a transform takes it
+only inside its call, so a pipeline with no Python in it keeps committing while Python runs. On
+free-threaded CPython there is no GIL to hold.
+
+**Ctrl-C.** `pipeline.run()` answers it as the command line does: the first stops the run after its
+next commit and waits for it to end, and a second cancels the run and raises `KeyboardInterrupt`.
+Under `asyncio.run` the first Ctrl-C cancels the main task, and an await of the run cancelled with
+it asks the run to stop after its next commit and raises at once, so the process exits without
+waiting for that commit. Exactly-once still holds: what was committed stays, and the next run reads
+on from the last committed cursor.
 
 ## Embedding rdlt
 
@@ -970,6 +1080,7 @@ flowchart LR
 | [`rdlt-wire`](crates/rdlt-wire) | The wire protocol: messages, the Arrow codec, limits, credit and TLS |
 | [`rdlt-certify`](crates/rdlt-certify) | Certification over the protocol, as a library for `rdlt certify` and tests |
 | [`rdlt-cli`](crates/rdlt-cli) | The `rdlt` command line: write, check, run, inspect and certify pipelines and connectors |
+| [`rdlt-python`](crates/rdlt-python) | The Python package's native extension, `rdlt._native`, beneath the typed package in [`python/rdlt`](python/rdlt) |
 | [`rdlt-adopt`](crates/rdlt-adopt) | The workspace's only `unsafe` code: adopting the socket a host passed a spawned connector, and spawning a connector that inherits no other descriptor of its host's |
 | [`rdlt-sim`](crates/rdlt-sim) | The deterministic simulation harness (not for publishing) |
 | [`rdlt-testkit`](crates/rdlt-testkit) | Drawn Arrow data and an exact value model for tests and the simulation (not for publishing) |
@@ -1002,6 +1113,7 @@ the whole engine runs under deterministic simulation.
 | Resident memory | Peak resident memory of 3 workloads at 2, 4 and all cores against the limit their budget gives them | Nightly, Linux |
 | Miri | The test of `rdlt-adopt`'s `adopt`, the socket half of its `unsafe` code | Every pull request |
 | Property and differential tests | Every logical type in every Arrow encoding, lowered and normalized and read back by meaning | Every pull request |
+| Python | The wheel as it ships, built in release and installed: the bindings, Python sources and transforms, the connector SDK, served mode and certification under pytest; ten thousand batches through a Python source and transform leave the heap's blocks, pyarrow's allocations and resident memory flat, and a pipeline with no Python in it commits while another's transform holds the GIL | Every pull request on CPython 3.14 on Linux and 3.11 on macOS; 3.11 to 3.15 and free-threaded 3.14 on both nightly |
 | Supply chain | cargo-deny over every lockfile, actions referenced by commit SHA, and every other tool but the Rust toolchains, which rustup installs, locked to a checksum in `mise.lock`; valgrind and bubblewrap come from Ubuntu's archive; the release's wheels are built by maturin-action, held to its commit, which fetches maturin, rustup and build tools unchecked, in pypa's manylinux containers on Linux | Every pull request; advisories nightly |
 
 `unsafe` lives in `rdlt-adopt` alone. Every other target's root starts with
