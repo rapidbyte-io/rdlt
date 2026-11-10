@@ -1185,3 +1185,60 @@ async fn a_credit_watch_outside_one_to_a_thousand_ms_is_a_usage_error() {
         assert_eq!(code(&output), Some(expected), "--credit-watch {watch}");
     }
 }
+
+/// A directory connector in `root`, where it lies, whose launcher runs a copy of the example
+/// `name` held in its tree.
+fn directory_connector(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let tree = std::fs::canonicalize(root)
+        .expect("it resolves")
+        .join("rdlt-connector-tree");
+    std::fs::create_dir_all(tree.join("bin")).expect("a directory");
+    std::fs::create_dir_all(tree.join("libexec")).expect("a directory");
+    let held = tree.join("libexec").join(name);
+    std::fs::copy(example(name), &held).expect("the binary copies");
+    let launcher = tree.join("bin/rdlt-connector");
+    let script = format!("#!/bin/sh\nexec '{}' \"$@\"\n", held.display());
+    std::fs::write(&launcher, script).expect("the launcher writes");
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
+        .expect("executable");
+    tree
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_directory_connector_is_certified_by_its_tree() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let tree = directory_connector(root.path(), "serve_source");
+    let tree = tree.to_str().expect("a UTF-8 path");
+    let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 5}]}"#;
+    let common = [
+        tree,
+        "--config-file",
+        "-",
+        "--env",
+        "LLVM_PROFILE_FILE",
+        "--require",
+        "partial",
+    ];
+    let trusted = certify_given(&[&common[..], &["--trust-binaries"]].concat(), config, &[]).await;
+    assert_eq!(
+        code(&trusted),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&trusted.stdout)
+    );
+    #[cfg(target_os = "linux")]
+    if let Err(unusable) = rdlt_host::Bubblewrap::new().usable() {
+        rdlt_testkit::process::without_sandbox(&unusable);
+    } else {
+        // Sandboxed, its launcher finds what it runs in the tree bound beside it.
+        let sandboxed = certify_given(&common, config, &[]).await;
+        assert_eq!(
+            code(&sandboxed),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&sandboxed.stdout)
+        );
+    }
+}
