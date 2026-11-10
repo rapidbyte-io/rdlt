@@ -16,7 +16,9 @@ import pytest
 import rdlt
 from rdlt.connector import Config, Cursor, source, stream
 from rdlt.connector import _source as declared
+from rdlt.connector._declared import package_version
 from tests.connectors.tickets import Tickets
+from tests.processes import children, ended
 
 
 def into_sqlite(tmp_path: Path) -> rdlt.Connector:
@@ -156,60 +158,71 @@ def test_partitions_without_a_ctx_are_refused_where_the_stream_is_declared() -> 
 
 
 class _Holder:
-    """What a connector's closure reaches, which holds the pipeline it serves."""
+    """What an instance of `HeldTickets` keeps: the pipeline that placed it, once it is built."""
 
     pipeline: rdlt.Pipeline | None = None
 
 
-def _held_tickets(holder: _Holder) -> type:
-    """A connector class whose method reaches `holder`."""
-
-    class HeldConfig(Config):
-        pages: int
-
-    @source(id="io.example.held", config=HeldConfig, version="1.0.0")
-    class Held:
-        def __init__(self, config: HeldConfig) -> None:
-            self.pages = config.pages
-
-        def check(self) -> None:
-            """Reads need nothing checked first."""
-
-        @stream(primary_key=["id"])
-        def rows(self) -> Iterator[object]:
-            held = holder.pipeline is not None
-            yield {"id": self.pages, "held": held}
-
-    return Held
+_HOLDERS: dict[str, _Holder] = {}
 
 
-def test_a_connector_holding_its_own_pipeline_is_collected(
+class _HeldConfig(Config):
+    pages: int
+    holder: str
+
+
+@source(id="io.example.held", config=_HeldConfig, version="1.0.0")
+class HeldTickets:
+    """A source whose instance keeps the holder its configuration names.
+
+    An author's instance may keep what reaches its own pipeline, as this one does.
+    """
+
+    def __init__(self, config: _HeldConfig) -> None:
+        self.pages = config.pages
+        self.holder = _HOLDERS.get(config.holder)
+
+    def check(self) -> None:
+        """Reads need nothing checked first."""
+
+    @stream(primary_key=["id"])
+    def rows(self) -> Iterator[object]:
+        """One row a page."""
+        yield from ({"id": page} for page in range(self.pages))
+
+
+def test_a_connector_reaching_its_pipeline_is_collected_with_its_connector_processes(
     tmp_path: Path, connectors: Path
 ) -> None:
-    holder = _Holder()
-    held = _held_tickets(holder)
+    gc.collect()
+    before = children()
+    holder = _HOLDERS.setdefault("local", _Holder())
     host = rdlt.Host(connectors=connectors, writable=[tmp_path], trust_binaries=True)
     holder.pipeline = rdlt.pipeline(
         "cycle",
-        source=rdlt.local(held, config={"pages": 1}),
+        source=rdlt.local(HeldTickets, config={"pages": 1, "holder": "local"}),
         destination=into_sqlite(tmp_path),
     ).build(host)
+    holder.pipeline.run()
+    spawned = children() - before
+    del _HOLDERS["local"]
     collected = weakref.ref(holder)
-    del holder, held, host
+    del holder, host
     gc.collect()
-    assert collected() is None
+    assert (collected() is None, ended(spawned)) == (True, True)
 
 
-def test_a_connector_a_host_registers_holding_its_own_pipeline_is_collected(
+def test_a_connector_a_host_registers_reaching_its_pipeline_is_collected(
     tmp_path: Path, connectors: Path
 ) -> None:
-    holder = _Holder()
-    held = _held_tickets(holder)
-    host = rdlt.Host(connectors=connectors, writable=[tmp_path], trust_binaries=True).source(held)
+    gc.collect()
+    before = children()
+    holder = _HOLDERS.setdefault("registered", _Holder())
+    host = rdlt.Host(connectors=connectors, writable=[tmp_path], trust_binaries=True)
     document: dict[str, rdlt.Json] = {
         "version": 1,
         "pipeline": "cycle",
-        "source": {"connector": "io.example.held", "config": {"pages": 1}},
+        "source": {"connector": "io.example.held", "config": {"pages": 1, "holder": "registered"}},
         "destination": {
             "connector": "io.rapidbyte.sqlite",
             "config": {"path": str(tmp_path / "out.db")},
@@ -217,11 +230,14 @@ def test_a_connector_a_host_registers_holding_its_own_pipeline_is_collected(
         },
         "streams": [{"name": "rows"}],
     }
-    holder.pipeline = rdlt.Pipeline.from_document(document).build(host)
+    holder.pipeline = rdlt.Pipeline.from_document(document).build(host.source(HeldTickets))
+    holder.pipeline.run()
+    spawned = children() - before
+    del _HOLDERS["registered"]
     collected = weakref.ref(holder)
-    del holder, held, host
+    del holder, host
     gc.collect()
-    assert collected() is None
+    assert (collected() is None, ended(spawned)) == (True, True)
 
 
 def test_a_built_pipeline_and_its_run_keep_its_connector(tmp_path: Path, connectors: Path) -> None:
@@ -401,7 +417,7 @@ def test_a_connector_s_version_is_read_once_for_its_package(
         return distributions()
 
     monkeypatch.setattr(importlib.metadata, "packages_distributions", counted)
-    declared.package_version.cache_clear()
+    package_version.cache_clear()
 
     @source(id="io.example.unversioned", config=_PagesConfig)
     class Unversioned:
@@ -411,6 +427,6 @@ def test_a_connector_s_version_is_read_once_for_its_package(
         def check(self) -> None:
             """Reads need nothing checked first."""
 
-    declared.factory(Unversioned)
-    declared.factory(Unversioned)
+    declared.placed(Unversioned)
+    declared.placed(Unversioned)
     assert len(looked) == 1

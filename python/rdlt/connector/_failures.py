@@ -76,3 +76,12 @@ class Unsupported(ConnectorFailure):
     """The request needs what the connector cannot do."""
 
     kind = "unsupported"
+
+
+class Fenced(ConnectorFailure):
+    """A newer session holds the destination, so this session may not commit.
+
+    It is coded `commit_stale` where the commit expects another commit landed.
+    """
+
+    kind = "fenced"

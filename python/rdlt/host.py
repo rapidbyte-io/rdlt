@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 from rdlt import _native
 from rdlt._transform import Transform, named_once
 from rdlt._weak import weakly_reached
-from rdlt.connector._source import factory, registered_once
+from rdlt.connector import _destination, _source
+from rdlt.connector._declared import Registered, registered_once
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -115,12 +116,15 @@ class Host:
     _store: _SecretStore | None = field(default=None, init=False, repr=False, compare=False)
     _sources: tuple[_native.SourceFactory, ...] = field(default=(), repr=False)
     """Python functions and classes this host runs as sources, by the ids their factories name."""
+    _destinations: tuple[_native.DestinationFactory, ...] = field(default=(), repr=False)
+    """Python classes this host runs as destinations, by the ids their factories name."""
     _transforms: tuple[tuple[str, Transform], ...] = field(default=(), repr=False)
     """Python transforms a document may name by its `{"code": name}`, held in the open."""
     _held: tuple[object, ...] = field(default=(), repr=False)
     """What the native side reaches of Python's only weakly: this host holds it in the open."""
-    _connectors: tuple[tuple[str, type], ...] = field(default=(), repr=False)
-    """Python connector classes this host runs, by the ids they answer to, held in the open."""
+    _connectors: Registered = field(default=(), repr=False)
+    """Python connector classes this host runs, by the roles they serve and the ids they answer
+    to, held in the open."""
     _origin: Host | None = field(default=None, init=False, repr=False, compare=False)
     """The host this one was derived from, whose compute pool it shares."""
     _handle: _native.Host | None = field(default=None, init=False, repr=False, compare=False)
@@ -158,12 +162,37 @@ class Host:
         to reach only weakly.
 
         Raises:
-            ValueError: another class answers to the id.
+            ValueError: another source class answers to the id.
         """
-        connectors = registered_once(self._connectors, connector)
+        answers = _source.declaration(connector).id
+        connectors = registered_once(self._connectors, "source", answers, connector)
         if connectors is self._connectors:
             return self
-        return self._replaced(_sources=(*self._sources, factory(connector)), _connectors=connectors)
+        made, placement = _source.placed(connector)
+        return self._replaced(
+            _sources=(*self._sources, made), _held=(*self._held, placement), _connectors=connectors
+        )
+
+    def destination(self, connector: type) -> Host:
+        """A host that also runs `connector`, a class `@destination` made, in process under its id.
+
+        A document names it by that id; the connector is held in the open, for the native side
+        to reach only weakly.
+
+        Raises:
+            ValueError: another destination class answers to the id, or its capabilities are not
+                the Rust SDK's.
+        """
+        answers = _destination.declaration(connector).id
+        connectors = registered_once(self._connectors, "destination", answers, connector)
+        if connectors is self._connectors:
+            return self
+        made, placement = _destination.placed(connector)
+        return self._replaced(
+            _destinations=(*self._destinations, made),
+            _held=(*self._held, placement),
+            _connectors=connectors,
+        )
 
     def _replaced(self, **changes: object) -> Host:
         """This host with `changes`, built on this host's compute pool."""

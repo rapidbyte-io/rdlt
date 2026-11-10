@@ -2,28 +2,24 @@
 
 from __future__ import annotations
 
-import functools
 import inspect
 import json
 import types
-import weakref
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
 from rdlt import _native
 from rdlt._streams import Stream
 from rdlt._weak import weakly_reached
 from rdlt.connector._config import Config, validated
+from rdlt.connector._declared import Placement, declare, declared_as, package_version
 from rdlt.cursor import Cursor
 
 T = TypeVar("T")
 
 _PartitionsOf = Callable[[Any], Sequence[str]] | str
 """A partitioned stream's partitions: a method taking `self`, or the name of one."""
-
-_DECLARATION = "__rdlt_source__"
-"""The attribute `@source` leaves on a class: a class it did not decorate has none of its own."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,34 +81,15 @@ def stream(
     return made
 
 
-@dataclass(frozen=True, slots=True, weakref_slot=True)
+@dataclass(frozen=True, slots=True)
 class _Declared:
-    """What `@source` declared of a class, which holds it: the native side reaches it weakly."""
+    """What `@source` declared of a class, which the class holds."""
 
     connector: type
     id: str
     version: str | None
     config: type[Config]
     streams: tuple[_StreamMethod, ...]
-    connections: weakref.WeakKeyDictionary[_Connected, Any] = field(
-        default_factory=weakref.WeakKeyDictionary[Any, Any]
-    )
-    """Each connection's instance of the class, for as long as the native side holds that
-    connection: the collector sees what an instance holds, which the native side's own
-    reference would hide."""
-
-
-@functools.cache
-def package_version(top: str) -> str:
-    """The version of the distribution that installed the top-level package `top`, else `0.0.0`.
-
-    It is read once a package: finding the distribution reads every one installed.
-    """
-    import importlib.metadata  # noqa: PLC0415
-
-    for distribution in importlib.metadata.packages_distributions().get(top, []):
-        return importlib.metadata.version(distribution)
-    return "0.0.0"
 
 
 def _streams_of(connector: type) -> tuple[_StreamMethod, ...]:
@@ -140,57 +117,48 @@ def source(
 
     Each `@stream` method of the class and of its bases is one of its streams; a subclass's own
     attribute of a stream's name replaces that stream. A subclass is a source of its own only
-    once `@source` makes it one. A class that has no `check` is refused here, where it is
-    declared.
+    once `@source` makes it one. A class that has no `check`, or that `@destination` made, is
+    refused here, where it is declared.
     """
 
     def made(connector: type[T]) -> type[T]:
         if not callable(getattr(connector, "check", None)):
             message = f"{connector.__name__} has no check(): a source checks it can read"
             raise TypeError(message)
-        declared = _Declared(connector, id, version, config, _streams_of(connector))
-        setattr(connector, _DECLARATION, declared)
+        declare(
+            connector, "source", _Declared(connector, id, version, config, _streams_of(connector))
+        )
         return connector
 
     return made
 
 
+def declares(connector: type) -> bool:
+    """Whether `@source` made `connector` a source."""
+    return declared_as(connector, "source") is not None
+
+
 def declaration(connector: type) -> _Declared:
     """What `@source` declared of `connector`."""
-    declared = vars(connector).get(_DECLARATION)
+    declared = declared_as(connector, "source")
     if declared is None:
         message = f"{connector.__name__} is no source: decorate it with @source"
         raise TypeError(message)
     return cast("_Declared", declared)
 
 
-def registered_once(
-    existing: tuple[tuple[str, type], ...], connector: type
-) -> tuple[tuple[str, type], ...]:
-    """`existing` with `connector` under its id; refused where a different class has that id.
-
-    Raises:
-        ValueError: another class answers to the id.
-    """
-    answers = declaration(connector).id
-    for known, held in existing:
-        if known == answers:
-            if held is not connector:
-                message = f"two different connector classes answer to {answers!r}"
-                raise ValueError(message)
-            return existing
-    return (*existing, (answers, connector))
-
-
 class _Connected:
     """One connection of a class's source, as the native side holds it.
 
-    It holds nothing of the author's itself: the class keeps the instance, under this object as
-    a weak key, where the collector sees it, and letting go of this object releases it.
+    It holds nothing of the author's itself: its placement keeps the instance, under this object
+    as a weak key, where the collector sees it, and letting go of this object releases it.
     """
 
-    def __init__(self, declared: Callable[[], _Declared]) -> None:
-        self._declared = declared
+    def __init__(self, placement: Callable[[], Placement[_Declared]]) -> None:
+        self._placement = placement
+
+    def _declared(self) -> _Declared:
+        return self._placement().declared
 
     @property
     def streams(self) -> list[Stream]:
@@ -200,7 +168,7 @@ class _Connected:
         ]
 
     def _instance(self) -> Any:  # noqa: ANN401 - the author's class
-        return self._declared().connections[self]
+        return self._placement().connections[self]
 
     def _stream(self, index: int, method: _StreamMethod) -> Stream:
         def read(
@@ -229,25 +197,27 @@ class _Connected:
         self._instance().check()
 
 
-def factory(connector: type) -> _native.SourceFactory:
-    """The native source `connector`, a class `@source` made, is.
+def placed(connector: type) -> tuple[_native.SourceFactory, Placement[_Declared]]:
+    """The native source a class `@source` made, and the placement that keeps its instances.
 
-    The native factory reaches the class through a weak reference: what may still connect holds
-    the class in the open, as a host and a pipeline builder do.
+    The native factory reaches the placement through a weak reference: what may still connect
+    holds it in the open, as the host or the pipeline builder that placed the class does.
     """
     declared = declaration(connector)
-    reached = weakly_reached(declared, f"connector {declared.id!r}")
+    placement = Placement(declared)
+    reached = weakly_reached(placement, f"connector {declared.id!r}")
 
     def connect(text: str) -> _Connected:
         found = reached()
-        instance = found.connector(validated(found.config, text))
+        instance = found.declared.connector(validated(found.declared.config, text))
         connected = _Connected(reached)
         found.connections[connected] = instance
         return connected
 
-    return _native.SourceFactory(
+    made = _native.SourceFactory(
         declared.id,
         declared.version or package_version(connector.__module__.split(".")[0]),
         json.dumps(declared.config.model_json_schema()),
         connect,
     )
+    return made, placement

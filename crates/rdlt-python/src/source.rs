@@ -37,7 +37,7 @@ pub(crate) struct PyCursor(Option<Box<RawValue>>);
 
 /// Calls `function` of `rdlt._reading` with the arguments `arguments` builds, its exception the
 /// connector's error and `extract` reading what it returned.
-async fn called<T: Send + 'static>(
+pub(crate) async fn called<T: Send + 'static>(
     function: &'static str,
     arguments: impl for<'py> FnOnce(Python<'py>) -> std::result::Result<Bound<'py, PyTuple>, PyErr>
     + Send

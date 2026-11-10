@@ -10,13 +10,14 @@ use arrow_pyarrow::FromPyArrow as _;
 use pyo3::exceptions::PyValueError;
 use pyo3::{Bound, PyAny, PyErr, Python, pyfunction};
 use rdlt_certify::{
-    Clause, KILL_CLAUSES, PROTOCOL_CLAUSES, Report, SOURCE_CLAUSES, TRANSFORM_CLAUSES, Target,
-    TransformInputs,
+    Clause, KILL_CLAUSES, PROTOCOL_CLAUSES, Probe, Report, SOURCE_CLAUSES, TRANSFORM_CLAUSES,
+    Target, TransformInputs, Unprobed,
 };
 use rdlt_connector::ConnectorId;
 use rdlt_connector::serve::Served;
-use rdlt_connector::testing::Outcome;
+use rdlt_connector::testing::{Outcome, Reason};
 
+use crate::destination::NativeDestinationFactory;
 use crate::source::NativeSourceFactory;
 use crate::transform::NativeTransform;
 use crate::{errors, runtime};
@@ -82,8 +83,7 @@ pub(crate) fn certify_source(
     config: &str,
     launcher: Option<PathBuf>,
 ) -> Result<String, PyErr> {
-    let config: serde_json::Value = serde_json::from_str(config)
-        .map_err(|error| PyValueError::new_err(format!("a configuration is JSON: {error}")))?;
+    let config = configured(config)?;
     let source = factory.factory();
     let id: ConnectorId = source.spec().id.clone();
     let mut target = Target::served(Served::new().with_source(source));
@@ -94,6 +94,68 @@ pub(crate) fn certify_source(
         rdlt_certify::certify_source(&target, config).await
     })?;
     Ok(reported(&report))
+}
+
+/// Certifies the destination `factory` makes, served in this process over a socket pair and
+/// read back through it; with `launcher`, the installed binary of the same connector, its kill
+/// clause spawns that.
+#[pyfunction]
+#[pyo3(signature = (factory, config, launcher = None))]
+pub(crate) fn certify_destination(
+    py: Python<'_>,
+    factory: &NativeDestinationFactory,
+    config: &str,
+    launcher: Option<PathBuf>,
+) -> Result<String, PyErr> {
+    let config = configured(config)?;
+    let destination = factory.readable();
+    let id: ConnectorId = destination.spec().id.clone();
+    let mut target = Target::served(Served::new().with_destination(destination));
+    let killed_elsewhere = launcher.is_some();
+    if let Some(launcher) = launcher {
+        target = target.kill_target(Target::trusted_binary(id, launcher));
+    }
+    let report = runtime::wait(py, async move {
+        let read_back = rdlt_certify::read_back(&target, &config).await;
+        let probe: &dyn Probe = match &read_back {
+            Some(read_back) => read_back,
+            None => &Unprobed,
+        };
+        rdlt_certify::certify_destination(&target, config, probe).await
+    })?;
+    Ok(reported(&if killed_elsewhere {
+        read_back_here(report)
+    } else {
+        report
+    }))
+}
+
+/// `report`, its kill clause's reason, where it has one, saying where what the launcher
+/// published is read back: in this process, through the connector served here, which finds only
+/// a store that outlives the killed process.
+fn read_back_here(mut report: Report) -> Report {
+    for result in &mut report.results {
+        if result.clause.id != KILL_CLAUSES[1].id {
+            continue;
+        }
+        let read_here = |reason: &Reason| {
+            Reason::new(format_args!(
+                "what the launcher published is read back in this process: {reason}"
+            ))
+        };
+        result.outcome = match &result.outcome {
+            Outcome::Failed(reason) => Outcome::Failed(read_here(reason)),
+            Outcome::Unobserved(reason) => Outcome::Unobserved(read_here(reason)),
+            kept => kept.clone(),
+        };
+    }
+    report
+}
+
+/// `config`, a connector's configuration as JSON.
+fn configured(config: &str) -> Result<serde_json::Value, PyErr> {
+    serde_json::from_str(config)
+        .map_err(|error| PyValueError::new_err(format!("a configuration is JSON: {error}")))
 }
 
 /// Certifies `transform` with the `T` family over `inputs` and the batches drawn from them, on a

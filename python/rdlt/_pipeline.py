@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
 from rdlt import _native
 from rdlt._transform import Transform, named_once
-from rdlt.connector import Local
-from rdlt.connector._source import declaration, factory, registered_once
+from rdlt.connector import Local, _destination, _source
+from rdlt.connector._declared import Registered, registered_once
 from rdlt.host import Host, StrPath, _names, _paths
 
 if TYPE_CHECKING:
@@ -395,12 +395,18 @@ def _resource_entries(resources: Sequence[Resource]) -> dict[str, dict[str, Json
     return entries
 
 
-def _local_document(local: Local) -> tuple[dict[str, Json], dict[str, dict[str, Json]]]:
-    """A local connector's source document, and an entry for each of its streams."""
-    declared = declaration(local.connector)
-    document: dict[str, Json] = {"connector": declared.id}
+def _local_reference(answers: str, local: Local) -> dict[str, Json]:
+    """The document's reference to a local connector that answers to `answers`."""
+    document: dict[str, Json] = {"connector": answers}
     if local.config is not None:
         document["config"] = dict(local.config)
+    return document
+
+
+def _local_document(local: Local) -> tuple[dict[str, Json], dict[str, dict[str, Json]]]:
+    """A local connector's source document, and an entry for each of its streams."""
+    declared = _source.declaration(local.connector)
+    document = _local_reference(declared.id, local)
     entries: dict[str, dict[str, Json]] = {}
     for method in declared.streams:
         entry: dict[str, Json] = {"name": method.name}
@@ -415,7 +421,7 @@ def pipeline(
     /,
     *,
     source: Connector | Local | Resource | Sequence[Resource],
-    destination: Connector,
+    destination: Connector | Local,
     streams: Sequence[Stream] = (),
     defaults: Defaults | None = None,
     commit: Commit | None = None,
@@ -430,14 +436,16 @@ def pipeline(
     it names. A resource is always selected; a local connector's streams are each selected where
     `streams` names none of them, and otherwise only those it names. A stream named exactly keeps
     what its declaration says, `read: incremental` for one with a cursor, under what its entry
-    says; one a pattern selects reads as the defaults say.
+    says; one a pattern selects reads as the defaults say. `destination` is a connector, or
+    `rdlt.local(SomeDestination, config=...)` for a class `@destination` made.
     """
     from rdlt._resource import RESOURCES, source_factory  # noqa: PLC0415
 
     selected = [] if isinstance(source, (Connector, Local)) else _resources(source)
     factories: list[_native.SourceFactory] = []
+    destinations: list[_native.DestinationFactory] = []
     held: list[object] = list(selected)
-    connectors: tuple[tuple[str, type], ...] = ()
+    connectors: Registered = ()
     entries: dict[str, dict[str, Json]] = {}
     source_document: dict[str, Json]
     if isinstance(source, Connector):
@@ -447,8 +455,11 @@ def pipeline(
         if streams:
             named_streams = {given.name for given in streams}
             entries = {name: entry for name, entry in entries.items() if name in named_streams}
-        factories.append(factory(source.connector))
-        connectors = registered_once(connectors, source.connector)
+        made, placement = _source.placed(source.connector)
+        factories.append(made)
+        held.append(placement)
+        answers = _source.declaration(source.connector).id
+        connectors = registered_once(connectors, "source", answers, source.connector)
     else:
         source_document = {"connector": RESOURCES}
         entries = _resource_entries(selected)
@@ -467,11 +478,20 @@ def pipeline(
     if not isinstance(source, (Connector, Local)):
         resuming = {name for name, entry in entries.items() if entry.get("read") == "incremental"}
         factories.append(source_factory(selected, resuming))
+    if isinstance(destination, Local):
+        answers = _destination.declaration(destination.connector).id
+        destination_document = _local_reference(answers, destination)
+        made_destination, destination_placement = _destination.placed(destination.connector)
+        destinations.append(made_destination)
+        held.append(destination_placement)
+        connectors = registered_once(connectors, "destination", answers, destination.connector)
+    else:
+        destination_document = destination._document()
     document: dict[str, Json] = {
         "version": 1,
         "pipeline": name,
         "source": source_document,
-        "destination": destination._document(),
+        "destination": destination_document,
         "streams": [*entries.values(), *repeated],
     }
     document.update(
@@ -488,6 +508,7 @@ def pipeline(
     return PipelineBuilder(
         document=document,
         sources=factories,
+        destinations=destinations,
         transforms=transforms,
         held=held,
         connectors=connectors,
@@ -503,13 +524,15 @@ class PipelineBuilder:
         document: Mapping[str, Json] | None = None,
         path: Path | None = None,
         sources: Sequence[_native.SourceFactory] = (),
+        destinations: Sequence[_native.DestinationFactory] = (),
         transforms: Sequence[tuple[str, Transform]] = (),
         held: Sequence[object] = (),
-        connectors: Sequence[tuple[str, type]] = (),
+        connectors: Registered = (),
     ) -> None:
         self._document = None if document is None else dict(document)
         self._path = path
         self._sources = tuple(sources)
+        self._destinations = tuple(destinations)
         self._transforms = tuple(transforms)
         self._held = tuple(held)
         self._connectors = tuple(connectors)
@@ -532,15 +555,16 @@ class PipelineBuilder:
             rdlt.Error: the subclass for the first mistake found, which never quotes a value.
             ValueError: a transform's name, or a connector class's id, the host gives another.
         """
-        if self._sources or self._transforms or self._held:
+        if self._sources or self._destinations or self._transforms or self._held:
             registered = host._transforms
             for name, made in self._transforms:
                 registered = named_once(registered, name, made)
             connectors = host._connectors
-            for _, connector in self._connectors:
-                connectors = registered_once(connectors, connector)
+            for role, answers, connector in self._connectors:
+                connectors = registered_once(connectors, role, answers, connector)
             host = host._replaced(
                 _sources=(*host._sources, *self._sources),
+                _destinations=(*host._destinations, *self._destinations),
                 _transforms=registered,
                 _held=(*host._held, *self._held),
                 _connectors=connectors,

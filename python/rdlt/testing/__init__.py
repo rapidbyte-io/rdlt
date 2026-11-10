@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from rdlt import _native
 from rdlt._transform import Transform
-from rdlt.connector._source import factory
+from rdlt.connector import _destination, _source
 from rdlt.model import Json
 
 if TYPE_CHECKING:
@@ -68,9 +68,29 @@ def certify_source(
     observes a kill only in a load that outlasts several commits, about a megabyte of rows, and a
     smaller one leaves it unobserved, which fails its test.
     """
-    made = factory(connector)
+    made, placement = _source.placed(connector)
     return Certification(
-        "source", lambda: _native.certify_source(made, json.dumps(config), launcher), connector
+        "source", lambda: _native.certify_source(made, json.dumps(config), launcher), placement
+    )
+
+
+def certify_destination(
+    connector: type, *, config: Mapping[str, Json], launcher: str | PathLike[str] | None = None
+) -> Certification:
+    """The destination clauses, and the protocol's, against `connector`.
+
+    It is served over an in-process socket pair and read back through `published`; the kill
+    clause spawns `launcher`, the installed connector, where it is given, and cuts the in-process
+    connections otherwise. The kill clause loads rows of its own and reads them back in this
+    process, so it observes a kill only where the class has `published` and, with a launcher,
+    keeps what it published where a process outliving the killed one finds it, as a file or a
+    database does; otherwise it goes unobserved or fails, which fails its test.
+    """
+    made, placement = _destination.placed(connector)
+    return Certification(
+        "destination",
+        lambda: _native.certify_destination(made, json.dumps(config), launcher),
+        placement,
     )
 
 
@@ -81,4 +101,10 @@ def certify_transform(transform: Transform, *, inputs: Sequence[pa.RecordBatch])
     )
 
 
-__all__ = ["Certification", "ClauseResult", "certify_source", "certify_transform"]
+__all__ = [
+    "Certification",
+    "ClauseResult",
+    "certify_destination",
+    "certify_source",
+    "certify_transform",
+]
