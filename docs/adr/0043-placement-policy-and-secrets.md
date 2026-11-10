@@ -95,7 +95,9 @@ given. A host enforces that only where it closes each of these:
     grant, fails rather than report a commit into storage that goes with the process. Its
     `/dev/shm` is the only other place written, in memory as the scratch is and its own: POSIX
     semaphores and shared memory are made there, as Python's `multiprocessing` makes its locks
-    and queues, and what is written there goes with the sandbox, as shared memory does.
+    and queues, and what is written there goes with the sandbox, as shared memory does. Each
+    is a tmpfs of the kernel's default size, half the machine's memory, which the operator's
+    control groups or container bound as they bound the connector's own memory.
   - `Bubblewrap` is the sandbox rdlt ships, for Linux. The connector sees the host's system
     directories read only, a `/proc` of its own, which is a kernel interface and no storage, a
     `/tmp` and a `/dev` of its own, read only but for the device nodes and a private
@@ -139,15 +141,18 @@ given. A host enforces that only where it closes each of these:
     `/tmp` is, and the entry in it, a link included, is the user's or the superuser's.
   - A connector may be a directory. Where `rdlt-connector-<name>` in a connector directory, or
     the path a reference names, is a directory, its `bin/rdlt-connector` is the binary, reached
-    through no link, the directory and `bin` held to the rule a binary's directories are. A
-    sandbox binds the directory's tree read only at its own path, so the launcher finds what
-    was installed beside it, an environment's interpreter among them; no root that may be
-    written may hold the tree or lie within it, whether its connector is sandboxed or trusted.
-    The digest is the launcher's, its first line naming its interpreter; the interpreter is
-    held by its path, as any script's is, and the tree's other files by its operator's
-    permissions, as a native binary's shared libraries are. An interpreter the tree's links
-    lead out of it to, as a virtual environment's base installation, must lie where the
-    sandbox shows the system's directories.
+    through no link, the directory and `bin` held to the rule a binary's directories are. The
+    tree is known by where it lies, every link resolved, and a sandbox binds it read only
+    there, so the launcher finds what was installed beside it at the path an install wrote,
+    an environment's interpreter among them. Whether its connector is sandboxed or trusted, no
+    root that may be written may hold the tree or lie within it, and while it runs the tree is
+    held as a read, so no grant held now may write it. The digest is the launcher's, its first
+    line naming its interpreter, so it pins the launcher alone: two installs at one path have
+    one launcher and one digest. The interpreter is held by its path, as any script's is, and
+    the tree's other files by its operator's permissions, as a native binary's shared
+    libraries are. An interpreter the tree's links lead out of it to, as a virtual
+    environment's base installation, must lie where the sandbox shows the system's
+    directories.
   - The open file is what is hashed, at placement and before every spawn, and what is
     executed: through `/proc/self/fd`, or handed to the sandbox, which binds it. A file that
     takes the binary's name later is never run; one whose bytes change is refused; and one
