@@ -20,16 +20,18 @@ from tests.launchers import tickets_launcher
 
 TESTS = Path(__file__).resolve().parents[1]
 
+# About 40,000 rows, a megabyte, as rdlt-certify's own kill fixtures are: a load that outlasts the
+# commits K-SOURCE's kills follow, so they land while the source is still read.
+KILLED_PAGES = 4_000
+
 CERTIFIED = """
 import sys
 sys.path.append({tests!r})
 from rdlt.testing import certify_source
 from tests.connectors.tickets import Tickets
 
-# Enough pages for its installed launcher's kills to land as it loads, so every clause that
-# applies is observed.
 test_certify = certify_source(
-    Tickets, config={{"pages": 400, "token": "t0ken"}}, launcher={launcher!r}
+    Tickets, config={{"pages": {pages}, "token": "t0ken"}}, launcher={launcher!r}
 )
 """
 
@@ -79,7 +81,7 @@ test_certify = certify_transform(unchanged, inputs=[empty])
 
 def test_each_clause_is_a_test_of_its_own(pytester: pytest.Pytester) -> None:
     launcher = tickets_launcher(pytester.path / "launchers")
-    certified = CERTIFIED.format(tests=str(TESTS), launcher=str(launcher))
+    certified = CERTIFIED.format(tests=str(TESTS), launcher=str(launcher), pages=KILLED_PAGES)
     pytester.makepyfile(test_tickets=textwrap.dedent(certified))
     result = pytester.runpytest_subprocess("-v")
     result.stdout.fnmatch_lines(["*test_certify[[]S-RESUME[]] PASSED*"])
@@ -117,7 +119,7 @@ def test_an_unobserved_clause_fails_saying_it_went_unobserved(pytester: pytest.P
 def test_a_launcher_s_kill_clause_kills_the_installed_connector(tmp_path: Path) -> None:
     certification = certify_source(
         Tickets,
-        config={"pages": 400, "token": "t0ken"},
+        config={"pages": KILLED_PAGES, "token": "t0ken"},
         launcher=tickets_launcher(tmp_path / "launchers"),
     )
     killed = certification.result("K-SOURCE")
