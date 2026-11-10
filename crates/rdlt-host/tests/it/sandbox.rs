@@ -197,8 +197,9 @@ pub(crate) mod bubblewrap {
             .expect_err("a trusted binary has its host's access");
     }
 
-    /// Nothing a connector writes where it runs outlives it, so it must fail: a commit into
-    /// the sandbox's own root would report data gone with the process.
+    /// Nothing a connector writes where it runs outlives it, so it must fail, but in its scratch
+    /// space and its shared memory: a commit into the sandbox's own root would report data gone
+    /// with the process.
     #[tokio::test]
     async fn a_sandboxed_connector_cannot_write_where_it_runs_and_keeps_its_scratch_space() {
         let Some(local) = sandboxed() else {
@@ -211,7 +212,7 @@ pub(crate) mod bubblewrap {
             "/var/tmp/x",
             "/run/x",
         ];
-        for lost in nowhere.iter().chain(&["/dev/shm/x", "/dev/x", "/etc/x"]) {
+        for lost in nowhere.iter().chain(&["/dev/x", "/etc/x"]) {
             let writing = serde_json::json!({ "writes": lost });
             let source = local
                 .clone()
@@ -226,6 +227,7 @@ pub(crate) mod bubblewrap {
         }
         let scratch = serde_json::json!({ "writes_temp": "scratch" });
         let source = local
+            .clone()
             .source(&scripted(), &scratch)
             .await
             .expect("it starts");
@@ -234,6 +236,13 @@ pub(crate) mod bubblewrap {
             .check()
             .await
             .expect("it has the scratch space TMPDIR names");
+        let shared = serde_json::json!({ "writes": "/dev/shm/x" });
+        let source = local.source(&scripted(), &shared).await.expect("it starts");
+        source
+            .connector
+            .check()
+            .await
+            .expect("it has shared memory of its own");
     }
 
     /// A grant beneath `/tmp` is written and outlives the connector, as any other is.

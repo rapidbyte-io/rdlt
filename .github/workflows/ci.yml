@@ -92,10 +92,12 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 15
         run: ./.github/sandbox.sh
-      # On Linux a test that needs a sandbox fails where none can be made, rather than skip.
+      # On Linux a test that needs a sandbox, or the system's Python, fails where there is none,
+      # rather than skip.
       - run: just test --profile ci
         env:
           RDLT_REQUIRE_SANDBOX: ${{ runner.os == 'Linux' && '1' || '0' }}
+          RDLT_REQUIRE_SYSTEM_PYTHON: ${{ runner.os == 'Linux' && '1' || '0' }}
 
   # The wheel as it ships, built in release and tested installed, on the abi3 range's two ends:
   # the newest CPython on Linux and the oldest on macOS. The nightly runs the whole matrix.
