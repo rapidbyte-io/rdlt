@@ -112,3 +112,42 @@ async fn a_played_placement_hashes_its_binary_where_it_is_placed() {
         .expect("it hashes");
     assert_eq!(launch.digest, Some(expected));
 }
+
+#[test]
+fn a_tree_replaced_after_it_was_checked_is_bound_as_it_was_checked() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    use rdlt_connector::ConnectorId;
+
+    use super::Local;
+    use crate::provider::ConnectorRef;
+
+    let temporary = tempfile::tempdir().expect("a temporary directory");
+    let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
+    let tree = |at: &std::path::Path| {
+        std::fs::create_dir_all(at.join("bin")).expect("a tree");
+        for directory in [at.to_owned(), at.join("bin")] {
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755))
+                .expect("its mode is set");
+        }
+        let launcher = at.join("bin/rdlt-connector");
+        std::fs::write(&launcher, "#!/bin/sh\n").expect("the launcher writes");
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))
+            .expect("the launcher is executable");
+    };
+    let path = root.join("rdlt-connector-tree");
+    tree(&path);
+    let checked = std::fs::metadata(&path).expect("the tree is there").ino();
+    let binary = Binary::at(&path).expect("the tree opens");
+    // Another tree takes its path once it was checked.
+    std::fs::rename(&path, root.join("moved")).expect("the tree moves");
+    tree(&path);
+    let reference = ConnectorRef::new(ConnectorId::parse("test.tree").expect("a valid id"));
+    let lease = Local::trusting_binaries()
+        .lease(&reference, &binary, true)
+        .expect("it is held");
+    let bound = lease.bound.iter().find(|bound| bound.at == path);
+    let bound = bound.expect("the tree is bound at its path");
+    let held = bound.file.metadata().expect("what is bound").ino();
+    assert_eq!(held, checked, "what is bound is the tree checked");
+}

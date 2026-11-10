@@ -485,10 +485,13 @@ fn a_directory_s_launcher_is_its_binary_and_the_directory_its_tree() {
         Binary::at(&tree).expect("found by path"),
     ] {
         assert_eq!(found.path(), launcher);
-        assert_eq!(found.tree(), Some(tree.as_path()));
+        assert_eq!(
+            found.tree().map(|tree| tree.path.as_path()),
+            Some(tree.as_path())
+        );
     }
     let binary = Binary::at(&launcher).expect("the launcher alone is a binary");
-    assert_eq!(binary.tree(), None);
+    assert!(binary.tree().is_none());
 }
 
 #[test]
@@ -505,10 +508,16 @@ fn a_tree_reached_through_a_link_is_known_by_where_it_lies() {
     std::os::unix::fs::symlink(&tree, links.join("rdlt-connector-tree")).expect("a link");
     let found = Binary::at(&links.join("rdlt-connector-tree")).expect("found by path");
     // What its launcher names, and what a sandbox binds, is the tree as installed.
-    assert_eq!(found.tree(), Some(tree.as_path()));
+    assert_eq!(
+        found.tree().map(|tree| tree.path.as_path()),
+        Some(tree.as_path())
+    );
     let linked_root = dir(&root, "linked-root");
     std::os::unix::fs::symlink(&root, linked_root.join("connectors")).expect("a link");
     let found = Binary::named(&[linked_root.join("connectors")], "rdlt-connector-tree")
         .expect("found by name");
-    assert_eq!(found.tree(), Some(tree.as_path()));
+    assert_eq!(
+        found.tree().map(|tree| tree.path.as_path()),
+        Some(tree.as_path())
+    );
 }

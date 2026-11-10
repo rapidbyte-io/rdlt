@@ -22,6 +22,7 @@ use parking_lot::Mutex;
 
 pub(crate) use opened::{Chain, Opened, located};
 
+use super::binary::Tree;
 use super::sandbox::{Access, SandboxError};
 
 /// What a placement holds, by identity.
@@ -133,7 +134,7 @@ pub(crate) struct Claim<'a> {
     /// a read whether its connector is confined or trusted, so no grant held now writes it, and
     /// guarded as a connector directory is, so no root that may be written holds it or lies
     /// within it.
-    pub(crate) tree: Option<&'a Path>,
+    pub(crate) tree: Option<&'a Tree>,
 }
 
 /// `path`, opened, as a grant or a root names it: absolute, and there.
@@ -141,6 +142,16 @@ fn opened(path: &Path) -> Result<Opened, SandboxError> {
     Opened::at(path).map_err(|_| SandboxError::Grant {
         path: path.to_owned(),
     })
+}
+
+/// The directory `tree` was opened as, where its binary was checked, as a read holds it.
+fn tree_held(tree: &Tree) -> Result<Opened, SandboxError> {
+    let refused = |_| SandboxError::Grant {
+        path: tree.path.clone(),
+    };
+    let file = tree.directory.try_clone().map_err(refused)?;
+    let chain = Chain::of(&file, &tree.path).map_err(refused)?;
+    Ok(Opened { file, chain })
 }
 
 /// Each of `paths`, opened, with its path.
@@ -168,9 +179,13 @@ impl Leases {
         let write_roots = all_opened(&claim.roots.write)?;
         let mut programs = claim.programs.to_vec();
         programs.extend(launchers(&claim.guarded.files)?);
-        let mut guarded = claim.guarded.directories.clone();
-        guarded.extend(claim.tree.map(Path::to_owned));
-        guarding(&write_roots, &guarded, &programs)?;
+        // The tree as it was checked, by its descriptor, not by what its path names now.
+        let tree = match claim.tree {
+            Some(tree) => Some((tree.path.as_path(), tree_held(tree)?)),
+            None => None,
+        };
+        let chains: Vec<&Chain> = tree.iter().map(|(_, held)| &held.chain).collect();
+        guarding(&write_roots, &claim.guarded.directories, &chains, &programs)?;
         let writable: Vec<&Chain> = write_roots.iter().map(|(_, root)| &root.chain).collect();
         let readable: Vec<&Chain> = read_roots.iter().map(|(_, root)| &root.chain).collect();
         let within = |granted: &Opened, roots: &[&Chain]| {
@@ -203,10 +218,6 @@ impl Leases {
         }
         // The operator's, as the system's directories are: no root need let it be read. A
         // trusted connector's reads are held and bound nowhere.
-        let tree = match claim.tree {
-            Some(tree) => Some((tree, opened(tree)?)),
-            None => None,
-        };
         let reads: Vec<_> = shared.into_iter().chain(tree).chain(reads).collect();
         self.held(claim, programs, reads, writes)
     }
@@ -345,12 +356,13 @@ fn launchers(files: &[PathBuf]) -> Result<Vec<Program>, SandboxError> {
 }
 
 /// Refuses a root of `roots`, each one that may be written, that holds or lies within one of
-/// `guarded`, or holds one of `programs` or its directory, or lies on the file system of one
-/// of `programs` that has a second name: whoever may write there decides what a host runs, or
-/// keeps.
+/// `guarded`, or of `checked`, guarded directories already opened, or holds one of `programs` or
+/// its directory, or lies on the file system of one of `programs` that has a second name:
+/// whoever may write there decides what a host runs, or keeps.
 fn guarding(
     roots: &[(&Path, Opened)],
     guarded: &[PathBuf],
+    checked: &[&Chain],
     programs: &[Program],
 ) -> Result<(), SandboxError> {
     if roots.is_empty() {
@@ -368,6 +380,7 @@ fn guarding(
         })?;
         directories.push((opened.chain, there));
     }
+    directories.extend(checked.iter().map(|chain| ((*chain).clone(), true)));
     let directories_of = programs.iter().filter_map(|program| program.chain.parent());
     directories.extend(directories_of.map(|directory| (directory, false)));
     for (path, root) in roots {
