@@ -68,7 +68,13 @@ def requirements(tmp_path: Path) -> Path:
         cwd=REPOSITORY,
         timeout=60,
     ).stdout
-    (wheel,) = (REPOSITORY / "target" / "wheels").glob("*/rdlt-*.whl")
+    built = sorted((REPOSITORY / "target" / "wheels").glob("*/rdlt-*.whl"))
+    if len(built) != 1:
+        pytest.fail(
+            f"target/wheels holds {len(built)} rdlt wheels, not one: "
+            "run this test with `just python-network`, which builds the wheel"
+        )
+    (wheel,) = built
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
     path = tmp_path / "requirements.txt"
     path.write_text(f"{exported}\nrdlt @ {wheel.as_uri()} --hash=sha256:{digest}\n")
