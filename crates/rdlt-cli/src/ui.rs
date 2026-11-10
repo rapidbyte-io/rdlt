@@ -26,7 +26,10 @@ pub(crate) use certify::{Clause, in_progress, kept_line, verdict_line};
 pub(crate) use failure::{certify_failure, failure};
 pub(crate) use live::{RunTitle, Stop};
 pub(crate) use painter::Std;
-pub(crate) use render::{catalog, check, connectors, created, plain_line, reset, run_summary};
+pub(crate) use render::{
+    LocalConnector, Remotes, Sandboxing, catalog, check, connectors, created, plain_line, reset,
+    run_summary,
+};
 
 use live::{RunProgress, View};
 use painter::Painter;

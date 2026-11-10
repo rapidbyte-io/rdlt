@@ -8,10 +8,10 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
-use nix::pty::{Winsize, openpty};
-use nix::sys::signal::{Signal, kill};
+use nix::pty::{self, Winsize};
+use nix::sys::signal::{self, Signal};
 use nix::sys::stat::Mode;
-use nix::unistd::mkfifo;
+use nix::unistd;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -55,11 +55,11 @@ fn pseudo_terminal(size: Size) -> (OwnedFd, OwnedFd) {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    let pty = openpty(Some(&winsize), None).expect("a pseudo-terminal");
+    let opened = pty::openpty(Some(&winsize), None).expect("a pseudo-terminal");
     // Copies closed on exec: else the next process this test spawns holds the terminal open past
     // the end of the run, and its reader never ends.
-    let master = pty.master.try_clone().expect("a descriptor");
-    let slave = pty.slave.try_clone().expect("a descriptor");
+    let master = opened.master.try_clone().expect("a descriptor");
+    let slave = opened.slave.try_clone().expect("a descriptor");
     (master, slave)
 }
 
@@ -271,7 +271,7 @@ async fn a_run_shows_what_it_committed_and_one_press_stops_it_after_its_next_com
         !shown.contains("attempt 1: committed"),
         "no line per event on a terminal: {shown}"
     );
-    kill(pid(&running.child), Signal::SIGINT).expect("signalled");
+    signal::kill(pid(&running.child), Signal::SIGINT).expect("signalled");
     running
         .until("the stop is shown", |screen| {
             screen
@@ -307,7 +307,7 @@ async fn two_presses_change_the_phase_line_as_each_is_heard() {
     hold.execute_batch("BEGIN IMMEDIATE")
         .expect("the write lock is taken");
     let run = pid(&running.child);
-    kill(run, Signal::SIGINT).expect("signalled");
+    signal::kill(run, Signal::SIGINT).expect("signalled");
     running
         .until("the first press is shown", |screen| {
             screen
@@ -315,7 +315,7 @@ async fn two_presses_change_the_phase_line_as_each_is_heard() {
                 .contains("Stopping after the next commit (Ctrl-C again to stop now)")
         })
         .await;
-    kill(run, Signal::SIGINT).expect("signalled again");
+    signal::kill(run, Signal::SIGINT).expect("signalled again");
     running
         .until("the second press is shown", |screen| {
             screen.contents().contains("Stopping now")
@@ -353,7 +353,7 @@ async fn a_terminal_nobody_reads_holds_up_neither_a_signal_nor_the_exit() {
     let scratch = following_scratch();
     let (document, _) = following(&scratch);
     let fifo = scratch.path().join("events.fifo");
-    mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR).expect("a fifo");
+    unistd::mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR).expect("a fifo");
     // A reader of the events, so the test hears of a commit while the terminal says nothing.
     let events = tokio::net::unix::pipe::OpenOptions::new()
         .open_receiver(&fifo)
@@ -385,7 +385,7 @@ async fn a_terminal_nobody_reads_holds_up_neither_a_signal_nor_the_exit() {
 /// terminal are given.
 async fn assert_exits_within_its_bound(child: &mut Child) {
     let signalled = std::time::Instant::now();
-    kill(pid(child), Signal::SIGINT).expect("signalled");
+    signal::kill(pid(child), Signal::SIGINT).expect("signalled");
     let status = tokio::time::timeout(Duration::from_secs(60), child.wait())
         .await
         .expect("a terminal nobody reads does not hold the exit")
@@ -449,7 +449,7 @@ async fn a_narrow_screen_wraps_no_line_and_a_short_one_collapses_its_streams() {
             size.columns,
             running.screen().contents()
         );
-        kill(pid(&running.child), Signal::SIGINT).expect("signalled");
+        signal::kill(pid(&running.child), Signal::SIGINT).expect("signalled");
         let finished = running.finished().await;
         assert_eq!(finished.status.code(), Some(130));
         assert_eq!(
@@ -703,7 +703,7 @@ async fn events_in_a_file_leave_the_terminal_animated() {
         &[],
     );
     running.until("the live region", committed_rows).await;
-    kill(pid(&running.child), Signal::SIGINT).expect("signalled");
+    signal::kill(pid(&running.child), Signal::SIGINT).expect("signalled");
     assert_eq!(running.finished().await.status.code(), Some(130));
 }
 
@@ -1160,7 +1160,7 @@ async fn a_certification_stopped_from_outside_has_already_said_what_it_found() {
             screen.contents().contains("✓ P-")
         })
         .await;
-    kill(pid(&running.child), Signal::SIGINT).expect("signalled");
+    signal::kill(pid(&running.child), Signal::SIGINT).expect("signalled");
     let finished = running.finished().await;
     assert_eq!(finished.status.code(), Some(130));
     let text = finished.screen().contents();

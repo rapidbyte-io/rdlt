@@ -1,7 +1,9 @@
-use rdlt::Code;
+use rdlt::{Code, ErrorKind, ErrorReport, Origin};
 
-use super::*;
+use super::{HINTS, certify_failure, failure, hint};
 use crate::Exit;
+use crate::output::Failure;
+use crate::ui::Ui;
 
 fn report(origin: Origin, kind: ErrorKind, code: Option<&'static str>) -> ErrorReport {
     ErrorReport {

@@ -126,15 +126,34 @@ pub(crate) async fn connectors(host: &HostArgs, mode: Mode, ui: &Ui) -> Result<E
         lines
     };
     let rich = || {
-        let table: Vec<(String, String)> = local
+        let table: Vec<ui::LocalConnector> = local
             .iter()
             .map(|entry| {
                 let text = |key: &str| entry[key].as_str().unwrap_or_default().to_owned();
-                (text("name"), text("path"))
+                ui::LocalConnector {
+                    name: text("name"),
+                    path: text("path"),
+                }
             })
             .collect();
-        ui::connectors(&table, !policy.trust_binaries, policy.remote.is_some(), ui)
+        let (sandboxing, remotes) = placing(&policy);
+        ui::connectors(&table, sandboxing, remotes, ui)
     };
     output::result(ui, mode, None, plain, rich, &json).await?;
     Ok(Exit::Success)
+}
+
+/// How `policy` runs local connectors, and whether it reaches remote ones.
+fn placing(policy: &rdlt::HostFile) -> (ui::Sandboxing, ui::Remotes) {
+    let sandboxing = if policy.trust_binaries {
+        ui::Sandboxing::Trusted
+    } else {
+        ui::Sandboxing::Sandboxed
+    };
+    let remotes = if policy.remote.is_some() {
+        ui::Remotes::Reached
+    } else {
+        ui::Remotes::NotReached
+    };
+    (sandboxing, remotes)
 }
