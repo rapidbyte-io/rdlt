@@ -156,7 +156,7 @@ fn holding(file: &File, metadata: &std::fs::Metadata, path: &Path) -> io::Result
 /// Where `file`, reached at `path`, is now, every link resolved: on Linux as the kernel names
 /// what is open; elsewhere `path` is resolved again, where no sandbox runs whose grants the
 /// answer could mislead.
-fn located(file: &File, path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn located(file: &File, path: &Path) -> io::Result<PathBuf> {
     #[cfg(target_os = "linux")]
     let located = {
         use std::os::fd::AsRawFd as _;

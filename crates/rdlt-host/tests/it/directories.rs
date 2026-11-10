@@ -121,20 +121,62 @@ mod confined {
     #[tokio::test]
     async fn a_sandboxed_directory_connector_reads_its_tree_and_nothing_else() {
         let Some(sandbox) = sandboxed() else { return };
-        let root = tempfile::tempdir().expect("a temporary directory");
+        let temporary = tempfile::tempdir().expect("a temporary directory");
+        let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
         let outside = tempfile::tempdir().expect("a temporary directory");
         let secret = outside.path().join("secret");
         std::fs::write(&secret, "the host's own").expect("the file writes");
-        let tree = root.path().join("rdlt-connector-scripted");
+        let tree = root.join("rdlt-connector-scripted");
         let body = format!(
             "cat '{}' > /dev/null || exit 7\nif cat '{}' > /dev/null 2>&1; then exit 8; fi",
             tree.join("share/data").display(),
             secret.display()
         );
-        directory_connector(root.path(), "scripted", &body);
-        placed(&sandbox.connectors(root.path()), &reference("scripted"))
+        directory_connector(&root, "scripted", &body);
+        placed(&sandbox.connectors(&root), &reference("scripted"))
             .await
             .expect("placed");
+    }
+
+    #[tokio::test]
+    async fn a_tree_reached_through_a_link_is_bound_where_it_lies() {
+        let Some(sandbox) = sandboxed() else { return };
+        let temporary = tempfile::tempdir().expect("a temporary directory");
+        let root = std::fs::canonicalize(temporary.path()).expect("it resolves");
+        let real = root.join("real");
+        private_dir(&real);
+        // The launcher names its tree where it lies, as an install writes it.
+        let lying = real.join("rdlt-connector-scripted");
+        let body = format!(
+            "cat '{}' > /dev/null || exit 7",
+            lying.join("share/data").display()
+        );
+        directory_connector(&real, "scripted", &body);
+        let links = root.join("links");
+        private_dir(&links);
+        std::os::unix::fs::symlink(&lying, links.join("linked")).expect("a link");
+        let by_path = scripted().path(links.join("linked"));
+        placed(&sandbox, &by_path)
+            .await
+            .expect("placed, its tree bound where it lies");
+    }
+
+    #[tokio::test]
+    async fn a_trusted_directory_connector_s_tree_is_written_by_no_grant_while_it_runs() {
+        let Some(sandbox) = sandboxed() else { return };
+        let root = tempfile::tempdir().expect("a temporary directory");
+        let tree = directory_connector(root.path(), "scripted", "");
+        let trusted = local().connectors(root.path());
+        let running = trusted
+            .source(&reference("scripted"), &serde_json::json!({}))
+            .await
+            .expect("placed");
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let writing = crate::process::scripted_in(elsewhere.path()).write(tree.join("share"));
+        let refused = placed(&sandbox.writable(&tree), &writing).await;
+        let refused = refused.expect_err("a grant within the running connector's tree");
+        assert_eq!(refused.code(), "grant_overlap", "{refused}");
+        drop(running);
     }
 
     /// The system's Python 3, where it is there; it must be where `RDLT_REQUIRE_SYSTEM_PYTHON`

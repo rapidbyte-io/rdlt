@@ -12,6 +12,7 @@ use std::path::{Component, Path, PathBuf};
 use rustix::fs::{CWD, Mode, OFlags};
 use sha2::Digest as _;
 
+use super::grants::located;
 use crate::provider::Digest;
 
 #[cfg(test)]
@@ -145,7 +146,7 @@ impl Binary {
             .metadata()
             .map_err(|error| Unfit::Absent(Some(error)))?;
         if metadata.is_dir() {
-            Self::launcher_in(&file, path)
+            Self::launcher_in(&file, &path)
         } else {
             Self::checked(file, path)
         }
@@ -153,10 +154,11 @@ impl Binary {
 
     /// The launcher of the directory connector open as `directory`, found at `path`: its
     /// `bin/rdlt-connector`, reached through no link, the directory and `bin` no other user's
-    /// to write.
-    fn launcher_in(directory: &File, path: PathBuf) -> Result<Self, Unfit> {
+    /// to write; the tree is known by where it lies, every link resolved, as its launcher names
+    /// its interpreter.
+    fn launcher_in(directory: &File, path: &Path) -> Result<Self, Unfit> {
         let absent = |error: rustix::io::Errno| Unfit::Absent(Some(error.into()));
-        private(directory, &path)?;
+        private(directory, path)?;
         let listing = OFlags::RDONLY
             .union(OFlags::DIRECTORY)
             .union(OFlags::CLOEXEC)
@@ -169,7 +171,8 @@ impl Binary {
             .map_err(absent)?;
         let found = path.join("bin").join("rdlt-connector");
         let mut binary = Self::checked(File::from(launcher), found)?;
-        binary.tree = Some(path);
+        let lies = located(directory, path).map_err(|error| Unfit::Absent(Some(error)))?;
+        binary.tree = Some(lies);
         Ok(binary)
     }
 

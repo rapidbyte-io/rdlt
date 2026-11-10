@@ -20,7 +20,7 @@ use std::sync::{Arc, LazyLock};
 
 use parking_lot::Mutex;
 
-pub(crate) use opened::{Chain, Opened};
+pub(crate) use opened::{Chain, Opened, located};
 
 use super::sandbox::{Access, SandboxError};
 
@@ -116,15 +116,6 @@ pub(crate) struct Program {
     pub(crate) linked: bool,
 }
 
-/// A directory connector's tree: held as a read where its connector is confined, and guarded as
-/// a connector directory is, so no root that may be written holds it or lies within it.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Tree<'a> {
-    pub(crate) path: &'a Path,
-    /// Whether the sandbox binds it, read only, at its path.
-    pub(crate) bound: bool,
-}
-
 /// What a placement asks to hold.
 #[derive(Debug)]
 pub(crate) struct Claim<'a> {
@@ -138,8 +129,11 @@ pub(crate) struct Claim<'a> {
     pub(crate) guarded: &'a Guarded,
     /// The programs the placement runs: its binary, and a script's interpreter.
     pub(crate) programs: &'a [Program],
-    /// The tree of the directory connector the binary launches, where it launches one.
-    pub(crate) tree: Option<Tree<'a>>,
+    /// The tree of the directory connector the binary launches, where it launches one: held as
+    /// a read whether its connector is confined or trusted, so no grant held now writes it, and
+    /// guarded as a connector directory is, so no root that may be written holds it or lies
+    /// within it.
+    pub(crate) tree: Option<&'a Path>,
 }
 
 /// `path`, opened, as a grant or a root names it: absolute, and there.
@@ -175,7 +169,7 @@ impl Leases {
         let mut programs = claim.programs.to_vec();
         programs.extend(launchers(&claim.guarded.files)?);
         let mut guarded = claim.guarded.directories.clone();
-        guarded.extend(claim.tree.map(|tree| tree.path.to_owned()));
+        guarded.extend(claim.tree.map(Path::to_owned));
         guarding(&write_roots, &guarded, &programs)?;
         let writable: Vec<&Chain> = write_roots.iter().map(|(_, root)| &root.chain).collect();
         let readable: Vec<&Chain> = read_roots.iter().map(|(_, root)| &root.chain).collect();
@@ -207,9 +201,10 @@ impl Leases {
                 path: path.to_path_buf(),
             });
         }
-        // The operator's, as the system's directories are: no root need let it be read.
-        let tree = match claim.tree.filter(|tree| tree.bound) {
-            Some(tree) => Some((tree.path, opened(tree.path)?)),
+        // The operator's, as the system's directories are: no root need let it be read. A
+        // trusted connector's reads are held and bound nowhere.
+        let tree = match claim.tree {
+            Some(tree) => Some((tree, opened(tree)?)),
             None => None,
         };
         let reads: Vec<_> = shared.into_iter().chain(tree).chain(reads).collect();
