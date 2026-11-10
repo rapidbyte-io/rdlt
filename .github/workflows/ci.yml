@@ -109,7 +109,7 @@ jobs:
           - { os: ubuntu-24.04, python: "3.14" }
           - { os: macos-15, python: "3.11" }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 65
+    timeout-minutes: 80
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -135,9 +135,11 @@ jobs:
           PYTHON: ${{ matrix.python }}
           RDLT_REQUIRE_SANDBOX: ${{ runner.os == 'Linux' && '1' || '0' }}
       # A scaffolded connector installed as a directory with the system's Python, this tree's
-      # wheel and PyPI's packages, placed in the sandbox, run and certified.
+      # wheel and PyPI's packages, placed in the sandbox, run and certified. It builds the debug
+      # `rdlt` the wheel's step does not: about two minutes warm, and cold no longer than that
+      # step's release build, under ten; thirty minutes is three times that.
       - if: runner.os == 'Linux'
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: just python-network "${PYTHON}"
         env:
           PYTHON: ${{ matrix.python }}
