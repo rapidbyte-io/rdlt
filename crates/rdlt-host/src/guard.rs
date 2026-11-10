@@ -1,7 +1,11 @@
-//! A connector placed in process, whose errors reach the engine as a host keeps a
+//! A connector placed in process, whose errors and panics reach the engine as a host keeps a
 //! connector's: scrubbed of the secrets it was sent, shown, and bounded, causes included.
 
+use std::any::Any;
+use std::future::{Future, poll_fn};
 use std::num::NonZeroUsize;
+use std::panic::{self, AssertUnwindSafe};
+use std::pin::pin;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::{
@@ -22,6 +26,39 @@ pub(crate) fn received(error: &ConnectorError, redactions: &Redactions) -> Conne
     error.received(&|text| redactions.scrubbed(text))
 }
 
+/// What `call` answers; should it panic, the panic unwinds on with nothing `redactions` holds
+/// in its message, which whatever catches it may show.
+pub(crate) async fn unwound<F: Future>(call: F, redactions: &Redactions) -> F::Output {
+    let mut call = pin!(call);
+    poll_fn(|context| {
+        let polled = panic::catch_unwind(AssertUnwindSafe(|| call.as_mut().poll(context)));
+        polled.unwrap_or_else(|payload| panic::resume_unwind(scrubbed(payload, redactions)))
+    })
+    .await
+}
+
+/// A panic's `payload`, its message scrubbed where it is text; any other payload says nothing.
+fn scrubbed(payload: Box<dyn Any + Send>, redactions: &Redactions) -> Box<dyn Any + Send> {
+    let message = match payload.downcast::<String>() {
+        Ok(message) => *message,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(message) => (*message).to_owned(),
+            Err(payload) => return payload,
+        },
+    };
+    Box::new(redactions.scrubbed(message))
+}
+
+/// What `call` answers, as the host keeps a connector's answer: its error and its panic
+/// scrubbed of what `redactions` holds.
+///
+/// Each call is made in the future it is given as, so that what a connector does before its own
+/// future is made is caught too.
+async fn answered<V>(call: impl Future<Output = Result<V>>, redactions: &Redactions) -> Result<V> {
+    let answer = unwound(call, redactions).await;
+    answer.map_err(|error| received(&error, redactions))
+}
+
 /// A source, a destination, a session or a table writer placed in process, with the secrets it
 /// was sent.
 pub(crate) struct Guarded<T> {
@@ -29,19 +66,15 @@ pub(crate) struct Guarded<T> {
     pub(crate) redactions: Redactions,
 }
 
-impl<T> Guarded<T> {
-    fn kept<V>(&self, result: Result<V>) -> Result<V> {
-        result.map_err(|error| received(&error, &self.redactions))
-    }
-}
-
 impl Source for Guarded<Box<dyn Source>> {
     fn check(&self) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async move { self.kept(self.inner.check().await) })
+        let Self { inner, redactions } = self;
+        Box::pin(answered(async move { inner.check().await }, redactions))
     }
 
     fn discover(&self) -> BoxFuture<'_, Result<Catalog>> {
-        Box::pin(async move { self.kept(self.inner.discover().await) })
+        let Self { inner, redactions } = self;
+        Box::pin(answered(async move { inner.discover().await }, redactions))
     }
 
     fn plan<'a>(
@@ -49,11 +82,19 @@ impl Source for Guarded<Box<dyn Source>> {
         stream: &'a StreamName,
         state: &'a StreamState,
     ) -> BoxFuture<'a, Result<PartitionPlan>> {
-        Box::pin(async move { self.kept(self.inner.plan(stream, state).await) })
+        let Self { inner, redactions } = self;
+        Box::pin(answered(
+            async move { inner.plan(stream, state).await },
+            redactions,
+        ))
     }
 
     fn read(&self, request: ReadRequest, sink: PartitionSink) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async move { self.kept(self.inner.read(request, sink).await) })
+        let Self { inner, redactions } = self;
+        Box::pin(answered(
+            async move { inner.read(request, sink).await },
+            redactions,
+        ))
     }
 
     fn committed<'a>(
@@ -61,7 +102,11 @@ impl Source for Guarded<Box<dyn Source>> {
         stream: &'a StreamName,
         cursors: &'a [(PartitionId, Cursor)],
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.kept(self.inner.committed(stream, cursors).await) })
+        let Self { inner, redactions } = self;
+        Box::pin(answered(
+            async move { inner.committed(stream, cursors).await },
+            redactions,
+        ))
     }
 
     fn max_calls(&self) -> Option<NonZeroUsize> {
@@ -75,16 +120,18 @@ impl Destination for Guarded<Box<dyn Destination>> {
     }
 
     fn check(&self) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async move { self.kept(self.inner.check().await) })
+        let Self { inner, redactions } = self;
+        Box::pin(answered(async move { inner.check().await }, redactions))
     }
 
     fn open<'a>(&'a self, context: &'a OpenContext) -> BoxFuture<'a, Result<OpenedSession>> {
+        let Self { inner, redactions } = self;
         Box::pin(async move {
-            let opened = self.kept(self.inner.open(context).await)?;
+            let opened = answered(async move { inner.open(context).await }, redactions).await?;
             Ok(OpenedSession {
                 session: Box::new(Guarded {
                     inner: opened.session,
-                    redactions: self.redactions.clone(),
+                    redactions: redactions.clone(),
                 }),
                 ..opened
             })
@@ -98,52 +145,53 @@ impl Destination for Guarded<Box<dyn Destination>> {
 
 impl DestinationSession for Guarded<Box<dyn DestinationSession>> {
     fn apply_schema<'a>(&'a mut self, change: &'a TableChange) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let applied = self.inner.apply_schema(change).await;
-            self.kept(applied)
-        })
+        let Self { inner, redactions } = self;
+        Box::pin(answered(
+            async move { inner.apply_schema(change).await },
+            redactions,
+        ))
     }
 
     fn writer<'a>(
         &'a mut self,
         table: &'a TableRef,
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
+        let Self { inner, redactions } = self;
         Box::pin(async move {
-            let writer = self.inner.writer(table).await;
-            let inner = self.kept(writer)?;
-            let redactions = self.redactions.clone();
-            Ok(Box::new(Guarded { inner, redactions }) as Box<dyn DestinationWriter>)
+            let writer = answered(async move { inner.writer(table).await }, redactions).await?;
+            let redactions = redactions.clone();
+            Ok(Box::new(Guarded {
+                inner: writer,
+                redactions,
+            }) as Box<dyn DestinationWriter>)
         })
     }
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
-        Box::pin(async move {
-            let committed = self.inner.commit(meta).await;
-            self.kept(committed)
-        })
+        let Self { inner, redactions } = self;
+        Box::pin(answered(
+            async move { inner.commit(meta).await },
+            redactions,
+        ))
     }
 
     fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
         let Self { inner, redactions } = *self;
-        Box::pin(async move {
-            let closed = inner.close().await;
-            closed.map_err(|error| received(&error, &redactions))
-        })
+        Box::pin(async move { answered(async move { inner.close().await }, &redactions).await })
     }
 }
 
 impl DestinationWriter for Guarded<Box<dyn DestinationWriter>> {
     fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async move {
-            let written = self.inner.write(segment, batch).await;
-            self.kept(written)
-        })
+        let Self { inner, redactions } = self;
+        Box::pin(answered(
+            async move { inner.write(segment, batch).await },
+            redactions,
+        ))
     }
 
     fn flush(&mut self) -> BoxFuture<'_, Result<WriteStats>> {
-        Box::pin(async move {
-            let flushed = self.inner.flush().await;
-            self.kept(flushed)
-        })
+        let Self { inner, redactions } = self;
+        Box::pin(answered(async move { inner.flush().await }, redactions))
     }
 }

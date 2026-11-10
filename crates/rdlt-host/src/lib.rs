@@ -4,6 +4,12 @@
 
 #![forbid(unsafe_code)]
 
+// Kani compiles every crate aborting, and runs nothing it compiles.
+#[cfg(all(panic = "abort", not(kani)))]
+compile_error!(
+    "rdlt-host scrubs an in-process connector's panic as it unwinds: build with panic = \"unwind\""
+);
+
 mod connect;
 mod guard;
 mod kills;

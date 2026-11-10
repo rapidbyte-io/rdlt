@@ -14,7 +14,7 @@ use rdlt_connector::{
 #[cfg(test)]
 mod tests;
 
-use crate::guard::{Guarded, received};
+use crate::guard::{Guarded, received, unwound};
 use crate::provider::{ConnectorRef, Honours, Placed, Placement, Provider, ProviderError, accepts};
 use crate::secrets::{Config, Redactions, SecretResolver, Secrets};
 
@@ -183,8 +183,9 @@ impl Provider for Registry {
             };
             let version = &factory.spec().version;
             let (config, redactions) = self.configured(reference, version, config).await?;
-            let inner = factory
-                .connect(config, ConnectContext::new())
+            // A connector parses what it was sent as it connects: a panic there is scrubbed too.
+            let connecting = async { factory.connect(config, ConnectContext::new()).await };
+            let inner = unwound(connecting, &redactions)
                 .await
                 .map_err(|error| unconnected(reference, &error, &redactions))?;
             Ok(Placed {
@@ -210,8 +211,8 @@ impl Provider for Registry {
             };
             let version = &factory.spec().version;
             let (config, redactions) = self.configured(reference, version, config).await?;
-            let inner = factory
-                .connect(config, ConnectContext::new())
+            let connecting = async { factory.connect(config, ConnectContext::new()).await };
+            let inner = unwound(connecting, &redactions)
                 .await
                 .map_err(|error| unconnected(reference, &error, &redactions))?;
             Ok(Placed {
