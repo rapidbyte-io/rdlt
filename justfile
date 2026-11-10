@@ -40,10 +40,11 @@ python-develop: python-env
     VIRTUAL_ENV="{{ justfile_directory() }}/.venv" maturin develop --uv
 
 # The Python package's static checks: ruff's format and lint, pyright strict over the package,
-# its tests and its examples, and stubtest of the native module's stub against the module built
+# its tests and its examples and the connector template `rdlt connector new` writes, and stubtest
+# of the native module's stub against the module built
 python-checks: python-develop
-    ruff format --check
-    ruff check
+    ruff format --check . crates/rdlt-cli/templates/python
+    ruff check . crates/rdlt-cli/templates/python
     pyright
     .venv/bin/python -m mypy.stubtest rdlt._native
 
@@ -56,55 +57,62 @@ connectors-build:
 python-test *args: python-develop connectors-build
     .venv/bin/python -m pytest {{ args }}
 
-# The Python package's tests that install from PyPI, with a wheel of this tree built: a connector
-# `rdlt connector new` scaffolds, built, installed as a directory connector, placed, run and
-# certified with its kill clause spawning the installed launcher
-python-network: python-develop connectors-build
+# Install the release wheel CPython `version` loads as it ships, with the test dependencies, into
+# an environment of its own, `target/wheel-env`, on an interpreter uv installs from the downloads
+# its release names, never the editable package. The wheel is built unless `target/wheels` holds
+# it: the abi3 one, or, for a version ending in `t`, free-threaded CPython such as `3.14t`, which
+# loads no abi3 wheel, one built for that interpreter alone
+python-wheel-env version:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo build --package rdlt-cli
-    rm -rf target/wheels
-    # The wheel is built without `.venv`, which the exported PYO3_PYTHON names
-    PYO3_PYTHON="$(mise which python)" maturin build --release --out target/wheels --interpreter "$(mise which python)"
-    .venv/bin/python -m pytest -m network
+    version="{{ version }}"
+    uv python install "$version"
+    if [[ "$version" == *t ]]; then
+        interpreter=$(uv python find "$version")
+        wheels="target/wheels/$version"
+    else
+        interpreter=$(mise which python)
+        wheels=target/wheels/abi3
+    fi
+    if [[ ! -d "$wheels" ]]; then
+        # The wheel is built without `.venv`, which the exported PYO3_PYTHON names
+        PYO3_PYTHON="$interpreter" maturin build --release --out "$wheels" --interpreter "$interpreter"
+    fi
+    rm -rf target/wheel-env
+    uv venv --python "$version" target/wheel-env
+    VIRTUAL_ENV=target/wheel-env uv sync --locked --active --only-group dev
+    uv pip install --python target/wheel-env/bin/python "$wheels"/*.whl
+    # The tests must read the wheel, not the source tree beside it
+    target/wheel-env/bin/python -c 'import pathlib, rdlt; assert "site-packages" in pathlib.Path(rdlt.__file__).parts'
+    echo "CPython $version: $(target/wheel-env/bin/python -VV)"
 
-# Build the release wheel and test it as it ships, on each CPython of `versions` in turn: installed
-# with the test dependencies into an environment of its own, on an interpreter uv installs from the
-# downloads its release names, never the editable package. The abi3 wheel is built once; a version
-# ending in `t` is free-threaded CPython, such as `3.14t`, which loads no abi3 wheel: its wheel is
-# built for that interpreter alone. Every version is tested, and the recipe fails after the last
-# if any failed
+# Build the release wheel and test it as it ships, on each CPython of `versions` in turn, in an
+# environment of its own; the abi3 wheel is built once. Every version is tested, and the recipe
+# fails after the last if any failed
 python-wheel +versions: connectors-build
     #!/usr/bin/env bash
     set -euo pipefail
     rm -rf target/wheels target/wheel-env
     failed=()
     for version in {{ versions }}; do
-        uv python install "$version"
-        if [[ "$version" == *t ]]; then
-            interpreter=$(uv python find "$version")
-            wheels="target/wheels/$version"
-        else
-            interpreter=$(mise which python)
-            wheels=target/wheels/abi3
-        fi
-        if [[ ! -d "$wheels" ]]; then
-            # The wheel is built without `.venv`, which the exported PYO3_PYTHON names
-            PYO3_PYTHON="$interpreter" maturin build --release --out "$wheels" --interpreter "$interpreter"
-        fi
-        rm -rf target/wheel-env
-        uv venv --python "$version" target/wheel-env
-        VIRTUAL_ENV=target/wheel-env uv sync --locked --active --only-group dev
-        uv pip install --python target/wheel-env/bin/python "$wheels"/*.whl
-        # The tests must read the wheel, not the source tree beside it
-        target/wheel-env/bin/python -c 'import pathlib, rdlt; assert "site-packages" in pathlib.Path(rdlt.__file__).parts'
-        echo "CPython $version: $(target/wheel-env/bin/python -VV)"
+        just python-wheel-env "$version"
         target/wheel-env/bin/python -m pytest -p no:cacheprovider || failed+=("$version")
     done
     if (( ${#failed[@]} )); then
         echo "the suite failed on CPython ${failed[*]}" >&2
         exit 1
     fi
+
+# The Python package's tests that install from PyPI, against this tree's release wheel on CPython
+# `version`: a connector `rdlt connector new` scaffolds, built, installed as a directory connector
+# with the wheel, placed, run and certified with its kill clause spawning the installed launcher
+python-network version="3.14": connectors-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf target/wheels
+    just python-wheel-env "{{ version }}"
+    cargo build --package rdlt-cli
+    target/wheel-env/bin/python -m pytest -p no:cacheprovider -m network
 
 # Run every static check CI runs
 lint: checks pins
