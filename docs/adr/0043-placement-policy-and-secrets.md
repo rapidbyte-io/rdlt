@@ -92,11 +92,14 @@ given. A host enforces that only where it closes each of these:
     each grant are mounts of their own, and a link does not cross mounts. Each sandbox has a
     private scratch directory of its own, in memory, at a path only `TMPDIR` names; `/tmp` is an
     empty read-only directory, so a path written by accident, one a document names without a
-    grant, fails rather than report a commit into storage that goes with the process.
+    grant, fails rather than report a commit into storage that goes with the process. Its
+    `/dev/shm` is the only other place written, in memory as the scratch is and its own: POSIX
+    semaphores and shared memory are made there, as Python's `multiprocessing` makes its locks
+    and queues, and what is written there goes with the sandbox, as shared memory does.
   - `Bubblewrap` is the sandbox rdlt ships, for Linux. The connector sees the host's system
     directories read only, a `/proc` of its own, which is a kernel interface and no storage, a
-    `/tmp` and a `/dev` of its own, read only but for the device nodes, the scratch directory
-    `TMPDIR` names, and what it was granted;
+    `/tmp` and a `/dev` of its own, read only but for the device nodes and a private
+    `/dev/shm`, the scratch directory `TMPDIR` names, and what it was granted;
     no home directory, no network unless granted, its own user, process, IPC, host-name and
     control-group namespaces and no further user namespace (`--disable-userns`, bubblewrap
     0.8 or later on a kernel with per-namespace limits); the environment the host states and
