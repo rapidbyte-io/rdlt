@@ -1,10 +1,15 @@
-//! Arbitrary text and drawn queries through `Sql::parse` and planning never panic or overflow
-//! their stack, and a plan rdlt-sql accepts holds only a projection of input, a filter and the
-//! listed scalar functions.
+//! Arbitrary text and drawn queries through `Sql::parse`, and the short among them through
+//! planning, never panic or overflow their stack, and a plan rdlt-sql accepts holds only a
+//! projection of input, a filter and the listed scalar functions.
 //!
 //! An input starting with a printable character is text, read as UTF-8 whatever its bytes; any
 //! other draws a query: the shapes a SQL transform may not hold beside those it may, names that
 //! are keywords, and nesting and chains past the depth limit.
+//!
+//! Every text is parsed, within two seconds however long the limit lets it be. Only a text of at
+//! most [`PLANNED`] bytes is planned: planning what the limits admit is polynomial in its depth,
+//! and slow under the fuzzer's instrumentation, so at this length a timeout is planning that grows
+//! faster than the limits allow.
 
 #![forbid(unsafe_code)]
 #![no_main]
@@ -13,6 +18,10 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use libfuzzer_sys::arbitrary::{Result, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use rdlt_sql::{SQL_DEPTH, Sql, function_names};
+
+/// Bytes: the longest text the target plans, at which the slowest queries the limits admit that
+/// were found plan within half the timeout.
+const PLANNED: usize = 208;
 
 /// The nodes an accepted plan may hold.
 const NODES: [&str; 4] = ["Projection", "Filter", "SubqueryAlias", "TableScan"];
@@ -63,6 +72,9 @@ fuzz_target!(|data: &[u8]| {
     let Ok(sql) = Sql::parse(&text) else {
         return;
     };
+    if text.len() > PLANNED {
+        return;
+    }
     let mut fields: Vec<Field> = COLUMNS
         .iter()
         .map(|name| Field::new(*name, DataType::Utf8, true))

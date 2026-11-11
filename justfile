@@ -334,8 +334,9 @@ public-api *args:
 
 # Fuzz one target for a number of seconds, for example `just fuzz state_record 60`, from its
 # corpus, which keeps what it finds, and the seeds `fuzz/seeds/<target>` holds for it, if any.
-# `sql_plan` is handed inputs as long as a query's text may be, 64 KiB, and an input it takes two
-# seconds over is a finding
+# `sql_plan` is handed inputs as long as a query's text may be, 64 KiB, which it parses, and plans
+# only those short enough that planning, polynomial within the limits, takes two seconds only where
+# it grows faster: an input it takes two seconds over is a finding
 fuzz target seconds="60":
     #!/usr/bin/env bash
     set -euo pipefail

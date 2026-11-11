@@ -210,7 +210,11 @@ determinism under simulation whatever the configuration says.
     is refused with a `CASE` or a `coalesce` for its `a`. Within one condition the planner's
     work stays polynomial in how deep the conditions are, about the cube of their depth at
     worst: a `CASE` in a `WHEN`, each condition 30 `abs` deep, takes twelve seconds to plan as
-    the fuzzer builds rdlt-sql, against three for one `CASE` whose condition is 62 deep.
+    the fuzzer builds rdlt-sql, against three for one `CASE` whose condition is 62 deep. The
+    nightly fuzzing holds parsing to any text up to 64 KiB within two seconds, and plans only
+    texts of at most 208 bytes, where the slowest admitted queries found plan within a second
+    as the fuzzer builds rdlt-sql: there a timeout is planning that grows faster than the
+    limits allow.
   - A query's text is parsed, measured and checked, and what is refused dropped, on a stack of
     its own, 4 KiB for each byte of the text, at least 1 MiB and at most 256 MiB, so a short
     query reserves little where a host commits memory strictly. The deepest tree text builds is
@@ -266,6 +270,11 @@ determinism under simulation whatever the configuration says.
   upgraded together.
 - SQL handed a dictionary or a run-end encoded column directly, outside a stream's stage, passes
   it on and tests it for null but computes nothing else from it.
+- Planning a query the limits admit is polynomial in its expressions' depth and in the
+  columns it outputs, and nothing but the limits bounds it. 64 KiB of 64-term chains takes 58
+  seconds to plan as the fuzzer builds rdlt-sql, and 1.7 seconds optimised as the simulation
+  profile builds it; 64 KiB of `CASE`s each holding another in its `WHEN`, each condition 30
+  `abs` deep, takes 65 seconds optimised.
 - A query nesting conditions deeper writes them flat: the conditions of a `CASE` lying in a
   `WHEN` as the `WHEN`s of one `CASE`, and `coalesce(coalesce(coalesce(a, b), c), d)` as
   `coalesce(a, b, c, d)`.
