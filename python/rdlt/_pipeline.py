@@ -414,10 +414,8 @@ def _functions(source: object) -> list[ReadStream]:
 
 
 def _entry(declared: ReadStream) -> dict[str, Json]:
-    """A stream's entry as its declaration says: incremental with a cursor, written as it says."""
+    """A stream's entry as its declaration says: incremental where it has a cursor."""
     entry: dict[str, Json] = {"name": declared.name}
-    if declared.write is not None:
-        entry["write"] = declared.write._document
     if declared.cursor is not None:
         entry["read"] = "incremental"
     return entry
@@ -458,9 +456,9 @@ def pipeline(
     of one source, `io.rapidbyte.functions`. A function's stream is always selected; a local
     connector's streams are each selected where `streams` names none of them, and otherwise only
     those it names. A stream named exactly keeps what its declaration says, `read: incremental`
-    for one with a cursor and its `write`, under what its entry says; one a pattern selects reads
-    as the defaults say. `destination` is a connector, or `rdlt.local(SomeDestination,
-    config=...)` for a class `@destination` made.
+    for one with a cursor, under what its entry says, `write` among it; one a pattern selects
+    reads as the defaults say. `destination` is a connector, or
+    `rdlt.local(SomeDestination, config=...)` for a class `@destination` made.
 
     Raises:
         TypeError: `source` holds something that is no stream, such as a plain function.

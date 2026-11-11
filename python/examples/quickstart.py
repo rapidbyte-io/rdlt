@@ -16,7 +16,7 @@ class Since(Cursor):
     after: int = -1
 
 
-@stream(primary_key="id", write=rdlt.merge("id"), cursor=Since)
+@stream(primary_key="id", cursor=Since)
 def users(since: Since) -> Iterator[object]:
     """Three pages of ten users, each followed by the checkpoint after it."""
     for page in range(since.after + 1, 3):
@@ -33,7 +33,9 @@ def main(connectors: Path, data: Path) -> rdlt.Outcome:
         config={"path": str(data / "users.db")},
         access=rdlt.Access(write=data),
     )
-    return rdlt.pipeline("users", source=users, destination=sqlite).build(host).run()
+    merged = rdlt.stream("users", write=rdlt.merge("id"))
+    pipeline = rdlt.pipeline("users", source=users, destination=sqlite, streams=[merged])
+    return pipeline.build(host).run()
 
 
 if __name__ == "__main__":

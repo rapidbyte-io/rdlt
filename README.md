@@ -215,8 +215,9 @@ a stream, as it makes a connector class's method one: it yields rows, as dicts o
 Arrow batches or anything that exports Arrow, and checkpoints, each the cursor a run resumes from
 once the rows before it are committed. A pipeline reads its stream functions in process, as the
 streams of one source, `io.rapidbyte.functions`; moved into a `@source` class, a function takes
-`self`, as its `partitions=` and `committed=` callables then do too. A stream that declares no
-partitions reads one that never ends, as a Rust source's does, and so does a
+`self`, as its `partitions=` and `committed=` callables then do too. How a stream's rows land is the
+pipeline's to say, as for any source: `rdlt.stream("users", write=rdlt.merge("id"))`. A stream that
+declares no partitions reads one that never ends, as a Rust source's does, and so does a
 `Partition(id, unbounded=True)` a stream declares: read `full`, everything it yields lands; read
 incrementally, what it yields up to its last checkpoint lands, and the next run reads the rest again
 from there, so its read ends on `yield checkpoint(cursor)`, and one that yields rows and no
@@ -243,7 +244,7 @@ class Since(Cursor):
     after: int = -1
 
 
-@stream(primary_key="id", write=rdlt.merge("id"), cursor=Since)
+@stream(primary_key="id", cursor=Since)
 def users(since: Since) -> Iterator[object]:
     """Three pages of ten users, each followed by the checkpoint after it."""
     for page in range(since.after + 1, 3):
@@ -260,7 +261,9 @@ def main(connectors: Path, data: Path) -> rdlt.Outcome:
         config={"path": str(data / "users.db")},
         access=rdlt.Access(write=data),
     )
-    return rdlt.pipeline("users", source=users, destination=sqlite).build(host).run()
+    merged = rdlt.stream("users", write=rdlt.merge("id"))
+    pipeline = rdlt.pipeline("users", source=users, destination=sqlite, streams=[merged])
+    return pipeline.build(host).run()
 
 
 if __name__ == "__main__":
