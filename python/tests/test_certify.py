@@ -185,3 +185,15 @@ def test_a_transform_s_clauses_pass() -> None:
     outcomes = {clause: certification.result(clause).outcome for clause, _ in certification.clauses}
     assert "failed" not in outcomes.values(), outcomes
     assert outcomes["T-ROWS"] == "passed"
+
+
+def test_a_clause_the_certification_does_not_hold_is_refused_naming_it() -> None:
+    @rdlt.transform()
+    def unchanged(batch: pa.RecordBatch) -> pa.RecordBatch:
+        return batch
+
+    certification = certify_transform(unchanged, inputs=[pa.record_batch({"n": [1]})])
+    with pytest.raises(KeyError) as refused:
+        certification.result("S-RESUME")
+    assert "S-RESUME" in str(refused.value)
+    assert certification.result("T-ROWS").clause == "T-ROWS"
