@@ -69,6 +69,9 @@ struct Declared {
     read_modes: Vec<ReadMode>,
     checkpointing: Checkpointing,
     partitioned: bool,
+    replayable: bool,
+    /// Whether the stream is told which of its cursors are committed.
+    committed: bool,
 }
 
 /// One stream of a Python source.
@@ -77,6 +80,7 @@ pub(crate) struct PythonStream {
     spec: StreamSpec,
     stream: Arc<Py<PyAny>>,
     partitioned: bool,
+    committed: bool,
 }
 
 impl PythonStream {
@@ -90,7 +94,8 @@ impl PythonStream {
             StreamName::new(&declared.name).config(format!("stream name {:?}", declared.name))?;
         let mut spec = StreamSpec::new(name)
             .with_read_modes(declared.read_modes)
-            .with_checkpointing(declared.checkpointing);
+            .with_checkpointing(declared.checkpointing)
+            .with_replayable(declared.replayable);
         if let Some(key) = &declared.primary_key {
             spec = spec.with_primary_key(key.iter().map(String::as_str));
         }
@@ -98,6 +103,7 @@ impl PythonStream {
             spec,
             stream: Arc::new(stream),
             partitioned: declared.partitioned,
+            committed: declared.committed,
         })
     }
 }
@@ -171,6 +177,33 @@ impl ReadStream<PythonSource> for PythonStream {
                 })
             })
             .collect()
+    }
+
+    async fn committed(
+        &self,
+        _source: &PythonSource,
+        cursors: &[(PartitionId, PyCursor)],
+    ) -> Result<()> {
+        if !self.committed {
+            return Ok(());
+        }
+        let told: Vec<(Option<String>, Option<String>)> = cursors
+            .iter()
+            .map(|(id, cursor)| {
+                let partition = self.partitioned.then(|| id.to_string());
+                (
+                    partition,
+                    cursor.0.as_ref().map(|text| text.get().to_owned()),
+                )
+            })
+            .collect();
+        let stream = Arc::clone(&self.stream);
+        called(
+            "committed",
+            move |py| (stream.clone_ref(py), told).into_pyobject(py),
+            |_| Ok(()),
+        )
+        .await
     }
 
     async fn read(
