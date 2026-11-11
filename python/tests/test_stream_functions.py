@@ -119,6 +119,7 @@ def two_runs(
         "moved",
         source=placed,  # pyright: ignore[reportArgumentType]
         destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("users", write=rdlt.merge("id"))],
     )
     every_host = host(tmp_path, connectors)
     built.build(every_host).run()
@@ -128,7 +129,7 @@ def two_runs(
 
 
 def as_function(available: list[int], started: Started, *, ends_on_rows: bool) -> object:
-    @stream(primary_key="id", write=rdlt.merge("id"), cursor=_Since)
+    @stream(primary_key="id", cursor=_Since)
     def users(since: _Since, ctx: StreamContext) -> Iterator[object]:
         started.append((since.after, ctx.resumes))
         for n in range(since.after + 1, available[0]):
@@ -148,7 +149,7 @@ def as_method(available: list[int], started: Started, *, ends_on_rows: bool) -> 
         def check(self) -> None:
             """Reads need nothing checked first."""
 
-        @stream(primary_key="id", write=rdlt.merge("id"), cursor=_Since)
+        @stream(primary_key="id", cursor=_Since)
         def users(self, since: _Since, ctx: StreamContext) -> Iterator[object]:
             started.append((since.after, ctx.resumes))
             for n in range(since.after + 1, available[0]):
@@ -574,14 +575,19 @@ def test_a_stream_function_with_a_cursor_resumes_the_next_run_and_adds_no_duplic
 ) -> None:
     started_from: list[int] = []
 
-    @stream(primary_key="id", write=write, cursor=_Since)
+    @stream(primary_key="id", cursor=_Since)
     def users(since: _Since) -> Iterator[object]:
         started_from.append(since.after)
         for n in range(since.after + 1, 3):
             yield {"id": n}
         yield checkpoint(_Since(after=2))
 
-    built = rdlt.pipeline("resumed", source=users, destination=into_sqlite(tmp_path))
+    built = rdlt.pipeline(
+        "resumed",
+        source=users,
+        destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("users", write=write)],
+    )
     every_host = host(tmp_path, connectors)
     built.build(every_host).run()
     built.build(every_host).run()
@@ -608,39 +614,48 @@ def test_a_stream_named_twice_is_refused_by_the_plan(tmp_path: Path, connectors:
     assert refused.value.code == "plan_duplicate_stream"
 
 
+def counted(started_from: list[int]) -> ReadStream:
+    """A stream of three rows read from its cursor, which says where each read started."""
+
+    @stream(primary_key="id", cursor=_Since)
+    def merged(since: _Since) -> Iterator[object]:
+        started_from.append(since.after)
+        for n in range(since.after + 1, 3):
+            yield {"id": n}
+        yield checkpoint(_Since(after=2))
+
+    return merged
+
+
 def test_naming_a_stream_function_in_streams_keeps_what_it_does_not_change(
     tmp_path: Path, connectors: Path
 ) -> None:
-    @stream(primary_key="id", write=rdlt.merge("id"))
-    def merged() -> Iterator[object]:
-        yield [{"id": n} for n in range(3)]
-
+    started_from: list[int] = []
     built = rdlt.pipeline(
         "merged",
-        source=merged,
+        source=counted(started_from),
+        destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("merged", write=rdlt.merge("id"))],
+    )
+    every_host = host(tmp_path, connectors)
+    built.build(every_host).run()
+    built.build(every_host).run()
+    assert started_from == [-1, 2]
+    assert len(rows_of(tmp_path, "merged")) == 3
+
+
+def test_an_entry_in_streams_overrides_what_it_sets(tmp_path: Path, connectors: Path) -> None:
+    started_from: list[int] = []
+    built = rdlt.pipeline(
+        "overridden",
+        source=counted(started_from),
         destination=into_sqlite(tmp_path),
         streams=[rdlt.stream("merged", read="full")],
     )
     every_host = host(tmp_path, connectors)
     built.build(every_host).run()
     built.build(every_host).run()
-    assert len(rows_of(tmp_path, "merged")) == 3
-
-
-def test_an_entry_in_streams_overrides_what_it_sets(tmp_path: Path, connectors: Path) -> None:
-    @stream(primary_key="id", write=rdlt.merge("id"))
-    def merged() -> Iterator[object]:
-        yield [{"id": n} for n in range(3)]
-
-    built = rdlt.pipeline(
-        "overridden",
-        source=merged,
-        destination=into_sqlite(tmp_path),
-        streams=[rdlt.stream("merged", write=rdlt.append())],
-    )
-    every_host = host(tmp_path, connectors)
-    built.build(every_host).run()
-    built.build(every_host).run()
+    assert started_from == [-1, -1]
     assert len(rows_of(tmp_path, "merged")) == 6
 
 

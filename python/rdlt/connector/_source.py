@@ -7,7 +7,7 @@ import json
 import types
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from rdlt import _native
 from rdlt._weak import weakly_reached
@@ -15,9 +15,6 @@ from rdlt.connector._config import Config, validated
 from rdlt.connector._cursor import Cursor
 from rdlt.connector._declared import Placement, declare, declared_as, package_version
 from rdlt.connector._streams import Committed, Partition, Stream
-
-if TYPE_CHECKING:
-    from rdlt._pipeline import WriteMode
 
 T = TypeVar("T")
 
@@ -46,7 +43,6 @@ class ReadStream:
     function: Callable[..., Any]
     name: str
     primary_key: tuple[str, ...] | None
-    write: WriteMode | None
     cursor: type[Cursor] | None
     partitions: _PartitionsOf | None
     committed: _CommittedBy | None
@@ -68,7 +64,6 @@ def stream(
     name: str | None = None,
     *,
     primary_key: str | Sequence[str] | None = None,
-    write: WriteMode | None = None,
     cursor: type[Cursor] | None = None,
     partitions: _PartitionsOf | None = None,
     committed: _CommittedBy | None = None,
@@ -80,10 +75,9 @@ def stream(
     Arrow data and `checkpoint(cursor)`. `partitions` answers the partitions, each an id or a
     `Partition`, called as the stream is, with the instance where it is a method, or names a
     method that does; `ctx.partition` then says which one is read. A method stays a method:
-    `self.tickets(since, ctx)` calls it.
-    `write` is how its rows land where `rdlt.pipeline` places its source in process, unless the
-    pipeline's `streams=` says otherwise. It makes a `ReadStream`, typed `Any` so it is called and
-    overridden as the function or method it was.
+    `self.tickets(since, ctx)` calls it. It makes a `ReadStream`, typed `Any` so it is called and
+    overridden as the function or method it was. How its rows land is the pipeline's to say, as
+    `rdlt.stream(name, write=...)`, whatever its source.
 
     `committed`, a function called as `partitions` is or a method's name, takes the cursors each
     commit made durable, as `(partition, cursor)` pairs, as a Rust stream's `committed` does: a
@@ -114,7 +108,6 @@ def stream(
             function=function,
             name=name or function.__name__,
             primary_key=None if keys is None else tuple(keys),
-            write=write,
             cursor=cursor,
             partitions=partitions,
             committed=committed,
