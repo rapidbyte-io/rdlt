@@ -362,27 +362,33 @@ impl Local {
     ) -> Result<Lease, ProviderError> {
         let programs =
             programs(binary).map_err(|source| spawn_failed(reference, binary.path(), source))?;
-        let unconfined = Access::default();
         let (access, shared_reads) = if confined {
-            (&reference.access, self.shared_reads.as_slice())
+            (reference.access.clone(), self.shared_reads.clone())
         } else {
-            (&unconfined, &[][..])
+            (Access::default(), Vec::new())
         };
         let claim = Claim {
             access,
             shared_reads,
-            roots: &self.roots,
-            guarded: &self.guarded(),
-            programs: &programs,
-            tree: binary.tree(),
+            roots: self.roots.clone(),
+            guarded: self.guarded(),
+            programs,
+            tree: binary.tree().cloned(),
         };
+        let refused = |source| ProviderError::Sandbox {
+            id: reference.id.clone(),
+            source,
+        };
+        #[cfg(feature = "sim")]
+        if self.played.is_some() {
+            // A simulated seed runs on one thread, as the digest is read, and a played connector
+            // holds nothing once its placement is dropped: there is nothing to wait for.
+            return self.leases.take(&claim).map_err(refused);
+        }
         self.leases
-            .take_within(&claim, self.options.deadlines.connect)
+            .take_within(claim, self.options.deadlines.connect)
             .await
-            .map_err(|source| ProviderError::Sandbox {
-                id: reference.id.clone(),
-                source,
-            })
+            .map_err(refused)
     }
 
     /// What no root a reference may write within may hold: where connectors are found, the

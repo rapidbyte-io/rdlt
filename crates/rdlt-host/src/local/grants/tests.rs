@@ -70,27 +70,25 @@ impl Asked {
             .collect()
     }
 
-    fn claim<'a>(&'a self, programs: &'a [Program]) -> Claim<'a> {
+    fn claim(&self) -> Claim {
         Claim {
-            access: &self.access,
-            shared_reads: &self.shared_reads,
-            roots: &self.roots,
-            guarded: &self.guarded,
-            programs,
+            access: self.access.clone(),
+            shared_reads: self.shared_reads.clone(),
+            roots: self.roots.clone(),
+            guarded: self.guarded.clone(),
+            programs: self.opened_programs(),
             tree: None,
         }
     }
 
     fn taken(&self, leases: &Leases) -> Result<Lease, SandboxError> {
-        let programs = self.opened_programs();
-        leases.take(&self.claim(&programs))
+        leases.take(&self.claim())
     }
 
     /// Taken as a placement takes it, waiting up to `patience` for what only connectors told to
     /// stop hold.
     async fn within(&self, leases: &Leases, patience: Duration) -> Result<Lease, SandboxError> {
-        let programs = self.opened_programs();
-        leases.take_within(&self.claim(&programs), patience).await
+        leases.take_within(self.claim(), patience).await
     }
 }
 
@@ -693,3 +691,4 @@ async fn a_grant_connectors_told_to_stop_keep_past_the_wait_is_refused() {
     assert_eq!(started.elapsed(), patience, "refused once the wait is over");
     drop(connector);
 }
+
