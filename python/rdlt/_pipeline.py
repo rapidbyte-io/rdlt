@@ -13,7 +13,7 @@ from typing import Literal, TypeAlias, cast
 
 from rdlt import _native
 from rdlt._transform import Transform, named_once
-from rdlt.connector import Local, _destination, _source
+from rdlt.connector import _destination, _source
 from rdlt.connector._declared import Registered, registered_once
 from rdlt.connector._source import ReadStream
 from rdlt.host import Host, StrPath, _names, _paths
@@ -131,6 +131,21 @@ class Connector:
         if self.access is not None:
             document["access"] = self.access._document()
         return document
+
+
+@dataclass(frozen=True, slots=True)
+class Local:
+    """A connector class placed in process, trusted as the program's own code."""
+
+    connector: type
+    """The class, which `@source` or `@destination` made."""
+    config: Mapping[str, Json] | None = field(default=None, repr=False, hash=False)
+    """Its configuration, which may hold a credential written inline and is never shown."""
+
+
+def local(connector: type, *, config: Mapping[str, Json] | None = None) -> Local:
+    """`connector`, a class `@source` or `@destination` made, placed in process with `config`."""
+    return Local(connector, config)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

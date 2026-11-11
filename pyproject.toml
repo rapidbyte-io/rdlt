@@ -102,6 +102,8 @@ convention = "google"
 # The connector template is a project of its own, where `rdlt` sorts as a third party's.
 "crates/rdlt-cli/templates/python/**" = ["I001"]
 "python/examples/**" = ["T201"]
+# A connector's failure classes are named as the Rust SDK names their kinds.
+"python/rdlt/connector/_failures.py" = ["N818"]
 "python/rdlt/_native.pyi" = ["A002"]
 "python/tests/**" = ["D103", "PLR2004", "S101", "S603", "S608"]
 

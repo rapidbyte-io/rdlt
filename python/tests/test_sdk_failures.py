@@ -19,14 +19,16 @@ def into_sqlite(tmp_path: Path) -> rdlt.Connector:
     )
 
 
-def test_a_rate_limit_s_after_is_the_engine_s_retry_delay(tmp_path: Path, connectors: Path) -> None:
+def test_a_rate_limit_s_retry_after_is_the_engine_s_retry_delay(
+    tmp_path: Path, connectors: Path
+) -> None:
     calls: list[int] = []
 
     @rdlt.connector.stream()
     def limited() -> Iterator[object]:
         calls.append(1)
         if len(calls) == 1:
-            raise RateLimited("HTTP 429", after=2.0, code="http_429")
+            raise RateLimited("HTTP 429", retry_after=2.0, code="http_429")
         yield {"n": 1}
 
     host = rdlt.Host(connectors=connectors, writable=[tmp_path], trust_binaries=True)
