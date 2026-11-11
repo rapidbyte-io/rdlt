@@ -189,11 +189,11 @@ def test_a_partition_that_never_ends_is_read_again_from_its_last_checkpoint(
     tmp_path: Path, connectors: Path
 ) -> None:
     available: list[int] = [7]
-    started: list[tuple[int, str | None]] = []
+    started: list[tuple[int, str]] = []
 
     @stream(primary_key="id", cursor=_Since, partitions=lambda: [Partition.single()])
     def users(since: _Since, ctx: StreamContext) -> Iterator[object]:
-        started.append((since.after, ctx.partition))
+        started.append((since.after, ctx.partition.id))
         for n in range(since.after + 1, available[0]):
             yield {"id": n}
             if n % 3 == 2:
@@ -206,21 +206,43 @@ def test_a_partition_that_never_ends_is_read_again_from_its_last_checkpoint(
 def test_partitions_answer_ids_and_partitions_alike(tmp_path: Path, connectors: Path) -> None:
     @stream(primary_key="id", partitions=lambda: ["eu", Partition("us")])
     def users(ctx: StreamContext) -> Iterator[object]:
-        yield {"id": ctx.partition}
+        yield {"id": ctx.partition.id}
 
     built = rdlt.pipeline("users", source=users, destination=into_sqlite(tmp_path))
     built.build(host(tmp_path, connectors)).run()
     assert rows_of(tmp_path, "users") == [("eu",), ("us",)]
 
 
-Told = list[tuple[str | None, int]]
+def test_a_stream_that_is_not_split_is_told_it_reads_its_single_partition(
+    tmp_path: Path, connectors: Path
+) -> None:
+    told: list[Partition] = []
+
+    @stream()
+    def whole(ctx: StreamContext) -> Iterator[object]:
+        told.append(ctx.partition)
+        yield {"id": 1}
+
+    @stream(cursor=_Since)
+    def resumed(since: _Since, ctx: StreamContext) -> Iterator[object]:
+        told.append(ctx.partition)
+        yield {"id": since.after + 1}
+        yield checkpoint(_Since(after=since.after + 1))
+
+    built = rdlt.pipeline("single", source=[whole, resumed], destination=into_sqlite(tmp_path))
+    built.build(host(tmp_path, connectors)).run()
+    assert told == [Partition.single(), Partition.single()]
+    assert Partition.single() == Partition("whole", unbounded=True)
+
+
+Told = list[tuple[str, int]]
 """The committed cursors a stream was told of: each partition, and the cursor's `after`."""
 
 
-def told_of(told: Told) -> Callable[[Sequence[tuple[str | None, _Since]]], None]:
+def told_of(told: Told) -> Callable[[Sequence[tuple[str, _Since]]], None]:
     """What a stream calls with its committed cursors, keeping each in `told`."""
 
-    def committed(cursors: Sequence[tuple[str | None, _Since]]) -> None:
+    def committed(cursors: Sequence[tuple[str, _Since]]) -> None:
         told.extend((partition, cursor.after) for partition, cursor in cursors)
 
     return committed
@@ -243,7 +265,7 @@ def test_a_stream_function_is_told_which_cursors_are_committed(
     )
     built.build(host(tmp_path, connectors)).run()
     assert told, "the stream was told of its commits"
-    assert told[-1] == (None, 5)
+    assert told[-1] == ("whole", 5)
     assert {after for _, after in told} <= {2, 5}
 
 
@@ -260,7 +282,7 @@ def test_a_source_class_s_stream_is_told_which_cursors_are_committed_through_a_m
         def check(self) -> None:
             """Reads need nothing checked first."""
 
-        def settle(self, cursors: Sequence[tuple[str | None, _Since]]) -> None:
+        def settle(self, cursors: Sequence[tuple[str, _Since]]) -> None:
             told_of(told)(cursors)
 
         @stream(cursor=_Since, partitions=lambda _self: ["eu"], committed="settle")
@@ -766,7 +788,7 @@ def test_a_string_is_not_a_list_of_partitions(tmp_path: Path, connectors: Path) 
 
     @stream(partitions=one_string)
     def split(ctx: StreamContext) -> Iterator[object]:
-        yield {"partition": ctx.partition}
+        yield {"partition": ctx.partition.id}
 
     built = rdlt.pipeline("split", source=split, destination=into_sqlite(tmp_path))
     with pytest.raises(rdlt.SourceError) as raised:
@@ -849,7 +871,7 @@ def test_a_read_s_threads_leave_nothing_in_threading_once_they_end(
 ) -> None:
     @stream(name="parted", partitions=lambda: [str(n) for n in range(32)])
     def parted(ctx: StreamContext) -> Iterator[object]:
-        yield {"partition": ctx.partition}
+        yield {"partition": ctx.partition.id}
 
     built = rdlt.pipeline("parted", source=parted, destination=into_sqlite(tmp_path))
     assert built.build(host(tmp_path, connectors)).run().report.rows == 32
@@ -862,7 +884,7 @@ def test_a_read_s_threads_leave_nothing_in_threading_once_they_end(
 class Logged:
     """A partition's rows, which log as they are let go, as a client closing its connection does."""
 
-    def __init__(self, partition: str | None) -> None:
+    def __init__(self, partition: str) -> None:
         self._rows = iter([{"partition": partition}])
 
     def __iter__(self) -> Logged:
@@ -880,7 +902,7 @@ def test_rows_that_log_as_they_are_let_go_leave_nothing_in_threading(
 ) -> None:
     @stream(name="logged", partitions=lambda: [str(n) for n in range(8)])
     def logged(ctx: StreamContext) -> Iterator[object]:
-        return Logged(ctx.partition)
+        return Logged(ctx.partition.id)
 
     built = rdlt.pipeline("logged", source=logged, destination=into_sqlite(tmp_path))
     assert built.build(host(tmp_path, connectors)).run().report.rows == 8

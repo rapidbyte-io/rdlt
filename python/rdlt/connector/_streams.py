@@ -4,38 +4,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from rdlt import _native
-from rdlt.connector._context import StreamContext
+from rdlt.connector._context import Partition, StreamContext
 from rdlt.connector._cursor import Cursor
-
-
-@dataclass(frozen=True, slots=True)
-class Partition:
-    """A partition of a stream, as its `partitions` answers it: its id, and whether it never ends.
-
-    Only a full read finishes a partition that never ends: any other read leaves it at its last
-    checkpoint, and the next run reads again what it yielded after that checkpoint. A read of a
-    partition that ends finishes it where the read ends on rows, which commit with it.
-    """
-
-    id: str
-    unbounded: bool = False
-
-    @classmethod
-    def single(cls) -> Partition:
-        """The partition of a stream that is not split, `whole`, which never ends."""
-        return cls("whole", unbounded=True)
-
 
 Read = Callable[..., Iterable[object] | AsyncIterable[object]]
 """A stream's read: takes its cursor first where it declares one, and `ctx` where it names it."""
 
-Committed = Sequence[tuple[str | None, Any]]
-"""Committed cursors: each partition, `None` for a stream without partitions, and its cursor, of
-the stream's `Cursor` type."""
+Committed = Sequence[tuple[str, Any]]
+"""Committed cursors: each partition's id, `whole` for a stream that is not split, and its cursor,
+of the stream's `Cursor` type."""
 
 
 class Stream:
@@ -93,7 +73,7 @@ class Stream:
             for each in found
         ]
 
-    def committed(self, cursors: Sequence[tuple[str | None, str | None]]) -> None:
+    def committed(self, cursors: Sequence[tuple[str, str | None]]) -> None:
         """Tells the author's code that `cursors`, each as JSON, are committed."""
         if self._committed is None:
             return
@@ -105,7 +85,7 @@ class Stream:
         self._committed(parsed)
 
     def read(
-        self, partition: str | None, cursor: str | None, context: _native.StreamContext
+        self, partition: str, cursor: str | None, context: _native.StreamContext
     ) -> Iterable[object] | AsyncIterable[object]:
         """Opens the read, its cursor parsed and the `ctx` it names built."""
         del partition

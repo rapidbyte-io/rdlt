@@ -138,7 +138,7 @@ def test_a_stream_can_name_the_method_that_answers_its_partitions(
         @stream(cursor=_Since, partitions="regions")
         def rows(self, since: _Since, ctx: rdlt.connector.StreamContext) -> Iterator[object]:
             for page in range(since.after + 1, self.pages):
-                yield [{"id": f"{ctx.partition}-{page}"}]
+                yield [{"id": f"{ctx.partition.id}-{page}"}]
 
     host = rdlt.Host(connectors=connectors, writable=[tmp_path], trust_binaries=True)
     placed = rdlt.local(Parted, config={"pages": 2})

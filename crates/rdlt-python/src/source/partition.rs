@@ -54,7 +54,7 @@ impl Reading {
     pub(crate) fn start(
         name: &str,
         stream: Arc<Py<PyAny>>,
-        partition: Option<String>,
+        partition: String,
         cursor: Option<String>,
         context: NativeStreamContext,
         limits: JsonLimits,

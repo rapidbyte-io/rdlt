@@ -76,11 +76,11 @@ class _Stream(Protocol):
         """Each partition to read, and whether it never ends."""
         ...
 
-    def committed(self, cursors: list[tuple[str | None, str | None]]) -> None:
+    def committed(self, cursors: list[tuple[str, str | None]]) -> None:
         """Tells the stream its cursors are committed."""
         ...
 
-    def read(self, partition: str | None, cursor: str | None, context: object) -> object:
+    def read(self, partition: str, cursor: str | None, context: object) -> object:
         """Opens the partition's read: an iterator or an async iterable of what it yields."""
         ...
 
@@ -119,7 +119,7 @@ class _Calls(Protocol):
 def start(  # noqa: PLR0917
     name: str,
     stream: _Stream,
-    partition: str | None,
+    partition: str,
     cursor: str | None,
     context: object,
     out: Out,
@@ -131,7 +131,7 @@ def start(  # noqa: PLR0917
 def _read(  # noqa: PLR0917
     name: str,
     stream: _Stream,
-    partition: str | None,
+    partition: str,
     cursor: str | None,
     context: object,
     out: Out,
@@ -252,6 +252,6 @@ def partitions(stream: _Stream) -> list[tuple[str, bool]]:
     return list(stream.partitions())
 
 
-def committed(stream: _Stream, cursors: list[tuple[str | None, str | None]]) -> None:
+def committed(stream: _Stream, cursors: list[tuple[str, str | None]]) -> None:
     """Tells `stream` that `cursors`, each a partition's and as JSON, are committed."""
     stream.committed(cursors)

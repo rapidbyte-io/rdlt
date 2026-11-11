@@ -12,9 +12,10 @@ from typing import Any, TypeVar, cast
 from rdlt import _native
 from rdlt._weak import weakly_reached
 from rdlt.connector._config import Config, validated
+from rdlt.connector._context import Partition
 from rdlt.connector._cursor import Cursor
 from rdlt.connector._declared import Placement, declare, declared_as, package_version
-from rdlt.connector._streams import Committed, Partition, Stream
+from rdlt.connector._streams import Committed, Stream
 
 T = TypeVar("T")
 
@@ -80,7 +81,7 @@ def stream(
     `rdlt.stream(name, write=...)`, whatever its source.
 
     `committed`, a function called as `partitions` is or a method's name, takes the cursors each
-    commit made durable, as `(partition, cursor)` pairs, as a Rust stream's `committed` does: a
+    commit made durable, as `(partition id, cursor)` pairs, as a Rust stream's `committed` does: a
     source that acknowledges upstream, as a queue settling its messages, does it there.
     `replayable=False` declares a stream that cannot be read again from any committed cursor, as
     the Rust SDK's `StreamSpec::with_replayable` does.

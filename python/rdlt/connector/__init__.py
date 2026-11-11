@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 from rdlt import _native
 from rdlt.connector._config import Config
-from rdlt.connector._context import StreamContext, checkpoint
+from rdlt.connector._context import Partition, StreamContext, checkpoint
 from rdlt.connector._cursor import Cursor
 from rdlt.connector._destination import Opened, answer, destination, minimal_capabilities
 from rdlt.connector._destination import declares as declares_destination
@@ -27,7 +27,6 @@ from rdlt.connector._secret import Secret
 from rdlt.connector._source import ReadStream, source, stream
 from rdlt.connector._source import declares as declares_source
 from rdlt.connector._source import placed as placed_source
-from rdlt.connector._streams import Partition
 
 
 def serve(connector: type, args: Sequence[str] | None = None) -> int:

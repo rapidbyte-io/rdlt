@@ -189,7 +189,7 @@ fn a_stream_that_asks_is_told_its_committed_cursors_by_partition() {
                 "python-told-whole",
                 "[]",
                 "False",
-                "(None, '{\"after\": 4}')",
+                "('whole', '{\"after\": 4}')",
             ),
         ] {
             let body = format!(

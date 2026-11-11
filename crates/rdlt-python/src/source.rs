@@ -187,14 +187,11 @@ impl ReadStream<PythonSource> for PythonStream {
         if !self.committed {
             return Ok(());
         }
-        let told: Vec<(Option<String>, Option<String>)> = cursors
+        let told: Vec<(String, Option<String>)> = cursors
             .iter()
             .map(|(id, cursor)| {
-                let partition = self.partitioned.then(|| id.to_string());
-                (
-                    partition,
-                    cursor.0.as_ref().map(|text| text.get().to_owned()),
-                )
+                let cursor = cursor.0.as_ref().map(|text| text.get().to_owned());
+                (id.to_string(), cursor)
             })
             .collect();
         let stream = Arc::clone(&self.stream);
@@ -213,11 +210,11 @@ impl ReadStream<PythonSource> for PythonStream {
         cursor: PyCursor,
         out: &mut Emitter<PyCursor>,
     ) -> Result<()> {
-        let key = self.partitioned.then(|| partition.id().to_string());
+        let key = partition.id().to_string();
         let cursor = cursor.0.map(|cursor| cursor.get().to_owned());
         let limits = out.limits();
         let limits = JsonLimits::new(limits.json_push_bytes, limits.nesting_depth);
-        let (context, due) = NativeStreamContext::new(key.clone(), out.follows(), out.resumes());
+        let (context, due) = NativeStreamContext::new(partition, out.follows(), out.resumes());
         due.set(out.checkpoint_due());
         let name = format!("rdlt-read-{}", self.spec.name());
         let mut reading = Reading::start(

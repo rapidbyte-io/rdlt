@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use pyo3::types::PyAnyMethods as _;
 use pyo3::{Py, PyAny, Python};
-use rdlt_connector::{ConnectorError, ConnectorErrorKind};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, Partition, PartitionId};
 use tokio::sync::mpsc;
 
 use super::{PartitionOut, Pushed, Reading};
@@ -30,9 +30,10 @@ fn stream(py: Python<'_>, body: &str) -> Py<PyAny> {
 }
 
 fn started(py: Python<'_>, body: &str) -> Reading {
-    let (context, _due) = NativeStreamContext::new(None, false, false);
+    let (context, _due) = NativeStreamContext::new(&Partition::single(), false, false);
     let stream = Arc::new(stream(py, body));
-    Reading::start("rdlt-test", stream, None, None, context, LIMITS).expect("it starts")
+    let whole = "whole".to_owned();
+    Reading::start("rdlt-test", stream, whole, None, context, LIMITS).expect("it starts")
 }
 
 fn drained(py: Python<'_>, mut reading: Reading) -> Vec<Pushed> {
@@ -296,7 +297,7 @@ fn a_stopped_read_returns_while_its_generator_is_blocked() {
 #[test]
 fn a_read_is_told_what_its_context_says_a_checkpoint_is_due() {
     embedded::with(|py| {
-        let (context, due) = NativeStreamContext::new(None, false, false);
+        let (context, due) = NativeStreamContext::new(&Partition::single(), false, false);
         let context = Py::new(py, context).unwrap().into_bound(py);
         let is_due = || -> bool {
             context
@@ -331,21 +332,27 @@ fn a_dict_that_changes_while_it_is_written_fails_the_read_rather_than_the_proces
 #[test]
 fn a_read_s_context_says_its_partition_and_whether_it_follows_and_resumes() {
     embedded::with(|py| {
-        let (context, _due) = NativeStreamContext::new(Some("p-1".to_owned()), true, true);
+        let parted = Partition::new(PartitionId::parse("p-1").unwrap()).unbounded();
+        let (context, _due) = NativeStreamContext::new(&parted, true, true);
         let context = Py::new(py, context).unwrap().into_bound(py);
-        let partition: Option<String> = context.getattr("partition").unwrap().extract().unwrap();
+        let partition: String = context.getattr("partition").unwrap().extract().unwrap();
+        let unbounded: bool = context.getattr("unbounded").unwrap().extract().unwrap();
         let follows: bool = context.getattr("follows").unwrap().extract().unwrap();
         let resumes: bool = context.getattr("resumes").unwrap().extract().unwrap();
-        assert_eq!(partition.as_deref(), Some("p-1"));
+        assert_eq!(partition, "p-1");
+        assert!(unbounded);
         assert!(follows);
         assert!(resumes);
 
-        let (context, _due) = NativeStreamContext::new(None, false, false);
+        let ending = Partition::new(PartitionId::whole());
+        let (context, _due) = NativeStreamContext::new(&ending, false, false);
         let context = Py::new(py, context).unwrap().into_bound(py);
-        let partition: Option<String> = context.getattr("partition").unwrap().extract().unwrap();
+        let partition: String = context.getattr("partition").unwrap().extract().unwrap();
+        let unbounded: bool = context.getattr("unbounded").unwrap().extract().unwrap();
         let follows: bool = context.getattr("follows").unwrap().extract().unwrap();
         let resumes: bool = context.getattr("resumes").unwrap().extract().unwrap();
-        assert_eq!(partition, None);
+        assert_eq!(partition, "whole");
+        assert!(!unbounded);
         assert!(!follows);
         assert!(!resumes);
     });
