@@ -163,7 +163,7 @@ const FAILURES: &[(&str, ConnectorErrorKind, &str)] = &[
         "transient",
     ),
     (
-        "raise RateLimited('slow down', after=2.5, code='http_429')",
+        "raise RateLimited('slow down', retry_after=2.5, code='http_429')",
         ConnectorErrorKind::RateLimited,
         "http_429",
     ),
@@ -229,7 +229,7 @@ fn each_failure_class_is_its_kind_with_its_code() {
 #[test]
 fn a_declared_failure_says_its_message_and_a_rate_limit_its_wait() {
     embedded::with(|py| {
-        let limited = connector_error(py, "raise RateLimited('slow down', after=2.5)");
+        let limited = connector_error(py, "raise RateLimited('slow down', retry_after=2.5)");
         assert_eq!(
             limited.retry_after(),
             Some(std::time::Duration::from_millis(2500))
@@ -240,7 +240,11 @@ fn a_declared_failure_says_its_message_and_a_rate_limit_its_wait() {
             None
         );
         assert_eq!(
-            connector_error(py, "raise RateLimited('slow down', after=float('nan'))").retry_after(),
+            connector_error(
+                py,
+                "raise RateLimited('slow down', retry_after=float('nan'))"
+            )
+            .retry_after(),
             None,
             "a wait that is not a duration is no hint"
         );

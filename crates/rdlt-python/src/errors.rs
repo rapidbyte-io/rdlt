@@ -123,7 +123,7 @@ impl Failure {
             retry_after: None,
             declared: false,
         };
-        if let Some((kind, code, after)) = declared(py, value) {
+        if let Some((kind, code, retry_after)) = declared(py, value) {
             failure.kind = kind;
             let class = coded(failure.type_name.rsplit('.').next().unwrap_or_default());
             failure.code = match code {
@@ -132,7 +132,7 @@ impl Failure {
                 None if HOST_CODES.contains(&class.as_str()) => coded(&failure.type_name),
                 None => class,
             };
-            failure.retry_after = after;
+            failure.retry_after = retry_after;
             failure.declared = true;
         }
         failure
@@ -198,7 +198,7 @@ fn declared(
 ) -> Option<(ConnectorErrorKind, Option<String>, Option<Duration>)> {
     let class = py
         .import("rdlt.connector._failures")
-        .and_then(|failures| failures.getattr("ConnectorFailure"))
+        .and_then(|failures| failures.getattr("ConnectorError"))
         .ok()?;
     if !value.is_instance(&class).unwrap_or(false) {
         return None;
@@ -223,13 +223,13 @@ fn declared(
         .and_then(|code| code.extract::<Option<String>>())
         .ok()
         .flatten();
-    let after = value
-        .getattr("after")
+    let retry_after = value
+        .getattr("retry_after")
         .and_then(|after| after.extract::<Option<f64>>())
         .ok()
         .flatten()
         .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok());
-    Some((kind, code, after))
+    Some((kind, code, retry_after))
 }
 
 /// A Python traceback, as the cause of the error it explains.

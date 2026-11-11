@@ -12,6 +12,7 @@ from rdlt._pipeline import (
     Commit,
     Connector,
     Defaults,
+    Local,
     Pipeline,
     PipelineBuilder,
     Resources,
@@ -22,13 +23,13 @@ from rdlt._pipeline import (
     WriteMode,
     append,
     history,
+    local,
     merge,
     pipeline,
     replace,
     stream,
 )
 from rdlt._transform import Transform, filter, transform  # noqa: A004
-from rdlt.connector import Cursor, Local, StreamContext, checkpoint, local
 from rdlt.errors import (
     ConfigError,
     DestinationError,
@@ -66,7 +67,6 @@ __all__ = [
     "Commit",
     "ConfigError",
     "Connector",
-    "Cursor",
     "Defaults",
     "DestinationError",
     "Error",
@@ -97,7 +97,6 @@ __all__ = [
     "StoppedError",
     "StrPath",
     "Stream",
-    "StreamContext",
     "StreamName",
     "StreamReport",
     "Tls",
@@ -106,7 +105,6 @@ __all__ = [
     "WriteMode",
     "__version__",
     "append",
-    "checkpoint",
     "connector",
     "filter",
     "history",

@@ -14,8 +14,8 @@ _CODE = re.compile(r"[a-z0-9_.-]+")
 """What a code may hold, as the protocol admits it: lower-case letters, digits, `_`, `.`, `-`."""
 
 
-class ConnectorFailure(Exception):  # noqa: N818 - named apart from the `rdlt.*Error` a run raises
-    """A failure of a declared kind, and the machine code the host keeps beside it.
+class ConnectorError(Exception):
+    """A connector's failure of a declared kind, and the machine code the host keeps beside it.
 
     `code` is lower-case letters, digits, `_`, `.` and `-`, as `http_429`, and none of the codes the
     host keeps for its own findings, such as `transport`. By default it is the class's name in
@@ -36,49 +36,49 @@ class ConnectorFailure(Exception):  # noqa: N818 - named apart from the `rdlt.*E
         self.code = code
 
 
-class Transient(ConnectorFailure):
+class Transient(ConnectorError):
     """A failure a retry may mend: the engine tries again after its policy's delay."""
 
     kind = "transient"
 
 
-class RateLimited(ConnectorFailure):
-    """The remote system asked to slow down; `after` seconds before a retry, where it said."""
+class RateLimited(ConnectorError):
+    """The remote system asked to slow down; `retry_after` seconds before a retry, where it said."""
 
     kind = "rate_limited"
 
     def __init__(
-        self, message: str, *, after: float | None = None, code: str | None = None
+        self, message: str, *, retry_after: float | None = None, code: str | None = None
     ) -> None:
         super().__init__(message, code=code)
-        self.after = after
+        self.retry_after = retry_after
 
 
-class InvalidConfig(ConnectorFailure):
+class InvalidConfig(ConnectorError):
     """The configuration is invalid or names something that does not exist."""
 
     kind = "config"
 
 
-class Unauthorized(ConnectorFailure):
+class Unauthorized(ConnectorError):
     """Credentials are missing, wrong, or lack a permission."""
 
     kind = "auth"
 
 
-class InvalidData(ConnectorFailure):
+class InvalidData(ConnectorError):
     """A value or a batch is malformed."""
 
     kind = "data"
 
 
-class Unsupported(ConnectorFailure):
+class Unsupported(ConnectorError):
     """The request needs what the connector cannot do."""
 
     kind = "unsupported"
 
 
-class Fenced(ConnectorFailure):
+class Fenced(ConnectorError):
     """A newer session holds the destination, so this session may not commit.
 
     It is coded `commit_stale` where the commit expects another commit landed.
