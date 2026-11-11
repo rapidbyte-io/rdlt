@@ -15,7 +15,7 @@ Read = Callable[..., Iterable[object] | AsyncIterable[object]]
 
 Committed = Sequence[tuple[str, Any]]
 """Committed cursors: each partition's id, `whole` for a stream that is not split, and its cursor,
-of the stream's `Cursor` type."""
+of the stream's `Cursor` type, or `None` for a stream that declares none."""
 
 
 class Stream:
@@ -79,8 +79,7 @@ class Stream:
             return
         of = self._cursor
         parsed = [
-            (partition, None if of is None or text is None else of.model_validate_json(text))
-            for partition, text in cursors
+            (partition, None if of is None else _parsed(of, text)) for partition, text in cursors
         ]
         self._committed(parsed)
 
@@ -91,8 +90,11 @@ class Stream:
         del partition
         arguments: list[object] = []
         if self._cursor is not None:
-            arguments.append(
-                self._cursor() if cursor is None else self._cursor.model_validate_json(cursor)
-            )
+            arguments.append(_parsed(self._cursor, cursor))
         keywords: dict[str, object] = {"ctx": StreamContext(context)} if self._takes_context else {}
         return self._read(*arguments, **keywords)
+
+
+def _parsed(of: type[Cursor], cursor: str | None) -> Cursor:
+    """`cursor`, JSON, as an `of`; `of`'s default, where a read starts, for none."""
+    return of() if cursor is None else of.model_validate_json(cursor)

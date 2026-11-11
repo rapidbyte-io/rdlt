@@ -82,7 +82,9 @@ def stream(
 
     `committed`, a function called as `partitions` is or a method's name, takes the cursors each
     commit made durable, as `(partition id, cursor)` pairs, as a Rust stream's `committed` does: a
-    source that acknowledges upstream, as a queue settling its messages, does it there.
+    source that acknowledges upstream, as a queue settling its messages, does it there. A cursor
+    may be told more than once, and one older than the last, so an acknowledgement never moves
+    back for it.
     `replayable=False` declares a stream that cannot be read again from any committed cursor, as
     the Rust SDK's `StreamSpec::with_replayable` does.
 
