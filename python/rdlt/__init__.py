@@ -1,7 +1,10 @@
 """Move data exactly once from Python with rdlt."""
 
-# Loaded here, so a read's thread imports nothing under Rust.
-from rdlt import _reading  # noqa: F401  # pyright: ignore[reportUnusedImport]
+# `_reading` is loaded here, so a read's thread imports nothing under Rust.
+from rdlt import (
+    _reading,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+    connector,
+)
 from rdlt._native import __version__
 from rdlt._pipeline import (
     Access,
@@ -24,11 +27,8 @@ from rdlt._pipeline import (
     replace,
     stream,
 )
-from rdlt._resource import Resource, resource
 from rdlt._transform import Transform, filter, transform  # noqa: A004
-from rdlt.connector import Local, local
-from rdlt.context import StreamContext, checkpoint
-from rdlt.cursor import Cursor
+from rdlt.connector import Cursor, Local, StreamContext, checkpoint, local
 from rdlt.errors import (
     ConfigError,
     DestinationError,
@@ -85,7 +85,6 @@ __all__ = [
     "PipelineBuilder",
     "ReadMode",
     "Report",
-    "Resource",
     "Resources",
     "Retry",
     "Run",
@@ -108,13 +107,13 @@ __all__ = [
     "__version__",
     "append",
     "checkpoint",
+    "connector",
     "filter",
     "history",
     "local",
     "merge",
     "pipeline",
     "replace",
-    "resource",
     "stream",
     "transform",
 ]

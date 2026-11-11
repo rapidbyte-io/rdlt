@@ -38,7 +38,7 @@ def into_sqlite(tmp_path: Path) -> rdlt.Connector:
     )
 
 
-@rdlt.resource(name="orders")
+@rdlt.connector.stream(name="orders")
 def orders() -> Iterator[object]:
     yield pa.record_batch({"id": list(range(10)), "amount": [n * 1.5 for n in range(10)]})
 
@@ -263,14 +263,14 @@ class Slow(NamedTuple):
     entered: threading.Event
     release: threading.Event
     transform: rdlt.Transform
-    resource: rdlt.Resource
+    stream: rdlt.connector.ReadStream
 
 
 def slow_run(tmp_path: Path, connectors: Path) -> Slow:
     entered = threading.Event()
     release = threading.Event()
 
-    @rdlt.resource(name="orders")
+    @rdlt.connector.stream(name="orders")
     def rows() -> Iterator[object]:
         yield pa.record_batch({"id": list(range(10)), "amount": [n * 1.5 for n in range(10)]})
 
@@ -376,11 +376,11 @@ def test_a_detached_run_holds_what_it_runs_until_it_ends(tmp_path: Path, connect
 
     asyncio.run(detach(slow.built, slow.entered))
     release = slow.release
-    kept_transform, kept_resource = weakref.ref(slow.transform), weakref.ref(slow.resource)
+    kept_transform, kept_stream = weakref.ref(slow.transform), weakref.ref(slow.stream)
     del slow
     gc.collect()
     assert kept_transform() is not None, "a detached run runs with its transform"
-    assert kept_resource() is not None, "a detached run reads with its resource"
+    assert kept_stream() is not None, "a detached run reads with its stream function"
     release.set()
     deadline = time.monotonic() + 30
     while landed(tmp_path) < 10 and time.monotonic() < deadline:
@@ -458,7 +458,7 @@ import rdlt
 started = threading.Event()
 @@BODY@@
 
-@rdlt.resource(name="orders")
+@rdlt.connector.stream(name="orders")
 def orders():
     for n in range(1_000_000):
         yield {"id": n, "amount": n * 1.5}
@@ -519,7 +519,7 @@ def host():
     return rdlt.Host(connectors=connectors, writable=[tmp], trust_binaries=True)
 
 
-@rdlt.resource(name="orders")
+@rdlt.connector.stream(name="orders")
 def orders():
     yield {"id": 1}
 
@@ -534,7 +534,7 @@ def stuck(batch):
 flowing = threading.Event()
 
 
-@rdlt.resource(name="endless")
+@rdlt.connector.stream(name="endless")
 def endless():
     for n in itertools.count():
         yield {"id": n}

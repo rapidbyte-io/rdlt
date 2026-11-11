@@ -1,4 +1,4 @@
-"""Python functions as in-process sources."""
+"""Functions `@rdlt.connector.stream` makes streams, read as a pipeline's in-process source."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import textwrap
 import threading
 import time
 import weakref
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextvars import ContextVar
 from pathlib import Path
 from typing import cast
@@ -26,6 +26,15 @@ from hypothesis import strategies as st
 
 import rdlt
 from rdlt import _reading
+from rdlt.connector import (
+    Config,
+    Cursor,
+    ReadStream,
+    StreamContext,
+    checkpoint,
+    source,
+    stream,
+)
 
 
 def host(tmp_path: Path, connectors: Path) -> rdlt.Host:
@@ -51,8 +60,131 @@ def rows_of(tmp_path: Path, table: str) -> list[tuple[object, ...]]:
         return sorted(database.execute(f'SELECT {selected} FROM "{table}"').fetchall(), key=repr)
 
 
+def test_a_stream_function_is_a_pipeline_s_source(tmp_path: Path, connectors: Path) -> None:
+    @stream(primary_key="id")
+    def users() -> Iterator[object]:
+        yield [{"id": n} for n in range(3)]
+
+    built = rdlt.pipeline("users", source=users, destination=into_sqlite(tmp_path))
+    outcome = built.build(host(tmp_path, connectors)).run()
+    assert outcome.report.rows == 3
+    assert rows_of(tmp_path, "users") == [(0,), (1,), (2,)]
+
+
+def test_a_sequence_of_stream_functions_is_a_pipeline_s_source(
+    tmp_path: Path, connectors: Path
+) -> None:
+    @stream(primary_key="id")
+    def users() -> Iterator[object]:
+        yield {"id": 1}
+
+    @stream(primary_key="id")
+    def orders() -> Iterator[object]:
+        yield [{"id": 1}, {"id": 2}]
+
+    built = rdlt.pipeline("shop", source=[users, orders], destination=into_sqlite(tmp_path))
+    built.build(host(tmp_path, connectors)).run()
+    assert rows_of(tmp_path, "users") == [(1,)]
+    assert rows_of(tmp_path, "orders") == [(1,), (2,)]
+
+
+def _plain() -> Iterator[object]:
+    yield {"id": 1}
+
+
+@pytest.mark.parametrize("given", [_plain, [_plain]], ids=["function", "sequence"])
+def test_a_plain_function_as_a_source_is_refused_naming_the_decorator(given: object) -> None:
+    with pytest.raises(TypeError, match=r"@rdlt\.connector\.stream"):
+        rdlt.pipeline(
+            "plain",
+            source=given,  # pyright: ignore[reportArgumentType]
+            destination=rdlt.Connector("io.rapidbyte.sqlite"),
+        )
+
+
+class _Since(Cursor):
+    after: int = -1
+
+
+Started = list[tuple[int, bool]]
+"""Where each read started, and whether it was given a cursor."""
+
+
+def two_runs(
+    tmp_path: Path, connectors: Path, placed: object, available: list[int]
+) -> list[tuple[object, ...]]:
+    """Runs `placed` twice, with three more rows available for the second run."""
+    built = rdlt.pipeline(
+        "moved",
+        source=placed,  # pyright: ignore[reportArgumentType]
+        destination=into_sqlite(tmp_path),
+    )
+    every_host = host(tmp_path, connectors)
+    built.build(every_host).run()
+    available[0] += 3
+    built.build(every_host).run()
+    return rows_of(tmp_path, "users")
+
+
+def as_function(available: list[int], started: Started, *, ends_on_rows: bool) -> object:
+    @stream(primary_key="id", write=rdlt.merge("id"), cursor=_Since)
+    def users(since: _Since, ctx: StreamContext) -> Iterator[object]:
+        started.append((since.after, ctx.resumes))
+        for n in range(since.after + 1, available[0]):
+            yield {"id": n}
+            if n % 3 == 2 or (n == available[0] - 1 and not ends_on_rows):
+                yield checkpoint(_Since(after=n))
+
+    return users
+
+
+def as_method(available: list[int], started: Started, *, ends_on_rows: bool) -> object:
+    @source(id="io.example.moved", config=Config, version="1.0.0")
+    class Moved:
+        def __init__(self, config: Config) -> None:
+            del config
+
+        def check(self) -> None:
+            """Reads need nothing checked first."""
+
+        @stream(primary_key="id", write=rdlt.merge("id"), cursor=_Since)
+        def users(self, since: _Since, ctx: StreamContext) -> Iterator[object]:
+            started.append((since.after, ctx.resumes))
+            for n in range(since.after + 1, available[0]):
+                yield {"id": n}
+                if n % 3 == 2 or (n == available[0] - 1 and not ends_on_rows):
+                    yield checkpoint(_Since(after=n))
+
+    return rdlt.local(Moved, config={})
+
+
+Made = Callable[..., object]
+
+
+@pytest.mark.parametrize("made", [as_function, as_method], ids=["function", "method"])
+def test_a_stream_reads_the_same_as_a_function_and_as_a_source_class_s_method(
+    made: Made, tmp_path: Path, connectors: Path
+) -> None:
+    available: list[int] = [7]
+    started: Started = []
+    placed = made(available, started, ends_on_rows=False)
+    assert two_runs(tmp_path, connectors, placed, available) == [(n,) for n in range(10)]
+    assert started == [(-1, False), (6, True)]
+
+
+@pytest.mark.parametrize("made", [as_function, as_method], ids=["function", "method"])
+def test_a_read_that_ends_on_rows_is_read_again_from_its_last_checkpoint_in_either_form(
+    made: Made, tmp_path: Path, connectors: Path
+) -> None:
+    available: list[int] = [7]
+    started: Started = []
+    placed = made(available, started, ends_on_rows=True)
+    assert two_runs(tmp_path, connectors, placed, available) == [(n,) for n in range(9)]
+    assert started == [(-1, False), (5, True)]
+
+
 def test_yielded_dicts_land_once(tmp_path: Path, connectors: Path) -> None:
-    @rdlt.resource(primary_key="id")
+    @stream(primary_key="id")
     def users() -> Iterator[object]:
         yield [{"id": n, "name": f"user {n}"} for n in range(100)]
         yield {"id": 100, "name": "the last"}
@@ -64,7 +196,7 @@ def test_yielded_dicts_land_once(tmp_path: Path, connectors: Path) -> None:
 
 
 def test_arrow_batches_and_tables_land(tmp_path: Path, connectors: Path) -> None:
-    @rdlt.resource()
+    @stream()
     def measured() -> Iterator[object]:
         yield pa.record_batch({"n": pa.array(range(10), pa.int64())})
         yield pa.table({"n": pa.array(range(10, 25), pa.int64())})
@@ -79,7 +211,7 @@ def test_arrow_batches_and_tables_land(tmp_path: Path, connectors: Path) -> None
 def test_other_libraries_results_land(library: str, tmp_path: Path, connectors: Path) -> None:
     module = pytest.importorskip(library)
 
-    @rdlt.resource(name="produced")
+    @stream(name="produced")
     def produced() -> Iterator[object]:
         if library == "polars":
             yield module.DataFrame({"n": list(range(7))})
@@ -97,7 +229,7 @@ def test_other_libraries_results_land(library: str, tmp_path: Path, connectors: 
 def test_a_transient_failure_retries_from_the_last_committed_checkpoint(
     tmp_path: Path, connectors: Path
 ) -> None:
-    class Since(rdlt.Cursor):
+    class Since(Cursor):
         after: int = -1
 
     started_from: list[int] = []
@@ -113,13 +245,13 @@ def test_a_transient_failure_retries_from_the_last_committed_checkpoint(
             time.sleep(0.01)
         raise AssertionError("no commit landed")
 
-    @rdlt.resource(cursor=Since)
+    @stream(cursor=Since)
     def numbers(since: Since) -> Iterator[object]:
         started_from.append(since.after)
         for n in range(since.after + 1, 100):
             yield {"id": n}
             if n % 10 == 9:
-                yield rdlt.checkpoint(Since(after=n))
+                yield checkpoint(Since(after=n))
             if n == 54 and len(started_from) == 1:
                 checkpoint_committed()
                 raise ConnectionResetError("the API went away")
@@ -141,7 +273,7 @@ def test_a_transient_failure_retries_from_the_last_committed_checkpoint(
 def test_an_exception_fails_the_run_with_its_type_message_and_traceback(
     tmp_path: Path, connectors: Path
 ) -> None:
-    @rdlt.resource()
+    @stream()
     def broken() -> Iterator[object]:
         yield {"n": 1}
         raise ValueError("page 2 is malformed")
@@ -185,7 +317,7 @@ def test_dicts_load_as_the_rust_source_s_same_json_does(
 ) -> None:
     ours, theirs = tmp_path_factory.mktemp("ours"), tmp_path_factory.mktemp("theirs")
 
-    @rdlt.resource(name="rows")
+    @stream(name="rows")
     def drawn() -> Iterator[object]:
         yield rows
 
@@ -215,7 +347,7 @@ def canonical(landed: object) -> object:
 
 def loaded(
     name: str,
-    source: rdlt.Resource | rdlt.Connector,
+    source: ReadStream | rdlt.Connector,
     into: Path,
     connectors: Path,
     *,
@@ -231,11 +363,11 @@ def loaded(
     return rows_of(into, "rows")
 
 
-def test_stop_now_returns_while_a_resource_blocks(tmp_path: Path, connectors: Path) -> None:
+def test_stop_now_returns_while_a_stream_function_blocks(tmp_path: Path, connectors: Path) -> None:
     release = threading.Event()
     waiting = threading.Event()
 
-    @rdlt.resource()
+    @stream()
     def blocked() -> Iterator[object]:
         yield {"n": 1}
         waiting.set()
@@ -256,7 +388,7 @@ def test_stop_now_returns_while_a_resource_blocks(tmp_path: Path, connectors: Pa
     release.set()
 
 
-def exits_with_seven(tmp_path: Path, connectors: Path, resource: str) -> int:
+def exits_with_seven(tmp_path: Path, connectors: Path, streamed: str) -> int:
     """The status of a script that exits, with a run in flight, once `started` is set inside it."""
     out = str(tmp_path / "out.db")
     tmp = str(tmp_path)
@@ -266,7 +398,7 @@ def exits_with_seven(tmp_path: Path, connectors: Path, resource: str) -> int:
             "import rdlt",
             "",
             "started = threading.Event()",
-            textwrap.dedent(resource),
+            textwrap.dedent(streamed),
             "",
             f"host = rdlt.Host(connectors={str(connectors)!r}, writable=[{tmp!r}],",
             "                 trust_binaries=True)",
@@ -286,64 +418,62 @@ def exits_with_seven(tmp_path: Path, connectors: Path, resource: str) -> int:
 
 
 def test_a_process_exits_while_a_read_is_flowing(tmp_path: Path, connectors: Path) -> None:
-    resource = """
-    class Since(rdlt.Cursor):
+    streamed = """
+    class Since(rdlt.connector.Cursor):
         after: int = -1
 
-    @rdlt.resource(cursor=Since)
+    @rdlt.connector.stream(cursor=Since)
     def source(since):
         for n in itertools.count(since.after + 1):
             yield {"n": n}
-            yield rdlt.checkpoint(Since(after=n))
+            yield rdlt.connector.checkpoint(Since(after=n))
             started.set()
     """
-    assert exits_with_seven(tmp_path, connectors, resource) == 7
+    assert exits_with_seven(tmp_path, connectors, streamed) == 7
 
 
-def test_a_process_exits_while_a_resource_polls_in_python(tmp_path: Path, connectors: Path) -> None:
-    resource = """
-    @rdlt.resource()
+def test_a_process_exits_while_a_stream_function_polls_in_python(
+    tmp_path: Path, connectors: Path
+) -> None:
+    streamed = """
+    @rdlt.connector.stream()
     def source():
         yield {"n": 0}
         started.set()
         while True:
             time.sleep(0.003)
     """
-    assert exits_with_seven(tmp_path, connectors, resource) == 7
+    assert exits_with_seven(tmp_path, connectors, streamed) == 7
 
 
-def test_a_process_exits_while_a_resource_lists_its_partitions(
+def test_a_process_exits_while_a_stream_function_lists_its_partitions(
     tmp_path: Path, connectors: Path
 ) -> None:
-    resource = """
+    streamed = """
     def partitions():
         started.set()
         while True:
             time.sleep(0.001)
 
-    @rdlt.resource(partitions=partitions)
+    @rdlt.connector.stream(partitions=partitions)
     def source(ctx):
         yield {"n": 0}
     """
-    assert exits_with_seven(tmp_path, connectors, resource) == 7
-
-
-class _Since(rdlt.Cursor):
-    after: int = -1
+    assert exits_with_seven(tmp_path, connectors, streamed) == 7
 
 
 @pytest.mark.parametrize("write", [None, rdlt.merge("id")], ids=["append", "merge"])
-def test_a_resource_with_a_cursor_resumes_the_next_run_and_adds_no_duplicate(
+def test_a_stream_function_with_a_cursor_resumes_the_next_run_and_adds_no_duplicate(
     write: rdlt.WriteMode | None, tmp_path: Path, connectors: Path
 ) -> None:
     started_from: list[int] = []
 
-    @rdlt.resource(primary_key="id", write=write, cursor=_Since)
+    @stream(primary_key="id", write=write, cursor=_Since)
     def users(since: _Since) -> Iterator[object]:
         started_from.append(since.after)
         for n in range(since.after + 1, 3):
             yield {"id": n}
-        yield rdlt.checkpoint(_Since(after=2))
+        yield checkpoint(_Since(after=2))
 
     built = rdlt.pipeline("resumed", source=users, destination=into_sqlite(tmp_path))
     every_host = host(tmp_path, connectors)
@@ -353,87 +483,8 @@ def test_a_resource_with_a_cursor_resumes_the_next_run_and_adds_no_duplicate(
     assert len(rows_of(tmp_path, "users")) == 3
 
 
-@pytest.mark.parametrize("write", [None, rdlt.merge("id")], ids=["append", "merge"])
-def test_a_read_that_ends_on_rows_resumes_from_its_last_checkpoint_and_loses_none(
-    write: rdlt.WriteMode | None, tmp_path: Path, connectors: Path
-) -> None:
-    available = [7]
-    finishing = [False]
-    started_from: list[int] = []
-
-    @rdlt.resource(primary_key="id", write=write, cursor=_Since)
-    def users(since: _Since) -> Iterator[object]:
-        started_from.append(since.after)
-        for n in range(since.after + 1, available[0]):
-            yield {"id": n}
-            if n % 3 == 2:
-                yield rdlt.checkpoint(_Since(after=n))
-        if finishing[0]:
-            yield rdlt.checkpoint(_Since(after=available[0] - 1))
-
-    built = rdlt.pipeline("partial", source=users, destination=into_sqlite(tmp_path))
-    every_host = host(tmp_path, connectors)
-
-    built.build(every_host).run()
-    assert rows_of(tmp_path, "users") == [(n,) for n in range(6)]
-
-    available[0], finishing[0] = 10, True
-    built.build(every_host).run()
-    assert rows_of(tmp_path, "users") == [(n,) for n in range(10)]
-
-    outcome = built.build(every_host).run()
-    assert outcome.report.rows == 0
-    assert len(rows_of(tmp_path, "users")) == 10
-    assert started_from == [-1, 5, 9]
-
-
-def test_a_resource_with_a_cursor_that_never_checkpoints_fails_naming_it(
-    tmp_path: Path, connectors: Path
-) -> None:
-    @rdlt.resource(cursor=_Since)
-    def users(since: _Since) -> Iterator[object]:
-        del since
-        yield {"id": 1}
-
-    built = rdlt.pipeline(
-        "unmarked",
-        source=users,
-        destination=into_sqlite(tmp_path),
-        retry=rdlt.Retry(max_attempts=1),
-    )
-    with pytest.raises(rdlt.Error) as raised:
-        built.build(host(tmp_path, connectors)).run()
-    assert raised.value.report().code == "checkpoint_missing"
-
-
-def test_a_resumed_read_that_yields_rows_and_never_checkpoints_fails(
-    tmp_path: Path, connectors: Path
-) -> None:
-    checkpointing = [True]
-
-    @rdlt.resource(cursor=_Since)
-    def users(since: _Since) -> Iterator[object]:
-        yield {"id": since.after + 1}
-        if checkpointing[0]:
-            yield rdlt.checkpoint(_Since(after=since.after + 1))
-
-    built = rdlt.pipeline(
-        "unmarked",
-        source=users,
-        destination=into_sqlite(tmp_path),
-        retry=rdlt.Retry(max_attempts=1),
-    )
-    every_host = host(tmp_path, connectors)
-    built.build(every_host).run()
-
-    checkpointing[0] = False
-    with pytest.raises(rdlt.Error) as raised:
-        built.build(every_host).run()
-    assert raised.value.report().code == "checkpoint_missing"
-
-
 def test_a_stream_named_twice_is_refused_by_the_plan(tmp_path: Path, connectors: Path) -> None:
-    @rdlt.resource()
+    @stream()
     def users() -> Iterator[object]:
         yield {"id": 1}
 
@@ -451,10 +502,10 @@ def test_a_stream_named_twice_is_refused_by_the_plan(tmp_path: Path, connectors:
     assert refused.value.code == "plan_duplicate_stream"
 
 
-def test_naming_a_resource_in_streams_keeps_what_it_does_not_change(
+def test_naming_a_stream_function_in_streams_keeps_what_it_does_not_change(
     tmp_path: Path, connectors: Path
 ) -> None:
-    @rdlt.resource(primary_key="id", write=rdlt.merge("id"))
+    @stream(primary_key="id", write=rdlt.merge("id"))
     def merged() -> Iterator[object]:
         yield [{"id": n} for n in range(3)]
 
@@ -471,7 +522,7 @@ def test_naming_a_resource_in_streams_keeps_what_it_does_not_change(
 
 
 def test_an_entry_in_streams_overrides_what_it_sets(tmp_path: Path, connectors: Path) -> None:
-    @rdlt.resource(primary_key="id", write=rdlt.merge("id"))
+    @stream(primary_key="id", write=rdlt.merge("id"))
     def merged() -> Iterator[object]:
         yield [{"id": n} for n in range(3)]
 
@@ -496,7 +547,7 @@ def test_an_object_with_only_aiter_is_read(tmp_path: Path, connectors: Path) -> 
             yield {"n": 1}
             yield {"n": 2}
 
-    @rdlt.resource()
+    @stream()
     def counted() -> Numbers:
         return Numbers()
 
@@ -506,7 +557,7 @@ def test_an_object_with_only_aiter_is_read(tmp_path: Path, connectors: Path) -> 
     assert len(rows_of(tmp_path, "counted")) == 2
 
 
-def test_an_async_resource_is_read_in_one_task_of_a_running_loop(
+def test_an_async_stream_function_is_read_in_one_task_of_a_running_loop(
     tmp_path: Path, connectors: Path
 ) -> None:
     held: ContextVar[int] = ContextVar("held")
@@ -525,7 +576,7 @@ def test_an_async_resource_is_read_in_one_task_of_a_running_loop(
             finally:
                 held.reset(token)
 
-    @rdlt.resource()
+    @stream()
     def counted() -> Numbers:
         return Numbers()
 
@@ -538,7 +589,7 @@ def test_an_async_resource_is_read_in_one_task_of_a_running_loop(
     assert rows_of(tmp_path, "counted") == [(7,), (7,)]
 
 
-def test_a_task_an_async_resource_leaves_running_is_cancelled_and_cleans_up(
+def test_a_task_an_async_stream_function_leaves_running_is_cancelled_and_cleans_up(
     tmp_path: Path, connectors: Path
 ) -> None:
     cleaned: list[bool] = []
@@ -550,7 +601,7 @@ def test_a_task_an_async_resource_leaves_running_is_cancelled_and_cleans_up(
             await asyncio.sleep(0)
             cleaned.append(True)
 
-    @rdlt.resource()
+    @stream()
     async def leaving() -> AsyncIterator[object]:
         left = asyncio.create_task(forever())
         await asyncio.sleep(0)
@@ -592,8 +643,8 @@ def test_a_string_is_not_a_list_of_partitions(tmp_path: Path, connectors: Path) 
     def one_string() -> Sequence[str]:
         return "abc"
 
-    @rdlt.resource(partitions=one_string)
-    def split(ctx: rdlt.StreamContext) -> Iterator[object]:
+    @stream(partitions=one_string)
+    def split(ctx: StreamContext) -> Iterator[object]:
         yield {"partition": ctx.partition}
 
     built = rdlt.pipeline("split", source=split, destination=into_sqlite(tmp_path))
@@ -602,16 +653,8 @@ def test_a_string_is_not_a_list_of_partitions(tmp_path: Path, connectors: Path) 
     assert raised.value.report().connector_code == "type_error"
 
 
-def test_a_partitioned_resource_that_takes_no_ctx_is_refused() -> None:
-    def naive() -> Iterator[object]:
-        yield {"n": 1}
-
-    with pytest.raises(TypeError, match="ctx"):
-        rdlt.resource(partitions=lambda: ["a", "b"])(naive)
-
-
 class Holder:
-    """What a resource keeps, which holds the pipeline the resource serves."""
+    """What a stream function keeps, which holds the pipeline the function serves."""
 
     pipeline: rdlt.Pipeline | None = None
 
@@ -620,9 +663,11 @@ class Holder:
         yield {"held": self.pipeline is not None}
 
 
-def test_a_resource_holding_its_own_pipeline_is_collected(tmp_path: Path, connectors: Path) -> None:
+def test_a_stream_function_holding_its_own_pipeline_is_collected(
+    tmp_path: Path, connectors: Path
+) -> None:
     holder = Holder()
-    rows = rdlt.resource(name="rows")(holder.read)
+    rows = stream(name="rows")(holder.read)
     holder.pipeline = rdlt.pipeline("cycle", source=rows, destination=into_sqlite(tmp_path)).build(
         host(tmp_path, connectors)
     )
@@ -632,8 +677,10 @@ def test_a_resource_holding_its_own_pipeline_is_collected(tmp_path: Path, connec
     assert collected() is None
 
 
-def test_a_built_pipeline_and_its_run_keep_its_resource(tmp_path: Path, connectors: Path) -> None:
-    @rdlt.resource(name="rows")
+def test_a_built_pipeline_and_its_run_keep_its_stream_function(
+    tmp_path: Path, connectors: Path
+) -> None:
+    @stream(name="rows")
     def rows() -> Iterator[object]:
         yield {"n": 1}
 
@@ -643,18 +690,18 @@ def test_a_built_pipeline_and_its_run_keep_its_resource(tmp_path: Path, connecto
     kept = weakref.ref(rows)
     del rows
     gc.collect()
-    assert kept() is not None, "a built pipeline reads with its resource"
+    assert kept() is not None, "a built pipeline reads with its stream function"
     run = built.start()
     del built
     gc.collect()
-    assert kept() is not None, "a run in progress reads with its resource"
+    assert kept() is not None, "a run in progress reads with its stream function"
     run.wait()
 
 
 def test_a_source_s_failure_says_its_type_and_message_once(
     tmp_path: Path, connectors: Path
 ) -> None:
-    @rdlt.resource(name="failing")
+    @stream(name="failing")
     def failing() -> Iterator[object]:
         yield {"n": 1}
         raise ConnectionRefusedError("the api is down")
@@ -679,8 +726,8 @@ def ended_threads() -> list[threading.Thread]:
 def test_a_read_s_threads_leave_nothing_in_threading_once_they_end(
     tmp_path: Path, connectors: Path
 ) -> None:
-    @rdlt.resource(name="parted", partitions=lambda: [str(n) for n in range(32)])
-    def parted(ctx: rdlt.StreamContext) -> Iterator[object]:
+    @stream(name="parted", partitions=lambda: [str(n) for n in range(32)])
+    def parted(ctx: StreamContext) -> Iterator[object]:
         yield {"partition": ctx.partition}
 
     built = rdlt.pipeline("parted", source=parted, destination=into_sqlite(tmp_path))
@@ -710,8 +757,8 @@ class Logged:
 def test_rows_that_log_as_they_are_let_go_leave_nothing_in_threading(
     tmp_path: Path, connectors: Path
 ) -> None:
-    @rdlt.resource(name="logged", partitions=lambda: [str(n) for n in range(8)])
-    def logged(ctx: rdlt.StreamContext) -> Iterator[object]:
+    @stream(name="logged", partitions=lambda: [str(n) for n in range(8)])
+    def logged(ctx: StreamContext) -> Iterator[object]:
         return Logged(ctx.partition)
 
     built = rdlt.pipeline("logged", source=logged, destination=into_sqlite(tmp_path))

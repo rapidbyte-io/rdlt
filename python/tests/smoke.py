@@ -1,6 +1,6 @@
 """A run of the installed package, which the release makes of each wheel it builds.
 
-`python smoke.py CONNECTORS`: a Python resource's rows, through a Python transform, into the
+`python smoke.py CONNECTORS`: a Python stream function's rows, through a Python transform, into the
 memory destination, whose binary `CONNECTORS` holds.
 """
 
@@ -17,7 +17,7 @@ import rdlt
 ROWS = 10
 
 
-@rdlt.resource(name="rows")
+@rdlt.connector.stream(name="rows")
 def rows() -> Iterator[object]:
     """Ten rows, as dicts."""
     yield [{"n": n} for n in range(ROWS)]

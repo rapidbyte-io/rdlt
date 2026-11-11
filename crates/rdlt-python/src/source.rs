@@ -69,10 +69,6 @@ struct Declared {
     read_modes: Vec<ReadMode>,
     checkpointing: Checkpointing,
     partitioned: bool,
-    /// Whether the stream is read from its committed cursor on: a read of a partition it declares
-    /// that ends on rows after its last checkpoint must not read as the partition finished.
-    #[serde(default)]
-    resumes: bool,
 }
 
 /// One stream of a Python source.
@@ -81,7 +77,6 @@ pub(crate) struct PythonStream {
     spec: StreamSpec,
     stream: Arc<Py<PyAny>>,
     partitioned: bool,
-    resumes: bool,
 }
 
 impl PythonStream {
@@ -103,7 +98,6 @@ impl PythonStream {
             spec,
             stream: Arc::new(stream),
             partitioned: declared.partitioned,
-            resumes: declared.resumes,
         })
     }
 }
@@ -159,15 +153,6 @@ impl ReadStream<PythonSource> for PythonStream {
         if !self.partitioned {
             return Ok(vec![Partition::single()]);
         }
-        // A resuming stream's declared partitions are never finished: rows a read leaves after
-        // its last checkpoint are read again from it, not committed and recorded done.
-        let held = |partition: Partition| {
-            if self.resumes {
-                partition.unbounded()
-            } else {
-                partition
-            }
-        };
         let stream = Arc::clone(&self.stream);
         let keys: Vec<String> = called(
             "partitions",
@@ -178,7 +163,7 @@ impl ReadStream<PythonSource> for PythonStream {
         keys.iter()
             .map(|key| {
                 PartitionId::parse(key)
-                    .map(|id| held(Partition::new(id)))
+                    .map(Partition::new)
                     .config(format!("partition {key:?}"))
             })
             .collect()

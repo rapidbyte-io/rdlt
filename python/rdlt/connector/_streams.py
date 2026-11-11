@@ -6,8 +6,8 @@ import json
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 
 from rdlt import _native
-from rdlt.context import StreamContext
-from rdlt.cursor import Cursor
+from rdlt.connector._context import StreamContext
+from rdlt.connector._cursor import Cursor
 
 Read = Callable[..., Iterable[object] | AsyncIterable[object]]
 """A stream's read: takes its cursor first where it declares one, and `ctx` where it names it."""
@@ -16,7 +16,7 @@ Read = Callable[..., Iterable[object] | AsyncIterable[object]]
 class Stream:
     """One stream, as the native source holds it: `read` and `partitions` reach the author's code.
 
-    They reach it weakly, so a generator or a class that holds its pipeline can be collected with
+    They reach it weakly, so a function or a class that holds its pipeline can be collected with
     that pipeline; what may still read it holds it in the open.
     """
 
@@ -29,7 +29,6 @@ class Stream:
         partitions: Callable[[], Sequence[str]] | None,
         *,
         takes_context: bool,
-        resumes: bool,
     ) -> None:
         self._name = name
         self._read = read
@@ -43,7 +42,6 @@ class Stream:
                 "read_modes": ["full", "incremental"] if cursor else ["full"],
                 "checkpointing": "on_demand" if takes_context else "natural",
                 "partitioned": partitions is not None,
-                "resumes": resumes,
             }
         )
 
