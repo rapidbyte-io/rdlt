@@ -51,9 +51,10 @@ pub use rdlt_connector::DEADLINE_EXCEEDED;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Deadlines {
     /// Each step of a connector's start, each with the whole deadline: the hash of its binary
-    /// at placement, its spawn with the binary's hash and any sandbox, its stream's opening or
-    /// its dial, its connection's setup with its handshake, the resolution of its
-    /// configuration's secrets, and its configuration; and the start of each read.
+    /// at placement, the wait at placement for grants only connectors told to stop still hold,
+    /// its spawn with the binary's hash and any sandbox, its stream's opening or its dial, its
+    /// connection's setup with its handshake, the resolution of its configuration's secrets,
+    /// and its configuration; and the start of each read.
     pub connect: Duration,
     /// A check.
     pub check: Duration,
