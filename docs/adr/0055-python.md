@@ -56,23 +56,24 @@ script that started a run and returned.
   included, reach the class one at a time, as the Rust SDK orders them, so an author's destination
   needs no lock of its own. Its configuration is a pydantic model, whose refusals name the field,
   the fault and the kind of value, never the value.
-- **One way to write a source, in the Rust SDK's words.** `rdlt.connector` names what the Rust
-  SDK names, in Python's case: `ConnectorError` and its kinds, `RateLimited`'s `retry_after`, a
-  `ReadStream` that `@stream` makes, `Cursor`, `checkpoint`, and `serve`'s `args`; where Python
-  differs, the language makes it, as decorators for attributes, exceptions for `Result` and
-  generators for an emitter. `@stream` makes a function a stream as it makes a method one, under the
-  same rules, so a function moves into a `@source` class taking `self`, as its `partitions=`
-  callable then does too. A pipeline reads its stream functions in process, as the streams of one
-  source, `io.rapidbyte.functions`, which has no configuration, and is not served, installed or
-  certified: a stream that needs those is a class's.
+- **One way to write a source, in the Rust SDK's words.** `rdlt.connector` names what the Rust SDK
+  names, in Python's case: `ConnectorError` and its kinds, `RateLimited`'s `retry_after`, a
+  `ReadStream` that `@stream` makes, its `Partition`s, `committed` and `replayable`, `Cursor`,
+  `checkpoint`, and `serve`'s `args`; where Python differs, the language makes it, as decorators for
+  attributes, exceptions for `Result` and generators for an emitter. `@stream` makes a function a
+  stream as it makes a method one, under the same rules, so a function moves into a `@source` class
+  taking `self`, as its `partitions=` and `committed=` callables then do too. A pipeline reads its
+  stream functions in process, as the streams of one source, `io.rapidbyte.functions`, which has no
+  configuration, and is not served, installed or certified: a stream that needs those is a class's.
 - **The engine ends a Python stream's read** as it ends any source's, since only the engine knows
-  the read mode (ADR 0004, ADR 0024). A stream that declares no partitions reads one that never
-  ends: a full read lands everything it yields, and an incremental read lands what it yields up to
-  its last checkpoint, the next run reading the rest again from there, so it ends on
+  the read mode (ADR 0004, ADR 0024). A stream that declares no partitions reads
+  `Partition.single()`, which never ends, as a `Partition(id, unbounded=True)` it declares does: a
+  full read lands everything it yields, and an incremental read lands what it yields up to its last
+  checkpoint, the next run reading the rest again from there, so it ends on
   `yield checkpoint(cursor)`; one that yields rows and no checkpoint after any fails
-  `checkpoint_missing`, since none of them could land. A partition a stream declares ends: a read
-  that ends on rows finishes it, and one that ends on a checkpoint leaves it there. A stream without
-  a cursor is read whole every run.
+  `checkpoint_missing`, since none of them could land. Any other partition a stream declares ends: a
+  read that ends on rows finishes it, and one that ends on a checkpoint leaves it there. A stream
+  without a cursor is read whole every run.
 - **Served mode is the Rust `serve`**, inside the extension, with a connector binary's flags and
   the GIL released while it serves. A served connector's code runs on Python's daemon threads,
   as an in-process one's does. SIGINT is ignored before serving: the server takes the signal

@@ -215,13 +215,14 @@ a stream, as it makes a connector class's method one: it yields rows, as dicts o
 Arrow batches or anything that exports Arrow, and checkpoints, each the cursor a run resumes from
 once the rows before it are committed. A pipeline reads its stream functions in process, as the
 streams of one source, `io.rapidbyte.functions`; moved into a `@source` class, a function takes
-`self`, as its `partitions=` callable then does too. A stream that declares no partitions reads one
-that never ends, as a Rust source's does: read `full`, everything it yields lands; read
+`self`, as its `partitions=` and `committed=` callables then do too. A stream that declares no
+partitions reads one that never ends, as a Rust source's does, and so does a
+`Partition(id, unbounded=True)` a stream declares: read `full`, everything it yields lands; read
 incrementally, what it yields up to its last checkpoint lands, and the next run reads the rest again
 from there, so its read ends on `yield checkpoint(cursor)`, and one that yields rows and no
-checkpoint after any fails `checkpoint_missing`, since none of them could land. A partition a stream
-declares ends: a read that ends on rows finishes it, and one that ends on a checkpoint leaves it
-there.
+checkpoint after any fails `checkpoint_missing`, since none of them could land. Any other partition
+a stream declares ends: a read that ends on rows finishes it, and one that ends on a checkpoint
+leaves it there.
 
 ```python
 """rdlt's Python quick start: a Python function's rows into SQLite, exactly once."""
@@ -290,15 +291,17 @@ transform, and `@rdlt.filter()` makes one that answers which rows to keep, as a 
 document names a transform its host registered with `host.transform("name", function)` as
 `{"code": "name"}`, and `rdlt.testing.certify_transform` runs the transform clauses against one.
 
-**Connectors.** `rdlt.connector` writes a connector as a class, in the Rust SDK's words.
-`@source` takes its configuration, a pydantic model in which a credential is a `Secret`, and
-`@stream` methods that yield rows and checkpoints. `@destination` takes its configuration and
-capabilities, and an `open` answering a session whose table writers stage what a commit
-publishes; a session's calls, its writers' included, reach the class one at a time, so it needs
-no lock of its own. `ConnectorError` and its kinds, such as `Transient` and
-`RateLimited(retry_after=)`, say what kind of failure the connector met. Barriers, credit,
-limits, deadlines, fencing and commits are the Rust SDK's, beneath it.
-`rdlt.local(Tickets, config=...)` places a class `Tickets` in process, and a launcher ending in
+**Connectors.** `rdlt.connector` writes a connector as a class, in the Rust SDK's words. `@source`
+takes its configuration, a pydantic model in which a credential is a `Secret`, and `@stream` methods
+that yield rows and checkpoints; a stream's `partitions` may answer a
+`Partition(id, unbounded=True)` that never ends, `committed=` is told the cursors each commit made
+durable, and `replayable=False` says it cannot be read again from one. `@destination` takes its
+configuration and capabilities, and an `open` answering a session whose table writers stage what a
+commit publishes; a session's calls, its writers' included, reach the class one at a time, so it
+needs no lock of its own. `ConnectorError` and its kinds, such as `Transient` and
+`RateLimited(retry_after=)`, say what kind of failure the connector met. Barriers, credit, limits,
+deadlines, fencing and commits are the Rust SDK's, beneath it. `rdlt.local(Tickets, config=...)`
+places a class `Tickets` in process, and a launcher ending in
 `raise SystemExit(rdlt.connector.serve(Tickets))` serves it as a connector binary.
 `test_certify = rdlt.testing.certify_source(Tickets, config=...)` in a test module, or
 `certify_destination`, makes each clause a pytest test, `test_certify[S-RESUME]`.
