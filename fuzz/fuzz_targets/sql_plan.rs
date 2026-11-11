@@ -21,7 +21,7 @@ use rdlt_sql::{SQL_DEPTH, Sql, function_names};
 
 /// Bytes: the longest text the target plans, at which the slowest queries the limits admit that
 /// were found plan within half the timeout.
-const PLANNED: usize = 208;
+const PLANNED: usize = 1 << 10;
 
 /// The nodes an accepted plan may hold.
 const NODES: [&str; 4] = ["Projection", "Filter", "SubqueryAlias", "TableScan"];
