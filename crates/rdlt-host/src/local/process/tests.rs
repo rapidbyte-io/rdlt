@@ -25,11 +25,11 @@ fn writing(leases: &Leases, written: &Path) -> Result<Lease, SandboxError> {
         write: vec![written.to_owned()],
     };
     leases.take(&Claim {
-        access: &access,
-        shared_reads: &[],
-        roots: &roots,
-        guarded: &Guarded::default(),
-        programs: &[],
+        access,
+        shared_reads: Vec::new(),
+        roots,
+        guarded: Guarded::default(),
+        programs: Vec::new(),
         tree: None,
     })
 }
@@ -232,11 +232,11 @@ fn a_sandboxed_connector_is_not_spawned_once_its_launcher_has_a_second_name() {
         files: vec![launcher.clone()],
     };
     let lease = Leases::default().take(&Claim {
-        access: &access,
-        shared_reads: &[],
-        roots: &roots,
-        guarded: &guarded,
-        programs: &[],
+        access,
+        shared_reads: Vec::new(),
+        roots,
+        guarded,
+        programs: Vec::new(),
         tree: None,
     });
     launch.lease = Arc::new(lease.expect("one name, beside"));
@@ -300,11 +300,11 @@ async fn a_scripts_interpreter_given_a_second_name_since_it_was_placed_is_not_sp
         let binary = Binary::at(&path).expect("the script opens");
         let programs = crate::local::programs(&binary).expect("its programs");
         let lease = leases.take(&Claim {
-            access: &Access::default(),
-            shared_reads: &[],
-            roots: &Roots::default(),
-            guarded: &Guarded::default(),
-            programs: &programs,
+            access: Access::default(),
+            shared_reads: Vec::new(),
+            roots: Roots::default(),
+            guarded: Guarded::default(),
+            programs,
             tree: None,
         });
         (Arc::new(binary), Arc::new(lease.expect("held")))

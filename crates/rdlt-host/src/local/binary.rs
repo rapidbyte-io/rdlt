@@ -8,6 +8,7 @@ use std::io;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use rustix::fs::{CWD, Mode, OFlags};
 use sha2::Digest as _;
@@ -45,7 +46,7 @@ pub(crate) struct Binary {
     /// Whether another name led to the file when it was opened.
     linked: bool,
     /// The directory connector it is the launcher of, where it is one's.
-    tree: Option<Tree>,
+    tree: Option<Arc<Tree>>,
 }
 
 /// A directory connector's tree: where it lies, and the directory opened and checked there, which
@@ -180,10 +181,10 @@ impl Binary {
         let found = path.join("bin").join("rdlt-connector");
         let mut binary = Self::checked(File::from(launcher), found)?;
         let lies = located(&directory, path).map_err(|error| Unfit::Absent(Some(error)))?;
-        binary.tree = Some(Tree {
+        binary.tree = Some(Arc::new(Tree {
             path: lies,
             directory,
-        });
+        }));
         Ok(binary)
     }
 
@@ -194,7 +195,7 @@ impl Binary {
 
     /// The directory connector the binary is the launcher of, where it is one's: its tree, which
     /// a sandbox binds read only and no root that may be written may hold or lie within.
-    pub(crate) fn tree(&self) -> Option<&Tree> {
+    pub(crate) fn tree(&self) -> Option<&Arc<Tree>> {
         self.tree.as_ref()
     }
 

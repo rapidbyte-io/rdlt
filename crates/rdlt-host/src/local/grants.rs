@@ -161,24 +161,24 @@ pub(crate) struct Program {
     pub(crate) linked: bool,
 }
 
-/// What a placement asks to hold.
+/// What a placement asks to hold, its own, so it may be tried where opening paths may block.
 #[derive(Debug)]
-pub(crate) struct Claim<'a> {
+pub(crate) struct Claim {
     /// The access the reference asks for.
-    pub(crate) access: &'a Access,
+    pub(crate) access: Access,
     /// What every connector of the provider may read.
-    pub(crate) shared_reads: &'a [PathBuf],
+    pub(crate) shared_reads: Vec<PathBuf>,
     /// Where the provider's operator lets access be given.
-    pub(crate) roots: &'a Roots,
+    pub(crate) roots: Roots,
     /// What no root that may be written may hold.
-    pub(crate) guarded: &'a Guarded,
+    pub(crate) guarded: Guarded,
     /// The programs the placement runs: its binary, and a script's interpreter.
-    pub(crate) programs: &'a [Program],
+    pub(crate) programs: Vec<Program>,
     /// The tree of the directory connector the binary launches, where it launches one: held as
     /// a read whether its connector is confined or trusted, so no grant held now writes it, and
     /// guarded as a connector directory is, so no root that may be written holds it or lies
     /// within it.
-    pub(crate) tree: Option<&'a Tree>,
+    pub(crate) tree: Option<Arc<Tree>>,
 }
 
 /// `path`, opened, as a grant or a root names it: absolute, and there.
@@ -214,8 +214,8 @@ impl Leases {
     }
 
     /// Holds what `claim` asks for as `claimed` does, refused at once whatever refuses it.
-    #[cfg(test)]
-    pub(crate) fn take(&self, claim: &Claim<'_>) -> Result<Lease, SandboxError> {
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) fn take(&self, claim: &Claim) -> Result<Lease, SandboxError> {
         self.claimed(claim).map_err(|refused| refused.error)
     }
 
@@ -229,15 +229,16 @@ impl Leases {
     /// wait for or `patience` has passed.
     pub(crate) async fn take_within(
         &self,
-        claim: &Claim<'_>,
+        claim: Claim,
         patience: Duration,
     ) -> Result<Lease, SandboxError> {
+        let claim = Arc::new(claim);
         let until = tokio::time::Instant::now().checked_add(patience);
         loop {
             // Asked for before the claim is tried, so a release after the try is not missed.
             let mut released = std::pin::pin!(self.released.notified());
             released.as_mut().enable();
-            match self.claimed(claim) {
+            match self.tried(&claim).await {
                 Err(Refused {
                     error,
                     ending: true,
@@ -257,14 +258,26 @@ impl Leases {
         }
     }
 
+    /// `claim` tried once as `claimed` tries it, on the blocking pool, since opening its paths may
+    /// block.
+    async fn tried(&self, claim: &Arc<Claim>) -> Result<Lease, Refused> {
+        let (leases, asked) = (self.clone(), Arc::clone(claim));
+        match tokio::task::spawn_blocking(move || leases.claimed(&asked)).await {
+            Ok(tried) => tried,
+            // The runtime is shutting down and never ran it, or it panicked: either way it is
+            // tried here, where a panic is this task's own.
+            Err(_) => self.claimed(claim),
+        }
+    }
+
     /// Holds what `claim` asks for, once each path is seen to lie where it may.
-    fn claimed(&self, claim: &Claim<'_>) -> Result<Lease, Refused> {
+    fn claimed(&self, claim: &Claim) -> Result<Lease, Refused> {
         let read_roots = all_opened(&claim.roots.read)?;
         let write_roots = all_opened(&claim.roots.write)?;
-        let mut programs = claim.programs.to_vec();
+        let mut programs = claim.programs.clone();
         programs.extend(launchers(&claim.guarded.files)?);
         // The tree as it was checked, by its descriptor, not by what its path names now.
-        let tree = match claim.tree {
+        let tree = match claim.tree.as_deref() {
             Some(tree) => Some((tree.path.as_path(), tree_held(tree)?)),
             None => None,
         };
@@ -290,7 +303,7 @@ impl Leases {
             }
             .into());
         }
-        let shared = all_opened(claim.shared_reads)?;
+        let shared = all_opened(&claim.shared_reads)?;
         let read_by_all = writes.iter().find(|(_, write)| {
             shared
                 .iter()
@@ -313,7 +326,7 @@ impl Leases {
     /// and as ending where only connectors told to stop hold it.
     fn held(
         &self,
-        claim: &Claim<'_>,
+        claim: &Claim,
         programs: Vec<Program>,
         reads: Vec<(&Path, Opened)>,
         writes: Vec<(&Path, Opened)>,
@@ -397,7 +410,7 @@ impl Program {
 /// A program with a second name may be written through any path on its file system.
 fn refused_by(
     other: &Held,
-    claim: &Claim<'_>,
+    claim: &Claim,
     programs: &[Program],
     reads: &[(&Path, Opened)],
     writes: &[(&Path, Opened)],
