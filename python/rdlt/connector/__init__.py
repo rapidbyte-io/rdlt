@@ -27,6 +27,7 @@ from rdlt.connector._secret import Secret
 from rdlt.connector._source import ReadStream, source, stream
 from rdlt.connector._source import declares as declares_source
 from rdlt.connector._source import placed as placed_source
+from rdlt.connector._streams import Partition
 
 
 def serve(connector: type, args: Sequence[str] | None = None) -> int:
@@ -77,6 +78,7 @@ __all__ = [
     "InvalidConfig",
     "InvalidData",
     "Opened",
+    "Partition",
     "RateLimited",
     "ReadStream",
     "Secret",

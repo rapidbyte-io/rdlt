@@ -4,10 +4,30 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
+from dataclasses import dataclass
 
 from rdlt import _native
 from rdlt.connector._context import StreamContext
 from rdlt.connector._cursor import Cursor
+
+
+@dataclass(frozen=True, slots=True)
+class Partition:
+    """A partition of a stream, as its `partitions` answers it: its id, and whether it never ends.
+
+    Only a full read finishes a partition that never ends: any other read leaves it at its last
+    checkpoint, and the next run reads again what it yielded after that checkpoint. A read of a
+    partition that ends finishes it where the read ends on rows, which commit with it.
+    """
+
+    id: str
+    unbounded: bool = False
+
+    @classmethod
+    def single(cls) -> Partition:
+        """The partition of a stream that is not split, `whole`, which never ends."""
+        return cls("whole", unbounded=True)
+
 
 Read = Callable[..., Iterable[object] | AsyncIterable[object]]
 """A stream's read: takes its cursor first where it declares one, and `ctx` where it names it."""
@@ -26,7 +46,7 @@ class Stream:
         read: Read,
         primary_key: tuple[str, ...] | None,
         cursor: type[Cursor] | None,
-        partitions: Callable[[], Sequence[str]] | None,
+        partitions: Callable[[], Sequence[str | Partition]] | None,
         *,
         takes_context: bool,
     ) -> None:
@@ -50,15 +70,18 @@ class Stream:
         """The stream's description, as JSON."""
         return self._spec
 
-    def partitions(self) -> list[str]:
-        """The partitions to read; none for a stream without partitions."""
+    def partitions(self) -> list[tuple[str, bool]]:
+        """Each partition and whether it never ends; none for a stream without partitions."""
         if self._partitions is None:
             return []
         found = self._partitions()
         if isinstance(found, str):
             message = f"stream {self._name!r}: partitions are a sequence, not one string"
             raise TypeError(message)
-        return list(found)
+        return [
+            (each.id, each.unbounded) if isinstance(each, Partition) else (each, False)
+            for each in found
+        ]
 
     def read(
         self, partition: str | None, cursor: str | None, context: _native.StreamContext

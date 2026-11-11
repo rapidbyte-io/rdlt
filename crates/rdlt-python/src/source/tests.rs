@@ -82,7 +82,7 @@ def read(partition, cursor, context):
     builtins.idents.add(threading.get_ident())
     barrier.wait(30)
     yield {'partition': partition}
-stream = types.SimpleNamespace(read=read, partitions=lambda: ['a', 'b', 'c'], spec=json.dumps({
+stream = types.SimpleNamespace(read=read, partitions=lambda: [('a', False), ('b', False), ('c', False)], spec=json.dumps({
     'name': 'rows', 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'partitioned': True}))
 streams = [stream]";
         let (_, error) = loaded(py, "python-partitioned", "full", body);
@@ -127,6 +127,51 @@ streams = [stream]";
             serde_json::from_str(cursors[1].as_deref().expect("resumed")).unwrap();
         assert_eq!(resumed["after"], 9);
         assert_eq!(published_rows("python-resumed", "rows"), 20);
+    });
+}
+
+#[test]
+fn a_partition_that_never_ends_keeps_its_last_checkpoint_when_its_read_ends_on_rows() {
+    embedded::with(|py| {
+        for (store, unbounded, resumed) in [
+            ("python-unbounded", "True", Some(4)),
+            ("python-bounded", "False", None),
+        ] {
+            let body = format!(
+                "\
+import builtins
+builtins.started = getattr(builtins, 'started', {{}})
+def read(partition, cursor, context):
+    builtins.started.setdefault('{store}', []).append(cursor)
+    start = 0 if cursor is None else json.loads(cursor)['after'] + 1
+    for n in range(start, start + 10):
+        yield {{'n': n}}
+        if n == start + 4:
+            yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({{'after': n}}))
+stream = types.SimpleNamespace(read=read, partitions=lambda: [('p', {unbounded})], spec=json.dumps({{
+    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'partitioned': True}}))
+streams = [stream]"
+            );
+            loaded(py, store, "incremental", &body);
+            loaded(py, store, "incremental", &body);
+            let started: Vec<Option<String>> = py
+                .eval(
+                    &std::ffi::CString::new(format!("__import__('builtins').started['{store}']"))
+                        .unwrap(),
+                    None,
+                    None,
+                )
+                .unwrap()
+                .extract()
+                .unwrap();
+            let after = started.get(1).map(|cursor| {
+                serde_json::from_str::<serde_json::Value>(cursor.as_deref().expect("resumed"))
+                    .unwrap()["after"]
+                    .as_i64()
+                    .unwrap()
+            });
+            assert_eq!(after, resumed, "{store}");
+        }
     });
 }
 
