@@ -658,13 +658,14 @@ A read pushes JSON objects (`rows`), JSON bytes (`json`), Arrow batches (`batch`
 `arrow-array` 59, and on `arrow-schema` 59 to build their schemas. `replan` tells a run that
 follows its source that the stream's partitions changed, and `behind` says how far the read lags
 its newest data, which the report totals per stream
-([ADR 0032](docs/adr/0032-source-signals.md)). A stream that plans no partitions reads one that
-never ends, `Partition::single()`, as a partition planned as `Partition::new(id).unbounded()` is,
+([ADR 0032](docs/adr/0032-source-signals.md)). A stream that keeps `ReadStream`'s default
+`partitions` reads one that never ends, `Partition::single()`, as a partition planned as `Partition::new(id).unbounded()` is,
 as a change stream's changes are. Only a full read finishes it: any other read leaves it at its
 last checkpoint, so the next reads again what followed, and an incremental read that pushes rows
 and no checkpoint after any fails `checkpoint_missing`
 ([ADR 0024](docs/adr/0024-hardening-data-correctness.md)). A partition the source declares with
-`Partition::new(id)` ends, and a read that ends on rows finishes it.
+`Partition::new(id)` ends: a read that ends on rows finishes it, and one that ends on a
+checkpoint leaves it there.
 
 A connector's error has a kind. While the retry policy allows, the engine starts a new attempt
 after a `Transient` or `RateLimited` error, and after a call or a wait on the memory budget passes
