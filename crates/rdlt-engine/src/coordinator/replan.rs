@@ -4,10 +4,11 @@
 
 use std::collections::BTreeSet;
 
-use rdlt_connector::{Partition, PartitionId, PartitionPlan, PartitionState};
+use rdlt_connector::{Partition, PartitionId, PartitionPlan};
 
 use super::Coordinator;
 use crate::error::Error;
+use crate::partition::resumed;
 
 impl Coordinator {
     /// Plans each stream that tracks its partitions again, unless the attempt is stopping.
@@ -87,18 +88,15 @@ impl Coordinator {
                     .map(|index| &self.parts.partitions[*index].id),
             )
             .collect();
-        let starts: Vec<_> = planned
-            .partitions
-            .iter()
-            .filter(|partition| !unsettled.contains(partition.id()))
-            .filter_map(|partition| match committed.get(partition.id()) {
-                Some(PartitionState::Done) => None,
-                Some(PartitionState::Cursor(cursor)) => {
-                    Some((partition.clone(), Some(cursor.clone())))
-                }
-                None => Some((partition.clone(), None)),
-            })
-            .collect();
+        let name = &self.parts.streams[stream].name;
+        let mut starts = Vec::new();
+        for partition in &planned.partitions {
+            if unsettled.contains(partition.id()) {
+                continue;
+            }
+            let position = committed.get(partition.id());
+            starts.extend(resumed(name, partition.clone(), position, template.read)?);
+        }
         if let Some(phases) = self.parts.streams[stream].phases.as_mut() {
             for id in retired {
                 self.retired.extend(phases.reading.remove(&id));

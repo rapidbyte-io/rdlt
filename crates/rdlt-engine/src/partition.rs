@@ -9,6 +9,7 @@ mod end;
 mod job;
 mod latest;
 mod progress;
+mod resume;
 mod retention;
 mod slots;
 #[cfg(test)]
@@ -48,6 +49,7 @@ use end::{checkpoint_missing, end_state};
 pub(crate) use job::{ChangeMode, PartitionJob};
 pub(crate) use latest::Latest;
 pub(crate) use progress::{CursorHold, Progress, Seal};
+pub(crate) use resume::resumed;
 use retention::read_resetting;
 pub(crate) use slots::{Parts, Slots};
 use write::write_flushed;

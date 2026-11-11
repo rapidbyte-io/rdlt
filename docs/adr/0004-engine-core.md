@@ -89,6 +89,14 @@ a run reports and tells must show what it did without changing what it does.
   land; one that pushes nothing ends cleanly. A partition that read nothing and never
   checkpointed records no position, so a stream that starts empty still loads rows added later.
   Marking it `Done` always would stop incremental streams from ever growing.
+- **No read passes over a partition that never ends.** A read that is not full plans each
+  partition from its committed position: a cursor resumes it, no position starts it from its
+  beginning, and `Done` passes over a bounded one, which has no more rows. An unbounded partition
+  is `Done` only where a read finished it with rows after its last checkpoint, as a full read
+  does, so no cursor resumes it: reading it from that checkpoint would land those rows twice, and
+  passing over it would miss every row it gains. Such a read fails, a Source error coded
+  `cursor_missing` that names the stream, as each run plans the stream and as a following run
+  plans it again; a full read that ends at a checkpoint, or a reset, mends it.
 - **Full reads are cycles.** A `full` read records its generation when it first commits and
   deletes the previous cycle's partition entries; its last commit records it as `completed`. Each
   run remembers the cycle it started or resumed per stream, and state keeps the stream's sixteen

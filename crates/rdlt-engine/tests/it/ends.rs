@@ -1,6 +1,7 @@
 //! How a partition's read ends: what lands of the rows after its last checkpoint, and whether a
 //! later run reads the partition again.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -38,6 +39,9 @@ struct Shape {
     partition: Planned,
     /// Where each read checkpoints among the rows after its cursor.
     checkpoints: Checkpoints,
+    /// How many of a connection's plans of each stream name no partition before one names it.
+    #[serde(default)]
+    named_after: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
@@ -73,6 +77,8 @@ fn one() -> usize {
 /// A source of streams read as its shape says.
 struct Ending {
     shape: Shape,
+    /// How many plans the connection answered.
+    plans: AtomicU64,
 }
 
 impl SourceConnector for Ending {
@@ -81,7 +87,8 @@ impl SourceConnector for Ending {
     type Config = Shape;
 
     async fn connect(shape: Shape, _: &ConnectContext) -> Result<Self> {
-        Ok(Self { shape })
+        let plans = AtomicU64::new(0);
+        Ok(Self { shape, plans })
     }
 
     async fn check(&self) -> Result<()> {
@@ -109,7 +116,10 @@ impl ReadStream<Ending> for Rows {
             .with_read_modes([ReadMode::Full, ReadMode::Incremental])
     }
 
-    async fn partitions(&self, _: &Ending, _: &StreamState) -> Result<Vec<Partition>> {
+    async fn partitions(&self, source: &Ending, _: &StreamState) -> Result<Vec<Partition>> {
+        if source.plans.fetch_add(1, Ordering::Relaxed) < source.shape.named_after {
+            return Ok(Vec::new());
+        }
         let declared = || Partition::new(PartitionId::parse("p0").expect("an id"));
         Ok(vec![match self.1 {
             Planned::Unsplit => Partition::single(),
@@ -402,4 +412,115 @@ async fn a_log_checkpointing_every_other_batch_lands_each_message_once_and_then_
             "{messages} messages"
         );
     }
+}
+
+/// Runs `plan` as [`run`] does, once for each `(rows, checkpoints)` of `reads`, the source's
+/// partition planned as `planned` says; each run's outcome.
+async fn runs(
+    plan: impl Fn() -> PipelinePlan,
+    planned: &str,
+    reads: &[(u64, &str)],
+    store: &str,
+) -> Vec<RunOutcome> {
+    let mut outcomes = Vec::new();
+    for (rows, checkpoints) in reads {
+        let shape = json!({ "rows": rows, "partition": planned, "checkpoints": checkpoints });
+        outcomes.push(run(plan(), shape, store).await);
+    }
+    outcomes
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_never_ending_partition_a_full_read_ended_on_rows_is_refused_to_an_incremental_read() {
+    for planned in ["unsplit", "unbounded"] {
+        let store = format!("ending_full_then_incremental_{planned}");
+        STARTS.lock().clear();
+        let full = || reading(ReadMode::Full, WriteMode::Append);
+        let incremental = || reading(ReadMode::Incremental, WriteMode::Append);
+        let ended = runs(full, planned, &[(6, "middle")], &store).await;
+        assert_eq!(ended[0].report.status, RunStatus::Succeeded, "{ended:?}");
+        let refused = runs(incremental, planned, &[(9, "middle_and_end")], &store).await;
+        assert_eq!(
+            refused[0].report.status,
+            RunStatus::Failed,
+            "{planned}: {refused:?}"
+        );
+        let error = refused[0].error.as_ref().expect("the run failed");
+        assert_eq!(error.code(), Some(codes::CURSOR_MISSING), "{error:?}");
+        assert_eq!(error.kind(), ErrorKind::Source, "{error:?}");
+        assert_eq!(
+            error.stream().map(ToString::to_string).as_deref(),
+            Some("rows")
+        );
+        assert!(!error.is_retryable(), "{error:?}");
+        // Neither skipped nor read again from its last checkpoint: nothing new lands, nothing twice.
+        assert_eq!(*STARTS.lock(), [0], "{planned}");
+        assert_eq!(published_ids(&store, "rows"), (0..6).collect::<Vec<_>>());
+        // A full read that ends on a checkpoint leaves the cursor an incremental read resumes from.
+        let mended = runs(full, planned, &[(9, "middle_and_end")], &store).await;
+        let resumed = runs(incremental, planned, &[(12, "middle_and_end")], &store).await;
+        for outcome in mended.iter().chain(&resumed) {
+            assert_eq!(outcome.report.status, RunStatus::Succeeded, "{outcome:?}");
+        }
+        assert_eq!(*STARTS.lock(), [0, 0, 9], "{planned}");
+        let mut expected: Vec<i64> = (0..6).chain(0..12).collect();
+        expected.sort_unstable();
+        assert_eq!(published_ids(&store, "rows"), expected, "{planned}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_incremental_read_after_a_full_read_that_ended_on_a_checkpoint_resumes_from_it() {
+    for planned in ["unsplit", "unbounded", "bounded"] {
+        let store = format!("ending_resumed_{planned}");
+        STARTS.lock().clear();
+        let full = || reading(ReadMode::Full, WriteMode::Append);
+        let incremental = || reading(ReadMode::Incremental, WriteMode::Append);
+        let mut outcomes = runs(full, planned, &[(6, "middle_and_end")], &store).await;
+        outcomes.extend(runs(incremental, planned, &[(9, "middle_and_end")], &store).await);
+        for outcome in &outcomes {
+            assert_eq!(outcome.report.status, RunStatus::Succeeded, "{outcome:?}");
+        }
+        assert_eq!(*STARTS.lock(), [0, 6], "{planned}");
+        assert_eq!(published_ids(&store, "rows"), (0..9).collect::<Vec<_>>());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_declared_bounded_partition_a_full_read_finished_is_not_read_incrementally() {
+    let store = "ending_bounded_after_full";
+    STARTS.lock().clear();
+    let full = || reading(ReadMode::Full, WriteMode::Append);
+    let incremental = || reading(ReadMode::Incremental, WriteMode::Append);
+    let mut outcomes = runs(full, "bounded", &[(6, "middle")], store).await;
+    outcomes.extend(runs(incremental, "bounded", &[(9, "middle_and_end")], store).await);
+    for outcome in &outcomes {
+        assert_eq!(outcome.report.status, RunStatus::Succeeded, "{outcome:?}");
+    }
+    assert_eq!(*STARTS.lock(), [0], "the incremental run reads nothing");
+    assert_eq!(published_ids(store, "rows"), (0..6).collect::<Vec<_>>());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_never_ending_partition_a_full_read_finished_is_refused_when_planned_again_mid_run() {
+    let store = "ending_replanned_after_full";
+    STARTS.lock().clear();
+    let full = reading(ReadMode::Full, WriteMode::Append);
+    let shape = json!({ "rows": 6, "partition": "unbounded", "checkpoints": "middle" });
+    let ended = run(full, shape, store).await;
+    assert_eq!(ended.report.status, RunStatus::Succeeded, "{ended:?}");
+    // The following run's first plan names no partition; the plan after it names the partition
+    // the full read finished.
+    let shape = json!({
+        "rows": 9, "partition": "unbounded", "checkpoints": "middle_and_end", "named_after": 1,
+    });
+    let plan = reading(ReadMode::Incremental, WriteMode::Append)
+        .with_until(Until::For(Duration::from_secs(2)));
+    let config = commit_every(1_000).replan(Duration::from_millis(100));
+    let outcome = run_by(config, plan, shape, store).await;
+    assert_eq!(outcome.report.status, RunStatus::Failed, "{outcome:?}");
+    let error = outcome.error.expect("the run failed");
+    assert_eq!(error.code(), Some(codes::CURSOR_MISSING), "{error:?}");
+    assert_eq!(*STARTS.lock(), [0]);
+    assert_eq!(published_ids(store, "rows"), (0..6).collect::<Vec<_>>());
 }

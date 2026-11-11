@@ -88,6 +88,10 @@ pub const COMMIT_POLICY_INVALID: Code = Code("commit_policy_invalid");
 /// zero, or a retry policy whose first delay is longer than its longest.
 pub const CONFIG_INVALID: Code = Code("config_invalid");
 
+/// The code of the error for a read that is not full of a partition that never ends, whose last
+/// read finished it with rows after its last checkpoint: no cursor resumes it past them.
+pub const CURSOR_MISSING: Code = Code("cursor_missing");
+
 /// The code of the error for a call into a connector that took longer than the engine's wait for
 /// it; a connector's own deadline, or its host's, is the connector's code of the same text.
 pub const DEADLINE_EXCEEDED: Code = Code(rdlt_connector::DEADLINE_EXCEEDED);

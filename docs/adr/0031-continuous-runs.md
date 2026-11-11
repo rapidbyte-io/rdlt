@@ -54,7 +54,8 @@ they are built apart.
   - a partition the plan names that is neither running nor `Done` starts from its committed
     position, or else from its beginning, as initial planning starts it: a plan's starts place
     only a new phase's partitions. New partitions start this way, and so do bounded partitions
-    that ended, so an incremental table is polled;
+    that ended, so an incremental table is polled. One that never ends and is `Done` fails the
+    run as `cursor_missing`, as initial planning fails it (ADR 0004);
   - a running partition the plan no longer names is stopped through a token of its own. What it
     sealed up to its last checkpoint commits; what it read after (for an on-demand stream,
     everything since its last barrier) is read again should a plan name it again. Its state entry
