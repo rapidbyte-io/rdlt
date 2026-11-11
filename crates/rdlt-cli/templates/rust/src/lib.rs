@@ -65,12 +65,9 @@ impl ReadStream<Greetings> for People {
             let end = (next + source.page).min(rows.len());
             out.rows(&rows[next..end]).await?;
             next = end;
-            // A checkpoint seals a segment. A full read, as this stream's, seals the rows after
-            // the last one with its end; read incrementally, the stream's one partition never
-            // ends, so a read ends at a checkpoint to land its last rows.
-            if next < rows.len() {
-                out.checkpoint(&next).await?;
-            }
+            // A checkpoint seals the page before it. One after the last page too means a read
+            // ends on a checkpoint, so the stream may also be read incrementally, from there.
+            out.checkpoint(&next).await?;
         }
         Ok(())
     }
