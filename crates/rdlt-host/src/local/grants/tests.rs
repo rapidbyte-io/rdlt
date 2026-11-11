@@ -692,3 +692,67 @@ async fn a_grant_connectors_told_to_stop_keep_past_the_wait_is_refused() {
     drop(connector);
 }
 
+#[tokio::test(start_paused = true)]
+async fn of_two_claims_waiting_on_one_ending_lease_one_holds_it_and_the_other_is_refused() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let a = dir(root.path(), "a");
+    let leases = Leases::default();
+    let under = || Asked::under(root.path());
+    let placed = under().writing(&a).taken(&leases).expect("a's grant");
+    let connector = placed.holding();
+    drop(placed);
+    let reaped = Duration::from_millis(50);
+    let ending = tokio::spawn(async move {
+        tokio::time::sleep(reaped).await;
+        drop(connector);
+    });
+    let (first, second) = (under().writing(&a), under().writing(&a));
+    let started = Instant::now();
+    let patience = Duration::from_secs(60);
+    let (first, second) = tokio::join!(
+        first.within(&leases, patience),
+        second.within(&leases, patience)
+    );
+    // Both wake at the release: one holds the grant, and the other meets its placement, which is
+    // there, and is refused at once.
+    let refused: Vec<&str> = [&first, &second]
+        .into_iter()
+        .filter_map(|taken| taken.as_ref().err().map(SandboxError::code))
+        .collect();
+    assert_eq!(refused, ["grant_overlap"], "{first:?} {second:?}");
+    assert_eq!(started.elapsed(), reaped, "decided at the release");
+    drop((first, second));
+    ending.await.expect("the connector ends");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_waiting_claim_cancelled_leaves_what_is_held_as_it_was() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let a = dir(root.path(), "a");
+    let leases = Leases::default();
+    let under = || Asked::under(root.path());
+    let placed = under().writing(&a).taken(&leases).expect("a's grant");
+    let connector = placed.holding();
+    drop(placed);
+    let held = || {
+        let held = leases.held.lock();
+        held.iter().map(|held| held.id).collect::<Vec<_>>()
+    };
+    let before = held();
+    let waiting = under().writing(&a);
+    let cancelled = tokio::time::timeout(
+        Duration::from_secs(1),
+        waiting.within(&leases, Duration::from_secs(60)),
+    )
+    .await;
+    assert!(cancelled.is_err(), "it was waiting when it was cancelled");
+    assert_eq!(held(), before, "what is held is as it was");
+    drop(connector);
+    assert!(held().is_empty(), "the ending lease is released");
+    let later = under()
+        .writing(&a)
+        .taken(&leases)
+        .expect("a later claim is held");
+    assert_eq!(held().len(), 1);
+    drop(later);
+}
