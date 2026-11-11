@@ -16,6 +16,8 @@ from typing import cast
 import pyarrow as pa
 
 from rdlt.connector import (
+    SCHEMA_CONFLICT,
+    TABLE_OWNED,
     Capabilities,
     Config,
     Fence,
@@ -107,7 +109,7 @@ class _Session:
         table = self.store.tables.setdefault(name, _Table(owner=self.pipeline))
         if table.owner != self.pipeline:
             message = f"table {name} belongs to pipeline {table.owner}"
-            raise InvalidConfig(message, code="table_owned")
+            raise InvalidConfig(message, code=TABLE_OWNED)
         return table
 
     def apply_schema(self, change: Mapping[str, Json]) -> None:
@@ -120,13 +122,13 @@ class _Session:
             columns = dict([_column(fields["field"])])
         else:
             message = f"table {name} widens no column in place"
-            raise InvalidData(message, code="schema_conflict")
+            raise InvalidData(message, code=SCHEMA_CONFLICT)
         with self.store.lock:
             table = self._claimed(name)
             for column, kept in columns.items():
                 if table.columns.get(column, kept) != kept:
                     message = f"table {name} holds column {column} at another type"
-                    raise InvalidData(message, code="schema_conflict")
+                    raise InvalidData(message, code=SCHEMA_CONFLICT)
             table.columns.update(columns)
 
     def writer(self, table: Mapping[str, Json]) -> _Writer:

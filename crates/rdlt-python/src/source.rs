@@ -255,11 +255,15 @@ impl ReadStream<PythonSource> for PythonStream {
     }
 }
 
-/// Connects the source `connect` makes from the configuration's JSON.
-async fn connected(connect: Arc<Py<PyAny>>, config: serde_json::Value) -> Result<PythonSource> {
+/// Connects the source `connect` makes from the configuration's JSON, for the host `host` names.
+async fn connected(
+    connect: Arc<Py<PyAny>>,
+    config: serde_json::Value,
+    host: Option<String>,
+) -> Result<PythonSource> {
     let (connected, declared) = called(
         "connected",
-        move |py| (connect.clone_ref(py), config.to_string()).into_pyobject(py),
+        move |py| (connect.clone_ref(py), config.to_string(), host).into_pyobject(py),
         |answered| answered.extract::<(Py<PyAny>, Vec<(String, Py<PyAny>)>)>(),
     )
     .await?;
@@ -319,8 +323,9 @@ impl NativeSourceFactory {
         let connect = Arc::clone(&self.connect);
         source_factory_from::<PythonSource, _>(
             self.spec.clone(),
-            move |config, _context| -> BoxFuture<'static, Result<PythonSource>> {
-                Box::pin(connected(Arc::clone(&connect), config))
+            move |config, context| -> BoxFuture<'static, Result<PythonSource>> {
+                let host = context.host().map(str::to_owned);
+                Box::pin(connected(Arc::clone(&connect), config, host))
             },
         )
     }

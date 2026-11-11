@@ -100,8 +100,8 @@ class Connected:
         import pyarrow as pa
         calls.append(['published', json.loads(table)['name']])
         return [list(pa.record_batch({'n': [1, 2]}).__arrow_c_array__())]
-def connect(config):
-    calls.append(['connect', json.loads(config)])
+def connect(config, host):
+    calls.append(['connect', json.loads(config), host])
     return Connected()
 ";
 
@@ -209,7 +209,7 @@ fn table_json() -> serde_json::Value {
 /// it, committing `meta`: the commit's receipt.
 async fn loaded(factory: &dyn DestinationFactory, meta: &CommitMeta) -> Receipt {
     let destination = factory
-        .connect(json!({ "given": 1 }), ConnectContext::new())
+        .connect(json!({ "given": 1 }), ConnectContext::serving("host-a"))
         .await
         .unwrap();
     assert_eq!(destination.capabilities(), &Capabilities::minimal());
@@ -268,7 +268,7 @@ fn each_call_reaches_the_python_destination_as_the_sdk_s_json() {
     assert_eq!(
         calls(&recorded),
         json!([
-            ["connect", { "given": 1 }],
+            ["connect", { "given": 1 }, "host-a"],
             ["check"],
             ["open", "p"],
             ["discard_staged"],
@@ -379,7 +379,7 @@ fn what_the_destination_raises_is_the_connector_s_error_of_its_kind_and_code() {
     let factory = embedded::with(|py| {
         let connect = py
             .eval(
-                c"lambda config: (_ for _ in ()).throw(__import__('rdlt.connector', fromlist=['Fenced']).Fenced('a newer session holds it', code='commit_stale'))",
+                c"lambda config, host: (_ for _ in ()).throw(__import__('rdlt.connector', fromlist=['Fenced']).Fenced('a newer session holds it', code='commit_stale'))",
                 None,
                 None,
             )
@@ -411,7 +411,7 @@ fn what_the_destination_raises_is_the_connector_s_error_of_its_kind_and_code() {
 fn a_factory_refuses_what_describes_no_destination() {
     embedded::with(|py| {
         let connect = || {
-            py.eval(c"lambda config: None", None, None)
+            py.eval(c"lambda config, host: None", None, None)
                 .unwrap()
                 .unbind()
         };

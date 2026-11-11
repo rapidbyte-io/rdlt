@@ -14,7 +14,7 @@ from typing import cast
 import pytest
 
 import rdlt
-from rdlt.connector import Config, Cursor, source, stream
+from rdlt.connector import Config, ConnectContext, Cursor, source, stream
 from rdlt.connector import _source as declared
 from rdlt.connector._declared import package_version
 from tests.connectors.tickets import Tickets
@@ -430,3 +430,28 @@ def test_a_connector_s_version_is_read_once_for_its_package(
     declared.placed(Unversioned)
     declared.placed(Unversioned)
     assert len(looked) == 1
+
+
+def test_a_class_whose_init_names_context_is_told_its_connect_context(
+    tmp_path: Path, connectors: Path
+) -> None:
+    told: list[ConnectContext] = []
+
+    @source(id="io.example.told", config=_PagesConfig, version="1.0.0")
+    class Told:
+        def __init__(self, config: _PagesConfig, context: ConnectContext) -> None:
+            told.append(context)
+            self.pages = config.pages
+
+        def check(self) -> None:
+            """Reads need nothing checked first."""
+
+        @stream(primary_key=["id"])
+        def rows(self) -> Iterator[object]:
+            yield {"id": self.pages}
+
+    host = rdlt.Host(connectors=connectors, writable=[tmp_path], trust_binaries=True)
+    placed = rdlt.local(Told, config={"pages": 1})
+    rdlt.pipeline("told", source=placed, destination=into_sqlite(tmp_path)).build(host).run()
+    assert told
+    assert set(told) == {ConnectContext(host=None)}, "in process, no host is named"

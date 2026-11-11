@@ -18,10 +18,17 @@ from rdlt.connector._capabilities import (
 from rdlt.connector._config import Config
 from rdlt.connector._context import Partition, StreamContext, checkpoint
 from rdlt.connector._cursor import Cursor
+from rdlt.connector._declared import ConnectContext
 from rdlt.connector._destination import OpenContext, Opened, WriteStats, destination
 from rdlt.connector._destination import declares as declares_destination
 from rdlt.connector._destination import placed as placed_destination
 from rdlt.connector._failures import (
+    COLUMN_MISSING,
+    COMMIT_STALE,
+    CURSOR_UNISSUED,
+    RETENTION_LOST,
+    SCHEMA_CONFLICT,
+    TABLE_OWNED,
     ConnectorError,
     Fenced,
     InvalidConfig,
@@ -79,9 +86,16 @@ def _failed(said: str) -> int:
 
 
 __all__ = [
+    "COLUMN_MISSING",
+    "COMMIT_STALE",
+    "CURSOR_UNISSUED",
+    "RETENTION_LOST",
+    "SCHEMA_CONFLICT",
+    "TABLE_OWNED",
     "Answer",
     "Capabilities",
     "Config",
+    "ConnectContext",
     "ConnectorError",
     "Cursor",
     "DeleteModes",

@@ -13,6 +13,19 @@ from typing import ClassVar
 
 from rdlt import _native
 
+COMMIT_STALE = _native.COMMIT_STALE
+"""The code of `Fenced` where a commit expects another commit landed than the one that did."""
+TABLE_OWNED = _native.TABLE_OWNED
+"""The code of `InvalidConfig` where a table another pipeline created is changed or written."""
+SCHEMA_CONFLICT = _native.SCHEMA_CONFLICT
+"""The code of `InvalidData` where a schema change conflicts with what its table holds."""
+COLUMN_MISSING = _native.COLUMN_MISSING
+"""The code of `InvalidData` where a commit's table lacks a column its rows were written with."""
+RETENTION_LOST = _native.RETENTION_LOST
+"""The code of the failure where a source's retention dropped where a read would resume."""
+CURSOR_UNISSUED = _native.CURSOR_UNISSUED
+"""The code of the failure where a read is asked to start from a cursor it cannot have issued."""
+
 _CODE = re.compile(r"[a-z0-9_.-]+")
 """What a code may hold, as the protocol admits it: lower-case letters, digits, `_`, `.`, `-`."""
 

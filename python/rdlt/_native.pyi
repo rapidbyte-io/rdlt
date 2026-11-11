@@ -6,7 +6,13 @@ from typing import Protocol, final
 import pyarrow as pa
 
 __all__ = [
+    "COLUMN_MISSING",
+    "COMMIT_STALE",
+    "CURSOR_UNISSUED",
     "HOST_CODES",
+    "RETENTION_LOST",
+    "SCHEMA_CONFLICT",
+    "TABLE_OWNED",
     "Checkpoint",
     "DestinationFactory",
     "Events",
@@ -27,6 +33,12 @@ __all__ = [
 
 __version__: str
 HOST_CODES: tuple[str, ...]
+COMMIT_STALE: str
+TABLE_OWNED: str
+SCHEMA_CONFLICT: str
+COLUMN_MISSING: str
+RETENTION_LOST: str
+CURSOR_UNISSUED: str
 
 class _StreamName(Protocol):
     @property
@@ -120,7 +132,11 @@ class _Connected(Protocol):
 @final
 class SourceFactory:
     def __new__(
-        cls, id: str, version: str, config_schema: str, connect: Callable[[str], _Connected]
+        cls,
+        id: str,
+        version: str,
+        config_schema: str,
+        connect: Callable[[str, str | None], _Connected],
     ) -> SourceFactory: ...
     @property
     def id(self) -> str: ...
@@ -150,7 +166,7 @@ class DestinationFactory:
         config_schema: str,
         capabilities: str,
         reads_back: bool,
-        connect: Callable[[str], _ConnectedDestination],
+        connect: Callable[[str, str | None], _ConnectedDestination],
     ) -> DestinationFactory: ...
     @property
     def id(self) -> str: ...

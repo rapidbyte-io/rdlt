@@ -230,10 +230,10 @@ def transformed(function: Callable[[pa.RecordBatch], object], batch: object) -> 
 
 
 def connected(
-    connect: Callable[[str], _Source], config: str
+    connect: Callable[[str, str | None], _Source], config: str, host: str | None
 ) -> tuple[_Source, list[tuple[str, _Stream]]]:
-    """The source `connect` makes, with each of its streams and what it says of itself."""
-    source = connect(config)
+    """The source `connect` makes for `host`, with each stream and what it says of itself."""
+    source = connect(config, host)
     return source, [(stream.spec, stream) for stream in source.streams]
 
 

@@ -6,7 +6,7 @@ import enum
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from rdlt.connector._failures import Fenced
+from rdlt.connector._failures import COMMIT_STALE, Fenced
 from rdlt.model import Json
 
 
@@ -56,7 +56,7 @@ class Fence:
         if decided is Answer.STALE:
             landed = None if self.landed is None else self.landed["key"]
             message = f"{_shown(key)} expects {_shown(after)} landed, and {_shown(landed)} did"
-            raise Fenced(message, code="commit_stale")
+            raise Fenced(message, code=COMMIT_STALE)
         return self.landed if decided is Answer.LANDED else None
 
 
