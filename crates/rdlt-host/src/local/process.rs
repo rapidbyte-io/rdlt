@@ -125,6 +125,9 @@ pub(crate) struct Process {
     tail: Arc<Tail>,
     /// What the connector was sent that nothing it says may show.
     redactions: Redactions,
+    /// Its placement's lease, kept while this is: its placement counts as there until the
+    /// process is told to stop, though the launch that spawned it is gone, as a wire's is.
+    _lease: Arc<Lease>,
 }
 
 /// What stops a connector's process.
@@ -223,6 +226,7 @@ impl Process {
             stderr_closed,
             tail,
             redactions,
+            _lease: Arc::clone(&launch.lease),
         })
     }
 
