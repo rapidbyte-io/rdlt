@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_connector::{
     BoxFuture, ConnectContext, ConnectorSpec, Destination, DestinationFactory, Source,
-    SourceFactory, destination_factory,
+    SourceFactory,
 };
 use rdlt_host::limits::TAIL_BYTES;
 use rdlt_host::{Ended, Played, Playing};
@@ -20,7 +20,7 @@ use tokio::sync::{Notify, mpsc};
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::destination::SimDestination;
+use super::Installed;
 use crate::network::Serving;
 use crate::rng::SplitMix64;
 
@@ -35,6 +35,8 @@ pub(super) struct Script {
     pids: AtomicU32,
     /// The source each process serves.
     serving: Serving,
+    /// How the connector is installed, which says how each process describes its connectors.
+    installed: Installed,
     /// The processes played, the latest last; those that ended are let go.
     playing: Mutex<Vec<Weak<Control>>>,
 }
@@ -97,14 +99,15 @@ impl Draws {
 
 impl Script {
     /// Plays processes drawn from `seed`, their ids counted from `first`, each serving the source
-    /// `serving` names and the simulated destination.
-    pub(super) fn new(seed: u64, first: u32, serving: Serving) -> Self {
+    /// `serving` names and the simulated destination as a connector `installed` so serves them.
+    pub(super) fn new(seed: u64, first: u32, serving: Serving, installed: Installed) -> Self {
         Self {
             rng: Mutex::new(SplitMix64::new(seed)),
             #[cfg(test)]
             first,
             pids: AtomicU32::new(first),
             serving,
+            installed,
             playing: Mutex::new(Vec::new()),
         }
     }
@@ -148,12 +151,13 @@ impl Script {
         let (stderr, stderr_written) = tokio::io::duplex(PIPE);
         let exit = Arc::new(Ended::default());
         let (said, saying) = mpsc::unbounded_channel();
+        let (source, destination) = self.installed.factories(self.serving);
         let source = Saying {
-            inner: self.serving.factory(),
+            inner: source,
             said: said.clone(),
         };
         let destination = Saying {
-            inner: destination_factory::<SimDestination>(),
+            inner: destination,
             said,
         };
         let served = Served::new()

@@ -1,6 +1,7 @@
+use std::path::Path;
 use std::time::Duration;
 
-use super::Spawning;
+use super::{Installed, Spawning};
 use crate::canary::Canary;
 use crate::network::{Serving, options};
 use crate::rng::SplitMix64;
@@ -116,4 +117,82 @@ fn a_played_process_ends_with_the_connector_placed_in_it() {
         alive, 0,
         "a played process outlived the connector placed in it"
     );
+}
+
+#[test]
+fn a_played_connector_serves_however_it_is_installed() {
+    let installs = [
+        (4, Installed::Binary, "rdlt-connector-sim"),
+        (
+            5,
+            Installed::Directory,
+            "rdlt-connector-sim/bin/rdlt-connector",
+        ),
+    ];
+    for (seed, installed, launched) in installs {
+        let (launchers, source, destination) = run(Seed::new(seed), |_env| async move {
+            let mut rng = SplitMix64::new(13);
+            let name = format!("played-installed-{seed}");
+            let registered = World::register(&name, &mut rng);
+            let canary = Canary::of(&name);
+            let options = options(&mut rng, rdlt_wire::Limits::default());
+            let spawning =
+                Spawning::installed(Seed::new(seed), &options, &canary, Serving::Rows, installed);
+            let launchers = spawning
+                .sides
+                .each_ref()
+                .map(|side| side.local.resolve(&side.reference));
+            let source = spawning.source(&canary.config()).await;
+            let destination = spawning.destination(&canary.config()).await;
+            let bound = Duration::from_secs(60);
+            let checked = (
+                tokio::time::timeout(bound, source.check()).await,
+                tokio::time::timeout(bound, destination.check()).await,
+            );
+            drop((source, destination));
+            drop(registered);
+            (launchers, checked.0, checked.1)
+        });
+        for found in launchers {
+            let found = found.expect("the host finds what it launches");
+            assert!(
+                found.ends_with(Path::new(launched)),
+                "{installed:?}: {found:?}"
+            );
+        }
+        source
+            .expect("bounded")
+            .unwrap_or_else(|error| panic!("{installed:?}: the source serves its check: {error}"));
+        destination.expect("bounded").unwrap_or_else(|error| {
+            panic!("{installed:?}: the destination serves its check: {error}")
+        });
+    }
+}
+
+#[test]
+fn a_directory_connector_is_found_by_its_id_in_the_connector_directory() {
+    let launchers = run(Seed::new(6), |_env| async move {
+        let mut rng = SplitMix64::new(15);
+        let canary = Canary::of("played-found");
+        let options = options(&mut rng, rdlt_wire::Limits::default());
+        let spawning = Spawning::installed(
+            Seed::new(6),
+            &options,
+            &canary,
+            Serving::Changes,
+            Installed::Directory,
+        );
+        spawning.sides.each_ref().map(|side| {
+            assert_eq!(side.reference.path, None, "named by its id alone");
+            side.local.resolve(&side.reference)
+        })
+    });
+    let launched = [
+        "rdlt-connector-changes/bin/rdlt-connector",
+        "rdlt-connector-sim/bin/rdlt-connector",
+    ];
+    for (found, launched) in launchers.into_iter().zip(launched) {
+        let found = found.expect("the host finds the tree by the id's last segment");
+        assert!(found.ends_with(Path::new(launched)), "{found:?}");
+    }
 }
