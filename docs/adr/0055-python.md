@@ -9,8 +9,8 @@ the engine (ADR 0053). Python users want the same pipelines, with their own func
 and transforms, and connector authors want to write connectors in Python without a second
 implementation of the protocol ADRs 0038 to 0050 harden.
 
-The `rdlt` Python package runs its users' code inside the engine's process: resources and
-sources read on threads of their own, a secret store answers a build, and transforms take the
+The `rdlt` Python package runs its users' code inside the engine's process: stream functions
+and sources read on threads of their own, a secret store answers a build, and transforms take the
 engine's batches. CPython ends a thread that holds or wants the interpreter when the interpreter
 finishes exiting. On 3.11, 3.12 and 3.13.0 to 3.13.7 it does so with `pthread_exit`, whose forced
 unwind through Rust frames, `catch_unwind` among them, aborts the process; on later versions the
@@ -29,8 +29,8 @@ script that started a run and returned.
   3.14 wheel beside it, since free-threaded CPython loads no abi3 wheel, for Linux
   (manylinux_2_28, x86-64 and aarch64) and macOS (arm64 and x86-64). ADR 0048 records how the
   release builds and publishes them.
-- **Python code in process is the embedder's.** A resource, a transform, a secret store and a
-  connector class placed in process run in the embedding process, trusted as its own code is
+- **Python code in process is the embedder's.** A stream function, a transform, a secret store
+  and a connector class placed in process run in the embedding process, trusted as its own code is
   (ADR 0037); a document names a transform or a connector class only once its host registered
   it.
 - **The GIL is held for Python's calls alone.** A source reads each partition on a thread of its
@@ -44,10 +44,11 @@ script that started a run and returned.
   was cancelled. So a pipeline with no Python in it keeps committing while Python holds the GIL.
 - **Exceptions cross whole.** A Python exception becomes the connector's or the transform's
   error: its type and message, shown and bounded as connector text, with its traceback as its
-  cause. A connector says what kind of failure it met by raising `rdlt.connector`'s failure
-  classes (`Transient`, `RateLimited` with its retry hint, `InvalidConfig`, `Unauthorized`,
-  `InvalidData`, `Unsupported`), whose message is said as written, with no traceback;
-  `TimeoutError` and `ConnectionError` are transient, and any other exception is internal.
+  cause. A connector says what kind of failure it met by raising `rdlt.connector.ConnectorError`
+  or one of its kinds (`Transient`, `RateLimited` with its `retry_after`, `InvalidConfig`,
+  `Unauthorized`, `InvalidData`, `Unsupported`), whose message is said as written, with no
+  traceback; `TimeoutError` and `ConnectionError` are transient, and any other exception is
+  internal.
 - **The SDK is the Rust SDK.** A Python connector class, which `@source` or `@destination` makes,
   is wrapped as an `rdlt-connector` source or destination described at run time, so barriers,
   checkpoints, frame sizing, limits, credit, heartbeats and deadlines, and a destination's
@@ -55,6 +56,23 @@ script that started a run and returned.
   included, reach the class one at a time, as the Rust SDK orders them, so an author's destination
   needs no lock of its own. Its configuration is a pydantic model, whose refusals name the field,
   the fault and the kind of value, never the value.
+- **One way to write a source, in the Rust SDK's words.** `rdlt.connector` names what the Rust
+  SDK names, in Python's case: `ConnectorError` and its kinds, `RateLimited`'s `retry_after`, a
+  `ReadStream` that `@stream` makes, `Cursor`, `checkpoint`, and `serve`'s `args`; where Python
+  differs, the language makes it, as decorators for attributes, exceptions for `Result` and
+  generators for an emitter. `@stream` makes a function a stream as it makes a method one, under the
+  same rules, so a function moves into a `@source` class taking `self`, as its `partitions=`
+  callable then does too. A pipeline reads its stream functions in process, as the streams of one
+  source, `io.rapidbyte.functions`, which has no configuration, and is not served, installed or
+  certified: a stream that needs those is a class's.
+- **The engine ends a Python stream's read** as it ends any source's, since only the engine knows
+  the read mode (ADR 0004, ADR 0024). A stream that declares no partitions reads one that never
+  ends: a full read lands everything it yields, and an incremental read lands what it yields up to
+  its last checkpoint, the next run reading the rest again from there, so it ends on
+  `yield checkpoint(cursor)`; one that yields rows and no checkpoint after any fails
+  `checkpoint_missing`, since none of them could land. A partition a stream declares ends: a read
+  that ends on rows finishes it, and one that ends on a checkpoint leaves it there. A stream without
+  a cursor is read whole every run.
 - **Served mode is the Rust `serve`**, inside the extension, with a connector binary's flags and
   the GIL released while it serves. A served connector's code runs on Python's daemon threads,
   as an in-process one's does. SIGINT is ignored before serving: the server takes the signal
@@ -95,9 +113,9 @@ script that started a run and returned.
   them means encoding every row, rendering every failure, or releasing every connection, in Python;
   a process exiting commits nothing further, so no committed data is at risk.
 - **What the native side holds of Python, it reaches weakly.** What the native side holds is opaque
-  to Python's collector, so a strong reference from it to a resource, a transform, a secret store or
-  a connector's instance that holds the pipeline it serves could never be collected, and the
-  pipeline's connector processes would live on with it. The native side holds a function that
+  to Python's collector, so a strong reference from it to a stream function, a transform, a secret
+  store or a connector's instance that holds the pipeline it serves could never be collected, and
+  the pipeline's connector processes would live on with it. The native side holds a function that
   reaches the object through a weak reference, and what may still need the object holds it in the
   open: the host and the builder, the pipeline, its runs and their events, and a detached run until
   it ends. A connector's instances are kept by the placement of its class that the host or the
@@ -131,6 +149,8 @@ script that started a run and returned.
   thread that died never reads as a finished partition.
 
 Rejected:
+- **A kind of source of its own for functions**, with its own words and rules: a function moved
+  into a connector class would read differently, and would be rewritten to become a connector.
 - **A Python implementation of the protocol.** It would be a second implementation of what ADRs
   0038 to 0050 harden.
 - **Two packages, the certifier apart.** One wheel is what a user installs, and served factories
@@ -162,7 +182,7 @@ when asked to, as the generator does, so within one pipeline a transform that ru
 partition's flush, in Python or not, holds back the pipeline's commits until it returns or the
 barrier's wait ends; the GIL is not what holds them.
 
-A resource that never checkpoints is read as one segment, so its run holds more of it at once.
+A stream that never checkpoints is read as one segment, so its run holds more of it at once.
 On Linux, glibc gives each thread that allocates, every read's and every host's compute threads,
 an arena of its own, and an arena keeps what it freed: across such runs, each on a host of its
 own, resident memory grows while what is in use stays flat. Over six runs of 10,000 batches,
