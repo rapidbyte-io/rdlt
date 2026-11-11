@@ -72,8 +72,8 @@ class _Stream(Protocol):
         """The stream's description, as JSON."""
         ...
 
-    def partitions(self) -> Iterable[str]:
-        """The partitions to read."""
+    def partitions(self) -> Iterable[tuple[str, bool]]:
+        """Each partition to read, and whether it never ends."""
         ...
 
     def read(self, partition: str | None, cursor: str | None, context: object) -> object:
@@ -243,6 +243,6 @@ def checked(source: _Source) -> None:
     source.check()
 
 
-def partitions(stream: _Stream) -> list[str]:
-    """The partitions of `stream`."""
+def partitions(stream: _Stream) -> list[tuple[str, bool]]:
+    """The partitions of `stream`, each with whether it never ends."""
     return list(stream.partitions())

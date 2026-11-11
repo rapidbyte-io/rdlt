@@ -14,7 +14,7 @@ from rdlt._weak import weakly_reached
 from rdlt.connector._config import Config, validated
 from rdlt.connector._cursor import Cursor
 from rdlt.connector._declared import Placement, declare, declared_as, package_version
-from rdlt.connector._streams import Stream
+from rdlt.connector._streams import Partition, Stream
 
 if TYPE_CHECKING:
     from rdlt._pipeline import WriteMode
@@ -24,7 +24,10 @@ T = TypeVar("T")
 FUNCTIONS = "io.rapidbyte.functions"
 """The connector id of the in-process source a pipeline reads its stream functions as."""
 
-_PartitionsOf = Callable[[Any], Sequence[str]] | Callable[[], Sequence[str]] | str
+_Answered = Sequence[str | Partition]
+"""A stream's partitions, each an id or a `Partition`."""
+
+_PartitionsOf = Callable[[Any], _Answered] | Callable[[], _Answered] | str
 """A partitioned stream's partitions: a function called as its stream is, or a method's name."""
 
 
@@ -66,20 +69,25 @@ def stream(
     """Makes a function a stream a pipeline reads as its source, or a method a stream of its class.
 
     It takes the cursor where one is declared, then `ctx` where it names it, and yields rows,
-    Arrow data and `checkpoint(cursor)`. `partitions` answers the partitions, called as the
-    stream is, with the instance where it is a method, or names a method that does; `ctx.partition`
-    then says which one is read. A method stays a method: `self.tickets(since, ctx)` calls it.
+    Arrow data and `checkpoint(cursor)`. `partitions` answers the partitions, each an id or a
+    `Partition`, called as the stream is, with the instance where it is a method, or names a
+    method that does; `ctx.partition` then says which one is read. A method stays a method:
+    `self.tickets(since, ctx)` calls it.
     `write` is how its rows land where `rdlt.pipeline` places its source in process, unless the
     pipeline's `streams=` says otherwise. It makes a `ReadStream`, typed `Any` so it is called and
     overridden as the function or method it was.
 
-    A stream without `partitions` is read as a Rust source's is: read incrementally, it commits
-    only what it yields before its last checkpoint, and the next run reads it again from there,
-    so it ends on a `checkpoint` to commit its last rows; one that yields rows and never
-    checkpoints fails the read, since nothing it read could land. Read `full`, everything it
-    yields commits. A partition `partitions` names ends: a read that yields rows after its last
-    checkpoint commits them and finishes the partition, which is not read again, and a read that
-    ends on a `checkpoint` leaves the partition there, for the next run to read again.
+    A stream without `partitions` reads `Partition.single()`, which never ends, as a Rust source's
+    does, and so does a `Partition(id, unbounded=True)` that `partitions` answers. Read `full`,
+    everything such a read yields commits. Read incrementally, it commits only what it yields
+    before its last checkpoint, and the next run reads it again from there, so it ends on a
+    `checkpoint` to commit its last rows; one that yields rows and no checkpoint after any fails
+    the read, coded `checkpoint_missing`, since nothing it read could land. Any other partition
+    `partitions` answers ends: a read that yields rows after its last checkpoint commits them and
+    finishes the partition, which a later incremental run does not read again, and an incremental
+    read that ends on a `checkpoint` leaves the partition there, for the next to read on from.
+    Each full run reads every partition whole, so a stream without a cursor, read only in full, is
+    read whole every run.
     """
 
     def made(function: Callable[..., Any]) -> ReadStream:
@@ -197,7 +205,7 @@ class _Connected:
             function = self._declared().streams[index].function
             return function(self._instance(), *arguments, **keywords)
 
-        def partitions() -> Sequence[str]:
+        def partitions() -> _Answered:
             of = self._declared().streams[index].partitions
             instance = self._instance()
             return getattr(instance, of)() if isinstance(of, str) else cast("Any", of)(instance)
@@ -262,8 +270,8 @@ def _function_stream(made: ReadStream) -> Stream:
     def read(*arguments: object, **keywords: object) -> Iterable[object] | AsyncIterable[object]:
         return reached().function(*arguments, **keywords)
 
-    def partitions() -> Sequence[str]:
-        return cast("Callable[[], Sequence[str]]", reached().partitions)()
+    def partitions() -> _Answered:
+        return cast("Callable[[], _Answered]", reached().partitions)()
 
     return Stream(
         made.name,

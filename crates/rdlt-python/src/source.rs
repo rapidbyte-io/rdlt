@@ -154,17 +154,21 @@ impl ReadStream<PythonSource> for PythonStream {
             return Ok(vec![Partition::single()]);
         }
         let stream = Arc::clone(&self.stream);
-        let keys: Vec<String> = called(
+        let keys: Vec<(String, bool)> = called(
             "partitions",
             move |py| (stream.clone_ref(py),).into_pyobject(py),
             |answered| answered.extract(),
         )
         .await?;
         keys.iter()
-            .map(|key| {
-                PartitionId::parse(key)
-                    .map(Partition::new)
-                    .config(format!("partition {key:?}"))
+            .map(|(key, unbounded)| {
+                let id = PartitionId::parse(key).config(format!("partition {key:?}"))?;
+                let partition = Partition::new(id);
+                Ok(if *unbounded {
+                    partition.unbounded()
+                } else {
+                    partition
+                })
             })
             .collect()
     }

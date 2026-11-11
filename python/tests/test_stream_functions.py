@@ -29,6 +29,7 @@ from rdlt import _reading
 from rdlt.connector import (
     Config,
     Cursor,
+    Partition,
     ReadStream,
     StreamContext,
     checkpoint,
@@ -181,6 +182,34 @@ def test_a_read_that_ends_on_rows_is_read_again_from_its_last_checkpoint_in_eith
     placed = made(available, started, ends_on_rows=True)
     assert two_runs(tmp_path, connectors, placed, available) == [(n,) for n in range(9)]
     assert started == [(-1, False), (5, True)]
+
+
+def test_a_partition_that_never_ends_is_read_again_from_its_last_checkpoint(
+    tmp_path: Path, connectors: Path
+) -> None:
+    available: list[int] = [7]
+    started: list[tuple[int, str | None]] = []
+
+    @stream(primary_key="id", cursor=_Since, partitions=lambda: [Partition.single()])
+    def users(since: _Since, ctx: StreamContext) -> Iterator[object]:
+        started.append((since.after, ctx.partition))
+        for n in range(since.after + 1, available[0]):
+            yield {"id": n}
+            if n % 3 == 2:
+                yield checkpoint(_Since(after=n))
+
+    assert two_runs(tmp_path, connectors, users, available) == [(n,) for n in range(9)]
+    assert started == [(-1, "whole"), (5, "whole")]
+
+
+def test_partitions_answer_ids_and_partitions_alike(tmp_path: Path, connectors: Path) -> None:
+    @stream(primary_key="id", partitions=lambda: ["eu", Partition("us")])
+    def users(ctx: StreamContext) -> Iterator[object]:
+        yield {"id": ctx.partition}
+
+    built = rdlt.pipeline("users", source=users, destination=into_sqlite(tmp_path))
+    built.build(host(tmp_path, connectors)).run()
+    assert rows_of(tmp_path, "users") == [("eu",), ("us",)]
 
 
 def test_yielded_dicts_land_once(tmp_path: Path, connectors: Path) -> None:

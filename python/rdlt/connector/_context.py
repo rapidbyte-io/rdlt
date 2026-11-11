@@ -35,8 +35,8 @@ class StreamContext:
 def checkpoint(cursor: Cursor) -> _native.Checkpoint:
     """A checkpoint to yield: what was yielded before it is sealed, and a restart resumes there.
 
-    Read `full`, everything a read yields commits. Read incrementally, a stream without
-    `partitions` commits only what it yields before its last checkpoint, and the next run reads the
-    rest again from there, so its read ends on a checkpoint.
+    Read `full`, everything a read yields commits. Read incrementally, a partition that never ends,
+    as a stream without `partitions` reads, commits only what is yielded before its last checkpoint,
+    and the next run reads the rest again from there, so its read ends on a checkpoint.
     """
     return _native.Checkpoint(cursor.model_dump_json())
