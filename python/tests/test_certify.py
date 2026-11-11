@@ -15,6 +15,7 @@ import pytest
 import rdlt
 from rdlt.connector import Config, source, stream
 from rdlt.testing import certify_source, certify_transform
+from tests.clauses import outcomes
 from tests.connectors.tickets import Tickets
 from tests.launchers import tickets_launcher
 
@@ -116,6 +117,28 @@ def test_an_unobserved_clause_fails_saying_it_went_unobserved(pytester: pytest.P
     assert result.ret == pytest.ExitCode.TESTS_FAILED
 
 
+SOURCE_UNMET = ["S-ACK"]
+"""The clauses a Python source cannot meet yet: it cannot say where it stands outside the engine."""
+
+SOURCE_PASSED = [
+    "P-HANDSHAKE",
+    "P-ORDER",
+    "P-ROLE",
+    "P-LIMITS",
+    "P-HEARTBEAT",
+    "P-MALFORMED",
+    "P-CREDIT",
+    "S-CHECK",
+    "S-DISCOVER",
+    "S-PLAN",
+    "S-RESUME",
+    "S-PARTITION",
+    "S-STOP",
+    "S-BARRIER",
+    "K-SOURCE",
+]
+
+
 def test_a_launcher_s_kill_clause_kills_the_installed_connector(tmp_path: Path) -> None:
     certification = certify_source(
         Tickets,
@@ -126,6 +149,7 @@ def test_a_launcher_s_kill_clause_kills_the_installed_connector(tmp_path: Path) 
     assert killed.outcome == "passed", killed
     assert killed.note is not None
     assert killed.note.startswith("killed: "), killed
+    assert outcomes(certification) == {"passed": SOURCE_PASSED, "inapplicable": SOURCE_UNMET}
 
 
 def test_a_certification_keeps_the_connector_it_certifies() -> None:
