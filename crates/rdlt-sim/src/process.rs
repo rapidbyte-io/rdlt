@@ -3,13 +3,13 @@
 //! serves the simulated connector over an in-memory socket, says its configuration's canary on its
 //! output, and stalls, ends by itself or is killed as the seed draws.
 
+mod installed;
 mod script;
 #[cfg(test)]
 mod tests;
 
 use std::convert::Infallible;
 use std::future::Future;
-use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +21,7 @@ use crate::destination::SimDestination;
 use crate::network::{Serving, placed};
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
+use installed::Installed;
 use script::Script;
 
 /// How long a host takes to act on what was done to a process: a kill, or a stall's end.
@@ -32,8 +33,9 @@ const PLAYED: u64 = 0x706c_6179_6564;
 /// The source's and the destination's placement, each through a `Local` of its own, so a kill of
 /// one leaves the other.
 pub(crate) struct Spawning {
-    /// Holds the binary the host opens, checks and hashes, which nothing runs.
-    _binary: tempfile::TempDir,
+    /// The connector directory, holding what the host opens, checks and hashes, which nothing
+    /// runs.
+    _connectors: tempfile::TempDir,
     /// The source's, then the destination's.
     sides: [Side; 2],
     options: Options,
@@ -52,20 +54,29 @@ struct Side {
 
 impl Spawning {
     /// Places the source `serving` names and the destination in played processes, their
-    /// connections run with `options`, their secrets `canary`'s, each process drawn from `seed`.
+    /// connections run with `options`, their secrets `canary`'s, each process and how the
+    /// connector is installed drawn from `seed`.
     pub(crate) fn new(seed: Seed, options: &Options, canary: &Canary, serving: Serving) -> Self {
-        let binary = tempfile::tempdir().expect("a directory for the binary");
-        let path = binary.path().join("rdlt-connector-sim");
-        std::fs::write(&path, b"rdlt-sim played connector\n").expect("the binary is written");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
-            .expect("the binary is the user's alone");
+        Self::installed(seed, options, canary, serving, Installed::drawn(seed))
+    }
+
+    /// Places them as [`new`](Self::new) does, the connector installed as `installed` says.
+    fn installed(
+        seed: Seed,
+        options: &Options,
+        canary: &Canary,
+        serving: Serving,
+        installed: Installed,
+    ) -> Self {
+        let connectors = tempfile::tempdir().expect("a connector directory");
         let source = serving.factory().spec().id.clone();
         let destination = destination_factory::<SimDestination>().spec().id.clone();
         let mut rng = SplitMix64::new(seed.value() ^ PLAYED);
         let sides = [(1_000_000_u32, source), (2_000_000, destination)].map(|(first, id)| {
-            let script = Arc::new(Script::new(rng.next_u64(), first, serving));
+            let script = Arc::new(Script::new(rng.next_u64(), first, serving, installed));
             let (kills, playing) = (Kills::new(), Arc::clone(&script));
             let local = Local::trusting_binaries()
+                .connectors(connectors.path())
                 .options(*options)
                 .secrets(canary.vault())
                 .kills(&kills)
@@ -74,11 +85,11 @@ impl Spawning {
                 local,
                 kills,
                 script,
-                reference: ConnectorRef::new(id).path(path.clone()),
+                reference: installed.install(connectors.path(), id),
             }
         });
         Self {
-            _binary: binary,
+            _connectors: connectors,
             sides,
             options: *options,
             canary: canary.clone(),
