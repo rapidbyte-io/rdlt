@@ -48,10 +48,27 @@ fn a_finished_partition_is_passed_over_unless_it_never_ends_and_the_read_is_not_
             Err(error) => {
                 assert!(refused, "{read:?} unbounded {unbounded}: refused {error:?}");
                 assert_eq!(error.code(), Some(codes::CURSOR_MISSING));
-                assert_eq!(error.kind(), ErrorKind::Source);
+                assert_eq!(error.kind(), ErrorKind::Config);
                 assert!(!error.is_retryable());
                 assert_eq!(error.stream(), Some(&stream));
             }
         }
     }
+}
+
+#[test]
+fn the_refusal_names_a_partition_only_where_the_source_declared_it() {
+    let stream = StreamName::new("s").expect("a valid name");
+    let done = PartitionState::Done;
+    let read = ReadMode::Incremental;
+    let names = |partition: Partition| {
+        let id = partition.id().to_string();
+        let error = resumed(&stream, partition, Some(&done), read).expect_err("refused");
+        error.to_string().contains(&id)
+    };
+    assert!(names(partition(true)), "a declared partition is named");
+    assert!(
+        !names(Partition::single()),
+        "the partition of a stream that plans none is not"
+    );
 }

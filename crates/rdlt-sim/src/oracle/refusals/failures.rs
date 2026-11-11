@@ -63,7 +63,7 @@ const REFUSALS: [(Code, ErrorKind); 5] = [
     (codes::SCHEMA_CHANGE_UNSUPPORTED, ErrorKind::Schema),
     (codes::MERGE_KEY_CHANGED, ErrorKind::Schema),
     (codes::CHECKPOINT_MISSING, ErrorKind::Source),
-    (codes::CURSOR_MISSING, ErrorKind::Source),
+    (codes::CURSOR_MISSING, ErrorKind::Config),
 ];
 
 /// A refusal a phase's runs met that the model does not predict.

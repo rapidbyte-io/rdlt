@@ -660,7 +660,7 @@ def test_an_incremental_read_after_a_full_one_resumes_only_where_it_ended_on_a_c
         assert rows_of(tmp_path, "users") == [(n,) for n in range(6)]
         return
     # No cursor follows the rows the full read ended on: read again, they would land twice.
-    with pytest.raises(rdlt.Error) as raised:
+    with pytest.raises(rdlt.ConfigError) as raised:
         incremental.build(every_host).run()
     assert raised.value.report().code == "cursor_missing"
     assert started_from == [-1]
