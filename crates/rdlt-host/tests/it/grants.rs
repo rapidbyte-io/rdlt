@@ -248,6 +248,31 @@ mod confined {
     }
 
     #[tokio::test]
+    async fn a_grant_a_running_wire_holds_is_refused_at_once() {
+        let Some(local) = sandboxed() else {
+            return;
+        };
+        let data = tempfile::tempdir().expect("a temporary directory");
+        let elsewhere = tempfile::tempdir().expect("a temporary directory");
+        let private = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+        std::fs::set_permissions(elsewhere.path(), private).expect("its mode is set");
+        let local = local.writable(data.path());
+        let writing = scripted_in(elsewhere.path()).write(dir(data.path(), "a"));
+        let wire = local
+            .wire(&writing)
+            .await
+            .expect("the wire's connector runs");
+        // Its placement is there while the wire is: refused now, not once the connect deadline,
+        // a minute, has passed.
+        let config = serde_json::json!({});
+        let placing = local.source(&writing, &config);
+        let placed = tokio::time::timeout(std::time::Duration::from_secs(10), placing).await;
+        let refused = placed.expect("refused at once").err().expect("refused");
+        assert_eq!(refused.code(), "grant_overlap", "{refused}");
+        drop(wire);
+    }
+
+    #[tokio::test]
     async fn grants_both_stated_to_be_shared_may_overlap() {
         let Some(local) = sandboxed() else {
             return;

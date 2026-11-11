@@ -110,6 +110,7 @@ impl Process {
             stderr_closed,
             tail,
             redactions,
+            _lease: Arc::clone(&launch.lease),
         };
         Ok((socket, process))
     }
