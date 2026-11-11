@@ -1,6 +1,6 @@
 use rdlt_sim::{
-    Features, Reach, Recorded, Seed, SimStream, SplitMix64, Weight, Workload, check_exactly_once,
-    for_each_seed, picked, seeds,
+    Features, Reach, Recorded, SWEPT, Seed, SimStream, SplitMix64, Weight, Workload,
+    check_exactly_once, for_each_seed, picked, seeds, unreached,
 };
 
 /// Seeds on which the simulation once found a defect, each held to the path it found it on.
@@ -71,6 +71,16 @@ fn every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs() {
     assert!(
         !below(0.2, pushes, seeds) && !below(0.1, cursors, seeds),
         "of {seeds} seeds, {pushes} made pushes wait and {cursors} cursors"
+    );
+    // A sweep as long as the pull request's shards and the nightly's checks every way a stream may
+    // be read and written.
+    let missed: Vec<String> = unreached(checked.iter().map(|run| run.reached))
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        seeds < SWEPT || missed.is_empty(),
+        "of {seeds} seeds, none checked a stream read and written as {missed:#?}"
     );
 }
 

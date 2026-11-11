@@ -66,7 +66,7 @@ pub use seed::{
 pub use source::{SimCursor, SimSource, SimSourceConfig, schema};
 pub use swarm::Features;
 pub use workload::{
-    Drift, Excluded, Excluding, Level, Masked, PHASES, Relaxed, Reshaping, Resolved, Row,
-    SimStream, Workload,
+    Combination, Drift, End, Ends, Excluded, Excluding, Level, Masked, PHASES, Relaxed, Reshaping,
+    Resolved, Row, SWEPT, SimStream, Workload, unreached,
 };
 pub use world::{Told, World};

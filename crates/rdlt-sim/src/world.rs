@@ -26,7 +26,7 @@ use crate::reached::{Reach, Reached};
 use crate::rng::SplitMix64;
 use crate::source::Plans;
 use crate::swarm::Features;
-use crate::workload::Workload;
+use crate::workload::{SimStream, Workload};
 use capabilities::capabilities;
 use hangs::Hangs;
 pub(crate) use named::{Named, Naming};
@@ -422,6 +422,18 @@ impl World {
     /// Records that a run reached `reach`.
     pub(crate) fn reach(&self, reach: Reach) {
         self.reached.lock().add(reach);
+    }
+
+    /// Records that the checks held how the workload's stream `stream` is read and written.
+    pub(crate) fn reach_combination(&self, stream: &str) {
+        let streams = &self.workload.streams;
+        let combination = streams
+            .iter()
+            .find(|found| found.name == stream)
+            .and_then(SimStream::combination);
+        if let Some(combination) = combination {
+            self.reached.lock().add_combination(combination);
+        }
     }
 
     /// Records that a run reached every path of `reached`.

@@ -1,5 +1,9 @@
 //! The paths a simulation's runs reached, so a seed kept for a defect it found can say where the
-//! defect was, and fail where the simulation has grown around it and it no longer gets there.
+//! defect was, and fail where the simulation has grown around it and it no longer gets there; and
+//! the ways its streams were read and written that its checks held, so a long sweep fails where
+//! one it must reach is drawn no more.
+
+use crate::workload::Combination;
 
 /// A path a seed's runs may reach, each where a kept seed's defect was.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,32 +83,52 @@ impl Reach {
     }
 }
 
-/// The paths a simulation's runs reached.
+/// The paths a simulation's runs reached, and the combinations its checks held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Reached(u32);
+pub struct Reached {
+    paths: u32,
+    combinations: u64,
+}
 
 impl Reached {
     /// Adds `reach`.
     pub(crate) fn add(&mut self, reach: Reach) {
-        self.0 |= reach.bit();
+        self.paths |= reach.bit();
     }
 
-    /// The paths either reached.
+    /// Adds `combination`.
+    pub(crate) fn add_combination(&mut self, combination: Combination) {
+        self.combinations |= combination.bit();
+    }
+
+    /// The paths and combinations either reached.
     pub(crate) fn with(self, other: Self) -> Self {
-        Self(self.0 | other.0)
+        Self {
+            paths: self.paths | other.paths,
+            combinations: self.combinations | other.combinations,
+        }
     }
 
     /// Whether the runs reached `reach`.
     pub fn has(self, reach: Reach) -> bool {
-        self.0 & reach.bit() != 0
+        self.paths & reach.bit() != 0
     }
 
-    /// The name of every path reached, for a timing line.
+    /// Whether the checks held `combination`.
+    pub fn has_combination(self, combination: Combination) -> bool {
+        self.combinations & combination.bit() != 0
+    }
+
+    /// The name of every path reached and every combination held, for a timing line.
     pub(crate) fn names(self) -> Vec<String> {
-        Reach::ALL
+        let paths = Reach::ALL
             .into_iter()
             .filter(|reach| self.has(*reach))
-            .map(|reach| format!("{reach:?}"))
-            .collect()
+            .map(|reach| format!("{reach:?}"));
+        let combinations = Combination::listed()
+            .into_iter()
+            .filter(|combination| self.has_combination(*combination))
+            .map(|combination| combination.to_string());
+        paths.chain(combinations).collect()
     }
 }
