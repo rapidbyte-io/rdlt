@@ -62,9 +62,9 @@ def stream(
     only what it yields before its last checkpoint, and the next run reads it again from there,
     so it ends on a `checkpoint` to commit its last rows; one that yields rows and never
     checkpoints fails the read, since nothing it read could land. Read `full`, everything it
-    yields commits. A read of a partition `partitions` names finishes it: rows yielded after its
-    last checkpoint commit with it, and the partition is not read again, so one that is to be
-    read again, from where it stopped, ends on a `checkpoint`.
+    yields commits. A partition `partitions` names ends: a read that yields rows after its last
+    checkpoint commits them and finishes the partition, which is not read again, and a read that
+    ends on a `checkpoint` leaves the partition there, for the next run to read again.
     """
 
     def made(function: Callable[..., Any]) -> _StreamMethod:
