@@ -90,7 +90,7 @@ futures-util = { version = "0.3.34", default-features = false, features = [
   "std",
 ] } # joining the simulation's hostile and broken hosts' calls, and a request stream of one frame
 command-fds = { version = "0.3.3", default-features = false } # a spawned connector's socket at file descriptor 3
-rustix = { version = "1.1.5", default-features = false, features = [
+rustix = { version = "1.1.6", default-features = false, features = [
   "std",
 ] } # a connector's exit seen before it is reaped and its process group signalled; files opened by name beneath an open directory, following no link, without `unsafe`
 libc = { version = "0.2.189", default-features = false } # close_range and fcntl in a spawned child, for rdlt-adopt alone
