@@ -125,7 +125,7 @@ fn sources_that_forget_are_drawn_apart_and_change_nothing_a_workload_draws_but_w
         let mut forgetting = crate::workload::Workload::generate(&mut rng.clone(), features);
         let plain = crate::workload::Workload::generate(&mut rng, remembering);
         for (index, stream) in forgetting.streams.iter_mut().enumerate() {
-            let incremental = stream.read == rdlt_connector::ReadMode::Incremental;
+            let incremental = stream.reads == [rdlt_connector::ReadMode::Incremental; 2];
             let forgets = features.forgetting && incremental && index % 2 == 0;
             assert_eq!(stream.replayable, !forgets, "seed {seed}: stream {index}");
             forgot += usize::from(forgets);

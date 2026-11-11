@@ -7,7 +7,7 @@ use rdlt_sim::{
 ///
 /// A seed fails if its defect comes back, unless its comment says otherwise: such a seed keeps
 /// only the path, and its defect may come back unseen.
-const FOUND: [(u64, Reach); 18] = [
+const FOUND: [(u64, Reach); 17] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     (743, Reach::LinkCut),
@@ -28,7 +28,6 @@ const FOUND: [(u64, Reach); 18] = [
     (249_911, Reach::ResetRefused),
     (728_591, Reach::ResetRefused),
     (820_601, Reach::ResetRefused),
-    (918_105, Reach::ResetRefused),
     // A merge table's column widened to JSON over values written as floats and as plain text,
     // which the destination then held as JSON, and the check read as values of JSON, not of
     // the types they were written as.
@@ -151,7 +150,7 @@ fn a_seed_whose_reports_fail_owes_their_cursors_and_passes() {
 }
 
 /// The seed of [`a_seed_whose_commits_are_sent_again_and_whose_late_tries_are_refused_passes`].
-const RETRIED: u64 = 165;
+const RETRIED: u64 = 558;
 
 /// A seed whose runs send again in place commits the destination answered transiently, and whose
 /// destination refuses as stale a try that lands after a later commit, so neither path drops out

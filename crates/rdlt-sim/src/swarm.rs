@@ -94,9 +94,9 @@ pub struct Features {
     /// Incremental and change streams, every other one, whose source forgets what it was told is
     /// committed: it no longer serves the rows before it, and refuses a read from before it.
     pub forgetting: bool,
-    /// Incremental streams whose rows arrive as simulated time passes, which runs follow for a
-    /// while before a run reads them to their end; every other one's partitions never end, and
-    /// the rest are read again as they grow.
+    /// Streams read incrementally in every phase whose rows arrive as simulated time passes,
+    /// which runs follow for a while before a run reads them to their end: those whose partitions
+    /// never end are followed, and the rest are read again as they grow.
     pub streaming: bool,
     /// Where runs follow the source, a source that retires partitions of the streams they follow,
     /// adds others and names retired ones again while they read, saying in each plan where each

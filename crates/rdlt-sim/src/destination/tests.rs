@@ -885,7 +885,7 @@ fn a_source_told_late_of_a_cursor_a_later_commit_removed_hears_what_was_committe
 fn incremental_world(name: &str) -> Registered {
     for seed in 0.. {
         let registered = World::register(name, &mut SplitMix64::new(seed));
-        if registered.world().workload.streams[0].read == ReadMode::Incremental {
+        if registered.world().workload.streams[0].reads == [ReadMode::Incremental; 2] {
             return registered;
         }
     }

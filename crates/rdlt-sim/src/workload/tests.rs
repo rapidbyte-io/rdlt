@@ -19,13 +19,13 @@ fn the_same_seed_generates_the_same_workload() {
 }
 
 #[test]
-fn incremental_streams_only_grow_and_keep_their_rows() {
+fn a_phase_read_incrementally_only_grows_and_keeps_the_rows_of_the_phase_before() {
     for seed in 0..200 {
         let workload = Workload::generate(&mut SplitMix64::new(seed), Features::ALL);
         for stream in workload
             .streams
             .iter()
-            .filter(|s| s.read == ReadMode::Incremental)
+            .filter(|s| s.reads[1] == ReadMode::Incremental)
         {
             for partition in 0..stream.partitions.len() {
                 // Drawn floats may be NaN, which equals nothing, so rows compare as text.
@@ -47,7 +47,7 @@ fn full_reads_see_new_values_in_each_phase() {
             workload
                 .streams
                 .iter()
-                .any(|stream| stream.read == ReadMode::Full && stream.partitions[0] == [5, 5])
+                .any(|stream| stream.reads[1] == ReadMode::Full && stream.partitions[0] == [5, 5])
         });
     let Some(workload) = workload else {
         return;
@@ -55,7 +55,7 @@ fn full_reads_see_new_values_in_each_phase() {
     let stream = workload
         .streams
         .iter()
-        .find(|stream| stream.read == ReadMode::Full && stream.partitions[0] == [5, 5])
+        .find(|stream| stream.reads[1] == ReadMode::Full && stream.partitions[0] == [5, 5])
         .expect("found above");
     let first = stream.rows(0, 0).to_vec();
     let second = stream.rows(0, 1).to_vec();
@@ -340,7 +340,7 @@ fn a_read_resumes_where_the_last_phases_ended_in_batches_of_the_streams_size() {
     let stream = streams()
         .into_iter()
         .find(|stream| {
-            stream.read == ReadMode::Incremental
+            stream.reads[1] == ReadMode::Incremental
                 && stream.batch_rows > 1
                 && stream.partitions[0][0] > 0
                 && stream.partitions[0][1] > stream.partitions[0][0]
@@ -635,7 +635,7 @@ fn a_streaming_read_serves_whole_checkpoint_groups_until_every_row_has_arrived()
         let group = usize::try_from(stream.batch_rows * every).unwrap();
         for phase in 0..PHASES {
             let rows = stream.rows(0, phase).len();
-            let start = if phase == 0 || stream.read != ReadMode::Incremental {
+            let start = if phase == 0 || stream.reads[phase] != ReadMode::Incremental {
                 0
             } else {
                 stream.rows(0, phase - 1).len()

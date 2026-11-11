@@ -103,7 +103,8 @@ they are built apart.
     at their head (`bounded`), and may forget what their group committed (`replayable: false`).
   - It is certified, `S-ACK` included, replayable or not.
 - **The simulation's `streaming` feature**, drawn apart from the seed's generator:
-  - The incremental streams follow, and every other one's partitions never end.
+  - The rows of the streams read incrementally in every phase arrive as runs follow them, and
+    those whose partitions never end are followed (ADR 0012).
   - Each phase begins with runs `until: For(d)`, disrupted and faulted as the seed says, the network
     included, while a production future joined with them makes rows arrive. The source serves what
     has arrived, and a following read waits on the world's notification, or a stop.

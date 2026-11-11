@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use rdlt_connector::ReadMode;
 use rdlt_engine::{CommitPolicy, EngineConfig, GrowthLimits, RetryPolicy};
 
 use crate::rng::SplitMix64;
@@ -90,12 +91,16 @@ pub(super) fn growth(seed: Seed) -> GrowthLimits {
     }
 }
 
-/// How many partitions of `workload`'s streams never end and are followed.
+/// How many partitions of `workload`'s streams never end and are followed: in a streaming world,
+/// those of streams some phase reads incrementally, whose rows arrive or not.
 pub(super) fn endless(workload: &Workload) -> usize {
+    if !workload.features.streaming {
+        return 0;
+    }
     workload
         .streams
         .iter()
-        .filter(|stream| stream.unbounded && stream.follows)
+        .filter(|stream| stream.unbounded && stream.reads.contains(&ReadMode::Incremental))
         .map(|stream| stream.partitions.len())
         .sum()
 }

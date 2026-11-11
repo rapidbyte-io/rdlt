@@ -19,7 +19,7 @@ impl Simulation {
         if !workload.features.shared || !world.changes.streams.is_empty() {
             return;
         }
-        let owner = plan(workload, &self.relaxed, 0);
+        let owner = plan(workload, &self.relaxed, 0, phase);
         let Some(stream) = owner.streams().first().cloned() else {
             return;
         };

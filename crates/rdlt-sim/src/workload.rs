@@ -42,6 +42,10 @@ const ENGINE_NAMES: [&str; 4] = [
     "_rdlt_staging__x",
 ];
 
+/// What the draw of how each stream is read in each phase, whether its partitions end, and whether
+/// an incremental stream's reads end on a checkpoint, mixes into the stream's own: "reads" in ASCII.
+const READS: u64 = 0x0072_6561_6473;
+
 /// Names excluded columns draw from: one a metadata column has, which no source column may ask
 /// for unless it is excluded.
 const EXCLUDED_NAMES: [&str; 3] = ["secret", "blob", "_rdlt_loaded_at"];
@@ -71,18 +75,21 @@ pub struct Workload {
 pub struct SimStream {
     /// The stream's name.
     pub name: String,
-    /// How the pipeline reads it.
-    pub read: ReadMode,
+    /// How the pipeline reads it in each phase.
+    pub reads: [ReadMode; PHASES],
     /// How the pipeline writes it.
     pub write: WriteMode,
     /// How it checkpoints.
     pub checkpointing: Checkpointing,
     /// Batches between checkpoints of a naturally checkpointing stream.
     pub checkpoint_every: u64,
-    /// Whether the stream checkpoints after its last batch.
+    /// Whether its reads checkpoint after their last batch, until an operator mends its source.
     ///
-    /// Incremental streams always do: a bounded partition that ends with rows after its last
-    /// checkpoint is done and never read again, and an unbounded one reads them again every run.
+    /// One that does not sends no checkpoint there, whatever is due, so its reads end on rows: a
+    /// bounded partition read so is done, and does not grow after an incremental read finished it;
+    /// and where it reads incrementally a partition that never ends, it sends no checkpoint at all,
+    /// so the read is refused. A bounded stream whose rows arrive as runs follow it always does,
+    /// since where its reads end is where its rows have arrived, which the runs' timing decides.
     pub final_checkpoint: bool,
     /// Rows per pushed batch.
     pub batch_rows: u64,
@@ -115,18 +122,16 @@ pub struct SimStream {
     /// Whether a JSON stream pushes floats JSON cannot hold, by name; otherwise its floats are
     /// finite, so a column of them keeps its inferred type.
     pub named_floats: bool,
-    /// Whether the source can read again what it acknowledged; one that cannot forgets it.
+    /// Whether the source can read again what it acknowledged; one that cannot forgets it, and is
+    /// read incrementally in every phase, as a full read of it is refused.
     ///
     /// Chosen by the stream's place, not drawn, so forgetting leaves a seed's workload as it was.
     pub replayable: bool,
-    /// Whether the stream's rows arrive as simulated time passes, so runs follow it for a while.
+    /// Whether the stream's rows arrive as simulated time passes, so runs follow it for a while:
+    /// in a streaming world, a stream read incrementally in every phase, as a full read ends at
+    /// the rows that have arrived and the model holds it to every row of its phase.
     pub follows: bool,
-    /// Whether its partitions never end: a followed stream's, as a log's, its others read again
-    /// as they grow; and a full stream's at every other place, whose rows after its last
-    /// checkpoint its read's end seals.
-    ///
-    /// Both chosen by the stream's read and place, not drawn, so streaming leaves a seed's
-    /// workload as it was.
+    /// Whether its partitions never end, as a log's or a table polled from a cursor do.
     pub unbounded: bool,
     /// The columns the plan excludes, none of which lands.
     pub excluded: Excluding,
@@ -229,13 +234,14 @@ impl Workload {
     }
 }
 
-/// How many rows each of a stream's partitions holds in each phase: an incremental stream's grow
-/// from one phase to the next, a full read's are drawn anew.
-fn partition_rows(rng: &mut SplitMix64, read: ReadMode) -> Vec<[u64; PHASES]> {
+/// How many rows each of a stream's partitions holds in each phase: those a phase reads
+/// incrementally grow from the phase before, as a cursor resumes only over rows that stay; those it
+/// reads in full are drawn anew.
+fn partition_rows(rng: &mut SplitMix64, reads: [ReadMode; PHASES]) -> Vec<[u64; PHASES]> {
     (0..=rng.below(4))
         .map(|_| {
             let first = rng.below(40);
-            let second = match read {
+            let second = match reads[1] {
                 ReadMode::Incremental => first + rng.below(20),
                 _ => rng.below(40),
             };
@@ -253,13 +259,17 @@ impl SimStream {
         pipeline: Level,
     ) -> Self {
         let (read, write) = modes(rng);
-        let partitions = partition_rows(rng, read);
+        let reading = Reading::drawn(mix(salt ^ READS ^ index), read, write);
+        let (reads, unbounded) = (reading.reads, reading.unbounded);
+        let partitions = partition_rows(rng, reads);
         let json = features.json && rng.chance(500);
         let schema = schema::level(rng, features);
         let drift = drift(rng, partitions.len(), features, json);
+        let incremental = reads.iter().all(|read| *read == ReadMode::Incremental);
+        let follows = features.streaming && incremental;
         let mut stream = Self {
             name: format!("s{index}"),
-            read,
+            reads,
             write,
             checkpointing: if rng.chance(500) {
                 Checkpointing::OnDemand
@@ -267,7 +277,7 @@ impl SimStream {
                 Checkpointing::Natural
             },
             checkpoint_every: 1 + rng.below(3),
-            final_checkpoint: read == ReadMode::Incremental || rng.chance(700),
+            final_checkpoint: reading.final_checkpoint(read, rng) || (follows && !unbounded),
             batch_rows: 1 + rng.below(8),
             keys: if write == WriteMode::Merge {
                 1 + rng.below(12)
@@ -284,20 +294,16 @@ impl SimStream {
             fat: 0,
             sliced: features.sliced && rng.chance(500),
             named_floats: json && rng.chance(250),
-            replayable: !(features.forgetting
-                && read == ReadMode::Incremental
-                && index.is_multiple_of(2)),
-            follows: features.streaming && read == ReadMode::Incremental,
-            unbounded: match read {
-                ReadMode::Incremental => features.streaming && index.is_multiple_of(2),
-                _ => !index.is_multiple_of(2),
-            },
+            replayable: !(features.forgetting && incremental && index.is_multiple_of(2)),
+            follows,
+            unbounded,
             drift,
             partitions,
             excluded: Excluding::drawn(features, json, mix(salt ^ EXCLUDE ^ index)),
             reshaping: Reshaping::default(),
             rows: Vec::new(),
         };
+        stream.finish_bounded();
         stream.reshaping = Reshaping::drawn(features, &stream, mix(salt ^ RESHAPE ^ index));
         if features.settings {
             stream.draw_columns(rng, features);
@@ -403,7 +409,52 @@ impl Excluding {
     }
 }
 
-/// How a stream is read and written.
+/// How a stream is read in each phase, whether its partitions end, and whether its reads end on a
+/// checkpoint where it is first read incrementally: drawn apart from the seed's generator, which
+/// so draws as it did before these were drawn.
+struct Reading {
+    reads: [ReadMode; PHASES],
+    unbounded: bool,
+    ends: bool,
+}
+
+impl Reading {
+    /// How a stream first read as `read` and written as `write` reads, drawn from `seed`: its
+    /// partitions never end half the time, and its incremental reads end on rows half the time.
+    fn drawn(seed: u64, read: ReadMode, write: WriteMode) -> Self {
+        let mut rng = SplitMix64::new(seed);
+        Self {
+            reads: reads(&mut rng, read, write),
+            unbounded: rng.chance(500),
+            ends: rng.chance(500),
+        }
+    }
+
+    /// Whether the reads of a stream first read as `read` end on a checkpoint: as drawn apart for
+    /// one read incrementally, and half the time from `rng`, the seed's generator, for one read in
+    /// full, which drew it there before the rest were drawn apart.
+    fn final_checkpoint(&self, read: ReadMode, rng: &mut SplitMix64) -> bool {
+        match read {
+            ReadMode::Incremental => self.ends,
+            _ => rng.chance(500),
+        }
+    }
+}
+
+/// How a stream read as `read` in its first phase and written as `write` is read in each phase:
+/// a quarter of the time the other way in the next, unless it replaces its table, which only a full
+/// read does.
+fn reads(rng: &mut SplitMix64, read: ReadMode, write: WriteMode) -> [ReadMode; PHASES] {
+    let changed = rng.chance(250) && write != WriteMode::Replace;
+    let next = match (read, changed) {
+        (ReadMode::Full, true) => ReadMode::Incremental,
+        (_, true) => ReadMode::Full,
+        (_, false) => read,
+    };
+    [read, next]
+}
+
+/// How a stream is first read, and how it is written.
 fn modes(rng: &mut SplitMix64) -> (ReadMode, WriteMode) {
     match rng.below(5) {
         0 => (ReadMode::Incremental, WriteMode::Append),

@@ -235,14 +235,18 @@ fn scopes(stream: &SimStream) -> Vec<ResetScope> {
         .iter()
         .all(|types| types.iter().all(|kind| *kind == types[0]));
     let drifts = !stream.drift.is_empty() || !steady_keys;
-    if !stream.replayable || stream.read == ReadMode::Cdc || drifts || stream.shared_keys {
+    if !stream.replayable || stream.reads.contains(&ReadMode::Cdc) || drifts || stream.shared_keys {
         return Vec::new();
     }
     let appended = stream.write == WriteMode::Append;
     let mut scopes = Vec::new();
     // A full read serves the rows its phase holds: a table it replaces holds just those, but one
     // it merges or appends to keeps earlier phases' too, which a table created anew would lack.
-    if stream.read == ReadMode::Incremental || stream.write == WriteMode::Replace {
+    let incremental = stream
+        .reads
+        .iter()
+        .all(|read| *read == ReadMode::Incremental);
+    if incremental || stream.write == WriteMode::Replace {
         scopes.push(ResetScope::Tables);
     }
     if !appended {

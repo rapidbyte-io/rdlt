@@ -4,14 +4,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{
-    ConnectContext, PartitionFeed, PartitionPlan, ReadRequest, Source, SourceEvent, StreamName,
-    StreamState, partition_channel, source_factory,
+    ConnectContext, Partition, PartitionFeed, PartitionId, PartitionPlan, ReadMode, ReadRequest,
+    Source, SourceEvent, StreamName, StreamState, partition_channel, source_factory,
 };
 use serde_json::json;
 
-use super::{SimCursor, SimSource};
+use super::{Marks, SimCursor, SimSource};
+use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
-use crate::world::churning;
+use crate::world::{World, churning};
 
 /// Bounds every wait of a test: a call that hangs fails its test.
 const WAIT: Duration = Duration::from_secs(60);
@@ -169,5 +170,51 @@ fn a_connections_record_holds_its_plans_and_what_its_reads_sent_after_a_plan_dro
     if checkpoint > 0 {
         assert_eq!(drained, vec![(key, checkpoint)]);
     }
+    drop(registered);
+}
+
+#[test]
+fn a_read_ending_on_rows_marks_no_last_batch_and_nowhere_in_an_incremental_read_of_an_endless_one()
+{
+    let name = "marks";
+    let (registered, index, phase) = (0..)
+        .find_map(|seed| {
+            let registered = World::register(name, &mut SplitMix64::new(seed));
+            let streams = &registered.world().workload.streams;
+            let found = streams.iter().enumerate().find_map(|(index, stream)| {
+                let phase = stream
+                    .reads
+                    .iter()
+                    .position(|read| *read == ReadMode::Incremental)?;
+                (!stream.final_checkpoint && stream.reads.contains(&ReadMode::Full))
+                    .then_some((index, phase))
+            });
+            found.map(|(index, phase)| (registered, index, phase))
+        })
+        .expect("some seed reads a stream that ends on rows both ways");
+    let world = Arc::clone(registered.world());
+    let stream = &world.workload.streams[index];
+    let id = || PartitionId::parse("p0").unwrap();
+    let (bounded, unbounded) = (Partition::new(id()), Partition::new(id()).unbounded());
+    let marks = |partition: &Partition| {
+        let marks = Marks::of(stream, &world, index, partition);
+        (marks.last, marks.any)
+    };
+    world.set_phase(phase);
+    assert_eq!(marks(&bounded), (false, true));
+    assert_eq!(marks(&unbounded), (false, false), "checkpoints nowhere");
+    world.set_phase(1 - phase);
+    assert_eq!(
+        marks(&unbounded),
+        (false, true),
+        "a full read checkpoints where it is due"
+    );
+    world.mend(index);
+    world.set_phase(phase);
+    assert_eq!(
+        marks(&unbounded),
+        (true, true),
+        "a mended source checkpoints its end"
+    );
     drop(registered);
 }

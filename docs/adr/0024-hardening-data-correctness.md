@@ -78,10 +78,20 @@ JSON exactness ADR 0026's.
   - Drift columns take the engine's own names.
   - Merge keys arrive as the same numbers at two scales.
   - A change source reads ahead of its round, pushing changes with no checkpoint after them.
-  - A full stream's partitions never end at every other place, and its reads may end on rows
-    after their last checkpoint, which the read's end seals.
+  - Half of all streams' partitions never end, whatever their read, and half of all streams'
+    reads end on rows after their last checkpoint: a full read's end seals them, a bounded
+    partition so read is done and not read again, and an incremental read of a partition that
+    never ends, whose source then checkpoints nowhere, is refused `checkpoint_missing` with none
+    of its rows landed, until an operator mends the source.
+  - A quarter of the streams that do not replace their table are read the other way in the next
+    phase: an incremental read resumes from the cursor a full read ended on, is refused
+    `cursor_missing` where the full read finished a partition that never ends, and a full read
+    after an incremental one reads every row again.
+  - Incremental reads of partitions that never end are polled, not followed, outside streaming
+    worlds: each run reads the rows added since the last, each once.
   - JSON pushes are written as text, so any integer pushes exactly.
-  - With the unbounded or key rule reverted, the simulation fails within its first seeds.
+  - With the unbounded, key or `cursor_missing` rule reverted, the simulation fails within its
+    first seeds.
 
 ## Consequences
 

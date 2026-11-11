@@ -86,6 +86,9 @@ pub struct World {
     /// Whether the destination was granted adding columns, as an operator would after its runs
     /// were refused for want of it.
     granted: AtomicBool,
+    /// The streams, by index, whose source an operator mended to checkpoint after its reads'
+    /// last batch, after a read that sealed none of its rows was refused.
+    mended: Mutex<BTreeSet<usize>>,
     phase: AtomicUsize,
     faulty: AtomicBool,
     rng: Mutex<SplitMix64>,
@@ -250,6 +253,7 @@ impl World {
             changes: ChangeWorkload::default(),
             capabilities: capabilities(rng, features),
             granted: AtomicBool::new(false),
+            mended: Mutex::default(),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
             hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
@@ -317,6 +321,7 @@ impl World {
             changes: ChangeWorkload::generate(rng, features, apart),
             capabilities,
             granted: AtomicBool::new(false),
+            mended: Mutex::default(),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
             hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
@@ -357,6 +362,16 @@ impl World {
     /// Lets the destination add columns from now on.
     pub fn grant_add_column(&self) {
         self.granted.store(true, Ordering::SeqCst);
+    }
+
+    /// Has the source of stream `stream` checkpoint after its reads' last batch from now on.
+    pub(crate) fn mend(&self, stream: usize) {
+        self.mended.lock().insert(stream);
+    }
+
+    /// Whether the source of stream `stream` was mended to checkpoint after its reads' last batch.
+    pub(crate) fn mended(&self, stream: usize) -> bool {
+        self.mended.lock().contains(&stream)
     }
 
     /// How many of the `rows` rows of partition `partition` of stream `stream` have arrived.

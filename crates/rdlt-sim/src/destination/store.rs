@@ -480,11 +480,9 @@ fn offset_column(world: &World, stream: &StreamName) -> &'static str {
     found.map_or("offset", |found| found.reshaping.offset())
 }
 
-/// Whether `world`'s stream `stream` is read incrementally.
+/// Whether `world`'s stream `stream` is read incrementally in the phase its source serves.
 fn incremental(world: &World, stream: &StreamName) -> bool {
-    world
-        .workload
-        .streams
-        .iter()
-        .any(|found| found.name == stream.name() && found.read == ReadMode::Incremental)
+    let streams = &world.workload.streams;
+    let found = streams.iter().find(|found| found.name == stream.name());
+    found.is_some_and(|found| found.reads[world.phase()] == ReadMode::Incremental)
 }

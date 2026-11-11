@@ -204,7 +204,7 @@ fn lists_filtered_from_nulls() -> SimStream {
         .expect("a generated stream pushing JSON with a drift column");
     let list = LogicalType::List(Box::new(Field::new("item", LogicalType::Utf8, true)));
     let mut stream = drawn;
-    stream.read = ReadMode::Full;
+    stream.reads = [ReadMode::Full; 2];
     stream.checkpointing = Checkpointing::OnDemand;
     stream.batch_rows = 1;
     stream.partitions = vec![[4, 0], [4, 0]];
