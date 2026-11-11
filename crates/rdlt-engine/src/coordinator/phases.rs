@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rdlt_connector::{
-    BoxFuture, Cursor, Exclusion, Partition, PartitionId, PartitionPlan, PartitionState, Source,
-    StateChange, StateEntry, StateKey, StreamName, StreamState,
+    BoxFuture, Cursor, Exclusion, Partition, PartitionId, PartitionPlan, PartitionState, ReadMode,
+    Source, StateChange, StateEntry, StateKey, StreamName, StreamState,
 };
 use tokio::sync::mpsc;
 
@@ -46,6 +46,8 @@ pub(crate) struct Begun {
 #[derive(Clone, Debug)]
 pub(crate) struct Template {
     pub(crate) table: usize,
+    /// How the stream is read: as changes, or incrementally in a following run.
+    pub(crate) read: ReadMode,
     pub(crate) on_demand: bool,
     pub(crate) changes: Option<ChangeMode>,
     /// Whether its partitions read again from their source's earliest after a retention loss.
@@ -244,6 +246,7 @@ impl Coordinator {
             stream: run.name.clone(),
             table: template.table,
             partition,
+            read: template.read,
             cursor,
             on_demand: template.on_demand,
             changes: template.changes,

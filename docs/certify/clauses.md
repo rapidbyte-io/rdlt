@@ -64,7 +64,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `S-DISCOVER` | discover lists at least one stream and is stable across calls | — |
 | `S-PLAN` | every stream plans at least one partition, with distinct ids | — |
 | `S-RESUME` | a read resumed from a checkpoint yields exactly the data after it | — |
-| `S-PARTITION` | a stream's planned partitions cover it exactly once, and those planned again from where they stood cover what is left exactly once | every stream plans a partition that never ends |
+| `S-PARTITION` | a stream's planned partitions cover it exactly once, and those planned again from where they stood cover what is left exactly once | every stream plans an unbounded partition, as one that declares no partitions does |
 | `S-STOP` | a read asked to stop ends promptly and cleanly, a following read of a partition that never ends too, while it waits for data | — |
 | `S-BARRIER` | an on-demand stream answers a pending barrier with a checkpoint | no stream checkpoints on demand |
 | `S-ACK` | a stream's position outside the engine moves only when the engine tells it a cursor is committed, and then to that cursor, and a read from a later cursor it issued starts there | the source does not tell where it stands, or reads no stream as changes or incrementally |

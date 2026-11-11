@@ -637,9 +637,9 @@ impl ReadStream<Greetings> for People {
             // JSON objects: the engine infers their schema.
             out.rows(&rows[next..end]).await?;
             next = end;
-            // A checkpoint seals a segment. Ending with rows after the last checkpoint marks the
-            // partition done; a partition that can grow, as a table polled for new rows does,
-            // ends at a checkpoint instead, and its next read goes on from there.
+            // A checkpoint seals a segment. A full read, as this stream's, seals the rows after
+            // the last one with its end; read incrementally, the stream's one partition never
+            // ends, so a read ends at a checkpoint to land its last rows.
             if next < rows.len() {
                 out.checkpoint(&next).await?;
             }
@@ -658,9 +658,13 @@ A read pushes JSON objects (`rows`), JSON bytes (`json`), Arrow batches (`batch`
 `arrow-array` 59, and on `arrow-schema` 59 to build their schemas. `replan` tells a run that
 follows its source that the stream's partitions changed, and `behind` says how far the read lags
 its newest data, which the report totals per stream
-([ADR 0032](docs/adr/0032-source-signals.md)). A partition planned as
-`Partition::new(id).unbounded()`, as a change stream's changes are, is never done: its next read
-resumes from its last checkpoint ([ADR 0024](docs/adr/0024-hardening-data-correctness.md)).
+([ADR 0032](docs/adr/0032-source-signals.md)). A stream that plans no partitions reads one that
+never ends, `Partition::single()`, as a partition planned as `Partition::new(id).unbounded()` is,
+as a change stream's changes are. Only a full read finishes it: any other read leaves it at its
+last checkpoint, so the next reads again what followed, and an incremental read that pushes rows
+and no checkpoint after any fails `checkpoint_missing`
+([ADR 0024](docs/adr/0024-hardening-data-correctness.md)). A partition the source declares with
+`Partition::new(id)` ends, and a read that ends on rows finishes it.
 
 A connector's error has a kind. While the retry policy allows, the engine starts a new attempt
 after a `Transient` or `RateLimited` error, and after a call or a wait on the memory budget passes
@@ -693,11 +697,11 @@ certification of io.example.greetings
   pass S-DISCOVER
   pass S-PLAN
   pass S-RESUME
-  pass S-PARTITION
+  n/a  S-PARTITION: every stream plans an unbounded partition, as one that declares no partitions does
   pass S-STOP
   n/a  S-BARRIER: no stream checkpoints on demand
   n/a  S-ACK: the source does not tell where it stands
-passed: 6 passed, 0 failed, 0 not observed, 2 not applicable
+passed: 5 passed, 0 failed, 0 not observed, 3 not applicable
 ```
 
 In process, certification runs a role's source or destination clauses. Through

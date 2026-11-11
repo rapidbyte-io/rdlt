@@ -12,8 +12,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Schema, SchemaRef, UnionFields, UnionMode};
 use rdlt_connector::{
-    ChangeOp, ColumnPath, Field, OP_COLUMN, OpenContext, PartitionState, PipelineId, PipelineState,
-    ReadMode, SEQ_COLUMN, Secret, StreamName, UNCHANGED_COLUMN,
+    ChangeOp, ColumnPath, Cursor, Field, OP_COLUMN, OpenContext, PartitionState, PipelineId,
+    PipelineState, ReadMode, SEQ_COLUMN, Secret, StreamName, UNCHANGED_COLUMN,
 };
 use rdlt_connector_reference::{published, schema};
 use rdlt_engine::{
@@ -422,6 +422,38 @@ async fn a_bounded_read_ending_in_deletes_its_stream_ignores_counts_them_once_an
     assert_eq!((first.deletes_ignored, second.deletes_ignored), (1, 0));
     assert_eq!(published_ids(name, "people"), [1, 2]);
     assert_eq!(standing(name).await, [PartitionState::Done]);
+}
+
+#[tokio::test]
+async fn an_unsplit_change_stream_reads_the_changes_after_its_last_checkpoint_again() {
+    let name = "transformed_unsplit_tail";
+    let pushes = vec![
+        changed(
+            &[(1, "ok", ChangeOp::Insert), (2, "ok", ChangeOp::Insert)],
+            1,
+        ),
+        changed(&[(3, "ok", ChangeOp::Insert)], 3),
+    ];
+    let mut served = Served::new(Form::Changes, pushes);
+    served.key = Some(ColumnPath::from("id"));
+    served.unsplit = true;
+    let plan = stream("people").read(ReadMode::Cdc).write(WriteMode::Merge);
+    // Each read ends on the change no checkpoint follows: it lands with neither.
+    twice(name, served.clone(), plan.clone()).await;
+    assert_eq!(published_ids(name, "people"), [1, 2]);
+    let cursor = Cursor::encode(1, &1_usize).expect("a cursor encodes");
+    assert_eq!(standing(name).await, [PartitionState::Cursor(cursor)]);
+    // Read again from that checkpoint by a read that checkpoints it, it lands once.
+    served.tail = false;
+    let outcome = engine(commit_every(1))
+        .run(
+            pipeline(name, [plan]),
+            source(name, served).await,
+            memory(name).await,
+        )
+        .await;
+    succeeded(&outcome);
+    assert_eq!(published_ids(name, "people"), [1, 2, 3]);
 }
 
 #[tokio::test]

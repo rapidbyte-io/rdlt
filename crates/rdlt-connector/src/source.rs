@@ -86,7 +86,7 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     /// The stream's name and read properties.
     fn spec(&self) -> StreamSpec;
 
-    /// The partitions to read this run; by default one partition.
+    /// The partitions to read this run; by default one, [`Partition::single`], which never ends.
     fn partitions(
         &self,
         _source: &S,
@@ -126,16 +126,19 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     /// checkpoint of where it starts before anything else: the host is then heard for that
     /// position, and not for `cursor`.
     ///
-    /// A read that finishes its partition says so: it ends with data pushed after its last
-    /// checkpoint, and the engine records the partition done, with no cursor, and reads it no
-    /// more. A read that ends at a checkpoint leaves its partition at that cursor, to be read
+    /// A read that finishes a partition that ends says so: it ends with data pushed after its
+    /// last checkpoint, and the engine records the partition done, with no cursor, and reads it
+    /// no more. A read that ends at a checkpoint leaves its partition at that cursor, to be read
     /// from there again by the next plan that names it, as a table polled for new rows is. In a
     /// stream read incrementally, ending finished partitions at a checkpoint keeps a cursor for
     /// every partition the source ever planned, which grows stored state until commits are
-    /// refused as `state_bytes_exceeded`; a full read's next cycle clears its partitions. A read
-    /// the engine asks to follow ([`Emitter::follows`]) and a partition that never ends
-    /// ([`Partition::unbounded`]) keep their cursors. An on-demand stream answers a barrier
-    /// pending before its last push with a checkpoint before that push.
+    /// refused as `state_bytes_exceeded`; a full read's next cycle clears its partitions. Only a
+    /// full read finishes a partition that never ends ([`Partition::unbounded`]), as a stream's
+    /// one partition by default: read otherwise, data it pushes after its last checkpoint is read
+    /// again by its next read, so an incremental read of it ends at a checkpoint to land its
+    /// last rows. A read the engine asks to follow ([`Emitter::follows`]) keeps its cursor. An
+    /// on-demand stream answers a barrier pending before its last push with a checkpoint before
+    /// that push.
     fn read(
         &self,
         source: &S,

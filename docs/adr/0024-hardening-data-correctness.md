@@ -54,10 +54,19 @@ JSON exactness ADR 0026's.
   is pressed while a request for pushes or for lowering waits, or while a holder of queued
   pieces waits for their writes.
 - **Unbounded partitions.** `Partition::unbounded()` marks a partition that never ends, such as a
-  change stream's or a log's.
-  - Such a partition is never `Done`.
-  - Rows it pushed after its last checkpoint are not sealed: its next read resumes from that
-    checkpoint and reads them again.
+  change stream's, a log's, or the one partition of a stream that plans none
+  (`Partition::single()`), as a source polled from a cursor reads.
+  - Outside a full read such a partition is never `Done`. Rows it pushed after its last
+    checkpoint are not sealed: its next read resumes from that checkpoint and reads them again.
+  - A full read seals them with its end, as a bounded partition's, since its next cycle starts
+    from the beginning: the cycle lands everything it read, and a `replace` table is whole.
+  - An incremental read of one that pushes rows and no checkpoint after any fails, a `Source`
+    error with the engine's code `checkpoint_missing` that no retry mends, since none of its rows
+    could land: the engine judges the source broke the read's contract, as it judges a push the
+    read mode does not take (`push_unexpected`), and its message says to checkpoint after the
+    last row. A checkpoint before its first row does not count, and a read that pushes nothing
+    ends cleanly. A change read is not held to this: a change source may read ahead of its round.
+  - The engine decides both from the stream's read mode, which no source is told.
   - The plan's proto lists the unbounded ids; a stray id is refused.
   - Change partitions are unbounded, and snapshot partitions stay bounded.
   - The coordinator drains its writers before it closes the session, since a write no commit took

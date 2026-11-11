@@ -5,7 +5,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rdlt_connector::{
     Capabilities, ConnectContext, Cursor, OpenContext, Partition, PartitionId, PartitionState,
-    PipelineId, SegmentId, StreamName, destination_factory, source_factory,
+    PipelineId, ReadMode, SegmentId, StreamName, destination_factory, source_factory,
 };
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination};
 use serde_json::json;
@@ -38,6 +38,7 @@ fn received(received: u64, written: u64, cursor: Option<u64>) -> Ingested {
         },
         last_cursor: cursor.map(|next| Cursor::encode(1, &next).unwrap()),
         sealed_rows: 0,
+        checkpointed: false,
         stopped: false,
         coalescer: Coalescer::new(BatchPolicy::default()),
         schemas: super::write::Schemas::default(),
@@ -127,7 +128,7 @@ fn rows_after_the_last_cursor_its_filters_dropped_or_its_changes_ignored_are_rea
 }
 
 #[test]
-fn an_unbounded_partition_ends_only_at_its_last_cursor_and_rows_after_it_are_read_again() {
+fn a_read_that_reads_again_ends_only_at_its_last_cursor_and_rows_after_it_are_read_again() {
     let cursor = Cursor::encode(1, &5u64).unwrap();
     assert_eq!(
         end_state(&ingested(0, Some(5)), true),
@@ -136,6 +137,60 @@ fn an_unbounded_partition_ends_only_at_its_last_cursor_and_rows_after_it_are_rea
     assert_eq!(end_state(&ingested(3, Some(5)), true), None);
     assert_eq!(end_state(&ingested(3, None), true), None);
     assert_eq!(end_state(&received(2, 0, Some(5)), true), None);
+}
+
+#[test]
+fn only_a_read_of_an_unbounded_partition_that_is_not_full_reads_its_end_again() {
+    let cases = [
+        (ReadMode::Full, false, false, false),
+        (ReadMode::Full, true, false, false),
+        (ReadMode::Incremental, false, false, false),
+        (ReadMode::Incremental, true, true, true),
+        (ReadMode::Cdc, false, false, false),
+        (ReadMode::Cdc, true, true, false),
+    ];
+    for (read, unbounded, reads_again, must_checkpoint) in cases {
+        let whole = Partition::new(PartitionId::whole());
+        let job = PartitionJob {
+            partition: if unbounded { whole.unbounded() } else { whole },
+            read,
+            ..reading()
+        };
+        let case = format!("{read:?}, unbounded {unbounded}");
+        assert_eq!(job.reads_again(), reads_again, "{case}");
+        assert_eq!(job.must_checkpoint(), must_checkpoint, "{case}");
+    }
+}
+
+#[test]
+fn a_read_seals_none_of_its_rows_only_where_it_read_some_and_no_checkpoint_followed_any() {
+    let ended = |rows, checkpointed| Ingested {
+        checkpointed,
+        ..received(rows, rows, None)
+    };
+    assert!(ended(3, false).sealed_none());
+    assert!(!ended(3, true).sealed_none());
+    assert!(!ended(0, false).sealed_none());
+    assert!(!ended(0, true).sealed_none());
+}
+
+/// A job reading partition `0` of `events` incrementally from its start.
+fn reading() -> PartitionJob {
+    PartitionJob {
+        index: 0,
+        stream: StreamName::new("events").unwrap(),
+        table: 0,
+        partition: Partition::new(PartitionId::parse("0").unwrap()),
+        read: ReadMode::Incremental,
+        cursor: None,
+        on_demand: false,
+        changes: None,
+        stop: CancellationToken::new(),
+        follow: false,
+        reset_retention: false,
+        exclude: rdlt_connector::Exclusion::default(),
+        stage: None,
+    }
 }
 
 #[test]
@@ -217,18 +272,8 @@ async fn a_read_ending_at_its_last_cursor_holds_that_cursor_in_the_cursors_share
     // Resumed past the partition's last row, the read sends nothing and ends where it resumed.
     let cursor = Cursor::encode(1, &json!({ "next": 10 })).unwrap();
     let job = PartitionJob {
-        index: 0,
-        stream: StreamName::new("events").unwrap(),
-        table: 0,
-        partition: Partition::new(PartitionId::parse("0").unwrap()),
         cursor: Some(cursor.clone()),
-        on_demand: false,
-        changes: None,
-        stop: CancellationToken::new(),
-        follow: false,
-        reset_retention: false,
-        exclude: rdlt_connector::Exclusion::default(),
-        stage: None,
+        ..reading()
     };
     let ran = tokio::time::timeout(WAIT, super::run(job, Arc::new(context))).await;
     ran.expect("the read ends in time")

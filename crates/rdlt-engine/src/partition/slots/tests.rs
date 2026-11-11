@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::{Partition, PartitionId, StreamName};
+use rdlt_connector::{Partition, PartitionId, ReadMode, StreamName};
 use tokio_util::sync::CancellationToken;
 
 use super::Slots;
@@ -32,6 +32,7 @@ fn job(index: usize, followed: bool) -> PartitionJob {
         } else {
             Partition::new(id)
         },
+        read: ReadMode::Incremental,
         cursor: None,
         on_demand: false,
         changes: None,

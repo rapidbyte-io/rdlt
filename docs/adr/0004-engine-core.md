@@ -79,10 +79,16 @@ a run reports and tells must show what it did without changing what it does.
   seal, even with a rows-only policy.
 - **End of partition.** A partition that reads to its end seals with its last cursor, so an
   incremental read resumes past it next run. Rows after the last checkpoint, written, filtered
-  out or ignored, have no cursor that resumes past them, so committing them marks the partition
-  `Done`. A partition that read nothing and never checkpointed records no position, so a stream
-  that starts empty still loads rows added later. Marking it `Done` always would stop incremental
-  streams from ever growing.
+  out or ignored, have no cursor that resumes past them. A full read seals them with its end, as
+  every read of a bounded partition does, and committing them marks the partition `Done`. Any
+  other read of an unbounded partition leaves them to its next read, from its last checkpoint.
+  A stream that plans no partitions reads one unbounded partition (`Partition::single`), so each
+  incremental run reads a source polled from a cursor again; a partition a source declares is
+  bounded unless it says otherwise. An incremental read of an unbounded partition that pushes
+  rows and no checkpoint after any fails, coded `checkpoint_missing`, since none of them could
+  land; one that pushes nothing ends cleanly. A partition that read nothing and never
+  checkpointed records no position, so a stream that starts empty still loads rows added later.
+  Marking it `Done` always would stop incremental streams from ever growing.
 - **Full reads are cycles.** A `full` read records its generation when it first commits and
   deletes the previous cycle's partition entries; its last commit records it as `completed`. Each
   run remembers the cycle it started or resumed per stream, and state keeps the stream's sixteen
@@ -148,5 +154,9 @@ a run reports and tells must show what it did without changing what it does.
 ## Consequences
 
 The simulation oracle checks every stream mode through faults, crashes, stops and concurrent
-runs. A source that ends with rows after its last checkpoint is read once; a well-behaved
-incremental source checkpoints after its last row.
+runs. A bounded partition that ends with rows after its last checkpoint is read once, its rows
+after the checkpoint sealed with its end. A partition that never ends, as a stream's one
+partition by default, is read again by the next incremental run from its last checkpoint, so its
+rows after that checkpoint are never lost, and its source checkpoints after its last row to land
+it. In a following run, a stream that plans
+no partitions holds one of the places followed unbounded reads have (ADR 0031).

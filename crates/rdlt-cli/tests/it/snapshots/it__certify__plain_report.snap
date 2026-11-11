@@ -14,9 +14,9 @@ certification of io.rapidbyte.memory
   pass S-DISCOVER
   pass S-PLAN
   pass S-RESUME
-  pass S-PARTITION
+  n/a  S-PARTITION: every stream plans an unbounded partition, as one that declares no partitions does
   pass S-STOP
   n/a  S-BARRIER: no stream checkpoints on demand
   n/a  S-ACK: the source does not tell where it stands
   skip K-SOURCE: no kill interrupted the load: it ended first (kill seed 515)
-incomplete: 12 passed, 0 failed, 1 not observed, 3 not applicable
+incomplete: 11 passed, 0 failed, 1 not observed, 4 not applicable

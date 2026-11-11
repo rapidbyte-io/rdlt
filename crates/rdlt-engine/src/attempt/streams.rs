@@ -292,6 +292,7 @@ fn planned(
         settled: false,
         template: Template {
             table: index,
+            read: plan.read_mode(),
             on_demand,
             changes,
             reset_retention,
@@ -311,6 +312,7 @@ fn planned(
             sequences: None,
             named: partitioned.named,
         },
+        read: plan.read_mode(),
         on_demand,
         changes,
         follow: follow && tracked,

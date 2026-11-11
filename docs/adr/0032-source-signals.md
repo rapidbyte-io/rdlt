@@ -72,7 +72,9 @@ whose truth, a stream planned again from where its partitions stood, needs re-pl
   - Partitions are placed as the engine places them: a plan beginning a new phase at its starts,
     any other from each partition's recorded cursor, or else its beginning.
   - A stream with unbounded partitions in its first plan is skipped (no single read covers one),
-    and so is one none of whose partitions checkpoints. The clause passes if it checked a stream.
+    a stream that plans no partitions of its own among them, and so is one none of whose
+    partitions checkpoints. The clause passes if it checked a stream: a source certifies it with
+    a stream that declares bounded partitions.
   - A source that ignores its cursor fails `S-PARTITION` as well as `S-RESUME`: it repeats rows
     however it is planned.
 - **The simulation's streaming reads** report how far behind they are and signal a re-plan after

@@ -14,7 +14,7 @@ pub struct Partition {
 }
 
 impl Partition {
-    /// A partition with `id`; the source gives the id its meaning.
+    /// A partition with `id`, which ends; the source gives the id its meaning.
     pub fn new(id: PartitionId) -> Self {
         Self {
             id,
@@ -23,10 +23,13 @@ impl Partition {
     }
 
     /// The partition, as one that never ends, as a change stream's changes or a log's records
-    /// do: a read of it that ends only pauses it.
+    /// do: only a full read finishes it, and any other read that ends pauses it.
     ///
-    /// Such a partition is never done: its next read resumes from its last checkpoint, so rows a
-    /// read pushed after that checkpoint are read again, not committed without a position.
+    /// A full read seals what it read after its last checkpoint with its end. Any other read
+    /// leaves the partition at its last checkpoint, so rows the read pushed after that checkpoint
+    /// are read again by its next read, not committed without a position; read incrementally, it
+    /// fails, coded `checkpoint_missing`, where it pushes rows and no checkpoint after any, since
+    /// none of them could land.
     #[must_use]
     pub fn unbounded(mut self) -> Self {
         self.unbounded = true;
@@ -38,9 +41,11 @@ impl Partition {
         self.unbounded
     }
 
-    /// The partition of a stream that is not split, with id `whole`.
+    /// The partition of a stream that is not split, with id `whole`, which never ends: each
+    /// incremental run reads it again from its committed cursor, as a source polled from a cursor
+    /// is read.
     pub fn single() -> Self {
-        Self::new(PartitionId::whole())
+        Self::new(PartitionId::whole()).unbounded()
     }
 
     /// The partition's id.

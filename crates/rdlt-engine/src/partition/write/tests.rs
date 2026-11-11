@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::cost::{Allocations, batch_charge};
-use rdlt_connector::{LogicalType, Partition, Permit, StreamName};
+use rdlt_connector::{LogicalType, Partition, Permit, ReadMode, StreamName};
 use rdlt_wire::limits::MESSAGE_ROOM;
 
 use super::Held;
@@ -28,6 +28,7 @@ fn job() -> PartitionJob {
         stream: StreamName::new("events").unwrap(),
         table: 0,
         partition: Partition::single(),
+        read: ReadMode::Full,
         cursor: None,
         on_demand: false,
         changes: None,

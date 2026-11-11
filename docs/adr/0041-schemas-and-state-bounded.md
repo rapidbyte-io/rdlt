@@ -151,9 +151,10 @@ Rejected:
   defaults and at the least memory alike.
 - A source whose partitions keep being created and read to their end stays within its state
   limit: its oldest done markers go as new ones need room, the latest named in the report and
-  the rest counted. A source says a partition is finished by ending its read with data after its
-  last checkpoint; the engine never infers it from a cursor. The reference files, memory and
-  generator sources end a read that does not follow so; the files and generator sources, which
+  the rest counted. A source says a bounded partition is finished by ending its read with data
+  after its last checkpoint, and a full read finishes any partition so; the engine never infers
+  it from a cursor. The reference files, memory and generator sources end a read that does not
+  follow so; the files and generator sources, which
   checkpoint on demand, answer a barrier pending before the last push ahead of it, and the memory
   source, which checkpoints only where it chooses, is never sent one. A following read keeps its
   cursor. They read in full, so each cycle also clears the one before. The change source's

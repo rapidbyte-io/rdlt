@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use rdlt_connector::{Cursor, Exclusion, Partition, StreamName};
+use rdlt_connector::{Cursor, Exclusion, Partition, ReadMode, StreamName};
 use tokio_util::sync::CancellationToken;
 
 use crate::transform::stage::Stage;
@@ -18,6 +18,9 @@ pub(crate) struct PartitionJob {
     pub(crate) table: usize,
     /// The partition.
     pub(crate) partition: Partition,
+    /// How the stream is read, which decides what lands of the rows after the read's last
+    /// checkpoint.
+    pub(crate) read: ReadMode,
     /// Where to resume.
     pub(crate) cursor: Option<Cursor>,
     /// Whether the partition checkpoints when asked, so barriers are forwarded to it.
@@ -44,6 +47,21 @@ impl PartitionJob {
     /// Whether the read follows its unbounded partition for as long as the run.
     pub(crate) fn followed(&self) -> bool {
         self.follow && self.partition.is_unbounded()
+    }
+
+    /// Whether the rows the read pushes after its last checkpoint are left to the partition's
+    /// next read rather than sealed with its end: an unbounded partition's, in a read that is
+    /// not full.
+    pub(crate) fn reads_again(&self) -> bool {
+        self.partition.is_unbounded() && self.read != ReadMode::Full
+    }
+
+    /// Whether a read that pushes rows and no checkpoint after any fails, since none of them
+    /// could land: an unbounded partition's, read incrementally.
+    ///
+    /// A change read is not held to it, as a change source may read ahead of its round.
+    pub(crate) fn must_checkpoint(&self) -> bool {
+        self.partition.is_unbounded() && self.read == ReadMode::Incremental
     }
 }
 

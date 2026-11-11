@@ -397,7 +397,7 @@ async fn read_followed(config: Value, stream: usize, follow: bool) -> Followed {
         .await
         .unwrap();
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).unwrap());
-    let partition = Partition::single().unbounded();
+    let partition = Partition::single();
     let request = ReadRequest::new(stream_name(stream), partition, None).following(follow);
     let clock = InlineEnv;
     let started = clock.instant();
@@ -504,7 +504,7 @@ async fn a_followed_replay_plans_one_unbounded_partition_a_stream_read_increment
         assert_eq!(spec.read_modes(), [ReadMode::Incremental]);
         assert!(spec.is_replayable());
         let planned = source.plan(&stream, &StreamState::default()).await.unwrap();
-        assert_eq!(planned.partitions, [Partition::single().unbounded()]);
+        assert_eq!(planned.partitions, [Partition::single()]);
     }
 }
 
@@ -530,7 +530,7 @@ async fn a_followed_replay_stopped_between_its_pushes_returns_at_once() {
         .await
         .unwrap();
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).unwrap());
-    let partition = Partition::single().unbounded();
+    let partition = Partition::single();
     let request = ReadRequest::new(stream_name(0), partition, None).following(true);
     let clock = InlineEnv;
     let read = source.read(request, sink);
