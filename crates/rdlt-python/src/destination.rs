@@ -395,7 +395,7 @@ impl NativeDestinationFactory {
 
 impl NativeDestinationFactory {
     /// What connects the destination: the callable, on a daemon thread, with the configuration's
-    /// JSON.
+    /// JSON and the host its connect context names.
     fn connecting(
         &self,
     ) -> impl Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<PythonDestination>>
@@ -403,14 +403,15 @@ impl NativeDestinationFactory {
     + Sync
     + 'static {
         let (connect, capabilities) = (Arc::clone(&self.connect), self.capabilities.clone());
-        move |config, _context| {
+        move |config, context| {
             let (connect, capabilities) = (Arc::clone(&connect), capabilities.clone());
+            let host = context.host().map(str::to_owned);
             Box::pin(async move {
                 let config = config.to_string();
                 let connected = method(
                     &connect,
                     "__call__",
-                    move |py| (config,).into_pyobject(py),
+                    move |py| (config, host).into_pyobject(py),
                     |answered| Ok(answered.unbind()),
                 )
                 .await?;

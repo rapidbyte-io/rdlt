@@ -47,6 +47,17 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     // The codes a host keeps for its own findings, which no connector may give.
     let host_codes = PyTuple::new(module.py(), rdlt_connector::wire::HOST_CODES)?;
     module.add("HOST_CODES", host_codes)?;
+    // The codes of the failures the Rust SDK names, which a Python connector raises as Rust's do.
+    for (name, code) in [
+        ("COMMIT_STALE", rdlt_connector::COMMIT_STALE),
+        ("TABLE_OWNED", rdlt_connector::TABLE_OWNED),
+        ("SCHEMA_CONFLICT", rdlt_connector::SCHEMA_CONFLICT),
+        ("COLUMN_MISSING", rdlt_connector::COLUMN_MISSING),
+        ("RETENTION_LOST", rdlt_connector::RETENTION_LOST),
+        ("CURSOR_UNISSUED", rdlt_connector::CURSOR_UNISSUED),
+    ] {
+        module.add(name, code)?;
+    }
     module.add_class::<host::NativeHost>()?;
     module.add_class::<pipeline::NativePipeline>()?;
     module.add_class::<run::NativeRun>()?;

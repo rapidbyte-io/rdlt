@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import weakref
+from dataclasses import dataclass
 from typing import Any, Generic, TypeAlias, TypeVar
 
 Registered: TypeAlias = tuple[tuple[str, str, type], ...]
@@ -14,6 +16,24 @@ _D = TypeVar("_D")
 _ROLES = {"source": "__rdlt_source__", "destination": "__rdlt_destination__"}
 """The attribute each decorator leaves on a class: a class it did not decorate has none of its
 own."""
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectContext:
+    """What a connector is told as it connects, as the Rust SDK's `ConnectContext` is.
+
+    `host` is the host it serves, as a listening connector accepted it: the name in the host's
+    certificate. It is `None` in the host's own process and for a connector its host spawned.
+    """
+
+    host: str | None = None
+
+
+def built(connector: type, config: object, host: str | None) -> object:
+    """An instance of `connector` for `config`, told its context where its `__init__` names one."""
+    if "context" in inspect.signature(connector).parameters:
+        return connector(config, context=ConnectContext(host))
+    return connector(config)
 
 
 def declare(connector: type, role: str, declared: object) -> None:

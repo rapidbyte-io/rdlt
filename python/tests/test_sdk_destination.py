@@ -18,6 +18,7 @@ import pytest
 import rdlt
 from rdlt import _native
 from rdlt.connector import (
+    COMMIT_STALE,
     Answer,
     Capabilities,
     Config,
@@ -213,7 +214,7 @@ def test_a_fence_decides_a_commit_as_the_rust_sdk_s_does() -> None:
     assert fenced.value.code is None
     with pytest.raises(Fenced) as stale:
         fence.decide({"key": {"epoch": 2, "seq": 3}, "after": {"epoch": 2, "seq": 2}})
-    assert stale.value.code == "commit_stale"
+    assert stale.value.code == COMMIT_STALE
 
 
 def test_a_stale_refusal_names_the_key_expected_and_the_key_that_landed() -> None:

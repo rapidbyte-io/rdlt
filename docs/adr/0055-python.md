@@ -59,11 +59,12 @@ script that started a run and returned.
 - **One way to write a source, in the Rust SDK's words.** `rdlt.connector` names what the Rust SDK
   names, in Python's case: `ConnectorError` and its kinds, `RateLimited`'s `retry_after`, a
   `ReadStream` that `@stream` makes, its `Partition`s, `committed` and `replayable`, `Cursor`,
-  `checkpoint`, a destination's `Capabilities`, `OpenContext`, `WriteStats` and `Fence`, and
-  `serve`'s `args`. Where Python differs, the language makes it: decorators for attributes,
-  exceptions for `Result`, named as exceptions are, so `InvalidConfig`, `Unauthorized` and
-  `InvalidData` are the kinds Rust calls `Config`, `Auth` and `Data`, generators for an emitter, and
-  a `StreamContext` for what a Rust read is told by its partition and asks its emitter. How a
+  `checkpoint`, the `ConnectContext` a connector's `__init__` takes where it names one, a
+  destination's `Capabilities`, `OpenContext`, `WriteStats` and `Fence`, the failure codes, such as
+  `COMMIT_STALE`, and `serve`'s `args`. Where Python differs, the language makes it: decorators for
+  attributes, exceptions for `Result`, named as exceptions are, so `InvalidConfig`, `Unauthorized`
+  and `InvalidData` are the kinds Rust calls `Config`, `Auth` and `Data`, generators for an emitter,
+  and a `StreamContext` for what a Rust read is told by its partition and asks its emitter. How a
   stream's rows land is the pipeline's to say, as for a Rust source. `@stream` makes a function a
   stream as it makes a method one, under the same rules, so a function moves into a `@source` class
   taking `self`, as its `partitions=` and `committed=` callables then do too. A pipeline reads its

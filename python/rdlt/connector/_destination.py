@@ -13,7 +13,7 @@ from rdlt import _native
 from rdlt._weak import weakly_reached
 from rdlt.connector._capabilities import Capabilities
 from rdlt.connector._config import Config, validated
-from rdlt.connector._declared import Placement, declare, declared_as, package_version
+from rdlt.connector._declared import Placement, built, declare, declared_as, package_version
 from rdlt.model import Json, _parse
 
 T = TypeVar("T")
@@ -71,7 +71,8 @@ def destination(
 ) -> Callable[[type[T]], type[T]]:
     """Makes a class a destination connector, which the Rust SDK drives.
 
-    The class is built from its validated `config`, checked with `check()`, and opened once a
+    The class is built from its validated `config`, and a `ConnectContext` as `context` where its
+    `__init__` names one, checked with `check()`, and opened once a
     load with `open(context)`, an `OpenContext`, answering `Opened`; for certification,
     `published(table)` yields the `pyarrow.RecordBatch`es a table published. A session has
     `apply_schema(change)`, `writer(table)`, `discard_staged()`, `commit(meta)` answering its
@@ -95,8 +96,8 @@ def destination(
       The receipt is `{"key": meta["key"], "committed_at": {"secs_since_epoch": s,
       "nanos_since_epoch": n}, "rows": rows, "bytes": size}`, the rows and bytes it published.
     - A table belongs to the pipeline that created it: another's schema change or writer raises
-      `InvalidConfig(..., code="table_owned")`, and a column declared at another type than the
-      table holds raises `InvalidData(..., code="schema_conflict")`.
+      `InvalidConfig(..., code=TABLE_OWNED)`, and a column declared at another type than the
+      table holds raises `InvalidData(..., code=SCHEMA_CONFLICT)`.
 
     A session's calls, its table writers' included, reach the class one at a time. A call the
     engine stopped waiting for still runs on its thread, the next call of its session, `close()`
@@ -258,9 +259,9 @@ def placed(connector: type) -> tuple[_native.DestinationFactory, Placement[_Decl
     placement = Placement(declared)
     reached = weakly_reached(placement, f"connector {declared.id!r}")
 
-    def connect(text: str) -> _Connected:
+    def connect(text: str, host: str | None) -> _Connected:
         found = reached()
-        instance = found.declared.connector(validated(found.declared.config, text))
+        instance = built(found.declared.connector, validated(found.declared.config, text), host)
         connected = _Connected(reached)
         found.connections[connected] = instance
         return connected

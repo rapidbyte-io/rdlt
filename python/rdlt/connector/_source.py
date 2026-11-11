@@ -14,7 +14,7 @@ from rdlt._weak import weakly_reached
 from rdlt.connector._config import Config, validated
 from rdlt.connector._context import Partition
 from rdlt.connector._cursor import Cursor
-from rdlt.connector._declared import Placement, declare, declared_as, package_version
+from rdlt.connector._declared import Placement, built, declare, declared_as, package_version
 from rdlt.connector._streams import Committed, Stream
 
 T = TypeVar("T")
@@ -153,6 +153,9 @@ def source(
 ) -> Callable[[type[T]], type[T]]:
     """Makes a class a source connector: built from its validated `config`, checked with `check()`.
 
+    Its `__init__` takes the configuration, and a `ConnectContext` as `context` where it names
+    one, as a Rust source's `connect(config, &ConnectContext)` does.
+
     Each `@stream` method of the class and of its bases is one of its streams; a subclass's own
     attribute of a stream's name replaces that stream. A subclass is a source of its own only
     once `@source` makes it one. A class that has no `check`, or that `@destination` made, is
@@ -254,9 +257,9 @@ def placed(connector: type) -> tuple[_native.SourceFactory, Placement[_Declared]
     placement = Placement(declared)
     reached = weakly_reached(placement, f"connector {declared.id!r}")
 
-    def connect(text: str) -> _Connected:
+    def connect(text: str, host: str | None) -> _Connected:
         found = reached()
-        instance = found.declared.connector(validated(found.declared.config, text))
+        instance = built(found.declared.connector, validated(found.declared.config, text), host)
         connected = _Connected(reached)
         found.connections[connected] = instance
         return connected
@@ -317,5 +320,8 @@ def functions_placed(streams: Sequence[ReadStream]) -> _native.SourceFactory:
     """
     connected = _Functions([_function_stream(made) for made in streams])
     return _native.SourceFactory(
-        FUNCTIONS, _native.__version__, json.dumps({"type": "object"}), lambda _config: connected
+        FUNCTIONS,
+        _native.__version__,
+        json.dumps({"type": "object"}),
+        lambda _config, _host: connected,
     )

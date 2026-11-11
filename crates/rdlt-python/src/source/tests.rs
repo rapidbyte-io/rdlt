@@ -19,7 +19,7 @@ fn connect(py: Python<'_>, body: &str) -> Py<PyAny> {
     let code = format!(
         "import json, types, threading\n{body}\n\
          connected = types.SimpleNamespace(check=lambda: None, streams=streams)\n\
-         connect = lambda config: connected\n"
+         connect = lambda config, host: connected\n"
     );
     let globals = PyDict::new(py);
     py.run(&std::ffi::CString::new(code).unwrap(), Some(&globals), None)
@@ -258,6 +258,39 @@ fn a_stream_says_whether_it_can_be_read_again() {
 }
 
 #[test]
+fn a_source_is_connected_for_the_host_its_context_names() {
+    embedded::with(|py| {
+        let code = c"import builtins, types
+connected = types.SimpleNamespace(check=lambda: None, streams=[])
+def connect(config, host):
+    builtins.connected_for = host
+    return connected
+";
+        let globals = PyDict::new(py);
+        py.run(code, Some(&globals), None).unwrap();
+        let connect = globals.get_item("connect").unwrap().unbind();
+        let made = NativeSourceFactory::new("io.example.py", "1.0.0".to_owned(), "{}", connect);
+        let source_factory = made.unwrap().factory();
+        let runtime = runtime::get(py).unwrap();
+        py.detach(|| {
+            runtime.block_on(async {
+                let serving = ConnectContext::serving("host-a");
+                source_factory
+                    .connect(serde_json::json!({}), serving)
+                    .await
+                    .unwrap();
+            });
+        });
+        let host: String = py
+            .eval(c"__import__('builtins').connected_for", None, None)
+            .unwrap()
+            .extract()
+            .unwrap();
+        assert_eq!(host, "host-a");
+    });
+}
+
+#[test]
 fn a_factory_says_its_spec_and_refuses_an_id_or_schema_that_is_not_one() {
     embedded::with(|py| {
         let made = factory(py, ONE_STREAM);
@@ -313,7 +346,7 @@ streams = [stream]
 def failing():
     raise PermissionError('no access')
 connected = types.SimpleNamespace(check=failing, streams=streams)
-connect = lambda config: connected";
+connect = lambda config, host: connected";
         let globals = PyDict::new(py);
         py.run(
             &std::ffi::CString::new(format!("import json, types\n{body}")).unwrap(),

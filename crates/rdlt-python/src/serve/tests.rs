@@ -8,7 +8,7 @@ use crate::embedded;
 use crate::source::NativeSourceFactory;
 
 fn connect(py: Python<'_>) -> Py<PyAny> {
-    py.eval(c"lambda config: None", None, None)
+    py.eval(c"lambda config, host: None", None, None)
         .unwrap()
         .unbind()
 }

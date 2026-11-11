@@ -16,6 +16,8 @@ from typing import TypeVar, cast
 import pyarrow as pa
 
 from rdlt.connector import (
+    SCHEMA_CONFLICT,
+    TABLE_OWNED,
     Capabilities,
     Config,
     Fence,
@@ -93,7 +95,7 @@ def _columns(change: Mapping[str, Json]) -> tuple[str, dict[str, Json]]:
         declared = [cast("list[dict[str, Json]]", fields["field"])]
     else:
         message = f"table {name} widens no column in place"
-        raise InvalidData(message, code="schema_conflict")
+        raise InvalidData(message, code=SCHEMA_CONFLICT)
     return name, {str(root["name"]): [root["type"], *rest] for root, *rest in declared}
 
 
@@ -162,7 +164,7 @@ class _Session:
             return {}
         if row[0] != self.pipeline:
             message = f"table {name} belongs to pipeline {row[0]}"
-            raise InvalidConfig(message, code="table_owned")
+            raise InvalidConfig(message, code=TABLE_OWNED)
         return cast("dict[str, Json]", json.loads(row[1]))
 
     def apply_schema(self, change: Mapping[str, Json]) -> None:
@@ -174,7 +176,7 @@ class _Session:
             for column, kept in columns.items():
                 if held.get(column, kept) != kept:
                     message = f"table {name} holds column {column} at another type"
-                    raise InvalidData(message, code="schema_conflict")
+                    raise InvalidData(message, code=SCHEMA_CONFLICT)
             held.update(columns)
             self.database.execute(
                 "update tables set columns = ? where name = ?", (json.dumps(held), name)
