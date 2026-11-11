@@ -25,7 +25,8 @@ use regex::{Regex, RegexBuilder};
 use crate::error::{SqlError, SqlErrorKind};
 use crate::functions::{Call, Listed, listed};
 use crate::limits::{
-    REGEX_BYTES, SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_LITERAL_BYTES, SQL_NESTED_CONDITIONS,
+    REGEX_BYTES, SQL_CALL_DEPTH, SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_LITERAL_BYTES,
+    SQL_NESTED_CONDITIONS,
 };
 
 /// Whether `statement`, a parsed query, filters; refused where it is not one a SQL transform
@@ -86,6 +87,17 @@ pub(crate) fn deep_condition() -> SqlError {
         format!(
             "the text nests a condition deeper than {SQL_CONDITION_DEPTH}, a `WHEN` or an \
              argument of `coalesce` but its last"
+        ),
+    )
+}
+
+/// The refusal of text nesting calls deeper than [`SQL_CALL_DEPTH`].
+pub(crate) fn deep_calls() -> SqlError {
+    SqlError::new(
+        SqlErrorKind::Syntax,
+        format!(
+            "the text nests calls deeper than {SQL_CALL_DEPTH}: a function, a `CASE` or a \
+             `coalesce` within another"
         ),
     )
 }
