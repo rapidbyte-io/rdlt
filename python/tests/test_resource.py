@@ -403,7 +403,7 @@ def test_a_resource_with_a_cursor_that_never_checkpoints_fails_naming_it(
     )
     with pytest.raises(rdlt.Error) as raised:
         built.build(host(tmp_path, connectors)).run()
-    assert raised.value.report().connector_code == "checkpoint_missing"
+    assert raised.value.report().code == "checkpoint_missing"
 
 
 def test_a_resumed_read_that_yields_rows_and_never_checkpoints_fails(
@@ -429,7 +429,7 @@ def test_a_resumed_read_that_yields_rows_and_never_checkpoints_fails(
     checkpointing[0] = False
     with pytest.raises(rdlt.Error) as raised:
         built.build(every_host).run()
-    assert raised.value.report().connector_code == "checkpoint_missing"
+    assert raised.value.report().code == "checkpoint_missing"
 
 
 def test_a_stream_named_twice_is_refused_by_the_plan(tmp_path: Path, connectors: Path) -> None:

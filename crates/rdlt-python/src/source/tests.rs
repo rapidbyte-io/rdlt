@@ -293,14 +293,14 @@ streams = [stream]";
     });
 }
 
-const RESUMING: &str =
+const UNSPLIT: &str =
     "stream = types.SimpleNamespace(read=read, partitions=lambda: [], spec=json.dumps({
     'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'],
-    'checkpointing': 'natural', 'partitioned': False, 'resumes': True}))
+    'checkpointing': 'natural', 'partitioned': False}))
 streams = [stream]";
 
 #[test]
-fn a_resuming_read_that_pushes_rows_and_never_checkpoints_fails() {
+fn an_incremental_read_that_pushes_rows_and_never_checkpoints_fails_and_a_full_one_loads_them() {
     embedded::with(|py| {
         for (store, read) in [
             ("no-checkpoint-rows", "yield {'n': 1}"),
@@ -309,21 +309,26 @@ fn a_resuming_read_that_pushes_rows_and_never_checkpoints_fails() {
                 "yield __import__('pyarrow').record_batch({'n': [1]})",
             ),
         ] {
-            let body = format!("def read(partition, cursor, context):\n    {read}\n{RESUMING}");
+            let body = format!("def read(partition, cursor, context):\n    {read}\n{UNSPLIT}");
             let (_, error) = loaded(py, store, "incremental", &body);
             let report: serde_json::Value =
                 serde_json::from_str(&error.expect("the run failed")).unwrap();
-            assert_eq!(report["connector_code"], "checkpoint_missing", "{read}");
+            assert_eq!(report["code"], "checkpoint_missing", "{read}");
+            assert_eq!(report["kind"], "source", "{read}");
+            let full = format!("{store}-full");
+            let (_, error) = loaded(py, &full, "full", &body);
+            assert_eq!(error, None, "{read}");
+            assert_eq!(published_rows(&full, "rows"), 1, "{read}");
         }
     });
 }
 
 #[test]
-fn a_resuming_read_that_pushes_nothing_ends_clean() {
+fn an_incremental_read_that_pushes_nothing_ends_clean() {
     embedded::with(|py| {
         let body = format!(
             "def read(partition, cursor, context):\n    \
-             yield __import__('pyarrow').record_batch({{'n': __import__('pyarrow').array([], __import__('pyarrow').int64())}})\n{RESUMING}"
+             yield __import__('pyarrow').record_batch({{'n': __import__('pyarrow').array([], __import__('pyarrow').int64())}})\n{UNSPLIT}"
         );
         let (_, error) = loaded(py, "no-checkpoint-empty", "incremental", &body);
         assert_eq!(error, None);

@@ -69,8 +69,8 @@ struct Declared {
     read_modes: Vec<ReadMode>,
     checkpointing: Checkpointing,
     partitioned: bool,
-    /// Whether the stream is read from its committed cursor on: a read that ends on rows after
-    /// its last checkpoint must not read as a partition finished.
+    /// Whether the stream is read from its committed cursor on: a read of a partition it declares
+    /// that ends on rows after its last checkpoint must not read as the partition finished.
     #[serde(default)]
     resumes: bool,
 }
@@ -156,8 +156,11 @@ impl ReadStream<PythonSource> for PythonStream {
         _source: &PythonSource,
         _state: &StreamState,
     ) -> Result<Vec<Partition>> {
-        // A resuming stream's partitions are never finished: rows a read leaves after its last
-        // checkpoint are read again from it, not committed and recorded done.
+        if !self.partitioned {
+            return Ok(vec![Partition::single()]);
+        }
+        // A resuming stream's declared partitions are never finished: rows a read leaves after
+        // its last checkpoint are read again from it, not committed and recorded done.
         let held = |partition: Partition| {
             if self.resumes {
                 partition.unbounded()
@@ -165,9 +168,6 @@ impl ReadStream<PythonSource> for PythonStream {
                 partition
             }
         };
-        if !self.partitioned {
-            return Ok(vec![held(Partition::single())]);
-        }
         let stream = Arc::clone(&self.stream);
         let keys: Vec<String> = called(
             "partitions",
@@ -193,8 +193,6 @@ impl ReadStream<PythonSource> for PythonStream {
     ) -> Result<()> {
         let key = self.partitioned.then(|| partition.id().to_string());
         let cursor = cursor.0.map(|cursor| cursor.get().to_owned());
-        let mut unmarked = self.resumes;
-        let mut pushed_rows = false;
         let limits = out.limits();
         let limits = JsonLimits::new(limits.json_push_bytes, limits.nesting_depth);
         let (context, due) = NativeStreamContext::new(key.clone(), out.follows(), out.resumes());
@@ -225,18 +223,10 @@ impl ReadStream<PythonSource> for PythonStream {
                 }
             };
             match pushed {
-                None if unmarked && pushed_rows => return Err(no_checkpoint(&self.spec)),
                 None => return Ok(()),
-                Some(Pushed::Json(json)) => {
-                    pushed_rows = true;
-                    out.json(json).await?;
-                }
-                Some(Pushed::Batch(batch)) => {
-                    pushed_rows |= batch.num_rows() > 0;
-                    out.batch(batch).await?;
-                }
+                Some(Pushed::Json(json)) => out.json(json).await?,
+                Some(Pushed::Batch(batch)) => out.batch(batch).await?,
                 Some(Pushed::Checkpoint(cursor)) => {
-                    unmarked = false;
                     out.checkpoint(&PyCursor(Some(cursor))).await?;
                 }
                 Some(Pushed::Failed(error)) => return Err(error),
@@ -244,17 +234,6 @@ impl ReadStream<PythonSource> for PythonStream {
             due.set(out.checkpoint_due());
         }
     }
-}
-
-/// Why a read of a resuming stream that pushed rows and never checkpointed fails: only rows
-/// before a checkpoint commit, so its rows would be read again by every run and none land.
-fn no_checkpoint(spec: &StreamSpec) -> ConnectorError {
-    ConnectorError::config(format!(
-        "stream {}: yielded rows but no checkpoint; rows commit at a checkpoint, so end the \
-         generator with `yield rdlt.checkpoint(cursor)`",
-        spec.name()
-    ))
-    .with_code("checkpoint_missing")
 }
 
 /// Connects the source `connect` makes from the configuration's JSON.
