@@ -224,20 +224,21 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import rdlt
+from rdlt.connector import Cursor, checkpoint, stream
 
 
-class Since(rdlt.Cursor):
+class Since(Cursor):
     """Where `users` resumes: the last page committed."""
 
     after: int = -1
 
 
-@rdlt.resource(primary_key="id", write=rdlt.merge("id"), cursor=Since)
+@stream(primary_key="id", write=rdlt.merge("id"), cursor=Since)
 def users(since: Since) -> Iterator[object]:
     """Three pages of ten users, each followed by the checkpoint after it."""
     for page in range(since.after + 1, 3):
         yield [{"id": page * 10 + n, "name": f"user {page * 10 + n}"} for n in range(10)]
-        yield rdlt.checkpoint(Since(after=page))
+        yield checkpoint(Since(after=page))
 
 
 def main(connectors: Path, data: Path) -> rdlt.Outcome:

@@ -9,16 +9,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypeAlias, cast
+from typing import Literal, TypeAlias, cast
 
 from rdlt import _native
 from rdlt._transform import Transform, named_once
 from rdlt.connector import Local, _destination, _source
 from rdlt.connector._declared import Registered, registered_once
+from rdlt.connector._source import ReadStream
 from rdlt.host import Host, StrPath, _names, _paths
-
-if TYPE_CHECKING:
-    from rdlt._resource import Resource
 from rdlt.model import Catalog, Json, Outcome, ReadMode, _parse
 from rdlt.run import Run, _ended
 
@@ -376,23 +374,38 @@ class Defaults:
         )
 
 
-def _resources(source: Resource | Sequence[Resource]) -> list[Resource]:
-    from rdlt._resource import Resource  # noqa: PLC0415
+def _functions(source: object) -> list[ReadStream]:
+    """`source`'s stream functions.
 
-    return [source] if isinstance(source, Resource) else list(source)
+    Raises:
+        TypeError: something in it is no stream: a plain function, a class or a name.
+    """
+    given: list[object] = (
+        list(cast("Sequence[object]", source))
+        if isinstance(source, Sequence) and not isinstance(source, str)
+        else [source]
+    )
+    functions: list[ReadStream] = []
+    for each in given:
+        if not isinstance(each, ReadStream):
+            named = getattr(each, "__name__", type(each).__name__)
+            message = (
+                f"source={named} is no stream: @rdlt.connector.stream makes a function one, and "
+                "a connector is rdlt.Connector(...) or rdlt.local(...)"
+            )
+            raise TypeError(message)
+        functions.append(each)
+    return functions
 
 
-def _resource_entries(resources: Sequence[Resource]) -> dict[str, dict[str, Json]]:
-    """Each resource's stream entry, selected without being named."""
-    entries: dict[str, dict[str, Json]] = {}
-    for resource in resources:
-        entry: dict[str, Json] = {"name": resource.name}
-        if resource.write is not None:
-            entry["write"] = resource.write._document
-        if resource.cursor is not None:
-            entry["read"] = "incremental"
-        entries[resource.name] = entry
-    return entries
+def _entry(declared: ReadStream) -> dict[str, Json]:
+    """A stream's entry as its declaration says: incremental with a cursor, written as it says."""
+    entry: dict[str, Json] = {"name": declared.name}
+    if declared.write is not None:
+        entry["write"] = declared.write._document
+    if declared.cursor is not None:
+        entry["read"] = "incremental"
+    return entry
 
 
 def _local_reference(answers: str, local: Local) -> dict[str, Json]:
@@ -407,20 +420,14 @@ def _local_document(local: Local) -> tuple[dict[str, Json], dict[str, dict[str, 
     """A local connector's source document, and an entry for each of its streams."""
     declared = _source.declaration(local.connector)
     document = _local_reference(declared.id, local)
-    entries: dict[str, dict[str, Json]] = {}
-    for method in declared.streams:
-        entry: dict[str, Json] = {"name": method.name}
-        if method.cursor is not None:
-            entry["read"] = "incremental"
-        entries[method.name] = entry
-    return document, entries
+    return document, {method.name: _entry(method) for method in declared.streams}
 
 
 def pipeline(
     name: str,
     /,
     *,
-    source: Connector | Local | Resource | Sequence[Resource],
+    source: Connector | Local | ReadStream | Sequence[ReadStream],
     destination: Connector | Local,
     streams: Sequence[Stream] = (),
     defaults: Defaults | None = None,
@@ -431,20 +438,21 @@ def pipeline(
 ) -> PipelineBuilder:
     """The pipeline `name`, from `source` to `destination`; the same document a file would hold.
 
-    `source` is a connector, `rdlt.local(SomeSource, config=...)` for a class `@source` made, or,
-    for sources written in Python, one or more `@rdlt.resource` functions, each read as the stream
-    it names. A resource is always selected; a local connector's streams are each selected where
-    `streams` names none of them, and otherwise only those it names. A stream named exactly keeps
-    what its declaration says, `read: incremental` for one with a cursor, under what its entry
-    says; one a pattern selects reads as the defaults say. `destination` is a connector, or
-    `rdlt.local(SomeDestination, config=...)` for a class `@destination` made.
-    """
-    from rdlt._resource import RESOURCES, source_factory  # noqa: PLC0415
+    `source` is a connector, `rdlt.local(SomeSource, config=...)` for a class `@source` made, or
+    one or more functions `@rdlt.connector.stream` made streams, read in process as the streams
+    of one source, `io.rapidbyte.functions`. A function's stream is always selected; a local
+    connector's streams are each selected where `streams` names none of them, and otherwise only
+    those it names. A stream named exactly keeps what its declaration says, `read: incremental`
+    for one with a cursor and its `write`, under what its entry says; one a pattern selects reads
+    as the defaults say. `destination` is a connector, or `rdlt.local(SomeDestination,
+    config=...)` for a class `@destination` made.
 
-    selected = [] if isinstance(source, (Connector, Local)) else _resources(source)
+    Raises:
+        TypeError: `source` holds something that is no stream, such as a plain function.
+    """
     factories: list[_native.SourceFactory] = []
     destinations: list[_native.DestinationFactory] = []
-    held: list[object] = list(selected)
+    held: list[object] = []
     connectors: Registered = ()
     entries: dict[str, dict[str, Json]] = {}
     source_document: dict[str, Json]
@@ -461,8 +469,11 @@ def pipeline(
         answers = _source.declaration(source.connector).id
         connectors = registered_once(connectors, "source", answers, source.connector)
     else:
-        source_document = {"connector": RESOURCES}
-        entries = _resource_entries(selected)
+        functions = _functions(source)
+        source_document = {"connector": _source.FUNCTIONS}
+        entries = {made.name: _entry(made) for made in functions}
+        factories.append(_source.functions_placed(functions))
+        held.extend(functions)
     named: set[str] = set()
     repeated: list[dict[str, Json]] = []
     transforms: tuple[tuple[str, Transform], ...] = ()
@@ -475,9 +486,6 @@ def pipeline(
         for step in given.transform:
             if isinstance(step, Transform):
                 transforms = named_once(transforms, step.name, step)
-    if not isinstance(source, (Connector, Local)):
-        resuming = {name for name, entry in entries.items() if entry.get("read") == "incremental"}
-        factories.append(source_factory(selected, resuming))
     if isinstance(destination, Local):
         answers = _destination.declaration(destination.connector).id
         destination_document = _local_reference(answers, destination)

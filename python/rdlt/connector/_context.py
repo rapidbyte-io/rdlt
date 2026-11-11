@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from rdlt import _native
-from rdlt.cursor import Cursor
+from rdlt.connector._cursor import Cursor
 
 
 class StreamContext:
@@ -35,7 +35,8 @@ class StreamContext:
 def checkpoint(cursor: Cursor) -> _native.Checkpoint:
     """A checkpoint to yield: what was yielded before it is sealed, and a restart resumes there.
 
-    Only rows before a checkpoint commit: a resource ends on one, or the rows after it wait for
-    the next run to read them again.
+    Read `full`, everything a read yields commits. Read incrementally, a stream without
+    `partitions` commits only what it yields before its last checkpoint, and the next run reads the
+    rest again from there, so its read ends on a checkpoint.
     """
     return _native.Checkpoint(cursor.model_dump_json())

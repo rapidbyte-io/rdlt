@@ -28,7 +28,7 @@ CHECKPOINTS = 100
 """Batches between checkpoints, so what a run holds at once does not grow with its length."""
 
 
-class Upto(rdlt.Cursor):
+class Upto(rdlt.connector.Cursor):
     """The last batch read."""
 
     batch: int = -1
@@ -54,12 +54,12 @@ def settled() -> tuple[int, int]:
 
 
 def loaded(batches: int, connectors: Path, name: str) -> None:
-    @rdlt.resource(name="numbers", cursor=Upto)
+    @rdlt.connector.stream(name="numbers", cursor=Upto)
     def numbers(upto: Upto) -> Iterator[object]:
         for n in range(upto.batch + 1, batches):
             yield pa.record_batch({"n": pa.array([n] * ROWS, pa.int64())})
             if n % CHECKPOINTS == CHECKPOINTS - 1:
-                yield rdlt.checkpoint(Upto(batch=n))
+                yield rdlt.connector.checkpoint(Upto(batch=n))
 
     @rdlt.transform()
     def plus(batch: pa.RecordBatch) -> pa.RecordBatch:

@@ -22,7 +22,7 @@ def into_sqlite(tmp_path: Path) -> rdlt.Connector:
 def test_a_rate_limit_s_after_is_the_engine_s_retry_delay(tmp_path: Path, connectors: Path) -> None:
     calls: list[int] = []
 
-    @rdlt.resource()
+    @rdlt.connector.stream()
     def limited() -> Iterator[object]:
         calls.append(1)
         if len(calls) == 1:
@@ -58,7 +58,7 @@ def test_a_rate_limit_s_after_is_the_engine_s_retry_delay(tmp_path: Path, connec
 def test_invalid_data_fails_the_run_as_data_and_is_not_retried(
     tmp_path: Path, connectors: Path
 ) -> None:
-    @rdlt.resource()
+    @rdlt.connector.stream()
     def malformed() -> Iterator[object]:
         raise InvalidData("row 7 has no id", code="missing_id")
         yield {}

@@ -53,7 +53,7 @@ enum Command {
     Status(oneshot::Sender<String>),
     Stop(rdlt::StopMode),
     /// Stops the run after its next commit and lets it finish though every handle is dropped,
-    /// holding the host its resources, transforms and secrets are reached through until it ends.
+    /// holding the host its streams, transforms and secrets are reached through until it ends.
     Detach(Py<PyAny>),
     /// Drops the run now, which cancels it.
     Cancel,
@@ -210,7 +210,7 @@ impl NativeRun {
 
     /// Asks the run to stop after its next commit and lets it finish in the background, though
     /// every handle to it is then dropped, as a cancelled await of it does; `host`, what its
-    /// resources, transforms and secrets are reached through, is held until it ends.
+    /// streams, transforms and secrets are reached through, is held until it ends.
     fn detach(&self, host: Py<PyAny>) {
         drop(self.commands.send(Command::Detach(host)));
     }
