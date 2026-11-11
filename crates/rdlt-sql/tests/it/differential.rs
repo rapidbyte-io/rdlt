@@ -10,7 +10,7 @@ use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use proptest::prelude::*;
 use rdlt_engine::Transform;
-use rdlt_sql::Sql;
+use rdlt_sql::{Sql, SqlErrorKind};
 
 use crate::composed;
 use crate::queries::{EXPRESSIONS, PREDICATES, batches, query};
@@ -208,6 +208,10 @@ proptest! {
         text in composed::query(),
         batch in composed::batch(),
     ) {
+        // A drawn query is one query far within the depth limit, so its one refusal of this kind
+        // is of a `CASE` lying within more conditions than the limit, which DataFusion plans.
+        let refused = Sql::parse(&text).err().map(|refused| refused.kind());
+        prop_assume!(refused != Some(SqlErrorKind::Syntax));
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("a runtime starts");

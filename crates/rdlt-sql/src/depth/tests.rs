@@ -3,12 +3,20 @@ use std::thread;
 use datafusion_sql::sqlparser::dialect::GenericDialect;
 use datafusion_sql::sqlparser::parser::Parser;
 
-use super::depth;
+use super::{Nesting, nesting};
 use crate::{SQL_BYTES, SQL_DEPTH, Sql, SqlErrorKind};
 
-fn measured(text: &str) -> usize {
+/// How `text`, a statement, nests.
+fn nesting_of(text: &str) -> Nesting {
     let statements = Parser::parse_sql(&GenericDialect {}, text).unwrap();
-    statements.iter().map(depth).max().unwrap()
+    let [statement] = statements.as_slice() else {
+        panic!("{text} is one statement");
+    };
+    nesting(statement)
+}
+
+fn measured(text: &str) -> usize {
+    nesting_of(text).depth
 }
 
 #[test]
@@ -30,6 +38,81 @@ fn an_expression_lies_as_deep_as_the_expressions_above_it() {
     ];
     for (text, expected) in cases {
         assert_eq!(measured(text), expected, "{text}");
+    }
+}
+
+/// Queries, each with the most conditions any `CASE` or `coalesce` of it lies within.
+const CONDITIONED: [(&str, usize); 19] = [
+    ("SELECT n FROM input", 0),
+    ("SELECT CASE WHEN n > 0 THEN 1 END AS x FROM input", 0),
+    (
+        "SELECT CASE WHEN CASE WHEN n > 0 THEN true END THEN 1 END AS x FROM input",
+        1,
+    ),
+    (
+        "SELECT CASE WHEN NOT (CASE WHEN n > 0 THEN true END) THEN 1 END AS x FROM input",
+        1,
+    ),
+    (
+        "SELECT n FROM input WHERE CASE WHEN CASE WHEN n > 0 THEN true END THEN true END",
+        1,
+    ),
+    (
+        "SELECT CASE n WHEN CASE WHEN n > 0 THEN 1 END THEN 2 END AS x FROM input",
+        1,
+    ),
+    // A result, an `ELSE` and an operand are no conditions.
+    (
+        "SELECT CASE WHEN n > 0 THEN CASE WHEN n > 1 THEN 1 END END AS x FROM input",
+        0,
+    ),
+    (
+        "SELECT CASE WHEN n > 0 THEN 1 ELSE CASE WHEN n > 1 THEN 2 END END AS x FROM input",
+        0,
+    ),
+    (
+        "SELECT CASE CASE WHEN n > 0 THEN 1 END WHEN 1 THEN 2 END AS x FROM input",
+        0,
+    ),
+    // `coalesce` tests each argument but its last, as the `CASE` planned for it does.
+    ("SELECT coalesce(n, coalesce(n, 1)) AS x FROM input", 0),
+    ("SELECT coalesce(coalesce(n, 1), 2) AS x FROM input", 1),
+    ("SELECT COALESCE(n, COALESCE(n, 1), 2) AS x FROM input", 1),
+    ("SELECT lower(coalesce(lower(t), 'a')) AS x FROM input", 0),
+    (
+        "SELECT CASE WHEN coalesce(n, 1) > 0 THEN 1 END AS x FROM input",
+        1,
+    ),
+    (
+        "SELECT coalesce(CASE WHEN n > 0 THEN 1 END, 2) AS x FROM input",
+        1,
+    ),
+    (
+        "SELECT coalesce(coalesce(coalesce(n, 1), 2), 3) AS x FROM input",
+        2,
+    ),
+    (
+        "SELECT CASE WHEN lower(CASE WHEN CASE WHEN n > 0 THEN t END = 'a' THEN t END) = 'b' \
+         THEN 1 END AS x FROM input",
+        2,
+    ),
+    // Conditions side by side, and a `CASE` met after the walk leaves a condition.
+    (
+        "SELECT CASE WHEN CASE WHEN n > 0 THEN true END AND CASE WHEN n > 1 THEN true END \
+         THEN 1 END AS x FROM input",
+        1,
+    ),
+    (
+        "SELECT CASE WHEN CASE WHEN n > 0 THEN true END THEN CASE WHEN CASE WHEN n > 1 THEN \
+         true END THEN 1 END END AS x FROM input",
+        1,
+    ),
+];
+
+#[test]
+fn a_case_lies_within_the_conditions_of_the_cases_and_coalesces_around_it() {
+    for (text, expected) in CONDITIONED {
+        assert_eq!(nesting_of(text).conditions, expected, "{text}");
     }
 }
 
