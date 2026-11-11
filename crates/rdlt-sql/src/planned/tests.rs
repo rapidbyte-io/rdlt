@@ -18,7 +18,7 @@ use rdlt_engine::{Bound, NAMED_COLUMNS, Transform, allocated_beyond, codes};
 use super::compact::compacted;
 use super::{logical, within};
 use crate::functions::{ARRAY, TEXT, TEXT_ARRAY};
-use crate::{SQL_CONDITION_DEPTH, SQL_DEPTH, Sql, SqlErrorKind, depth};
+use crate::{SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_NESTED_CONDITIONS, Sql, SqlErrorKind, depth};
 
 fn people() -> RecordBatch {
     RecordBatch::try_from_iter([
@@ -416,18 +416,22 @@ fn an_output_column_under_the_engines_prefix_is_refused_naming_it() {
     assert_eq!(refused.column(), Some("_rdlt_op"));
 }
 
-/// How deep the expressions of `text` nest, as the limit measures them.
-fn depth_of(text: &str) -> usize {
+/// How the expressions of `text`, a statement, nest, as the limits measure them.
+fn nesting_of(text: &str) -> depth::Nesting {
     let parsed = Parser::new(&GenericDialect {})
         .with_recursion_limit(1 << 12)
         .try_with_sql(text)
         .and_then(|mut parser| parser.parse_statements())
         .unwrap();
-    parsed
-        .iter()
-        .map(|statement| depth::nesting(statement).depth)
-        .max()
-        .unwrap()
+    let [statement] = parsed.as_slice() else {
+        panic!("{text} is one statement");
+    };
+    depth::nesting(statement)
+}
+
+/// How deep the expressions of `text` nest, as the limit measures them.
+fn depth_of(text: &str) -> usize {
+    nesting_of(text).depth
 }
 
 /// A query of `form`, as deep as the limit admits.
@@ -537,7 +541,7 @@ fn a_case_within_as_many_conditions_as_the_limit_admits_runs_and_one_within_more
         },
     ];
     for form in forms {
-        let at = form(SQL_CONDITION_DEPTH + 1);
+        let at = form(SQL_NESTED_CONDITIONS + 1);
         let shown: String = at.chars().take(60).collect();
         let ran = std::thread::Builder::new()
             .name("a small stack".to_owned())
@@ -552,7 +556,7 @@ fn a_case_within_as_many_conditions_as_the_limit_admits_runs_and_one_within_more
             .unwrap()
             .join();
         assert_eq!(ran.unwrap(), Ok(3), "{shown}");
-        for levels in [SQL_CONDITION_DEPTH + 2, 18] {
+        for levels in [SQL_NESTED_CONDITIONS + 2, 18] {
             let refused = Sql::parse(&form(levels)).unwrap_err();
             assert_eq!(
                 (refused.kind(), refused.code()),
@@ -560,6 +564,40 @@ fn a_case_within_as_many_conditions_as_the_limit_admits_runs_and_one_within_more
                 "{shown} at {levels}"
             );
         }
+    }
+}
+
+#[test]
+fn a_condition_as_deep_as_the_limit_admits_runs_and_one_deeper_is_refused() {
+    let realistic = "SELECT CASE WHEN lower(btrim(t)) = 'x' AND coalesce(n, 0) > 3 THEN 1 ELSE 0 END \
+                     AS x FROM input";
+    let forms: [fn(usize) -> String; 2] = [
+        |deep| {
+            let (open, close) = ("abs(".repeat(deep - 1), ")".repeat(deep - 1));
+            format!("SELECT CASE WHEN {open}n{close} = 1 THEN n ELSE 1 END AS x FROM input")
+        },
+        |deep| {
+            let (open, close) = ("abs(".repeat(deep), ")".repeat(deep));
+            format!("SELECT coalesce({open}n{close}, 1) AS x FROM input")
+        },
+    ];
+    let mut admitted = vec![realistic.to_owned()];
+    for form in forms {
+        let (at, over) = (form(SQL_CONDITION_DEPTH), form(SQL_CONDITION_DEPTH + 1));
+        assert_eq!(nesting_of(&at).condition_depth, SQL_CONDITION_DEPTH, "{at}");
+        let refused = Sql::parse(&over).unwrap_err();
+        assert_eq!(
+            (refused.kind(), refused.code()),
+            (SqlErrorKind::Syntax, codes::TRANSFORM_INVALID),
+            "{over}"
+        );
+        admitted.push(at);
+    }
+    for text in admitted {
+        let sql = Sql::parse(&text).unwrap();
+        let batch = mixed();
+        sql.keep(&batch).unwrap();
+        assert_eq!(sql.apply(batch).unwrap().num_rows(), 3, "{text}");
     }
 }
 

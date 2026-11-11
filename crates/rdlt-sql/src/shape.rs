@@ -24,7 +24,9 @@ use regex::{Regex, RegexBuilder};
 
 use crate::error::{SqlError, SqlErrorKind};
 use crate::functions::{Call, Listed, listed};
-use crate::limits::{REGEX_BYTES, SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_LITERAL_BYTES};
+use crate::limits::{
+    REGEX_BYTES, SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_LITERAL_BYTES, SQL_NESTED_CONDITIONS,
+};
 
 /// Whether `statement`, a parsed query, filters; refused where it is not one a SQL transform
 /// may hold.
@@ -66,13 +68,24 @@ pub(crate) fn nested() -> SqlError {
     )
 }
 
-/// The refusal of text nesting a `CASE` within more conditions than [`SQL_CONDITION_DEPTH`].
+/// The refusal of text nesting a `CASE` within more conditions than [`SQL_NESTED_CONDITIONS`].
 pub(crate) fn conditioned() -> SqlError {
     SqlError::new(
         SqlErrorKind::Syntax,
         format!(
-            "the text nests a `CASE` within more than {SQL_CONDITION_DEPTH} condition, a `WHEN` or \
+            "the text nests a `CASE` within more than {SQL_NESTED_CONDITIONS} condition, a `WHEN` or \
              an argument of `coalesce` but its last"
+        ),
+    )
+}
+
+/// The refusal of text nesting a condition deeper than [`SQL_CONDITION_DEPTH`].
+pub(crate) fn deep_condition() -> SqlError {
+    SqlError::new(
+        SqlErrorKind::Syntax,
+        format!(
+            "the text nests a condition deeper than {SQL_CONDITION_DEPTH}, a `WHEN` or an \
+             argument of `coalesce` but its last"
         ),
     )
 }

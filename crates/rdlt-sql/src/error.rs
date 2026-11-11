@@ -13,6 +13,7 @@ pub enum SqlErrorKind {
     TooLong,
     /// The text is not one statement, nests deeper than [`SQL_DEPTH`](crate::SQL_DEPTH), or
     /// nests a `CASE` within more conditions than
+    /// [`SQL_NESTED_CONDITIONS`](crate::SQL_NESTED_CONDITIONS), or a condition deeper than
     /// [`SQL_CONDITION_DEPTH`](crate::SQL_CONDITION_DEPTH).
     Syntax,
     /// The query is not a projection of `input`, optionally filtered.

@@ -15,7 +15,15 @@ pub const SQL_DEPTH: usize = 64;
 ///
 /// The planner reads a `CASE` in a condition again for each operator above it there, so its
 /// work multiplies with each condition a `CASE` lies within.
-pub const SQL_CONDITION_DEPTH: usize = 1;
+pub const SQL_NESTED_CONDITIONS: usize = 1;
+
+/// How deep the expressions of a SQL transform's condition may nest, each within as many as lie
+/// above it in its outermost condition: `n > 0` is one deep, and a `CASE` in a condition counts
+/// its own conditions in it.
+///
+/// The planner asks whether each part of a condition can be null again for each operator above
+/// that part, so its work on a condition grows as a power of the condition's depth.
+pub const SQL_CONDITION_DEPTH: usize = 8;
 
 /// How deep the parser may recurse, growing its stack as it goes: beyond what any query the
 /// depth limit admits takes, so text deeper still is refused as the limit refuses it.
