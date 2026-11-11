@@ -36,6 +36,7 @@ from rdlt.connector import (
     source,
     stream,
 )
+from rdlt.connector._streams import Stream
 
 
 def host(tmp_path: Path, connectors: Path) -> rdlt.Host:
@@ -274,6 +275,26 @@ def test_a_stream_function_is_told_which_cursors_are_committed(
     assert told, "the stream was told of its commits"
     assert told[-1] == ("whole", 5)
     assert {after for _, after in told} <= {2, 5}
+
+
+def test_a_committed_start_is_told_as_the_cursor_a_read_starts_from() -> None:
+    def read(since: _Since) -> Iterator[object]:
+        del since
+        yield from ()
+
+    told: Told = []
+    users = Stream(
+        "users",
+        read,
+        None,
+        _Since,
+        None,
+        committed=told_of(told),
+        takes_context=False,
+        replayable=True,
+    )
+    users.committed([("whole", None), ("whole", _Since(after=4).model_dump_json())])
+    assert told == [("whole", -1), ("whole", 4)]
 
 
 def test_a_source_class_s_stream_is_told_which_cursors_are_committed_through_a_method(

@@ -202,10 +202,12 @@ def built(
 def landed(into: Path, table: str = "users") -> list[int]:
     """The ids `table` holds, each as often as it lands; none where no table was made."""
     with sqlite3.connect(into / "out.db") as database:
-        try:
-            return sorted(row[0] for row in database.execute(f'SELECT "id" FROM "{table}"'))
-        except sqlite3.OperationalError:
+        made = database.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        ).fetchone()
+        if made is None:
             return []
+        return sorted(row[0] for row in database.execute(f'SELECT "id" FROM "{table}"'))
 
 
 @pytest.mark.parametrize(
