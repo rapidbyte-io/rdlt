@@ -179,10 +179,10 @@ determinism under simulation whatever the configuration says.
     are matched as written, time is in UTC, and an output expression other than a bare column is
     named.
   - SQL is hostile input: text of at most 64 KiB, expressions nested at most 64 deep, a `CASE`
-    within one condition at most and a condition at most 8 deep, literals of at most 4 KiB,
-    regular expressions and `LIKE` patterns only as literals, the former compiled under 1 MiB,
-    operators from a list, casts only to the listed scalar types, and output columns within the
-    engine's limit. The listed types are booleans, integers signed
+    within one condition at most and a condition at most 8 deep, calls nested at most 28 deep,
+    literals of at most 4 KiB, regular expressions and `LIKE` patterns only as literals, the
+    former compiled under 1 MiB, operators from a list, casts only to the listed scalar types,
+    and output columns within the engine's limit. The listed types are booleans, integers signed
     and unsigned, floats, decimals, text, dates, times and timestamps, under their names and the
     other names rdlt-sql lists for them (`CHARACTER VARYING`, `DEC`, `DATETIME`, `INT64` and the
     like), which a query is planned with as DataFusion names it. `INT8` is Postgres's name, 64
@@ -217,7 +217,15 @@ determinism under simulation whatever the configuration says.
     refused alike: the slowest condition found then plans in 54 milliseconds as the fuzzer
     builds rdlt-sql, and `CASE WHEN lower(btrim(t)) = 'x' AND coalesce(n, 0) > 3`, 4 deep, in
     11. At 6, `((a + b) * (c - d)) / e > 0.5 AND f IS NULL`, 7 deep with a parenthesis a
-    level, would be refused. The
+    level, would be refused. DataFusion works out a call's type and whether it can be null
+    again for each call around it, so a nest of calls costs about the square of its depth: 63
+    nested `abs` take a second to plan as the fuzzer builds rdlt-sql, and a nest wrapped around
+    a `CASE` pays the `CASE`'s conditions again for each call. So calls nest at most 28 deep,
+    a function's, `coalesce`'s, a `CASE` and a `SUBSTRING` a level each, measured and refused
+    alike, while operators keep the 64: 1 KiB of the slowest admitted queries found then plans
+    within a second as the fuzzer builds rdlt-sql, the slowest 20 `round`s around a `CASE`
+    whose condition is 8 deep, and `round(coalesce(nullif(n, 0), length(btrim(lower(t)))) /
+    3.0, 2)` still plans. The
     nightly fuzzing holds parsing to any text up to 64 KiB within two seconds, and plans only
     texts of at most 208 bytes, where the slowest admitted queries found plan within a second
     as the fuzzer builds rdlt-sql: there a timeout is planning that grows faster than the
@@ -280,8 +288,8 @@ determinism under simulation whatever the configuration says.
 - Planning a query the limits admit is polynomial in its expressions' depth and in the
   columns it outputs, and nothing but the limits bounds it. 64 KiB of 64-term chains takes 58
   seconds to plan as the fuzzer builds rdlt-sql, and 1.4 seconds optimised as the simulation
-  profile builds it; the slowest 64 KiB found, of calls nested 62 deep, takes 4.9 seconds
-  optimised.
+  profile builds it; the slowest 64 KiB found, of 20 `round`s each around a `CASE` whose
+  condition is 8 deep, takes 2.1 seconds optimised.
 - A query nesting conditions deeper writes them flat: the conditions of a `CASE` lying in a
   `WHEN` as the `WHEN`s of one `CASE`, and `coalesce(coalesce(coalesce(a, b), c), d)` as
   `coalesce(a, b, c, d)`.

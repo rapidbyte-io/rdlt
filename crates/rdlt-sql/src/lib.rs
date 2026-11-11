@@ -39,7 +39,7 @@ mod stack;
 pub use error::{SqlError, SqlErrorKind};
 pub use functions::function_names;
 pub use limits::{
-    REGEX_BYTES, SQL_BYTES, SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_LITERAL_BYTES,
+    REGEX_BYTES, SQL_BYTES, SQL_CALL_DEPTH, SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_LITERAL_BYTES,
     SQL_NESTED_CONDITIONS,
 };
 pub use sql::Sql;

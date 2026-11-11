@@ -25,6 +25,14 @@ pub const SQL_NESTED_CONDITIONS: usize = 1;
 /// that part, so its work on a condition grows as a power of the condition's depth.
 pub const SQL_CONDITION_DEPTH: usize = 8;
 
+/// How deep a SQL transform's calls may nest within one another: a function's, `coalesce`'s
+/// among them, a `CASE` and a `SUBSTRING` are a level each, so `lower(btrim(t))` is two deep and
+/// `n + 1` none.
+///
+/// The planner works out a call's type and nullability again for each call around it, so its
+/// work on a nest of calls grows as the square of the nest's depth.
+pub const SQL_CALL_DEPTH: usize = 28;
+
 /// How deep the parser may recurse, growing its stack as it goes: beyond what any query the
 /// depth limit admits takes, so text deeper still is refused as the limit refuses it.
 pub(crate) const PARSER_DEPTH: usize = 4 * SQL_DEPTH;

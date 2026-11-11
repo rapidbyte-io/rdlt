@@ -19,7 +19,8 @@ use crate::contain::contained;
 use crate::dialect::{Guarded, Refused};
 use crate::error::{SqlError, SqlErrorKind};
 use crate::limits::{
-    PARSER_DEPTH, PLANS, SQL_BYTES, SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_NESTED_CONDITIONS,
+    PARSER_DEPTH, PLANS, SQL_BYTES, SQL_CALL_DEPTH, SQL_CONDITION_DEPTH, SQL_DEPTH,
+    SQL_NESTED_CONDITIONS,
 };
 use crate::planned::Planned;
 use crate::{depth, shape, stack};
@@ -50,8 +51,9 @@ impl Sql {
     ///
     /// A [`SqlError`], coded `transform_invalid`, where `text` is longer than [`SQL_BYTES`], is
     /// not one query, nests deeper than [`SQL_DEPTH`], nests a `CASE` within more conditions
-    /// than [`SQL_NESTED_CONDITIONS`] or a condition deeper than [`SQL_CONDITION_DEPTH`], asks
-    /// for what a SQL transform may not, or makes a library it is parsed by panic.
+    /// than [`SQL_NESTED_CONDITIONS`], a condition deeper than [`SQL_CONDITION_DEPTH`] or calls
+    /// deeper than [`SQL_CALL_DEPTH`], asks for what a SQL transform may not, or makes a library
+    /// it is parsed by panic.
     pub fn parse(text: &str) -> Result<Self, SqlError> {
         let parsed = contained(|| Self::parsed(text));
         parsed.unwrap_or_else(|| {
@@ -179,6 +181,9 @@ fn read(tokens: Vec<TokenWithSpan>) -> Result<(Statement, bool), SqlError> {
         }
         if nesting.condition_depth > SQL_CONDITION_DEPTH {
             return Err(shape::deep_condition());
+        }
+        if nesting.call_depth > SQL_CALL_DEPTH {
+            return Err(shape::deep_calls());
         }
     }
     let (Some(mut statement), true) = (statements.pop(), statements.is_empty()) else {

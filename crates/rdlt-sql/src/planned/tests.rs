@@ -18,7 +18,9 @@ use rdlt_engine::{Bound, NAMED_COLUMNS, Transform, allocated_beyond, codes};
 use super::compact::compacted;
 use super::{logical, within};
 use crate::functions::{ARRAY, TEXT, TEXT_ARRAY};
-use crate::{SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_NESTED_CONDITIONS, Sql, SqlErrorKind, depth};
+use crate::{
+    SQL_CALL_DEPTH, SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_NESTED_CONDITIONS, Sql, SqlErrorKind, depth,
+};
 
 fn people() -> RecordBatch {
     RecordBatch::try_from_iter([
@@ -434,10 +436,15 @@ fn depth_of(text: &str) -> usize {
     nesting_of(text).depth
 }
 
-/// A query of `form`, as deep as the limit admits.
-fn deepest(form: fn(usize) -> String) -> usize {
-    let admitted = (1..4096).take_while(|times| depth_of(&form(*times)) <= SQL_DEPTH);
+/// How many times `form` repeats its level where `measured` is as deep as `limit` admits.
+fn deepest(form: fn(usize) -> String, measured: fn(&str) -> usize, limit: usize) -> usize {
+    let admitted = (1..4096).take_while(|times| measured(&form(*times)) <= limit);
     admitted.last().expect("one level fits the limit")
+}
+
+/// How deep the calls of `text` nest, as the limit measures them.
+fn calls_of(text: &str) -> usize {
+    nesting_of(text).call_depth
 }
 
 /// Batches of a number `n`, a text `t` and a truth `b`.
@@ -456,9 +463,51 @@ fn mixed() -> RecordBatch {
     .unwrap()
 }
 
+/// Whether `text` parses, plans, filters and projects [`mixed`] from a 2 MiB thread.
+fn runs_on_a_small_stack(text: String) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("a small stack".to_owned())
+        .stack_size(2 << 20)
+        .spawn(move || {
+            let sql = Sql::parse(&text).map_err(|error| error.to_string())?;
+            let batch = mixed();
+            sql.output(batch.schema_ref())
+                .map_err(|error| error.to_string())?;
+            sql.keep(&batch).map_err(|error| error.to_string())?;
+            sql.apply(batch).map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+/// Each of `forms` as deep as `limit` admits, as `measured` measures it, runs from a 2 MiB
+/// thread, and a level deeper is refused.
+fn deepest_runs_and_deeper_is_refused(
+    forms: &[fn(usize) -> String],
+    measured: fn(&str) -> usize,
+    limit: usize,
+) {
+    for form in forms {
+        let times = deepest(*form, measured, limit);
+        let (at, over) = (form(times), form(times + 1));
+        let shown: String = at.chars().take(60).collect();
+        assert_eq!(measured(&at), limit, "{shown}");
+        assert_eq!(runs_on_a_small_stack(at), Ok(()), "{shown} at {times}");
+        let refused = Sql::parse(&over).unwrap_err();
+        assert_eq!(
+            (refused.kind(), refused.code()),
+            (SqlErrorKind::Syntax, codes::TRANSFORM_INVALID),
+            "{shown} at {}",
+            times + 1
+        );
+    }
+}
+
 #[test]
 fn a_query_as_deep_as_the_limit_admits_runs_on_a_small_stack_and_one_deeper_is_refused() {
-    let forms: [fn(usize) -> String; 6] = [
+    let forms: [fn(usize) -> String; 4] = [
         |times| {
             format!(
                 "SELECT {}n{} AS x FROM input",
@@ -467,6 +516,20 @@ fn a_query_as_deep_as_the_limit_admits_runs_on_a_small_stack_and_one_deeper_is_r
             )
         },
         |times| format!("SELECT {}n AS x FROM input", "n + ".repeat(times)),
+        |times| {
+            format!(
+                "SELECT n FROM input WHERE {}b",
+                "b IS DISTINCT FROM ".repeat(times)
+            )
+        },
+        |times| format!("SELECT {}b AS x FROM input", "NOT ".repeat(times)),
+    ];
+    deepest_runs_and_deeper_is_refused(&forms, depth_of, SQL_DEPTH);
+}
+
+#[test]
+fn calls_as_deep_as_the_limit_admits_run_on_a_small_stack_and_one_deeper_is_refused() {
+    let forms: [fn(usize) -> String; 4] = [
         |times| {
             let (open, close) = ("CASE WHEN n > 0 THEN ", " ELSE n END");
             format!(
@@ -484,39 +547,26 @@ fn a_query_as_deep_as_the_limit_admits_runs_on_a_small_stack_and_one_deeper_is_r
         },
         |times| {
             format!(
-                "SELECT n FROM input WHERE {}b",
-                "b IS DISTINCT FROM ".repeat(times)
+                "SELECT {}n{} AS x FROM input",
+                "abs(".repeat(times),
+                ")".repeat(times)
             )
         },
-        |times| format!("SELECT {}b AS x FROM input", "NOT ".repeat(times)),
+        |times| {
+            format!(
+                "SELECT {}n{} AS x FROM input",
+                "coalesce(n, ".repeat(times),
+                ")".repeat(times)
+            )
+        },
     ];
-    for form in forms {
-        let times = deepest(form);
-        let (at, over) = (form(times), form(times + 1));
-        assert_eq!(depth_of(&at), SQL_DEPTH);
-        let ran = std::thread::Builder::new()
-            .name("a small stack".to_owned())
-            .stack_size(2 << 20)
-            .spawn(move || {
-                let sql = Sql::parse(&at).map_err(|error| error.to_string())?;
-                let batch = mixed();
-                sql.output(batch.schema_ref())
-                    .map_err(|error| error.to_string())?;
-                sql.keep(&batch).map_err(|error| error.to_string())?;
-                sql.apply(batch).map_err(|error| error.to_string())?;
-                Ok::<_, String>(())
-            })
-            .unwrap()
-            .join();
-        let shown: String = form(times).chars().take(60).collect();
-        assert_eq!(ran.unwrap(), Ok(()), "{shown} at {times}");
-        let refused = Sql::parse(&over).unwrap_err();
-        assert_eq!(
-            refused.kind(),
-            SqlErrorKind::Syntax,
-            "{shown} at {}",
-            times + 1
-        );
+    deepest_runs_and_deeper_is_refused(&forms, calls_of, SQL_CALL_DEPTH);
+    for call in [
+        "upper(coalesce(nullif(btrim(lower(t)), ''), 'none'))",
+        "round(coalesce(nullif(n, 0), length(btrim(lower(t)))) / 3.0, 2)",
+    ] {
+        let text = format!("SELECT {call} AS x FROM input");
+        assert_eq!(runs_on_a_small_stack(text.clone()), Ok(()), "{text}");
     }
 }
 

@@ -169,6 +169,31 @@ fn a_condition_is_as_deep_as_the_expressions_above_its_deepest_part_within_it() 
     }
 }
 
+/// Queries, each with the most calls any expression lies within, itself among them.
+const CALL_DEPTHS: [(&str, usize); 10] = [
+    ("SELECT n FROM input", 0),
+    ("SELECT n + 1 AS x FROM input", 0),
+    ("SELECT CAST(CAST(n AS INT) AS INT) AS x FROM input", 0),
+    ("SELECT lower(t) AS x FROM input", 1),
+    ("SELECT lower(t) || upper(t) AS x FROM input", 1),
+    ("SELECT SUBSTRING(t FROM 1 FOR 2) AS x FROM input", 1),
+    ("SELECT CASE WHEN b THEN lower(t) END AS x FROM input", 2),
+    (
+        "SELECT round(coalesce(nullif(btrim(lower(t)), ''), n), 2) AS x FROM input",
+        5,
+    ),
+    ("SELECT n FROM input WHERE lower(lower(t)) = 'a'", 2),
+    // A call met after the walk leaves another starts anew.
+    ("SELECT abs(abs(n)) + abs(n) AS x FROM input", 2),
+];
+
+#[test]
+fn calls_nest_as_deep_as_the_calls_around_the_deepest_one() {
+    for (text, expected) in CALL_DEPTHS {
+        assert_eq!(nesting_of(text).call_depth, expected, "{text}");
+    }
+}
+
 /// Lengths of text the deepest forms are built at: a short query's, a long one's, and the most a
 /// query's text may take.
 const LENGTHS: [usize; 3] = [1 << 10, 8 << 10, SQL_BYTES];

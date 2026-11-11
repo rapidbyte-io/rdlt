@@ -1,5 +1,5 @@
 //! How deep a parsed query's expressions nest, measured on the tree the parser built, how many
-//! conditions its `CASE`s lie within, and how deep its conditions nest.
+//! conditions its `CASE`s lie within, how deep its conditions nest, and how deep its calls nest.
 //!
 //! The parser builds a chain such as `a + b + c` in a loop, into a tree as deep as the chain is
 //! long, which its recursion limit does not bound. The measure counts expressions alone: a
@@ -10,7 +10,8 @@
 //!
 //! The planner reads a `CASE` lying in a condition again for each operator above it there, so
 //! its work multiplies with each condition a `CASE` lies within, however shallow the tree, and
-//! grows within one condition as a power of the condition's depth.
+//! grows within one condition as a power of the condition's depth. It works out a call's type
+//! again for each call around it, so a nest of calls costs about the square of its depth.
 
 #[cfg(test)]
 mod tests;
@@ -37,6 +38,9 @@ pub(crate) struct Nesting {
     /// The most expressions any expression of a condition lies within, counted in its outermost
     /// condition alone: `n > 0` is one deep, and a `CASE` in it takes its own conditions along.
     pub(crate) condition_depth: usize,
+    /// The most calls any expression lies within, itself among them: a function's, a `CASE`, a
+    /// `coalesce` or a `SUBSTRING`, so `lower(t)` is one deep and `n + 1` none.
+    pub(crate) call_depth: usize,
 }
 
 /// How the expressions of `statement` nest.
@@ -47,12 +51,13 @@ pub(crate) fn nesting(statement: &Statement) -> Nesting {
         depth: measured.deepest,
         conditions: measured.most_conditioned,
         condition_depth: measured.deepest_tested,
+        call_depth: measured.deepest_called,
     }
 }
 
 /// How many expressions a walk is within, and the most it has been; how many conditions it is
-/// within, and the most a `CASE` it met has been; and how deep in its outermost condition it is,
-/// and the most it has been.
+/// within, and the most a `CASE` it met has been; how deep in its outermost condition it is, and
+/// the most it has been; and how many calls it is within, and the most it has been.
 #[derive(Default)]
 struct Measured {
     within: usize,
@@ -64,6 +69,8 @@ struct Measured {
     /// How many expressions the outermost condition the walk is within lies within.
     outermost: usize,
     deepest_tested: usize,
+    called: usize,
+    deepest_called: usize,
 }
 
 impl Visitor for Measured {
@@ -87,6 +94,10 @@ impl Visitor for Measured {
             self.most_conditioned = self.most_conditioned.max(self.conditioned);
             self.tested.extend(conditions.into_iter().map(address));
         }
+        if called(expr) {
+            self.called = self.called.saturating_add(1);
+            self.deepest_called = self.deepest_called.max(self.called);
+        }
         ControlFlow::Continue(())
     }
 
@@ -95,8 +106,20 @@ impl Visitor for Measured {
         if self.tested.remove(&address(expr)) {
             self.conditioned = self.conditioned.saturating_sub(1);
         }
+        if called(expr) {
+            self.called = self.called.saturating_sub(1);
+        }
         ControlFlow::Continue(())
     }
+}
+
+/// Whether `expr` is a call as the planner plans it: a function's, `coalesce`'s among them, a
+/// `CASE`, or a `SUBSTRING`, which is planned as `substr`.
+fn called(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Function(_) | Expr::Case { .. } | Expr::Substring { .. }
+    )
 }
 
 /// Where `expr` lies, which the walk meets it at again.
