@@ -70,13 +70,13 @@ fn a_refusal_of_a_stream_s_reads_is_met_only_where_predicted_and_of_its_kind() {
         may: BTreeSet::from([("s0".to_owned(), codes::CURSOR_MISSING)]),
         must: BTreeSet::new(),
     };
-    let met = engine(ErrorKind::Source, Some(codes::CURSOR_MISSING), "s0");
+    let met = engine(ErrorKind::Config, Some(codes::CURSOR_MISSING), "s0");
     let refusal = refused(std::slice::from_ref(&met), &prediction).expect("predicted");
     assert_eq!(refusal, Some(("s0".to_owned(), codes::CURSOR_MISSING)));
     // Neither a refusal of a stream the model does not name, nor one of another kind, is met.
     let elsewhere = engine(ErrorKind::Source, Some(codes::CHECKPOINT_MISSING), "s1");
     assert!(refused(&[met, elsewhere], &prediction).is_err());
-    let miskinded = engine(ErrorKind::Config, Some(codes::CURSOR_MISSING), "s0");
+    let miskinded = engine(ErrorKind::Source, Some(codes::CURSOR_MISSING), "s0");
     assert!(refused(std::slice::from_ref(&miskinded), &prediction).is_err());
     assert!(unexplained(&[miskinded], &prediction).is_some());
 }

@@ -115,6 +115,7 @@ fn hints_are_given_only_for_their_codes_and_say_what_a_weakened_default_costs() 
     };
     for code in [
         "connector_not_found",
+        "cursor_missing",
         "grant_outside",
         "sandbox_missing",
         "sandbox_unavailable",
@@ -132,6 +133,12 @@ fn hints_are_given_only_for_their_codes_and_say_what_a_weakened_default_costs() 
             assert!(
                 hint.contains("your own access"),
                 "a hint that weakens a default says what it costs: {hint}"
+            );
+        }
+        if hint.contains("--tables") {
+            assert!(
+                hint.contains("drops its table"),
+                "a hint that drops a table says so: {hint}"
             );
         }
     }

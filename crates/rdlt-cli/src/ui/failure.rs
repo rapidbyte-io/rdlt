@@ -10,11 +10,17 @@ use crate::output::{Failure, shown};
 
 /// The hints by the code the engine or the host gave a failure; a hint never recommends
 /// weakening a default without saying what that costs.
-const HINTS: [(&str, &str); 5] = [
+const HINTS: [(&str, &str); 6] = [
     (
         "connector_not_found",
         "`rdlt connectors` lists the binaries the host finds; a connector is an executable \
          named rdlt-connector-<name> in a --connectors directory",
+    ),
+    (
+        "cursor_missing",
+        "the stream's last full read ended on rows after its last checkpoint; keep reading it \
+         in full, or `rdlt state reset <document> <stream> --tables`, which drops its table for \
+         the next run to load again from its beginning",
     ),
     (
         "grant_outside",

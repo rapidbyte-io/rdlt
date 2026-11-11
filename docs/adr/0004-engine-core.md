@@ -94,9 +94,12 @@ a run reports and tells must show what it did without changing what it does.
   beginning, and `Done` passes over a bounded one, which has no more rows. An unbounded partition
   is `Done` only where a read finished it with rows after its last checkpoint, as a full read
   does, so no cursor resumes it: reading it from that checkpoint would land those rows twice, and
-  passing over it would miss every row it gains. Such a read fails, a Source error coded
-  `cursor_missing` that names the stream, as each run plans the stream and as a following run
-  plans it again; a full read that ends at a checkpoint, or a reset, mends it.
+  passing over it would miss every row it gains. Such a read fails, a Config error coded
+  `cursor_missing`, as `plan_mode_invalid` refuses a read mode the stream cannot take: the
+  stream's last full read ended on rows after its last checkpoint. It names the stream, and the
+  partition where the source declared it, as each run plans the stream and as a following run
+  plans it again. Reading the stream in full again, or a reset with its tables, mends it, and a
+  source whose full reads end on a checkpoint never meets it.
 - **Full reads are cycles.** A `full` read records its generation when it first commits and
   deletes the previous cycle's partition entries; its last commit records it as `completed`. Each
   run remembers the cycle it started or resumed per stream, and state keeps the stream's sixteen

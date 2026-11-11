@@ -12,15 +12,15 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::LogSource;
 use rdlt_engine::{
-    EngineConfigBuilder, ErrorKind, PipelinePlan, RetryPolicy, RunOutcome, RunStatus, Until,
-    WriteMode, codes,
+    EngineConfigBuilder, ErrorKind, PipelinePlan, ResetScope, RetryPolicy, RunOutcome, RunStatus,
+    StopMode, Until, WriteMode, codes,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::support::{
-    commit_every, engine, memory, pipeline, published_ids, published_json, stream,
+    commit_every, engine, memory, pipeline, published_ids, published_json, stream, until,
 };
 
 /// Where each read of the test's source started.
@@ -42,6 +42,9 @@ struct Shape {
     /// How many of a connection's plans of each stream name no partition before one names it.
     #[serde(default)]
     named_after: u64,
+    /// Whether each read waits to be stopped once it pushed its rows.
+    #[serde(default)]
+    hold: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
@@ -141,7 +144,7 @@ impl ReadStream<Ending> for Rows {
             push(out, source.shape.checkpoints, next, held).await?;
         }
         // A read asked to follow waits for more until it is stopped.
-        if out.follows() {
+        if out.follows() || source.shape.hold {
             out.stopped().await;
         }
         Ok(())
@@ -447,7 +450,7 @@ async fn a_never_ending_partition_a_full_read_ended_on_rows_is_refused_to_an_inc
         );
         let error = refused[0].error.as_ref().expect("the run failed");
         assert_eq!(error.code(), Some(codes::CURSOR_MISSING), "{error:?}");
-        assert_eq!(error.kind(), ErrorKind::Source, "{error:?}");
+        assert_eq!(error.kind(), ErrorKind::Config, "{error:?}");
         assert_eq!(
             error.stream().map(ToString::to_string).as_deref(),
             Some("rows")
@@ -523,4 +526,97 @@ async fn a_never_ending_partition_a_full_read_finished_is_refused_when_planned_a
     assert_eq!(error.code(), Some(codes::CURSOR_MISSING), "{error:?}");
     assert_eq!(*STARTS.lock(), [0]);
     assert_eq!(published_ids(store, "rows"), (0..6).collect::<Vec<_>>());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_incremental_read_after_a_full_cycle_stopped_part_way_resumes_from_its_last_commit() {
+    for write in [WriteMode::Append, WriteMode::Merge] {
+        let store = format!("ending_stopped_cycle_{write:?}");
+        STARTS.lock().clear();
+        let plan = |read| {
+            let planned = stream("rows").read(read).write(write);
+            let keyed = if write == WriteMode::Merge {
+                planned.key(["id"])
+            } else {
+                planned
+            };
+            pipeline("ending", [keyed])
+        };
+        // The full read checkpoints after its first five rows, pushes the rest and waits to be
+        // stopped: the cycle's first commit lands, and the cycle is left part way.
+        let shape = json!({
+            "rows": 9, "partition": "unbounded", "checkpoints": "middle", "hold": true,
+        });
+        let source = source_factory::<Ending>()
+            .connect(shape, ConnectContext::new())
+            .await
+            .expect("it connects");
+        let engine = engine(commit_every(1).retry(RetryPolicy::default().max_attempts(1)));
+        let stopping = engine.run(
+            plan(ReadMode::Full),
+            Arc::from(source),
+            memory(&store).await,
+        );
+        let control = stopping.control();
+        let stop = async {
+            until(|| !published_ids(&store, "rows").is_empty()).await;
+            control.stop(StopMode::AfterCommit);
+        };
+        let (stopped, ()) = tokio::join!(stopping, stop);
+        assert_eq!(stopped.report.status, RunStatus::Stopped, "{stopped:?}");
+        assert_eq!(
+            published_ids(&store, "rows"),
+            (0..5).collect::<Vec<_>>(),
+            "{write:?}"
+        );
+        let shape = json!({ "rows": 9, "partition": "unbounded", "checkpoints": "middle_and_end" });
+        let resumed = run(plan(ReadMode::Incremental), shape, &store).await;
+        assert_eq!(resumed.report.status, RunStatus::Succeeded, "{resumed:?}");
+        assert_eq!(*STARTS.lock(), [0, 5], "{write:?}");
+        assert_eq!(
+            published_ids(&store, "rows"),
+            (0..9).collect::<Vec<_>>(),
+            "{write:?}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_refused_cursor_missing_and_reset_with_its_tables_reads_each_row_once() {
+    let store = "ending_reset_after_full";
+    STARTS.lock().clear();
+    let full = || reading(ReadMode::Full, WriteMode::Append);
+    let incremental = || reading(ReadMode::Incremental, WriteMode::Append);
+    let ended = runs(full, "unsplit", &[(6, "middle")], store).await;
+    let refused = runs(incremental, "unsplit", &[(9, "middle_and_end")], store).await;
+    let error = refused[0].error.as_ref().expect("the run failed");
+    assert_eq!(
+        error.code(),
+        Some(codes::CURSOR_MISSING),
+        "{ended:?} {error:?}"
+    );
+    // The remedy the refusal names: the stream reset with its tables, then read incrementally.
+    let shape = json!({ "rows": 9, "partition": "unsplit", "checkpoints": "middle_and_end" });
+    let source = source_factory::<Ending>()
+        .connect(shape, ConnectContext::new())
+        .await
+        .expect("it connects");
+    let reset = engine(commit_every(1_000))
+        .reset(
+            "ending",
+            &["rows"],
+            ResetScope::Tables,
+            Arc::from(source),
+            memory(store).await,
+        )
+        .await;
+    assert!(reset.is_ok(), "{reset:?}");
+    let resumed = runs(incremental, "unsplit", &[(9, "middle_and_end")], store).await;
+    assert_eq!(
+        resumed[0].report.status,
+        RunStatus::Succeeded,
+        "{resumed:?}"
+    );
+    assert_eq!(*STARTS.lock(), [0, 0]);
+    assert_eq!(published_ids(store, "rows"), (0..9).collect::<Vec<_>>());
 }

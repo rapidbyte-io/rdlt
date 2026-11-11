@@ -61,7 +61,7 @@ JSON exactness ADR 0026's.
   - A full read seals them with its end, as a bounded partition's, since its next cycle starts
     from the beginning: the cycle lands everything it read, and a `replace` table is whole.
   - Its seal leaves no cursor past them, so a read of the stream that is not full fails on a
-    partition so finished, a Source error coded `cursor_missing` (ADR 0004), rather than read
+    partition so finished, a Config error coded `cursor_missing` (ADR 0004), rather than read
     them again or pass over the partition for good.
   - An incremental read of one that pushes rows and no checkpoint after any fails, a `Source`
     error with the engine's code `checkpoint_missing` that no retry mends, since none of its rows
