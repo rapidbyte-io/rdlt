@@ -1,9 +1,10 @@
-//! The schema refusals a phase's runs may meet, and whether every run meets one: each column's
-//! own column followed through every order the phase's batches may arrive in, as schema
-//! resolution changes it.
+//! The refusals a phase's runs may meet, and whether every run meets one: each column's own column
+//! followed through every order the phase's batches may arrive in, as schema resolution changes it,
+//! and the refusals of a stream's reads.
 
 mod failures;
 mod keys;
+mod reads;
 #[cfg(test)]
 mod tests;
 
@@ -40,6 +41,10 @@ pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize) -> Predi
             .filter(|column| stream.lands(&stream.drift[*column].name))
             .map(|column| Column::new(stream, column, *relaxed, &capabilities).outcome(phase));
         let key = (stream.keys > 0).then(|| key_outcome(stream, *relaxed, &capabilities, phase));
+        if let Some(code) = reads::refusal(stream, *relaxed, phase) {
+            prediction.may.insert((stream.name.clone(), code));
+            prediction.must.insert(stream.name.clone());
+        }
         let pruning = prunes(stream, phase);
         for outcome in columns.chain(key) {
             if let Some(code) = outcome.code {

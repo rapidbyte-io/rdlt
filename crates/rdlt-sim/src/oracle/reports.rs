@@ -10,6 +10,7 @@ use super::{Simulation, plan, settled};
 use crate::destination::committed_next;
 use crate::placing::Placing;
 use crate::seed::Seed;
+use crate::workload::PHASES;
 use crate::world::World;
 
 /// A converged workload whose reports are checked: its pipelines, and what its state holds.
@@ -119,11 +120,11 @@ fn stands(world: &World, stream: &str, partition: &str) -> Option<u64> {
     committed_next(world, &name, &id).filter(|next| *next != u64::MAX)
 }
 
-/// Whether `stream` is read incrementally.
+/// Whether `stream` is read incrementally in the last phase, as the runs checked read it.
 fn incremental(world: &World, stream: &str) -> bool {
     let streams = &world.workload.streams;
     let found = streams.iter().find(|found| found.name == stream);
-    found.is_some_and(|found| found.read == ReadMode::Incremental)
+    found.is_some_and(|found| found.reads[PHASES - 1] == ReadMode::Incremental)
 }
 
 impl Simulation {
@@ -131,7 +132,9 @@ impl Simulation {
     pub(super) async fn check_reports(&self, seed: Seed) {
         let workload = &self.world.workload;
         let plans = (0..workload.pipelines)
-            .map(|pipeline| plan(workload, &self.relaxed, pipeline).with_until(Until::Exhausted))
+            .map(|pipeline| {
+                plan(workload, &self.relaxed, pipeline, PHASES - 1).with_until(Until::Exhausted)
+            })
             .collect();
         let reported = Reported {
             runs: &self.runs,

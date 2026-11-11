@@ -11,16 +11,16 @@ use super::{PHASES, Row, SimStream, values};
 
 impl SimStream {
     /// The rows of `partition` the source reads in `phase`: every row of a full read, and an
-    /// incremental read's rows new in `phase`.
+    /// incremental read's rows new in `phase`, none where a read finished it in the phase before.
     pub fn read(&self, partition: usize, phase: usize) -> &[Row] {
         let rows = self.rows(partition, phase);
         &rows[self.start(partition, phase).min(rows.len())..]
     }
 
     /// The offset `partition`'s read starts from in `phase`: where the last phase's ended, for an
-    /// incremental read, and else 0.
+    /// incremental read, however the last phase read it, and else 0.
     fn start(&self, partition: usize, phase: usize) -> usize {
-        match (self.read, phase.checked_sub(1)) {
+        match (self.reads[phase], phase.checked_sub(1)) {
             (ReadMode::Incremental, Some(last)) => {
                 usize::try_from(self.partitions[partition][last]).unwrap_or(usize::MAX)
             }
@@ -82,15 +82,30 @@ impl SimStream {
         }
     }
 
-    /// The phase that first delivers row `offset` of `partition`: incremental rows keep the phase
-    /// they first appeared in, full reads deliver every row again in each phase.
+    /// The phase that first delivers row `offset` of `partition`: a phase read incrementally keeps
+    /// the rows the phase before held, and a phase read in full delivers every row anew.
     fn delivered(&self, partition: usize, offset: u64, phase: usize) -> usize {
-        if self.read != ReadMode::Incremental {
-            return phase;
+        let mut delivered = phase;
+        while delivered > 0
+            && self.reads[delivered] == ReadMode::Incremental
+            && offset < self.partitions[partition][delivered - 1]
+        {
+            delivered -= 1;
         }
-        (0..=phase)
-            .find(|earlier| offset < self.partitions[partition][*earlier])
-            .unwrap_or(phase)
+        delivered
+    }
+
+    /// Keeps each bounded partition that a read ending on rows finishes in the first phase as it
+    /// was into an incremental next phase, as a bounded partition done does not grow.
+    pub(super) fn finish_bounded(&mut self) {
+        if self.final_checkpoint || self.unbounded || self.reads[1] != ReadMode::Incremental {
+            return;
+        }
+        for rows in &mut self.partitions {
+            if rows[0] > 0 {
+                rows[1] = rows[0];
+            }
+        }
     }
 
     /// The rows `partition` holds in each phase; a row delivered in an earlier phase is that

@@ -57,27 +57,35 @@ pub(super) fn groups(
 }
 
 /// The rows a stream that does not merge loaded by `phase`, each as often as its table holds it:
-/// where the phase `stopped` short, a full read may be in progress, and a replaced table may
-/// still hold an earlier phase's rows.
+/// each phase's that it reads in full, as often as its full reads completed, and the rows new in
+/// each phase that it reads incrementally, once.
+///
+/// Where the phase `stopped` short, a full read may be in progress, and a replaced table may still
+/// hold an earlier phase's rows.
 fn loaded(world: &World, stream: &SimStream, phase: usize, stopped: bool, seed: Seed) -> Vec<Row> {
-    match (stream.read, stream.write) {
-        (ReadMode::Full, WriteMode::Append) => (0..=phase)
-            .flat_map(|done| {
-                let copies =
-                    completions(world, &stream.name, done) + usize::from(stopped && done == phase);
-                assert!(
-                    copies > 0 || done < phase,
-                    "seed {seed}: stream {} never completed",
-                    stream.name
-                );
-                std::iter::repeat_n(stream.all_rows(done), copies).flatten()
-            })
-            .collect(),
-        (ReadMode::Full, WriteMode::Replace) if stopped => {
+    if stream.write == WriteMode::Replace {
+        return if stopped {
             (0..=phase).flat_map(|done| stream.all_rows(done)).collect()
-        }
-        _ => stream.all_rows(phase),
+        } else {
+            stream.all_rows(phase)
+        };
     }
+    let mut loaded = Vec::new();
+    for done in 0..=phase {
+        let rows = stream.all_rows(done);
+        if stream.reads[done] != ReadMode::Full {
+            loaded.extend(rows.into_iter().filter(|row| row.delivered == done));
+            continue;
+        }
+        let copies = completions(world, &stream.name, done) + usize::from(stopped && done == phase);
+        assert!(
+            copies > 0 || done < phase,
+            "seed {seed}: stream {} never completed",
+            stream.name
+        );
+        loaded.extend(std::iter::repeat_n(rows, copies).flatten());
+    }
+    loaded
 }
 
 /// A merge key's identity: its key and, for a key spanning two columns, its tag.

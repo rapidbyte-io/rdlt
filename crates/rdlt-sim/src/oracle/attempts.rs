@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use rdlt_connector::{ColumnPath, PipelineId, Secret, StreamName};
-use rdlt_engine::{Literal, Mask, Op, PipelinePlan, Report, StreamPlan, Transform, Until, codes};
+use rdlt_engine::{
+    Code, Literal, Mask, Op, PipelinePlan, Report, StreamPlan, Transform, Until, codes,
+};
 use rdlt_sql::Sql;
 
 use super::memory::{Counterweight, Tracing};
@@ -131,7 +133,7 @@ impl Simulation {
         }
         let workload = &self.world.workload;
         let plans: Vec<PipelinePlan> = (0..workload.pipelines)
-            .map(|pipeline| plan(workload, &self.relaxed, pipeline).with_until(until))
+            .map(|pipeline| plan(workload, &self.relaxed, pipeline, phase).with_until(until))
             .collect();
         let executed = self.measured(&plans, scenario, clean, network, phase).await;
         self.ledger.ended(phase, scenario, &executed, &self.world);
@@ -163,20 +165,23 @@ impl Simulation {
             explained(&failures, &prediction, seed, phase);
         }
         let failure = failures.into_iter().last().map(|failure| failure.text);
-        let mut stopped = false;
-        if let Some((stream, code)) = refused {
-            self.world.reach(Reach::Refused);
-            if code == codes::MERGE_KEY_CHANGED {
-                stopped = true;
-            } else {
-                refusals::relax(&self.world, &mut self.relaxed, &stream, code);
-            }
-        }
+        let stopped = refused.is_some_and(|(stream, code)| self.answer(&stream, code));
         Ran {
             succeeded,
             failure,
             stopped,
         }
+    }
+
+    /// Answers a refusal of `stream` coded `code` that a phase's runs met, as an operator would:
+    /// whether it stops the phase short, as no operator relaxes it, or else relaxes it.
+    fn answer(&mut self, stream: &str, code: Code) -> bool {
+        self.world.reach(Reach::Refused);
+        let stops = code == codes::MERGE_KEY_CHANGED || code == codes::CURSOR_MISSING;
+        if !stops {
+            refusals::relax(&self.world, &mut self.relaxed, stream, code);
+        }
+        stops
     }
 }
 
@@ -196,7 +201,9 @@ pub(super) struct Ran {
     pub(super) succeeded: Vec<bool>,
     /// The last failure among them, printed.
     pub(super) failure: Option<String>,
-    /// Whether one met a refusal no operator can relax.
+    /// Whether one met a refusal no operator relaxes: a merge key whose type changed, or a
+    /// partition that never ends which no cursor resumes, which a reset would mend but the
+    /// model's rows would not hold.
     pub(super) stopped: bool,
 }
 
@@ -240,9 +247,14 @@ fn reshaped(mut plan: StreamPlan, stream: &SimStream) -> StreamPlan {
     plan.transform(Op::mask([CONSTANT_COLUMN], mask))
 }
 
-/// The plan of `workload`'s pipeline `pipeline`, of the streams it loads, each stream's settings
-/// as `relaxed` leaves them.
-pub(super) fn plan(workload: &Workload, relaxed: &[Relaxed], pipeline: usize) -> PipelinePlan {
+/// The plan of `workload`'s pipeline `pipeline` in `phase`, of the streams it loads, each read as
+/// the phase reads it and with its settings as `relaxed` leaves them.
+pub(super) fn plan(
+    workload: &Workload,
+    relaxed: &[Relaxed],
+    pipeline: usize,
+    phase: usize,
+) -> PipelinePlan {
     let id = PipelineId::parse(PIPELINES[pipeline]).expect("valid pipeline id");
     let streams = workload
         .streams
@@ -254,7 +266,7 @@ pub(super) fn plan(workload: &Workload, relaxed: &[Relaxed], pipeline: usize) ->
             let name = StreamName::new(&stream.name).expect("valid stream name");
             let settings = stream.schema.relaxing(stream.pipeline, *relaxed);
             let mut plan = StreamPlan::new(name)
-                .read(stream.read)
+                .read(stream.reads[phase])
                 .write(stream.write)
                 .schema(settings.engine());
             for drift in &stream.drift {

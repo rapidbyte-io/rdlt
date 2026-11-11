@@ -210,7 +210,7 @@ impl Table<'_> {
              {:#?}",
             self.seed,
             self.stream.name,
-            self.stream.read,
+            self.stream.reads,
             self.stream.write,
             self.stream.schema,
             self.stream.pipeline,

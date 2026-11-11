@@ -399,7 +399,7 @@ fn check_discards(world: &World, phase: usize, reports: &[Report], stopped: bool
                     values + counts.discarded_values,
                 )
             });
-        let read: Vec<Row> = match stream.read {
+        let read: Vec<Row> = match stream.reads[phase] {
             ReadMode::Full => {
                 let copies = completions(world, &stream.name, phase) + usize::from(stopped);
                 std::iter::repeat_n(stream.all_rows(phase), copies)
@@ -432,7 +432,7 @@ fn check_discards(world: &World, phase: usize, reports: &[Report], stopped: bool
              (rows, values) discarded; the model counts {expected:?}, which reports that are \
              {} must {}",
             stream.name,
-            stream.read,
+            stream.reads,
             stream.write,
             stream.schema,
             if complete { "complete" } else { "incomplete" },

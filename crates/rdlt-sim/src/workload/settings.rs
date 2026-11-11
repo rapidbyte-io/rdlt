@@ -30,14 +30,17 @@ pub struct Resolved {
     pub nested: Nested,
 }
 
-/// What an operator relaxed after a stream's runs were refused: frozen schemas now evolve, and
-/// refused changes take variant columns.
+/// What an operator relaxed after a stream's runs were refused: frozen schemas now evolve,
+/// refused changes take variant columns, and a source whose read sealed none of its rows
+/// checkpoints after its reads' last batch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Relaxed {
     /// Whether `Freeze` became `Evolve`.
     pub frozen: bool,
     /// Whether `Refuse` became `VariantColumn`.
     pub refused: bool,
+    /// Whether the source was mended to checkpoint after its reads' last batch.
+    pub mended: bool,
 }
 
 impl Level {

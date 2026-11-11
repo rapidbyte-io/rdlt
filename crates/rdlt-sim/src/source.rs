@@ -3,6 +3,7 @@
 mod forgets;
 mod plans;
 mod push;
+mod serving;
 #[cfg(test)]
 mod tests;
 
@@ -22,6 +23,7 @@ use plans::PlannedRead;
 pub(crate) use plans::{Findings, Plans};
 pub(crate) use push::json_push;
 use push::{batch, json_rows};
+use serving::{Marks, Serving, at};
 
 use crate::oracle::aside;
 use crate::owners::Live;
@@ -57,14 +59,6 @@ pub struct SimCursor {
     /// What the cursor carries beside its offset, so cursors press on the engine's budget.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub pad: String,
-}
-
-/// The cursor at `next` of a source pressing as `world` says.
-fn at(world: &World, next: usize) -> SimCursor {
-    SimCursor {
-        next: next as u64,
-        pad: "p".repeat(world.pressure().pad),
-    }
 }
 
 impl SourceConnector for SimSource {
@@ -241,6 +235,7 @@ impl ReadStream<SimSource> for SimStreamReader {
         let given = out.resumes().then_some(&cursor);
         world.reports.started(&stream.name, partition.id(), given);
         let rows = stream.rows(index, world.phase());
+        let marks = Marks::of(stream, world, self.index, partition);
         let mut next = usize::try_from(cursor.next).unwrap_or(usize::MAX);
         let started = next;
         let mut batches = 0;
@@ -250,6 +245,7 @@ impl ReadStream<SimSource> for SimStreamReader {
             let serving = Serving {
                 reading: &reading,
                 available,
+                marks,
             };
             self.serve(source, out, rows, &mut next, serving, &mut batches)
                 .await?;
@@ -257,7 +253,9 @@ impl ReadStream<SimSource> for SimStreamReader {
             if !(out.follows() && partition.is_unbounded()) {
                 break;
             }
-            self.checkpoint(source, out, &reading, next).await?;
+            if marks.any {
+                self.checkpoint(source, out, &reading, next).await?;
+            }
             // As a log does, it says how far behind its newest rows it is; and it asks for the
             // stream to be planned again, which changes nothing unless its world named other
             // partitions since.
@@ -265,7 +263,7 @@ impl ReadStream<SimSource> for SimStreamReader {
                 .await?;
             out.replan().await?;
             if !self
-                .arrival(source, out, &reading, rows.len(), next)
+                .arrival(source, out, (&reading, marks), rows.len(), next)
                 .await?
             {
                 return Ok(());
@@ -274,7 +272,7 @@ impl ReadStream<SimSource> for SimStreamReader {
         // A read that sent nothing says nothing of where it is, at every other position: its
         // host then reports the cursor it read from, which the source never sent.
         let silent = next == started && (index + started).is_multiple_of(2);
-        if stream.final_checkpoint && !silent {
+        if marks.last && !silent {
             self.checkpoint(source, out, &reading, next).await?;
         }
         Ok(())
@@ -290,13 +288,6 @@ impl ReadStream<SimSource> for SimStreamReader {
         source.world.hang(FaultPoint::Acknowledge).await;
         heard
     }
-}
-
-/// What a read serves next: as which read, and up to which of its partition's rows.
-#[derive(Clone, Copy)]
-struct Serving<'a> {
-    reading: &'a PlannedRead<'a>,
-    available: usize,
 }
 
 impl SimStreamReader {
@@ -341,6 +332,7 @@ impl SimStreamReader {
         let available = serving.available;
         let world = &source.world;
         let stream = self.stream(source);
+        let held = rows.len();
         while *next < available {
             world.latency().await;
             if let Some(fault) = world.fault(FaultPoint::Read) {
@@ -381,7 +373,8 @@ impl SimStreamReader {
                 Checkpointing::OnDemand => out.checkpoint_due(),
                 Checkpointing::Natural => (*batches).is_multiple_of(stream.checkpoint_every),
             };
-            if due {
+            let marked = serving.marks.any && (serving.marks.last || end < held);
+            if due && marked {
                 self.checkpoint(source, out, serving.reading, *next).await?;
             }
         }
@@ -391,12 +384,13 @@ impl SimStreamReader {
     /// Waits until more of the `rows` rows of the partition `reading` reads than `next` have
     /// arrived: false once the read is asked to stop instead.
     ///
-    /// It wakes now and then to answer a barrier, as a source waiting for data does.
+    /// It wakes now and then to answer a barrier, as a source waiting for data does, where its
+    /// `marks` let it checkpoint.
     async fn arrival(
         &self,
         source: &SimSource,
         out: &mut Emitter<SimCursor>,
-        reading: &PlannedRead<'_>,
+        (reading, marks): (&PlannedRead<'_>, Marks),
         rows: usize,
         next: usize,
     ) -> Result<bool> {
@@ -415,7 +409,7 @@ impl SimStreamReader {
                 () = out.stopped() => return Ok(false),
                 () = &mut arrived => {}
                 () = tokio::time::sleep(WAKE) => {
-                    if out.checkpoint_due() {
+                    if marks.any && out.checkpoint_due() {
                         self.checkpoint(source, out, reading, next).await?;
                     }
                 }

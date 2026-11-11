@@ -43,20 +43,30 @@ impl Failure {
     }
 
     /// The refusal this failure is, where `prediction` names it: its stream and code, the
-    /// engine's refusal of a schema change.
+    /// engine's refusal of a schema change or of a stream's reads.
     fn refusal(&self, prediction: &Prediction) -> Option<(String, Code)> {
-        let refusals = [
-            codes::SCHEMA_FROZEN,
-            codes::SCHEMA_CHANGE_UNSUPPORTED,
-            codes::MERGE_KEY_CHANGED,
-        ];
-        let code = refusals.into_iter().find(|code| self.is(*code))?;
+        let (code, kind) = REFUSALS.into_iter().find(|(code, _)| self.is(*code))?;
         let refusal = (self.stream.clone()?, code);
-        (self.kind == ErrorKind::Schema && prediction.may.contains(&refusal)).then_some(refusal)
+        (self.kind == kind && prediction.may.contains(&refusal)).then_some(refusal)
+    }
+
+    /// Whether this failure is a refusal of the model's: the engine's refusal of a schema change
+    /// or of a stream's reads, which no fault causes.
+    fn refuses(&self) -> bool {
+        self.kind == ErrorKind::Schema || REFUSALS.iter().any(|(code, _)| self.is(*code))
     }
 }
 
-/// A schema failure a phase's runs met that the model does not predict.
+/// The engine's refusals the model predicts, and the kind of error each is.
+const REFUSALS: [(Code, ErrorKind); 5] = [
+    (codes::SCHEMA_FROZEN, ErrorKind::Schema),
+    (codes::SCHEMA_CHANGE_UNSUPPORTED, ErrorKind::Schema),
+    (codes::MERGE_KEY_CHANGED, ErrorKind::Schema),
+    (codes::CHECKPOINT_MISSING, ErrorKind::Source),
+    (codes::CURSOR_MISSING, ErrorKind::Source),
+];
+
+/// A refusal a phase's runs met that the model does not predict.
 #[derive(Debug)]
 pub(in crate::oracle) struct Unpredicted {
     failure: String,
@@ -77,16 +87,13 @@ impl std::fmt::Display for Unpredicted {
 ///
 /// # Errors
 ///
-/// A schema failure `prediction` does not name.
+/// A schema failure, or a refusal of a stream's reads, that `prediction` does not name.
 pub(in crate::oracle) fn refused(
     failures: &[Failure],
     prediction: &Prediction,
 ) -> Result<Option<(String, Code)>, Unpredicted> {
     let mut met = None;
-    for failure in failures
-        .iter()
-        .filter(|failure| failure.kind == ErrorKind::Schema)
-    {
+    for failure in failures.iter().filter(|failure| failure.refuses()) {
         match failure.refusal(prediction) {
             Some(refusal) => met = Some(refusal),
             None => {
@@ -123,7 +130,8 @@ pub(in crate::oracle) fn violation(failures: &[Failure]) -> Option<&Failure> {
 }
 
 /// Relaxes what refused `stream`'s runs with `code`, as an operator would: a frozen schema
-/// evolves; a change the destination cannot apply takes a variant column, and the destination
+/// evolves; a source whose read sealed none of its rows is mended to checkpoint after its reads'
+/// last batch; a change the destination cannot apply takes a variant column, and the destination
 /// is granted adding columns.
 pub(in crate::oracle) fn relax(world: &World, relaxed: &mut [Relaxed], stream: &str, code: Code) {
     let index = world
@@ -134,6 +142,9 @@ pub(in crate::oracle) fn relax(world: &World, relaxed: &mut [Relaxed], stream: &
         .expect("refusals name the workload's streams");
     if code == codes::SCHEMA_FROZEN {
         relaxed[index].frozen = true;
+    } else if code == codes::CHECKPOINT_MISSING {
+        relaxed[index].mended = true;
+        world.mend(index);
     } else {
         relaxed[index].refused = true;
         world.grant_add_column();

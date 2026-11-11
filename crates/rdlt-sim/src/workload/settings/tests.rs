@@ -65,9 +65,11 @@ fn relaxed_levels_resolve_as_the_relaxation_of_what_they_resolved_to() {
     // The plan relaxes a stream's own and its columns' levels; the model relaxes what they
     // resolve to. The two must agree for every combination.
     let relaxations = [false, true].into_iter().flat_map(|frozen| {
-        [false, true]
-            .into_iter()
-            .map(move |refused| Relaxed { frozen, refused })
+        [false, true].into_iter().map(move |refused| Relaxed {
+            frozen,
+            refused,
+            ..Relaxed::default()
+        })
     });
     for relaxed in relaxations {
         for column in levels() {

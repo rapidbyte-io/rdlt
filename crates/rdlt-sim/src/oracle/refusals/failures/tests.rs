@@ -4,7 +4,7 @@ use rdlt_connector::wire::INVALID_MESSAGE;
 use rdlt_engine::{Code, ErrorKind, Origin, codes};
 use rdlt_host::CONNECTOR_LOST;
 
-use super::{Failure, unexplained, violation};
+use super::{Failure, refused, unexplained, violation};
 use crate::oracle::refusals::Prediction;
 
 /// A failure of `stream` the engine found, of `kind` and coded `code`.
@@ -62,6 +62,23 @@ fn a_connector_naming_the_engine_s_refusal_is_no_refusal() {
     let failures = [forged];
     let found = unexplained(&failures, &prediction).map(|failure| failure.text.as_str());
     assert_eq!(found, Some(failures[0].text.as_str()));
+}
+
+#[test]
+fn a_refusal_of_a_stream_s_reads_is_met_only_where_predicted_and_of_its_kind() {
+    let prediction = Prediction {
+        may: BTreeSet::from([("s0".to_owned(), codes::CURSOR_MISSING)]),
+        must: BTreeSet::new(),
+    };
+    let met = engine(ErrorKind::Source, Some(codes::CURSOR_MISSING), "s0");
+    let refusal = refused(std::slice::from_ref(&met), &prediction).expect("predicted");
+    assert_eq!(refusal, Some(("s0".to_owned(), codes::CURSOR_MISSING)));
+    // Neither a refusal of a stream the model does not name, nor one of another kind, is met.
+    let elsewhere = engine(ErrorKind::Source, Some(codes::CHECKPOINT_MISSING), "s1");
+    assert!(refused(&[met, elsewhere], &prediction).is_err());
+    let miskinded = engine(ErrorKind::Config, Some(codes::CURSOR_MISSING), "s0");
+    assert!(refused(std::slice::from_ref(&miskinded), &prediction).is_err());
+    assert!(unexplained(&[miskinded], &prediction).is_some());
 }
 
 #[test]
