@@ -128,19 +128,19 @@ def two_runs(
     return rows_of(tmp_path, "users")
 
 
-def as_function(available: list[int], started: Started, *, ends_on_rows: bool) -> object:
+def as_function(available: list[int], started: Started) -> object:
     @stream(primary_key="id", cursor=_Since)
     def users(since: _Since, ctx: StreamContext) -> Iterator[object]:
         started.append((since.after, ctx.resumes))
         for n in range(since.after + 1, available[0]):
             yield {"id": n}
-            if n % 3 == 2 or (n == available[0] - 1 and not ends_on_rows):
+            if n % 3 == 2 or n == available[0] - 1:
                 yield checkpoint(_Since(after=n))
 
     return users
 
 
-def as_method(available: list[int], started: Started, *, ends_on_rows: bool) -> object:
+def as_method(available: list[int], started: Started) -> object:
     @source(id="io.example.moved", config=Config, version="1.0.0")
     class Moved:
         def __init__(self, config: Config) -> None:
@@ -154,7 +154,7 @@ def as_method(available: list[int], started: Started, *, ends_on_rows: bool) -> 
             started.append((since.after, ctx.resumes))
             for n in range(since.after + 1, available[0]):
                 yield {"id": n}
-                if n % 3 == 2 or (n == available[0] - 1 and not ends_on_rows):
+                if n % 3 == 2 or n == available[0] - 1:
                     yield checkpoint(_Since(after=n))
 
     return rdlt.local(Moved, config={})
@@ -169,20 +169,27 @@ def test_a_stream_reads_the_same_as_a_function_and_as_a_source_class_s_method(
 ) -> None:
     available: list[int] = [7]
     started: Started = []
-    placed = made(available, started, ends_on_rows=False)
+    placed = made(available, started)
     assert two_runs(tmp_path, connectors, placed, available) == [(n,) for n in range(10)]
     assert started == [(-1, False), (6, True)]
 
 
-@pytest.mark.parametrize("made", [as_function, as_method], ids=["function", "method"])
-def test_a_read_that_ends_on_rows_is_read_again_from_its_last_checkpoint_in_either_form(
-    made: Made, tmp_path: Path, connectors: Path
+def test_a_stream_without_a_cursor_is_read_whole_every_run(
+    tmp_path: Path, connectors: Path
 ) -> None:
-    available: list[int] = [7]
-    started: Started = []
-    placed = made(available, started, ends_on_rows=True)
-    assert two_runs(tmp_path, connectors, placed, available) == [(n,) for n in range(9)]
-    assert started == [(-1, False), (5, True)]
+    reads: list[int] = []
+
+    @stream()
+    def users() -> Iterator[object]:
+        reads.append(1)
+        yield [{"id": n} for n in range(3)]
+
+    built = rdlt.pipeline("whole", source=users, destination=into_sqlite(tmp_path))
+    every_host = host(tmp_path, connectors)
+    assert built.build(every_host).run().report.rows == 3
+    assert built.build(every_host).run().report.rows == 3
+    assert len(reads) == 2
+    assert len(rows_of(tmp_path, "users")) == 6
 
 
 def test_a_partition_that_never_ends_is_read_again_from_its_last_checkpoint(
@@ -589,32 +596,6 @@ def test_a_process_exits_while_a_stream_function_lists_its_partitions(
         yield {"n": 0}
     """
     assert exits_with_seven(tmp_path, connectors, streamed) == 7
-
-
-@pytest.mark.parametrize("write", [None, rdlt.merge("id")], ids=["append", "merge"])
-def test_a_stream_function_with_a_cursor_resumes_the_next_run_and_adds_no_duplicate(
-    write: rdlt.WriteMode | None, tmp_path: Path, connectors: Path
-) -> None:
-    started_from: list[int] = []
-
-    @stream(primary_key="id", cursor=_Since)
-    def users(since: _Since) -> Iterator[object]:
-        started_from.append(since.after)
-        for n in range(since.after + 1, 3):
-            yield {"id": n}
-        yield checkpoint(_Since(after=2))
-
-    built = rdlt.pipeline(
-        "resumed",
-        source=users,
-        destination=into_sqlite(tmp_path),
-        streams=[rdlt.stream("users", write=write)],
-    )
-    every_host = host(tmp_path, connectors)
-    built.build(every_host).run()
-    built.build(every_host).run()
-    assert started_from == [-1, 2]
-    assert len(rows_of(tmp_path, "users")) == 3
 
 
 def test_a_stream_named_twice_is_refused_by_the_plan(tmp_path: Path, connectors: Path) -> None:

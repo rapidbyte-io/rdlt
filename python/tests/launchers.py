@@ -34,6 +34,11 @@ def tickets_launcher(directory: Path) -> Path:
     return _launcher(directory, "tickets", "Tickets")
 
 
+def numbers_launcher(directory: Path) -> Path:
+    """A launcher serving the numbers source, in `directory`, a directory of its own."""
+    return _launcher(directory, "numbers", "Numbers")
+
+
 def pysqlite_launcher(directory: Path) -> Path:
     """A launcher serving the sqlite3 destination, in `directory`, a directory of its own."""
     return _launcher(directory, "pysqlite", "PySqlite")
