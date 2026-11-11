@@ -177,6 +177,9 @@ impl Simulation {
     /// whether it stops the phase short, as no operator relaxes it, or else relaxes it.
     fn answer(&mut self, stream: &str, code: Code) -> bool {
         self.world.reach(Reach::Refused);
+        if code == codes::CURSOR_MISSING {
+            self.world.reach_combination(stream);
+        }
         let stops = code == codes::MERGE_KEY_CHANGED || code == codes::CURSOR_MISSING;
         if !stops {
             refusals::relax(&self.world, &mut self.relaxed, stream, code);

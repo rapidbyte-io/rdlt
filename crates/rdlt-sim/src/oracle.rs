@@ -267,6 +267,11 @@ impl Simulation {
             if stopped {
                 break;
             }
+            if phase == PHASES - 1 {
+                for stream in &self.world.workload.streams {
+                    self.world.reach_combination(&stream.name);
+                }
+            }
             self.intrude(seed, phase).await;
             settled(seed, &self.world, self.placing.as_ref()).await;
         }

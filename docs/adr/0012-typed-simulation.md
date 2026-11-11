@@ -28,6 +28,11 @@ every stored cell by type.
 - **Swarm testing.** Each seed turns a random subset of features on: drift, nesting depth,
   encodings, JSON pushes, normalizing, sliced batches, faults, disruptions and narrow
   destinations; one seed in eight turns every feature on.
+- **Each way a stream is read is drawn on its own.** How each phase reads a stream, whether its
+  partitions end, whether its reads end on a checkpoint and how it is written are drawn apart from
+  one another, unless the engine refuses the combination or the model cannot hold it, each such
+  case named with its reason beside the list of combinations. A sweep of a thousand seeds or more
+  fails, naming each, where its checks held none of a listed combination.
 - **The oracle reads every cell by type.** The destination keeps each stored row's Arrow data. For
   every row the model expects, as often as the model expects it, the oracle requires each source
   value in exactly one of its column's own and variant columns, whose type holds the value's

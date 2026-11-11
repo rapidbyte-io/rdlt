@@ -1,5 +1,6 @@
 //! Seeded workloads: the streams a simulated source serves and the rows each phase holds.
 
+mod combination;
 mod keys;
 mod reshaping;
 mod rows;
@@ -14,6 +15,7 @@ use rdlt_engine::{Nested, OnUnsupported, SchemaPolicy, WriteMode};
 use rdlt_testkit::draw::{draw, mix};
 use rdlt_testkit::drawn::{Scalar, Shape, json, neighbors};
 
+pub use combination::{Combination, End, Ends, SWEPT, unreached};
 pub(crate) use reshaping::{CONSTANT, CONSTANT_COLUMN, LISTED, MASK_KEY, REDACTION, TWICE_COLUMN};
 pub use reshaping::{Masked, Reshaping};
 use settings::resolve;
