@@ -56,7 +56,8 @@ pub const SOURCE_CLAUSES: &[Clause] = &[
         id: "S-PARTITION",
         statement: "a stream's planned partitions cover it exactly once, and those planned again \
                     from where they stood cover what is left exactly once",
-        unless: "every stream plans a partition that never ends",
+        unless: "every stream plans an unbounded partition, as one that declares no partitions \
+                 does",
     },
     Clause {
         id: "S-STOP",

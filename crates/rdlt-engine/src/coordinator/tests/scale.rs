@@ -7,7 +7,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use rdlt_connector::{
     BoxFuture, Catalog, ConnectorError, Cursor, Headroom, Partition, PartitionId, PartitionPlan,
-    PartitionSink, PartitionState, ReadRequest, Result, Source, StreamName, StreamState,
+    PartitionSink, PartitionState, ReadMode, ReadRequest, Result, Source, StreamName, StreamState,
 };
 
 use super::{Setup, cursor, name, position, stream};
@@ -93,6 +93,7 @@ async fn phased(plans: Vec<Vec<String>>, follow: bool) -> Coordinator {
         settled: false,
         template: Template {
             table: 0,
+            read: ReadMode::Cdc,
             on_demand: true,
             changes: Some(ChangeMode {
                 merge: false,

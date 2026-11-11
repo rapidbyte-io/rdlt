@@ -386,18 +386,19 @@ async fn a_group_file_one_host_keeps_is_refused_another_and_kept_for_the_next() 
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_checkpoint_follows_every_so_many_batches_as_the_stream_says() {
+async fn a_checkpoint_follows_every_so_many_batches_as_the_stream_says_and_the_last_batch() {
     let stream = |every: u64| {
         json!({ "seed": 3, "group": format!("every_{every}"), "streams": [{
             "name": "events", "partitions": 1, "messages": 70, "checkpoint_batches": every,
         }]})
     };
-    // Seven batches of ten.
+    // Seven batches of ten; a read that returns at the head of its partition, which never ends,
+    // checkpoints there where none followed its last batch.
     for (every, expected) in [
         (1, vec![10, 20, 30, 40, 50, 60, 70]),
-        (3, vec![30, 60]),
+        (3, vec![30, 60, 70]),
         (7, vec![70]),
-        (8, Vec::new()),
+        (8, vec![70]),
         (0, vec![10, 20, 30, 40, 50, 60, 70]),
     ] {
         let source = connected(&stream(every)).await;

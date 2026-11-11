@@ -42,7 +42,10 @@ pub(super) async fn partitions_cover_exactly_once(
     } else if uncheckpointed {
         Outcome::Unobserved("no stream's partitions checkpoint before their end".into())
     } else {
-        Outcome::Inapplicable("every stream plans a partition that never ends".into())
+        Outcome::Inapplicable(
+            "every stream plans an unbounded partition, as one that declares no partitions does"
+                .into(),
+        )
     }
 }
 

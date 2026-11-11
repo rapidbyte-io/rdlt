@@ -6,7 +6,7 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use proptest::prelude::*;
-use rdlt_connector::{Cursor, PartitionId, PartitionState, StateChange, StateEntry};
+use rdlt_connector::{Cursor, PartitionId, PartitionState, ReadMode, StateChange, StateEntry};
 
 use super::{Answer, Harness, Setup, cursor, ended, name, partition, position, stream, until};
 use crate::config::{CommitPolicy, RetryPolicy};
@@ -487,6 +487,7 @@ async fn a_done_partition_owed_as_its_phase_ends_is_told_by_a_later_commit_of_th
         settled: false,
         template: Template {
             table: 0,
+            read: ReadMode::Incremental,
             on_demand: false,
             changes: None,
             reset_retention: false,

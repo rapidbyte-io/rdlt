@@ -363,10 +363,12 @@ fn a_sources_factory_debugs_as_its_role_and_id() {
 }
 
 #[test]
-fn a_partition_is_bounded_unless_it_says_it_never_ends() {
+fn a_declared_partition_is_bounded_unless_it_says_it_never_ends_and_an_unsplit_stream_s_never_ends()
+{
     let id = PartitionId::parse("changes").unwrap();
     assert!(!Partition::new(id.clone()).is_unbounded());
-    assert!(!Partition::single().is_unbounded());
+    assert!(Partition::single().is_unbounded());
+    assert_eq!(Partition::single().id(), &PartitionId::whole());
     let unbounded = Partition::new(id.clone()).unbounded();
     assert!(unbounded.is_unbounded());
     assert_eq!(unbounded.id(), &id);
@@ -377,7 +379,7 @@ async fn a_following_read_waits_once_caught_up_until_asked_to_stop() {
     let source = connect(2).await;
     for follow in [false, true] {
         let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).unwrap());
-        let partition = Partition::single().unbounded();
+        let partition = Partition::single();
         let request = ReadRequest::new(numbers(), partition, None).following(follow);
         let read = source.read(request, sink);
         let watch = async {

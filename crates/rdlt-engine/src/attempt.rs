@@ -16,7 +16,7 @@ use std::sync::atomic::AtomicU64;
 use parking_lot::Mutex;
 use rdlt_connector::{
     Cursor, Destination, Epoch, Exclusion, GenerationId, OpenContext, OpenedSession, Partition,
-    PipelineState, Receipt, Source, StreamName,
+    PipelineState, ReadMode, Receipt, Source, StreamName,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -75,6 +75,8 @@ pub(crate) struct RunContext {
 /// A stream ready to load, and the partitions to read.
 struct Planned {
     stream: StreamRun,
+    /// How the stream is read.
+    read: ReadMode,
     on_demand: bool,
     /// How a change stream's pushes load; `None` for other streams.
     changes: Option<ChangeMode>,
@@ -391,6 +393,7 @@ fn spawn_partitions(
                 stream: stream.stream.name.clone(),
                 table: stream.stream.table,
                 partition,
+                read: stream.read,
                 cursor,
                 on_demand: stream.on_demand,
                 changes: stream.changes,

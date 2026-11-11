@@ -77,9 +77,9 @@ async fn arrow_batches_whose_schema_changes_mid_read_load_across_the_wire() {
 async fn a_served_read_learns_whether_its_partition_ends_and_whether_to_follow_it() {
     let source = ticks(serde_json::json!({ "rows": 1 })).await;
     let reads = [
+        (Partition::new(PartitionId::whole()), false),
         (Partition::single(), false),
-        (Partition::single().unbounded(), false),
-        (Partition::single().unbounded(), true),
+        (Partition::single(), true),
     ];
     for (partition, follow) in reads {
         let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));

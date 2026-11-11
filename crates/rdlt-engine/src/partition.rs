@@ -5,6 +5,7 @@ mod barriers;
 mod clock;
 mod coalesce;
 mod due;
+mod end;
 mod job;
 mod latest;
 mod progress;
@@ -43,6 +44,7 @@ use barriers::Barriers;
 pub(crate) use clock::LoadClock;
 use coalesce::{Coalescer, Pushed};
 use due::Due;
+use end::{checkpoint_missing, end_state};
 pub(crate) use job::{ChangeMode, PartitionJob};
 pub(crate) use latest::Latest;
 pub(crate) use progress::{CursorHold, Progress, Seal};
@@ -145,14 +147,18 @@ async fn reading(job: PartitionJob, context: Arc<PartitionContext>) -> Result<()
     Box::pin(read(job, &context)).await
 }
 
-/// Reads `job`, which holds its slot, to its end, sealing or abandoning what it read last.
+/// Reads `job`, which holds its slot, to its end, sealing or abandoning what it read last, and
+/// refusing a read that sealed none of the rows it pushed where its partition must checkpoint.
 async fn read(mut job: PartitionJob, context: &PartitionContext) -> Result<(), Error> {
     context.report(Progress::Started {
         partition: job.index,
     })?;
     let ingested = read_resetting(&mut job, context).await?;
+    if !ingested.stopped && job.must_checkpoint() && ingested.sealed_none() {
+        return Err(checkpoint_missing(&job));
+    }
     let end = (!ingested.stopped)
-        .then(|| end_state(&ingested, job.partition.is_unbounded()))
+        .then(|| end_state(&ingested, job.reads_again()))
         .flatten();
     match end {
         Some(state) => {
@@ -239,32 +245,14 @@ async fn read_and_ingest(
     Ok((ingested, read))
 }
 
-/// Where a partition that read to its end resumes, if anywhere new.
-///
-/// Rows read after the last checkpoint have no cursor that resumes past them, so committing them
-/// marks the partition `Done`, whether they were written, its policy discarded them all, its
-/// filters dropped them or it ignores them, and the seal carries what was done to them.
-/// Otherwise the partition resumes from its last cursor, so an incremental read picks up rows the
-/// source adds later. A partition that read nothing and never checkpointed records no position,
-/// so its next read starts from the beginning again.
-///
-/// An unbounded partition is never done: rows it pushed after its last checkpoint are not
-/// sealed, so its next read, from that checkpoint, reads them again.
-fn end_state(ingested: &Ingested, unbounded: bool) -> Option<PartitionState> {
-    match (&ingested.last_cursor, ingested.open.read()) {
-        (Some(cursor), 0) => Some(PartitionState::Cursor(cursor.clone())),
-        (None, 0) => None,
-        _ if unbounded => None,
-        _ => Some(PartitionState::Done),
-    }
-}
-
 /// What an ingest loop leaves once the read has ended.
 struct Ingested {
     open: OpenSegment,
     last_cursor: Option<Cursor>,
     /// Rows of the segments the read sealed.
     sealed_rows: u64,
+    /// Whether a checkpoint of the read came after a row it read.
+    checkpointed: bool,
     stopped: bool,
     /// Pushes gathered and not yet written.
     coalescer: Coalescer,
@@ -347,6 +335,7 @@ async fn ingest(
         open: OpenSegment::new(context.next_segment()),
         last_cursor: job.cursor.clone(),
         sealed_rows: 0,
+        checkpointed: false,
         stopped: false,
         coalescer: Coalescer::new(context.batch),
         schemas: write::Schemas::default(),
@@ -393,6 +382,11 @@ async fn ingest(
 }
 
 impl Ingested {
+    /// Whether the read read rows and no checkpoint came after any of them.
+    fn sealed_none(&self) -> bool {
+        !self.checkpointed && self.open.read() > 0
+    }
+
     /// Takes `event`, admitted with `permit`: the event comes after its permit, so an event
     /// refused here is dropped before what was charged for it is released.
     async fn handle(
@@ -431,6 +425,7 @@ impl Ingested {
                 let next = OpenSegment::new(context.next_segment());
                 let sealed = std::mem::replace(&mut self.open, next);
                 self.sealed_rows = self.sealed_rows.saturating_add(sealed.rows);
+                self.checkpointed |= sealed.read() > 0;
                 let state = PartitionState::Cursor(cursor.clone());
                 self.last_cursor = Some(cursor);
                 // The permit that admitted the checkpoint holds its cursor until its commit.

@@ -170,7 +170,7 @@ async fn a_certification_that_could_not_observe_a_clause_exits_one_unless_part_i
             .filter(|clause| clause["outcome"] == "unobserved")
             .filter_map(|clause| clause["id"].as_str())
             .collect();
-        let unseen = ["P-CREDIT", "S-RESUME", "S-PARTITION", "K-SOURCE"];
+        let unseen = ["P-CREDIT", "S-RESUME", "K-SOURCE"];
         assert_eq!(unobserved, unseen, "{report}");
     }
 }

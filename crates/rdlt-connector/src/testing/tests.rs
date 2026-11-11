@@ -206,7 +206,8 @@ impl ReadStream<Pages> for Page {
         } else {
             1
         };
-        Ok(vec![Partition::single(); copies])
+        // Bounded, so `S-PARTITION` checks it.
+        Ok(vec![Partition::new(PartitionId::whole()); copies])
     }
 
     async fn plan(&self, source: &Pages, state: &StreamState) -> Result<PartitionPlan> {

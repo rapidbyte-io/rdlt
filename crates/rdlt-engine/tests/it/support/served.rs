@@ -11,8 +11,8 @@ use bytes::Bytes;
 use parking_lot::Mutex;
 use rdlt_connector::{
     ColumnPath, ConnectContext, ConnectorError, Emitter, Exclusion, Field, LogicalType, Partition,
-    ReadMode, ReadStream, Result, Source, SourceConnector, StreamName, StreamSpec, Streams,
-    TableSchema, UNCHANGED_COLUMN, remap_unchanged, source_factory,
+    PartitionId, ReadMode, ReadStream, Result, Source, SourceConnector, StreamName, StreamSpec,
+    StreamState, Streams, TableSchema, UNCHANGED_COLUMN, remap_unchanged, source_factory,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -28,8 +28,9 @@ pub(crate) enum Form {
 
 /// What a test's source serves: its pushes, in one form, each followed by a checkpoint unless it
 /// is the last and `tail` says so; whether it leaves out the columns the stream excludes, as a
-/// source that honours the projection does; and the schema, key and change time its catalog
-/// declares, if any.
+/// source that honours the projection does; the schema, key and change time its catalog
+/// declares, if any; and whether its stream plans no partitions of its own, so its one partition
+/// never ends, where `unsplit` says so, or declares one that ends.
 #[derive(Clone, Debug)]
 pub(crate) struct Served {
     pub(crate) form: Form,
@@ -39,6 +40,7 @@ pub(crate) struct Served {
     pub(crate) declared: Option<TableSchema>,
     pub(crate) key: Option<ColumnPath>,
     pub(crate) change_time: Option<ColumnPath>,
+    pub(crate) unsplit: bool,
 }
 
 impl Served {
@@ -51,6 +53,7 @@ impl Served {
             declared: None,
             key: None,
             change_time: None,
+            unsplit: false,
         }
     }
 }
@@ -119,6 +122,16 @@ impl ReadStream<Excluding> for People {
             spec = spec.with_change_time(column.clone());
         }
         spec
+    }
+
+    /// One partition, which ends unless the stream is unsplit: a read that ends on pushes after
+    /// its last checkpoint finishes one that ends.
+    async fn partitions(&self, _: &Excluding, _: &StreamState) -> Result<Vec<Partition>> {
+        Ok(vec![if self.0.unsplit {
+            Partition::single()
+        } else {
+            Partition::new(PartitionId::whole())
+        }])
     }
 
     async fn read(

@@ -151,7 +151,7 @@ impl ReadStream<Stamped> for Stream {
     }
 
     async fn partitions(&self, _source: &Stamped, _state: &StreamState) -> Result<Vec<Partition>> {
-        Ok(vec![Partition::single().unbounded()])
+        Ok(vec![Partition::single()])
     }
 
     /// Pushes again, with their first stamps, the pushes after `cursor` no report has covered,

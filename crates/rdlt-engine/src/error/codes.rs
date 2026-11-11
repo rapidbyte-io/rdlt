@@ -56,6 +56,10 @@ pub const CAPABILITIES_INVALID: Code = Code("capabilities_invalid");
 /// engine's other call into it, which leaves it none for a read or a table writer.
 pub const CALLS_TOO_FEW: Code = Code("calls_too_few");
 
+/// The code of the error for an incremental read of a partition that never ends that pushed rows
+/// and no checkpoint after any, so none of them could land.
+pub const CHECKPOINT_MISSING: Code = Code("checkpoint_missing");
+
 /// The code of the error for a change stream merged by key into a destination that does not
 /// merge change streams.
 pub const CHANGE_MERGE_UNSUPPORTED: Code = Code("change_merge_unsupported");

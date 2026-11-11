@@ -58,9 +58,13 @@ def stream(
     the partitions; `ctx.partition` then says which one is read. The method stays a method:
     `self.tickets(since, ctx)` calls it.
 
-    A read that ends finishes its partition, as a Rust source's does: rows yielded after its last
-    checkpoint commit with it, and the partition is not read again. An incremental read that is
-    to be read again, from where it stopped, ends on a `checkpoint`.
+    A stream without `partitions` is read as a Rust source's is: read incrementally, it commits
+    only what it yields before its last checkpoint, and the next run reads it again from there,
+    so it ends on a `checkpoint` to commit its last rows; one that yields rows and never
+    checkpoints fails the read, since nothing it read could land. Read `full`, everything it
+    yields commits. A read of a partition `partitions` names finishes it: rows yielded after its
+    last checkpoint commit with it, and the partition is not read again, so one that is to be
+    read again, from where it stopped, ends on a `checkpoint`.
     """
 
     def made(function: Callable[..., Any]) -> _StreamMethod:

@@ -187,9 +187,10 @@ impl EngineConfig {
     ///
     /// A read that is not followed holds a whole part while it reads, so no more of them read at
     /// once than the parts. A following run follows fewer unbounded partitions than this, however
-    /// much memory it has: their reads hold no part of their own, but keep what they keep in the
-    /// parts no other read holds, all but one, and fail with `limit_exceeded` where that needs a
-    /// part none is free for.
+    /// much memory it has, each incremental stream that plans no partitions of its own among them:
+    /// their reads hold no part of their own, but keep what they keep in the parts no other read
+    /// holds, all but one, and fail with `limit_exceeded` where that needs a part none is free
+    /// for.
     ///
     /// A source whose calls are bounded ([`Source::max_calls`](rdlt_connector::Source::max_calls))
     /// is read no more at once than its calls less one, where those are fewer, the parts still

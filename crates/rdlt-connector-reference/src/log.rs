@@ -87,8 +87,9 @@ pub struct LoggedStream {
     pub batch_rows: u64,
     /// Batches a checkpoint: one follows every so many batches, each batch where it is one.
     ///
-    /// With more, a read that ends on a batch no checkpoint follows has no cursor past its last
-    /// messages, as a table read to its end has none.
+    /// With more, a read of a bounded partition that ends on a batch no checkpoint follows has no
+    /// cursor past its last messages, as a table read to its end has none. A read of an unbounded
+    /// one that returns at its head checkpoints there, so its last messages land.
     #[serde(default = "one")]
     pub checkpoint_batches: u64,
 }
@@ -308,6 +309,18 @@ impl Logged {
             })
             .collect()
     }
+
+    /// Ends a read at its head, `batches` pushed and the next offset `next`: a read of a
+    /// partition that never ends checkpoints there where messages followed its last checkpoint,
+    /// which every read ending so would otherwise read again and none land; a bounded one's read
+    /// ends on them, finishing it.
+    async fn ended(&self, out: &mut Emitter<Offset>, batches: u64, next: u64) -> Result<()> {
+        let unmarked = !batches.is_multiple_of(self.0.checkpoint_batches.max(1));
+        if unmarked && !self.0.bounded {
+            out.checkpoint(&Offset { next }).await?;
+        }
+        Ok(())
+    }
 }
 
 /// The value of the message at `offset` of `partition` of `stream`, for `seed`.
@@ -391,6 +404,7 @@ impl ReadStream<LogSource> for Logged {
                 out.behind(behind, Headroom::default()).await?;
             }
             if self.0.bounded || !out.follows() {
+                self.ended(out, batches, next).await?;
                 return reached(head);
             }
             // The first partition says when the stream's partitions change, as a consumer that
