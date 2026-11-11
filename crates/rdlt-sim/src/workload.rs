@@ -81,8 +81,8 @@ pub struct SimStream {
     pub checkpoint_every: u64,
     /// Whether the stream checkpoints after its last batch.
     ///
-    /// Incremental streams always do: a partition that ends with rows after its last checkpoint is
-    /// done and never read again.
+    /// Incremental streams always do: a bounded partition that ends with rows after its last
+    /// checkpoint is done and never read again, and an unbounded one reads them again every run.
     pub final_checkpoint: bool,
     /// Rows per pushed batch.
     pub batch_rows: u64,
@@ -121,8 +121,9 @@ pub struct SimStream {
     pub replayable: bool,
     /// Whether the stream's rows arrive as simulated time passes, so runs follow it for a while.
     pub follows: bool,
-    /// Whether its partitions never end, as a log's; a followed stream's others are read again as
-    /// they grow.
+    /// Whether its partitions never end: a followed stream's, as a log's, its others read again
+    /// as they grow; and a full stream's at every other place, whose rows after its last
+    /// checkpoint its read's end seals.
     ///
     /// Both chosen by the stream's read and place, not drawn, so streaming leaves a seed's
     /// workload as it was.
@@ -287,9 +288,10 @@ impl SimStream {
                 && read == ReadMode::Incremental
                 && index.is_multiple_of(2)),
             follows: features.streaming && read == ReadMode::Incremental,
-            unbounded: features.streaming
-                && read == ReadMode::Incremental
-                && index.is_multiple_of(2),
+            unbounded: match read {
+                ReadMode::Incremental => features.streaming && index.is_multiple_of(2),
+                _ => !index.is_multiple_of(2),
+            },
             drift,
             partitions,
             excluded: Excluding::drawn(features, json, mix(salt ^ EXCLUDE ^ index)),

@@ -75,6 +75,8 @@ JSON exactness ADR 0026's.
   - Drift columns take the engine's own names.
   - Merge keys arrive as the same numbers at two scales.
   - A change source reads ahead of its round, pushing changes with no checkpoint after them.
+  - A full stream's partitions never end at every other place, and its reads may end on rows
+    after their last checkpoint, which the read's end seals.
   - JSON pushes are written as text, so any integer pushes exactly.
   - With the unbounded or key rule reverted, the simulation fails within its first seeds.
 

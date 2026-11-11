@@ -90,12 +90,12 @@ pub(super) fn growth(seed: Seed) -> GrowthLimits {
     }
 }
 
-/// How many partitions of `workload`'s streams never end.
+/// How many partitions of `workload`'s streams never end and are followed.
 pub(super) fn endless(workload: &Workload) -> usize {
     workload
         .streams
         .iter()
-        .filter(|stream| stream.unbounded)
+        .filter(|stream| stream.unbounded && stream.follows)
         .map(|stream| stream.partitions.len())
         .sum()
 }
