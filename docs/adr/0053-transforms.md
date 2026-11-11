@@ -227,9 +227,10 @@ determinism under simulation whatever the configuration says.
     whose condition is 8 deep, and `round(coalesce(nullif(n, 0), length(btrim(lower(t)))) /
     3.0, 2)` still plans. The
     nightly fuzzing holds parsing to any text up to 64 KiB within two seconds, and plans only
-    texts of at most 208 bytes, where the slowest admitted queries found plan within a second
+    texts of at most 1 KiB, where the slowest admitted queries found plan within a second
     as the fuzzer builds rdlt-sql: there a timeout is planning that grows faster than the
-    limits allow.
+    limits allow, as the nest of `CASE`s each the condition of the next did, past two seconds
+    at about 570 bytes.
   - A query's text is parsed, measured and checked, and what is refused dropped, on a stack of
     its own, 4 KiB for each byte of the text, at least 1 MiB and at most 256 MiB, so a short
     query reserves little where a host commits memory strictly. The deepest tree text builds is
