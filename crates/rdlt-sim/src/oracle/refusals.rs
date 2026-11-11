@@ -41,9 +41,11 @@ pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize) -> Predi
             .filter(|column| stream.lands(&stream.drift[*column].name))
             .map(|column| Column::new(stream, column, *relaxed, &capabilities).outcome(phase));
         let key = (stream.keys > 0).then(|| key_outcome(stream, *relaxed, &capabilities, phase));
-        if let Some(code) = reads::refusal(stream, *relaxed, phase) {
-            prediction.may.insert((stream.name.clone(), code));
-            prediction.must.insert(stream.name.clone());
+        if let Some(refusal) = reads::refusal(stream, *relaxed, phase) {
+            prediction.may.insert((stream.name.clone(), refusal.code));
+            if refusal.must {
+                prediction.must.insert(stream.name.clone());
+            }
         }
         let pruning = prunes(stream, phase);
         for outcome in columns.chain(key) {

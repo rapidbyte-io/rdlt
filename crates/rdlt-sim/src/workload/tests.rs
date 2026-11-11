@@ -359,6 +359,48 @@ fn a_read_resumes_where_the_last_phases_ended_in_batches_of_the_streams_size() {
     assert_eq!(stream.read(0, 0).len(), first);
 }
 
+#[test]
+fn an_incremental_read_leaving_rows_after_its_last_checkpoint_lands_them_next_phase_once() {
+    let tailed: Vec<SimStream> = streams()
+        .into_iter()
+        .filter(|stream| stream.tails() && stream.reads == [ReadMode::Incremental; PHASES])
+        .collect();
+    assert!(!tailed.is_empty(), "some stream leaves rows to a next read");
+    for stream in tailed {
+        let group = usize::try_from(stream.batch_rows * stream.checkpoint_every).unwrap();
+        for partition in (0..stream.partitions.len()).filter(|at| !stream.rows(*at, 0).is_empty()) {
+            let first = stream.rows(partition, 0).len();
+            assert!(
+                first.is_multiple_of(group) && first >= 2 * group,
+                "{} p{partition}: {first} rows, in groups of {group}",
+                stream.name
+            );
+            let left = Relaxed::default();
+            assert_eq!(stream.sealed(partition, 0, left), first - group);
+            assert_eq!(stream.begins(partition, 1, left), first - group);
+            // Read again the next phase, the rows left land once: every row of the first phase
+            // lands, in order, and the next phase's read leaves rows of its own.
+            let landed: Vec<i64> = (0..PHASES)
+                .flat_map(|phase| stream.landing(partition, phase, left))
+                .map(|row| row.offset)
+                .collect();
+            let sealed = i64::try_from(stream.sealed(partition, 1, left)).unwrap();
+            assert_eq!(landed, (0..sealed).collect::<Vec<_>>(), "{}", stream.name);
+            assert!(sealed >= i64::try_from(first).unwrap());
+            // Mended in the first phase, its read there seals every row.
+            let mended = Relaxed {
+                mended: Some(0),
+                ..Relaxed::default()
+            };
+            assert_eq!(stream.landing(partition, 0, mended).len(), first);
+            assert_eq!(
+                stream.landing(partition, 1, mended).len(),
+                stream.rows(partition, 1).len() - first
+            );
+        }
+    }
+}
+
 /// Whether `stream` normalizes and a column of it holds arrays somewhere.
 fn has_arrays(stream: &SimStream) -> bool {
     stream.normalized()

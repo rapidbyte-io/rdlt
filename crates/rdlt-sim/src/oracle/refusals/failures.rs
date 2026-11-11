@@ -129,11 +129,16 @@ pub(in crate::oracle) fn violation(failures: &[Failure]) -> Option<&Failure> {
     })
 }
 
-/// Relaxes what refused `stream`'s runs with `code`, as an operator would: a frozen schema
-/// evolves; a source whose read sealed none of its rows is mended to checkpoint after its reads'
-/// last batch; a change the destination cannot apply takes a variant column, and the destination
-/// is granted adding columns.
-pub(in crate::oracle) fn relax(world: &World, relaxed: &mut [Relaxed], stream: &str, code: Code) {
+/// Relaxes what refused `stream`'s runs with `code` in `phase`, as an operator would: a frozen
+/// schema evolves; a source whose read sealed none of its rows is mended to checkpoint after its
+/// reads' last batch; a change the destination cannot apply takes a variant column, and the
+/// destination is granted adding columns.
+pub(in crate::oracle) fn relax(
+    world: &World,
+    relaxed: &mut [Relaxed],
+    (stream, code): (&str, Code),
+    phase: usize,
+) {
     let index = world
         .workload
         .streams
@@ -143,7 +148,7 @@ pub(in crate::oracle) fn relax(world: &World, relaxed: &mut [Relaxed], stream: &
     if code == codes::SCHEMA_FROZEN {
         relaxed[index].frozen = true;
     } else if code == codes::CHECKPOINT_MISSING {
-        relaxed[index].mended = true;
+        relaxed[index].mended.get_or_insert(phase);
         world.mend(index);
     } else {
         relaxed[index].refused = true;

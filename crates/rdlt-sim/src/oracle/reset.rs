@@ -166,6 +166,33 @@ impl Simulation {
         }
     }
 
+    /// Resets the workload's stream `index` with its tables, without faults, as an operator does
+    /// for a stream no position resumes: its next incremental read starts from its beginning.
+    ///
+    /// # Panics
+    ///
+    /// Panics, naming the seed, where the reset is not done.
+    pub(super) async fn remedy(&self, index: usize) {
+        let workload = &self.world.workload;
+        let name = &workload.streams[index].name;
+        let drawn = Drawn {
+            pipeline: PipelineId::parse(PIPELINES[index % workload.pipelines])
+                .expect("valid pipeline id"),
+            streams: [StreamName::new(name).expect("valid stream name")],
+            scope: ResetScope::Tables,
+            delay: Duration::ZERO,
+        };
+        self.world.set_faulty(false);
+        let (source, destination) = connected(&self.name, self.placing.as_ref()).await;
+        let watch = (&*self.world, self.name.as_str());
+        let answer = tried(&self.runs.engine(), &drawn, &source, &destination, watch).await;
+        assert!(
+            answer.is_ok(),
+            "seed {}: resetting {name} with its tables, as its refusal says, answered {answer:?}",
+            self.seed
+        );
+    }
+
     /// The reset `seed` draws apart from its generator, where the feature is on and a stream
     /// can be reset.
     fn draw(&self, seed: Seed) -> Option<Drawn> {
@@ -222,20 +249,12 @@ async fn tried(
 
 /// The resets after which the model's rows for `stream` still hold.
 ///
-/// A stream whose columns or key drift is never reset: read again, its earlier phases' rows
-/// would meet the types its columns drifted to, and a table created anew would meet its drift
-/// columns afresh, where the policies that discarded or refused them before may keep them. Nor is
-/// one whose partitions share keys: read again at once, their merges of a key race, where the
-/// model has the last phase's row win. An appended stream is never read again into its table,
-/// which keeps what it held, a full read's partial cycle too, beside the rows read again; and a
-/// full read's table is dropped only where the read replaces it.
+/// Only a stream whose rows read again hold as the model has them is reset ([`rereadable`]). An
+/// appended stream is never read again into its table, which keeps what it held, a full read's
+/// partial cycle too, beside the rows read again; and a full read's table is dropped only where
+/// the read replaces it.
 fn scopes(stream: &SimStream) -> Vec<ResetScope> {
-    let steady_keys = stream
-        .key_types
-        .iter()
-        .all(|types| types.iter().all(|kind| *kind == types[0]));
-    let drifts = !stream.drift.is_empty() || !steady_keys;
-    if !stream.replayable || stream.reads.contains(&ReadMode::Cdc) || drifts || stream.shared_keys {
+    if !rereadable(stream) {
         return Vec::new();
     }
     let appended = stream.write == WriteMode::Append;
@@ -253,6 +272,23 @@ fn scopes(stream: &SimStream) -> Vec<ResetScope> {
         scopes.push(ResetScope::Positions);
     }
     scopes
+}
+
+/// Whether `stream`'s rows, read again from its beginning, hold as the model has them: its source
+/// can read again, it is no change stream, none of its columns or keys drift, and its partitions
+/// share no keys.
+///
+/// Read again, a drifting stream's earlier phases' rows would meet the types its columns drifted
+/// to, and a table created anew would meet its drift columns afresh, where the policies that
+/// discarded or refused them before may keep them. Partitions sharing keys, read again at once,
+/// race to merge a key, where the model has the last phase's row win.
+pub(super) fn rereadable(stream: &SimStream) -> bool {
+    let steady_keys = stream
+        .key_types
+        .iter()
+        .all(|types| types.iter().all(|kind| *kind == types[0]));
+    let drifts = !stream.drift.is_empty() || !steady_keys;
+    stream.replayable && !stream.reads.contains(&ReadMode::Cdc) && !drifts && !stream.shared_keys
 }
 
 /// Whether `error` refuses a reset of a stream the pipeline recorded nothing of.

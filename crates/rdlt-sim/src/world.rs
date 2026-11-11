@@ -27,7 +27,7 @@ use crate::reached::{Reach, Reached};
 use crate::rng::SplitMix64;
 use crate::source::Plans;
 use crate::swarm::Features;
-use crate::workload::{SimStream, Workload};
+use crate::workload::{End, Workload};
 use capabilities::capabilities;
 use hangs::Hangs;
 pub(crate) use named::{Named, Naming};
@@ -89,8 +89,11 @@ pub struct World {
     /// were refused for want of it.
     granted: AtomicBool,
     /// The streams, by index, whose source an operator mended to checkpoint after its reads'
-    /// last batch, after a read that sealed none of its rows was refused.
+    /// last batch: after a read that sealed none of its rows was refused, or once no phase is
+    /// left to read again the rows its reads left after their last checkpoint.
     mended: Mutex<BTreeSet<usize>>,
+    /// What the first phase's reads of each stream, by index, ended on.
+    ended: Mutex<BTreeSet<(usize, End)>>,
     phase: AtomicUsize,
     faulty: AtomicBool,
     rng: Mutex<SplitMix64>,
@@ -200,6 +203,7 @@ impl World {
             capabilities: capabilities(rng, features),
             granted: AtomicBool::new(false),
             mended: Mutex::default(),
+            ended: Mutex::default(),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
             hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
@@ -268,6 +272,7 @@ impl World {
             capabilities,
             granted: AtomicBool::new(false),
             mended: Mutex::default(),
+            ended: Mutex::default(),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
             hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
@@ -320,6 +325,13 @@ impl World {
         self.mended.lock().contains(&stream)
     }
 
+    /// Notes that a read of stream `stream` ended on `end`, where it is the first phase's.
+    pub(crate) fn ended(&self, stream: usize, end: End) {
+        if self.phase() == 0 {
+            self.ended.lock().insert((stream, end));
+        }
+    }
+
     /// How many of the `rows` rows of partition `partition` of stream `stream` have arrived.
     pub(crate) fn available(&self, stream: usize, partition: usize, rows: usize) -> usize {
         match &*self.produced.lock() {
@@ -370,15 +382,18 @@ impl World {
         self.reached.lock().add(reach);
     }
 
-    /// Records that the checks held how the workload's stream `stream` is read and written.
+    /// Records that the checks held how the workload's stream `stream` is read and written, as
+    /// each way its first phase's reads ended.
     pub(crate) fn reach_combination(&self, stream: &str) {
         let streams = &self.workload.streams;
-        let combination = streams
-            .iter()
-            .find(|found| found.name == stream)
-            .and_then(SimStream::combination);
-        if let Some(combination) = combination {
-            self.reached.lock().add_combination(combination);
+        let Some(index) = streams.iter().position(|found| found.name == stream) else {
+            return;
+        };
+        let ended = self.ended.lock();
+        let ends = ended.range((index, End::Checkpoint)..=(index, End::Unmarked));
+        let mut reached = self.reached.lock();
+        for (_, end) in ends {
+            reached.add_combination(streams[index].combination(*end));
         }
     }
 

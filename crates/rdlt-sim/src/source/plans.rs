@@ -78,6 +78,7 @@ impl Plans {
             key,
             number: planned.began,
             since: planned.answered,
+            checkpointed: Mutex::default(),
         }
     }
 
@@ -113,6 +114,8 @@ pub(crate) struct PlannedRead<'a> {
     number: u64,
     /// How many plans the connection had answered when the read began.
     since: u64,
+    /// The offset of the row after the last checkpoint the engine took from the read, if any.
+    checkpointed: Mutex<Option<u64>>,
 }
 
 impl PlannedRead<'_> {
@@ -136,6 +139,7 @@ impl PlannedRead<'_> {
 
     /// Notes that the engine took the read's checkpoint before the row at offset `next`.
     pub(crate) fn took(&self, next: u64) {
+        *self.checkpointed.lock() = Some(next);
         {
             let mut planned = self.plans.0.lock();
             let reads = planned.taken.entry(self.key).or_default();
@@ -143,6 +147,11 @@ impl PlannedRead<'_> {
             *taken = (*taken).max(next);
         }
         self.pushed();
+    }
+
+    /// The offset of the row after the last checkpoint the engine took from the read, if any.
+    pub(crate) fn checkpointed(&self) -> Option<u64> {
+        *self.checkpointed.lock()
     }
 }
 
