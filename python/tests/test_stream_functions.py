@@ -212,6 +212,83 @@ def test_partitions_answer_ids_and_partitions_alike(tmp_path: Path, connectors: 
     assert rows_of(tmp_path, "users") == [("eu",), ("us",)]
 
 
+Told = list[tuple[str | None, int]]
+"""The committed cursors a stream was told of: each partition, and the cursor's `after`."""
+
+
+def told_of(told: Told) -> Callable[[Sequence[tuple[str | None, _Since]]], None]:
+    """What a stream calls with its committed cursors, keeping each in `told`."""
+
+    def committed(cursors: Sequence[tuple[str | None, _Since]]) -> None:
+        told.extend((partition, cursor.after) for partition, cursor in cursors)
+
+    return committed
+
+
+def test_a_stream_function_is_told_which_cursors_are_committed(
+    tmp_path: Path, connectors: Path
+) -> None:
+    told: Told = []
+
+    @stream(cursor=_Since, committed=told_of(told))
+    def users(since: _Since) -> Iterator[object]:
+        for n in range(since.after + 1, 6):
+            yield {"id": n}
+            if n % 3 == 2:
+                yield checkpoint(_Since(after=n))
+
+    built = rdlt.pipeline(
+        "told", source=users, destination=into_sqlite(tmp_path), commit=rdlt.Commit(rows=1)
+    )
+    built.build(host(tmp_path, connectors)).run()
+    assert told, "the stream was told of its commits"
+    assert told[-1] == (None, 5)
+    assert {after for _, after in told} <= {2, 5}
+
+
+def test_a_source_class_s_stream_is_told_which_cursors_are_committed_through_a_method(
+    tmp_path: Path, connectors: Path
+) -> None:
+    told: Told = []
+
+    @source(id="io.example.told", config=Config, version="1.0.0")
+    class Told:
+        def __init__(self, config: Config) -> None:
+            del config
+
+        def check(self) -> None:
+            """Reads need nothing checked first."""
+
+        def settle(self, cursors: Sequence[tuple[str | None, _Since]]) -> None:
+            told_of(told)(cursors)
+
+        @stream(cursor=_Since, partitions=lambda _self: ["eu"], committed="settle")
+        def users(self, since: _Since, ctx: StreamContext) -> Iterator[object]:
+            del ctx
+            for n in range(since.after + 1, 3):
+                yield {"id": n}
+            yield checkpoint(_Since(after=2))
+
+    placed = rdlt.local(Told, config={})
+    rdlt.pipeline("told", source=placed, destination=into_sqlite(tmp_path)).build(
+        host(tmp_path, connectors)
+    ).run()
+    assert told == [("eu", 2)]
+
+
+def test_a_stream_that_cannot_be_read_again_says_so_in_its_catalog(
+    tmp_path: Path, connectors: Path
+) -> None:
+    @stream(cursor=_Since, replayable=False)
+    def leased(since: _Since) -> Iterator[object]:
+        del since
+        yield {"id": 1}
+
+    built = rdlt.pipeline("leased", source=leased, destination=into_sqlite(tmp_path))
+    (found,) = built.build(host(tmp_path, connectors)).discover().streams
+    assert found.raw["replayable"] is False
+
+
 def test_yielded_dicts_land_once(tmp_path: Path, connectors: Path) -> None:
     @stream(primary_key="id")
     def users() -> Iterator[object]:

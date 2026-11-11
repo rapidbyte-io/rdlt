@@ -14,7 +14,7 @@ from rdlt._weak import weakly_reached
 from rdlt.connector._config import Config, validated
 from rdlt.connector._cursor import Cursor
 from rdlt.connector._declared import Placement, declare, declared_as, package_version
-from rdlt.connector._streams import Partition, Stream
+from rdlt.connector._streams import Committed, Partition, Stream
 
 if TYPE_CHECKING:
     from rdlt._pipeline import WriteMode
@@ -29,6 +29,10 @@ _Answered = Sequence[str | Partition]
 
 _PartitionsOf = Callable[[Any], _Answered] | Callable[[], _Answered] | str
 """A partitioned stream's partitions: a function called as its stream is, or a method's name."""
+
+_CommittedBy = Callable[[Any, Committed], None] | Callable[[Committed], None] | str
+"""What a stream calls with its committed cursors: a function called as its stream is, or a
+method's name."""
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
@@ -45,6 +49,8 @@ class ReadStream:
     write: WriteMode | None
     cursor: type[Cursor] | None
     partitions: _PartitionsOf | None
+    committed: _CommittedBy | None
+    replayable: bool
     takes_context: bool
 
     def __get__(self, instance: object, owner: type | None = None) -> Any:  # noqa: ANN401 - the author's method
@@ -65,6 +71,8 @@ def stream(
     write: WriteMode | None = None,
     cursor: type[Cursor] | None = None,
     partitions: _PartitionsOf | None = None,
+    committed: _CommittedBy | None = None,
+    replayable: bool = True,
 ) -> Callable[[Callable[..., Any]], Any]:
     """Makes a function a stream a pipeline reads as its source, or a method a stream of its class.
 
@@ -76,6 +84,12 @@ def stream(
     `write` is how its rows land where `rdlt.pipeline` places its source in process, unless the
     pipeline's `streams=` says otherwise. It makes a `ReadStream`, typed `Any` so it is called and
     overridden as the function or method it was.
+
+    `committed`, a function called as `partitions` is or a method's name, takes the cursors each
+    commit made durable, as `(partition, cursor)` pairs, as a Rust stream's `committed` does: a
+    source that acknowledges upstream, as a queue settling its messages, does it there.
+    `replayable=False` declares a stream that cannot be read again from any committed cursor, as
+    the Rust SDK's `StreamSpec::with_replayable` does.
 
     A stream without `partitions` reads `Partition.single()`, which never ends, as a Rust source's
     does, and so does a `Partition(id, unbounded=True)` that `partitions` answers. Read `full`,
@@ -103,6 +117,8 @@ def stream(
             write=write,
             cursor=cursor,
             partitions=partitions,
+            committed=committed,
+            replayable=replayable,
             takes_context=takes_context,
         )
 
@@ -210,13 +226,23 @@ class _Connected:
             instance = self._instance()
             return getattr(instance, of)() if isinstance(of, str) else cast("Any", of)(instance)
 
+        def committed(cursors: Committed) -> None:
+            by = self._declared().streams[index].committed
+            instance = self._instance()
+            if isinstance(by, str):
+                getattr(instance, by)(cursors)
+            else:
+                cast("Any", by)(instance, cursors)
+
         return Stream(
             method.name,
             read,
             method.primary_key,
             method.cursor,
             None if method.partitions is None else partitions,
+            committed=None if method.committed is None else committed,
             takes_context=method.takes_context,
+            replayable=method.replayable,
         )
 
     def check(self) -> None:
@@ -262,9 +288,10 @@ class _Functions:
 
 def _function_stream(made: ReadStream) -> Stream:
     """`made`, a function's stream, as the native source reads it, reaching it weakly."""
-    if isinstance(made.partitions, str):
-        message = f"stream {made.name!r}: partitions= names a method, and a function has no class"
-        raise TypeError(message)
+    for named in ("partitions", "committed"):
+        if isinstance(getattr(made, named), str):
+            message = f"stream {made.name!r}: {named}= names a method, and a function has no class"
+            raise TypeError(message)
     reached = weakly_reached(made, f"stream {made.name!r}")
 
     def read(*arguments: object, **keywords: object) -> Iterable[object] | AsyncIterable[object]:
@@ -273,13 +300,18 @@ def _function_stream(made: ReadStream) -> Stream:
     def partitions() -> _Answered:
         return cast("Callable[[], _Answered]", reached().partitions)()
 
+    def committed(cursors: Committed) -> None:
+        cast("Callable[[Committed], None]", reached().committed)(cursors)
+
     return Stream(
         made.name,
         read,
         made.primary_key,
         made.cursor,
         None if made.partitions is None else partitions,
+        committed=None if made.committed is None else committed,
         takes_context=made.takes_context,
+        replayable=made.replayable,
     )
 
 

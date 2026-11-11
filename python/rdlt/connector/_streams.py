@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from rdlt import _native
 from rdlt.connector._context import StreamContext
@@ -32,6 +33,10 @@ class Partition:
 Read = Callable[..., Iterable[object] | AsyncIterable[object]]
 """A stream's read: takes its cursor first where it declares one, and `ctx` where it names it."""
 
+Committed = Sequence[tuple[str | None, Any]]
+"""Committed cursors: each partition, `None` for a stream without partitions, and its cursor, of
+the stream's `Cursor` type."""
+
 
 class Stream:
     """One stream, as the native source holds it: `read` and `partitions` reach the author's code.
@@ -48,12 +53,15 @@ class Stream:
         cursor: type[Cursor] | None,
         partitions: Callable[[], Sequence[str | Partition]] | None,
         *,
+        committed: Callable[[Committed], None] | None,
         takes_context: bool,
+        replayable: bool,
     ) -> None:
         self._name = name
         self._read = read
         self._cursor = cursor
         self._partitions = partitions
+        self._committed = committed
         self._takes_context = takes_context
         self._spec = json.dumps(
             {
@@ -62,6 +70,8 @@ class Stream:
                 "read_modes": ["full", "incremental"] if cursor else ["full"],
                 "checkpointing": "on_demand" if takes_context else "natural",
                 "partitioned": partitions is not None,
+                "replayable": replayable,
+                "committed": committed is not None,
             }
         )
 
@@ -82,6 +92,17 @@ class Stream:
             (each.id, each.unbounded) if isinstance(each, Partition) else (each, False)
             for each in found
         ]
+
+    def committed(self, cursors: Sequence[tuple[str | None, str | None]]) -> None:
+        """Tells the author's code that `cursors`, each as JSON, are committed."""
+        if self._committed is None:
+            return
+        of = self._cursor
+        parsed = [
+            (partition, None if of is None or text is None else of.model_validate_json(text))
+            for partition, text in cursors
+        ]
+        self._committed(parsed)
 
     def read(
         self, partition: str | None, cursor: str | None, context: _native.StreamContext
