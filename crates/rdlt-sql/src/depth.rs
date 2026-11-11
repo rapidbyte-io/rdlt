@@ -1,5 +1,5 @@
-//! How deep a parsed query's expressions nest, measured on the tree the parser built, and how
-//! many conditions its `CASE`s lie within.
+//! How deep a parsed query's expressions nest, measured on the tree the parser built, how many
+//! conditions its `CASE`s lie within, and how deep its conditions nest.
 //!
 //! The parser builds a chain such as `a + b + c` in a loop, into a tree as deep as the chain is
 //! long, which its recursion limit does not bound. The measure counts expressions alone: a
@@ -9,7 +9,8 @@
 //! and refused on its tree before either meets it.
 //!
 //! The planner reads a `CASE` lying in a condition again for each operator above it there, so
-//! its work multiplies with each condition a `CASE` lies within, however shallow the tree.
+//! its work multiplies with each condition a `CASE` lies within, however shallow the tree, and
+//! grows within one condition as a power of the condition's depth.
 
 #[cfg(test)]
 mod tests;
@@ -33,6 +34,9 @@ pub(crate) struct Nesting {
     /// of the `CASE`s around it, and the arguments but the last of the calls of `coalesce`
     /// around it, which is planned as a `CASE` testing each.
     pub(crate) conditions: usize,
+    /// The most expressions any expression of a condition lies within, counted in its outermost
+    /// condition alone: `n > 0` is one deep, and a `CASE` in it takes its own conditions along.
+    pub(crate) condition_depth: usize,
 }
 
 /// How the expressions of `statement` nest.
@@ -42,11 +46,13 @@ pub(crate) fn nesting(statement: &Statement) -> Nesting {
     Nesting {
         depth: measured.deepest,
         conditions: measured.most_conditioned,
+        condition_depth: measured.deepest_tested,
     }
 }
 
-/// How many expressions a walk is within, and the most it has been; and how many conditions it
-/// is within, and the most a `CASE` it met has been.
+/// How many expressions a walk is within, and the most it has been; how many conditions it is
+/// within, and the most a `CASE` it met has been; and how deep in its outermost condition it is,
+/// and the most it has been.
 #[derive(Default)]
 struct Measured {
     within: usize,
@@ -55,16 +61,27 @@ struct Measured {
     tested: BTreeSet<usize>,
     conditioned: usize,
     most_conditioned: usize,
+    /// How many expressions the outermost condition the walk is within lies within.
+    outermost: usize,
+    deepest_tested: usize,
 }
 
 impl Visitor for Measured {
     type Break = Infallible;
 
     fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<Infallible> {
-        self.deepest = self.deepest.max(self.within);
+        let depth = self.within;
+        self.deepest = self.deepest.max(depth);
         self.within = self.within.saturating_add(1);
         if self.tested.contains(&address(expr)) {
+            if self.conditioned == 0 {
+                self.outermost = depth;
+            }
             self.conditioned = self.conditioned.saturating_add(1);
+        }
+        if self.conditioned > 0 {
+            let tested = depth.saturating_sub(self.outermost);
+            self.deepest_tested = self.deepest_tested.max(tested);
         }
         if let Some(conditions) = conditions(expr) {
             self.most_conditioned = self.most_conditioned.max(self.conditioned);

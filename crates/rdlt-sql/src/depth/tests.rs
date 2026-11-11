@@ -116,6 +116,59 @@ fn a_case_lies_within_the_conditions_of_the_cases_and_coalesces_around_it() {
     }
 }
 
+/// Queries, each with the most expressions any expression of a condition lies within there.
+const CONDITION_DEPTHS: [(&str, usize); 13] = [
+    ("SELECT n FROM input", 0),
+    ("SELECT CASE WHEN b THEN 1 END AS x FROM input", 0),
+    ("SELECT CASE WHEN n > 0 THEN 1 END AS x FROM input", 1),
+    (
+        "SELECT CASE WHEN lower(btrim(t)) = 'x' AND coalesce(n, 0) > 3 THEN 1 END AS x FROM input",
+        4,
+    ),
+    (
+        "SELECT n FROM input WHERE CASE WHEN abs(n) = 1 THEN b END",
+        2,
+    ),
+    // Each parenthesis is a level.
+    (
+        "SELECT CASE WHEN ((n + n) * (n - n)) / n > 0.5 AND t IS NULL THEN 1 END AS x FROM input",
+        7,
+    ),
+    // A result and an `ELSE` are no conditions, however deep.
+    (
+        "SELECT CASE WHEN b THEN abs(abs(abs(n))) ELSE abs(abs(n)) END AS x FROM input",
+        0,
+    ),
+    // A `CASE` in a condition counts its own conditions there.
+    (
+        "SELECT CASE WHEN CASE WHEN n > 0 THEN b END THEN 1 END AS x FROM input",
+        2,
+    ),
+    (
+        "SELECT CASE WHEN NOT (CASE WHEN abs(n) > 0 THEN b END) THEN 1 END AS x FROM input",
+        5,
+    ),
+    // `coalesce` tests each argument but its last.
+    ("SELECT coalesce(abs(abs(n)), 1) AS x FROM input", 2),
+    ("SELECT coalesce(n, abs(abs(n))) AS x FROM input", 0),
+    // The deepest condition counts, and one met after the walk leaves another starts anew.
+    (
+        "SELECT CASE WHEN b THEN 1 WHEN abs(abs(n)) = 1 THEN 2 END AS x FROM input",
+        3,
+    ),
+    (
+        "SELECT CASE WHEN b THEN abs(abs(abs(CASE WHEN n > 0 THEN 1 END))) END AS x FROM input",
+        1,
+    ),
+];
+
+#[test]
+fn a_condition_is_as_deep_as_the_expressions_above_its_deepest_part_within_it() {
+    for (text, expected) in CONDITION_DEPTHS {
+        assert_eq!(nesting_of(text).condition_depth, expected, "{text}");
+    }
+}
+
 /// Lengths of text the deepest forms are built at: a short query's, a long one's, and the most a
 /// query's text may take.
 const LENGTHS: [usize; 3] = [1 << 10, 8 << 10, SQL_BYTES];

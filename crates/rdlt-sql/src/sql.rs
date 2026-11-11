@@ -18,7 +18,9 @@ use rdlt_engine::{Bound, Transform, TransformError, TransformStep};
 use crate::contain::contained;
 use crate::dialect::{Guarded, Refused};
 use crate::error::{SqlError, SqlErrorKind};
-use crate::limits::{PARSER_DEPTH, PLANS, SQL_BYTES, SQL_CONDITION_DEPTH, SQL_DEPTH};
+use crate::limits::{
+    PARSER_DEPTH, PLANS, SQL_BYTES, SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_NESTED_CONDITIONS,
+};
 use crate::planned::Planned;
 use crate::{depth, shape, stack};
 
@@ -48,8 +50,8 @@ impl Sql {
     ///
     /// A [`SqlError`], coded `transform_invalid`, where `text` is longer than [`SQL_BYTES`], is
     /// not one query, nests deeper than [`SQL_DEPTH`], nests a `CASE` within more conditions
-    /// than [`SQL_CONDITION_DEPTH`], asks for what a SQL transform may not, or makes a library
-    /// it is parsed by panic.
+    /// than [`SQL_NESTED_CONDITIONS`] or a condition deeper than [`SQL_CONDITION_DEPTH`], asks
+    /// for what a SQL transform may not, or makes a library it is parsed by panic.
     pub fn parse(text: &str) -> Result<Self, SqlError> {
         let parsed = contained(|| Self::parsed(text));
         parsed.unwrap_or_else(|| {
@@ -172,8 +174,11 @@ fn read(tokens: Vec<TokenWithSpan>) -> Result<(Statement, bool), SqlError> {
         if nesting.depth > SQL_DEPTH {
             return Err(shape::nested());
         }
-        if nesting.conditions > SQL_CONDITION_DEPTH {
+        if nesting.conditions > SQL_NESTED_CONDITIONS {
             return Err(shape::conditioned());
+        }
+        if nesting.condition_depth > SQL_CONDITION_DEPTH {
+            return Err(shape::deep_condition());
         }
     }
     let (Some(mut statement), true) = (statements.pop(), statements.is_empty()) else {
