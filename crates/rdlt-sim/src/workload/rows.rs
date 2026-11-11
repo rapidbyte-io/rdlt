@@ -7,7 +7,7 @@ use rdlt_connector::{Checkpointing, ReadMode};
 use rdlt_testkit::draw::mix;
 use rdlt_testkit::drawn::Scalar;
 
-use super::{PHASES, Row, SimStream, values};
+use super::{PHASES, Relaxed, Row, SimStream, values};
 
 impl SimStream {
     /// The rows of `partition` the source reads in `phase`: every row of a full read, and an
@@ -95,15 +95,79 @@ impl SimStream {
         delivered
     }
 
-    /// Keeps each bounded partition that a read ending on rows finishes in the first phase as it
-    /// was into an incremental next phase, as a bounded partition done does not grow.
-    pub(super) fn finish_bounded(&mut self) {
-        if self.final_checkpoint || self.unbounded || self.reads[1] != ReadMode::Incremental {
-            return;
-        }
-        for rows in &mut self.partitions {
-            if rows[0] > 0 {
+    /// Fits each partition's rows to how the stream's reads end: a bounded partition that a
+    /// first phase's read ending on rows finishes does not grow into an incremental next phase, as
+    /// it is done; and where an incremental first phase leaves the rows after its last checkpoint
+    /// to the next read, each partition holding rows holds two or more whole checkpoint groups, so
+    /// the rows left are one whole group, which the next phase reads again in the same batches.
+    pub(super) fn fit_partitions(&mut self) {
+        let incremental = self.reads[1] == ReadMode::Incremental;
+        let finished = !self.final_checkpoint && !self.unbounded && incremental;
+        let tailed = self.tails() && self.reads[0] == ReadMode::Incremental;
+        let group = self.batch_rows * self.checkpoint_every;
+        for rows in self.partitions.iter_mut().filter(|rows| rows[0] > 0) {
+            if finished {
                 rows[1] = rows[0];
+            }
+            if tailed {
+                let fitted = rows[0].div_ceil(group).max(2) * group;
+                if incremental {
+                    rows[1] += fitted - rows[0];
+                }
+                rows[0] = fitted;
+            }
+        }
+    }
+
+    /// Whether its incremental reads of a partition that never ends, where they end on rows,
+    /// leave the rows after their last checkpoint to the next read: it checkpoints naturally, so
+    /// where that checkpoint falls is the workload's to say.
+    pub fn tails(&self) -> bool {
+        !self.final_checkpoint && self.unbounded && self.checkpointing == Checkpointing::Natural
+    }
+
+    /// Where `partition`'s read in `phase` starts, as the operator left the stream: at its
+    /// beginning in the first phase, in a phase read in full and after a reset with its tables;
+    /// else where the phase before sealed it.
+    pub(crate) fn begins(&self, partition: usize, phase: usize, relaxed: Relaxed) -> usize {
+        match phase.checked_sub(1) {
+            Some(last) if self.reads[phase] != ReadMode::Full && relaxed.reset != Some(phase) => {
+                self.sealed(partition, last, relaxed)
+            }
+            _ => 0,
+        }
+    }
+
+    /// The offset up to which `partition`'s rows of `phase` land once the phase converged: all of
+    /// them, but where an incremental read of a partition that never ends leaves the rows after
+    /// its last checkpoint to the next read, and the operator had not mended the source by then.
+    ///
+    /// A read that seals none of its rows is refused, and the source mended.
+    pub(crate) fn sealed(&self, partition: usize, phase: usize, relaxed: Relaxed) -> usize {
+        let end = self.rows(partition, phase).len();
+        let mended = relaxed.mended.is_some_and(|at| at <= phase);
+        if !self.tails() || mended || self.reads[phase] != ReadMode::Incremental {
+            return end;
+        }
+        let begins = self.begins(partition, phase, relaxed);
+        let size = usize::try_from(self.batch_rows).unwrap_or(1);
+        let every = usize::try_from(self.checkpoint_every).unwrap_or(1);
+        let batches = end.saturating_sub(begins).div_ceil(size);
+        if batches <= every {
+            return end;
+        }
+        begins + (batches - 1) / every * every * size
+    }
+
+    /// The rows of `partition` that land in `phase`, as the operator left the stream: every row
+    /// of a phase read in full, at each of its completions, and those an incremental read seals.
+    pub(crate) fn landing(&self, partition: usize, phase: usize, relaxed: Relaxed) -> &[Row] {
+        let rows = self.rows(partition, phase);
+        match self.reads[phase] {
+            ReadMode::Full => rows,
+            _ => {
+                &rows
+                    [self.begins(partition, phase, relaxed)..self.sealed(partition, phase, relaxed)]
             }
         }
     }

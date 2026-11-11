@@ -11,6 +11,7 @@ use rdlt_sql::Sql;
 
 use super::memory::{Counterweight, Tracing};
 use super::pressure::explained;
+use super::reset::rereadable;
 use super::scenario::{Executed, Scenario, execute_all};
 use super::twice::Twice;
 use super::{Simulation, Window, refusals};
@@ -165,27 +166,62 @@ impl Simulation {
             explained(&failures, &prediction, seed, phase);
         }
         let failure = failures.into_iter().last().map(|failure| failure.text);
-        let stopped = refused.is_some_and(|(stream, code)| self.answer(&stream, code));
+        let answer = match refused {
+            Some((stream, code)) => Box::pin(self.answer(&stream, code, phase)).await,
+            None => Answer::Relaxed,
+        };
         Ran {
             succeeded,
             failure,
-            stopped,
+            stopped: answer == Answer::Stopped,
+            mended: match answer {
+                Answer::Mended(pipeline) => Some(pipeline),
+                _ => None,
+            },
         }
     }
 
-    /// Answers a refusal of `stream` coded `code` that a phase's runs met, as an operator would:
-    /// whether it stops the phase short, as no operator relaxes it, or else relaxes it.
-    fn answer(&mut self, stream: &str, code: Code) -> bool {
+    /// Answers a refusal of `stream` coded `code` that `phase`'s runs met, as an operator would:
+    /// relaxes it, or resets with its tables a stream no position resumes, where its rows still
+    /// hold as the model has them once read again; or it stops the phase short.
+    async fn answer(&mut self, stream: &str, code: Code, phase: usize) -> Answer {
         self.world.reach(Reach::Refused);
-        if code == codes::CURSOR_MISSING {
+        if code == codes::MERGE_KEY_CHANGED {
+            return Answer::Stopped;
+        }
+        let streams = &self.world.workload.streams;
+        let index = streams
+            .iter()
+            .position(|candidate| candidate.name == stream)
+            .expect("refusals name the workload's streams");
+        if code == codes::CHECKPOINT_MISSING {
+            refusals::relax(&self.world, &mut self.relaxed, (stream, code), phase);
+            return Answer::Mended(index % self.world.workload.pipelines);
+        }
+        if code != codes::CURSOR_MISSING {
+            refusals::relax(&self.world, &mut self.relaxed, (stream, code), phase);
+            return Answer::Relaxed;
+        }
+        if !rereadable(&streams[index]) {
             self.world.reach_combination(stream);
+            return Answer::Stopped;
         }
-        let stops = code == codes::MERGE_KEY_CHANGED || code == codes::CURSOR_MISSING;
-        if !stops {
-            refusals::relax(&self.world, &mut self.relaxed, stream, code);
-        }
-        stops
+        Box::pin(self.remedy(index)).await;
+        self.relaxed[index].reset = Some(phase);
+        Answer::Relaxed
     }
+}
+
+/// What an operator's answer to a refusal leaves of the phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Answer {
+    /// It goes on.
+    Relaxed,
+    /// It goes on until the pipeline, by its index, succeeds again: the stream's source now
+    /// checkpoints after its reads' last batch, so a read seals the rows those before it left.
+    Mended(usize),
+    /// It stops short.
+    Stopped,
 }
 
 /// Checks that none of `failures` breaks the wire protocol, which no fault excuses.
@@ -208,6 +244,10 @@ pub(super) struct Ran {
     /// partition that never ends which no cursor resumes, which a reset would mend but the
     /// model's rows would not hold.
     pub(super) stopped: bool,
+    /// The pipeline, by its index, whose stream's source an operator mended to checkpoint after
+    /// its reads' last batch, which must succeed again for its reads to seal the rows those
+    /// before them left.
+    pub(super) mended: Option<usize>,
 }
 
 /// The identifiers of the pipelines sharing the destination.

@@ -2,11 +2,27 @@
 //! its first phase reads it, whether the next reads it the other way, how its partitions end, what
 //! its first reads end on and how it is written, but those no stream may be.
 //!
-//! Each is drawn on its own (`SimStream::generate`). Those never drawn, and why:
-//! - a stream that replaces its table read incrementally in either phase: replace needs a full
-//!   read, and the engine refuses the plan as `plan_mode_invalid`;
-//! - a stream whose rows arrive as runs follow it read in full in either phase: a full read ends
-//!   at the rows that have arrived, where the model holds each cycle to every row of its phase.
+//! Each is drawn on its own (`SimStream::generate`), but what a read that does not end on a
+//! checkpoint ends on, which the source notes as each read ends: rows after its last checkpoint,
+//! or no checkpoint at all, as its batches fall. The draws are tied only where the engine refuses
+//! a combination or the model cannot hold it:
+//! - a stream that replaces its table is read in full in every phase: replace needs a full read,
+//!   and the engine refuses the plan as `plan_mode_invalid`;
+//! - a stream whose rows arrive as runs follow it is read incrementally in every phase, and where
+//!   its partitions end, its reads end on a checkpoint: a full read, or a read finishing a
+//!   partition on rows, would end at the rows that had arrived, where the model holds each to every
+//!   row of its phase;
+//! - an incremental read of a partition that never ends, of a stream that checkpoints on demand,
+//!   never ends on rows after a checkpoint, but checkpoints nowhere and is refused. Where its last
+//!   checkpoint falls is the engine's to ask, so which rows the next read reads again is not the
+//!   model's to know: it would need the source to tell the model where each read checkpointed,
+//!   and the model to follow every run's reads. The same read of a stream that checkpoints
+//!   naturally ends on rows after a checkpoint, which the model places;
+//! - each partition of a stream whose first incremental reads leave the rows after their last
+//!   checkpoint to the next read holds two or more whole checkpoint groups, so the rows left are
+//!   one group, read again in the batches of the phase that first held them (a batch is typed as
+//!   its first row's phase); and a bounded partition a first read ending on rows finished does not
+//!   grow, as it is done.
 
 use std::fmt;
 
@@ -47,12 +63,24 @@ pub enum Ends {
 }
 
 /// What a read ends on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum End {
     /// A checkpoint after its last row.
     Checkpoint,
-    /// Rows after its last checkpoint, or no checkpoint at all.
-    Rows,
+    /// Rows after its last checkpoint.
+    Tail,
+    /// Rows, with no checkpoint before any.
+    Unmarked,
+}
+
+impl fmt::Display for End {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Checkpoint => "ending on a checkpoint",
+            Self::Tail => "ending on rows after a checkpoint",
+            Self::Unmarked => "never checkpointing",
+        })
+    }
 }
 
 impl Combination {
@@ -62,7 +90,7 @@ impl Combination {
         for read in [ReadMode::Full, ReadMode::Incremental] {
             for changed in [false, true] {
                 for ends in [Ends::Bounded, Ends::Unbounded, Ends::Followed] {
-                    for end in [End::Checkpoint, End::Rows] {
+                    for end in [End::Checkpoint, End::Tail, End::Unmarked] {
                         for write in [WriteMode::Append, WriteMode::Replace, WriteMode::Merge] {
                             let combination = Self {
                                 read,
@@ -82,7 +110,7 @@ impl Combination {
         listed
     }
 
-    /// Whether a stream may be so, as the module's list of those never drawn says.
+    /// Whether a stream may be so, as the ties the module lists allow.
     fn drawn(self) -> bool {
         let full = self.read == ReadMode::Full && !self.changed;
         let incremental = self.read == ReadMode::Incremental && !self.changed;
@@ -114,7 +142,7 @@ impl fmt::Display for Combination {
         };
         write!(
             formatter,
-            "{}{next}, {:?}, ending on {:?}, {:?}",
+            "{}{next}, {:?}, {}, {:?}",
             read(self.read),
             self.ends,
             self.end,
@@ -124,27 +152,23 @@ impl fmt::Display for Combination {
 }
 
 impl SimStream {
-    /// The combination the stream is read and written in, where its first phase reads rows.
-    pub fn combination(&self) -> Option<Combination> {
-        let read = (0..self.partitions.len()).any(|partition| !self.read(partition, 0).is_empty());
+    /// The combination the stream is read and written in, where a read of its first phase ended
+    /// on `end`.
+    pub fn combination(&self, end: End) -> Combination {
         let ends = match (self.unbounded, self.follows) {
             (false, _) => Ends::Bounded,
             (true, false) => Ends::Unbounded,
             (true, true) => Ends::Followed,
         };
-        read.then(|| Combination {
+        Combination {
             read: self.reads[0],
             changed: self.reads[1..PHASES]
                 .iter()
                 .any(|next| *next != self.reads[0]),
             ends,
-            end: if self.final_checkpoint {
-                End::Checkpoint
-            } else {
-                End::Rows
-            },
+            end,
             write: self.write,
-        })
+        }
     }
 }
 

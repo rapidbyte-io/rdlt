@@ -23,7 +23,7 @@ use plans::PlannedRead;
 pub(crate) use plans::{Findings, Plans};
 pub(crate) use push::json_push;
 use push::{batch, json_rows};
-use serving::{Marks, Serving, at};
+use serving::{Marks, Serving, at, ended};
 
 use crate::oracle::aside;
 use crate::owners::Live;
@@ -253,7 +253,7 @@ impl ReadStream<SimSource> for SimStreamReader {
             if !(out.follows() && partition.is_unbounded()) {
                 break;
             }
-            if marks.any {
+            if marks.at(next, rows.len()) {
                 self.checkpoint(source, out, &reading, next).await?;
             }
             // As a log does, it says how far behind its newest rows it is; and it asks for the
@@ -266,6 +266,7 @@ impl ReadStream<SimSource> for SimStreamReader {
                 .arrival(source, out, (&reading, marks), rows.len(), next)
                 .await?
             {
+                ended(world, self.index, &reading, started..next);
                 return Ok(());
             }
         }
@@ -275,6 +276,7 @@ impl ReadStream<SimSource> for SimStreamReader {
         if marks.last && !silent {
             self.checkpoint(source, out, &reading, next).await?;
         }
+        ended(world, self.index, &reading, started..next);
         Ok(())
     }
 
@@ -373,8 +375,7 @@ impl SimStreamReader {
                 Checkpointing::OnDemand => out.checkpoint_due(),
                 Checkpointing::Natural => (*batches).is_multiple_of(stream.checkpoint_every),
             };
-            let marked = serving.marks.any && (serving.marks.last || end < held);
-            if due && marked {
+            if due && serving.marks.at(end, held) {
                 self.checkpoint(source, out, serving.reading, *next).await?;
             }
         }
@@ -409,7 +410,7 @@ impl SimStreamReader {
                 () = out.stopped() => return Ok(false),
                 () = &mut arrived => {}
                 () = tokio::time::sleep(WAKE) => {
-                    if marks.any && out.checkpoint_due() {
+                    if marks.at(next, rows) && out.checkpoint_due() {
                         self.checkpoint(source, out, reading, next).await?;
                     }
                 }

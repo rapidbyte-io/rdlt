@@ -4,14 +4,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{
-    ConnectContext, Partition, PartitionFeed, PartitionId, PartitionPlan, ReadMode, ReadRequest,
-    Source, SourceEvent, StreamName, StreamState, partition_channel, source_factory,
+    Checkpointing, ConnectContext, Partition, PartitionFeed, PartitionId, PartitionPlan, ReadMode,
+    ReadRequest, Source, SourceEvent, StreamName, StreamState, partition_channel, source_factory,
 };
 use serde_json::json;
 
 use super::{Marks, SimCursor, SimSource};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
+use crate::workload::SimStream;
 use crate::world::{World, churning};
 
 /// Bounds every wait of a test: a call that hangs fails its test.
@@ -174,8 +175,8 @@ fn a_connections_record_holds_its_plans_and_what_its_reads_sent_after_a_plan_dro
 }
 
 #[test]
-fn a_read_ending_on_rows_marks_no_last_batch_and_nowhere_in_an_incremental_read_of_an_endless_one()
-{
+fn a_read_ending_on_rows_marks_no_last_batch_and_on_demand_none_in_an_incremental_read_of_an_endless_one()
+ {
     let name = "marks";
     let (registered, index, phase) = (0..)
         .find_map(|seed| {
@@ -196,25 +197,52 @@ fn a_read_ending_on_rows_marks_no_last_batch_and_nowhere_in_an_incremental_read_
     let stream = &world.workload.streams[index];
     let id = || PartitionId::parse("p0").unwrap();
     let (bounded, unbounded) = (Partition::new(id()), Partition::new(id()).unbounded());
-    let marks = |partition: &Partition| {
+    let checkpointing = |checkpointing| {
+        let mut stream = stream.clone();
+        stream.checkpointing = checkpointing;
+        stream
+    };
+    let (natural, on_demand) = (
+        checkpointing(Checkpointing::Natural),
+        checkpointing(Checkpointing::OnDemand),
+    );
+    let marks = |stream: &SimStream, partition: &Partition| {
         let marks = Marks::of(stream, &world, index, partition);
         (marks.last, marks.any)
     };
     world.set_phase(phase);
-    assert_eq!(marks(&bounded), (false, true));
-    assert_eq!(marks(&unbounded), (false, false), "checkpoints nowhere");
+    assert_eq!(marks(&on_demand, &bounded), (false, true));
+    assert_eq!(
+        marks(&on_demand, &unbounded),
+        (false, false),
+        "checkpoints nowhere"
+    );
+    assert_eq!(
+        marks(&natural, &unbounded),
+        (false, true),
+        "checkpoints as its batches come due"
+    );
     world.set_phase(1 - phase);
     assert_eq!(
-        marks(&unbounded),
+        marks(&on_demand, &unbounded),
         (false, true),
         "a full read checkpoints where it is due"
     );
     world.mend(index);
     world.set_phase(phase);
     assert_eq!(
-        marks(&unbounded),
+        marks(&on_demand, &unbounded),
         (true, true),
         "a mended source checkpoints its end"
     );
     drop(registered);
+}
+
+#[test]
+fn a_read_checkpoints_after_its_last_row_only_where_it_checkpoints_there() {
+    let marks = |last, any| Marks { last, any };
+    assert!(marks(false, true).at(3, 4));
+    assert!(!marks(false, true).at(4, 4), "not after its last row");
+    assert!(marks(true, true).at(4, 4));
+    assert!(!marks(false, false).at(3, 4), "nowhere");
 }

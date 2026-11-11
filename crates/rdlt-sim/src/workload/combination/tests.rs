@@ -9,7 +9,28 @@ use crate::rng::SplitMix64;
 use crate::swarm::Features;
 use crate::workload::{SimStream, Workload};
 
-/// How many of the workloads of seeds `0..SWEPT` draw each combination, by its place in the list,
+/// The combination `stream`'s draw alone says it is in, where its first phase reads rows: its
+/// reads end on a checkpoint where it checkpoints there, and otherwise on rows, which stand as
+/// rows after a checkpoint for both ways reads end on them, as only a sweep tells those apart.
+fn drawn_as(stream: &SimStream) -> Option<Combination> {
+    let read = (0..stream.partitions.len()).any(|partition| !stream.read(partition, 0).is_empty());
+    let end = if stream.final_checkpoint {
+        End::Checkpoint
+    } else {
+        End::Tail
+    };
+    read.then(|| stream.combination(end))
+}
+
+/// `combination` as [`drawn_as`] stands for it.
+fn on_rows(mut combination: Combination) -> Combination {
+    if combination.end == End::Unmarked {
+        combination.end = End::Tail;
+    }
+    combination
+}
+
+/// How many of the workloads of seeds `0..SWEPT` draw each combination, as [`drawn_as`] has it,
 /// and any they draw that the list leaves out.
 fn drawn() -> (BTreeMap<usize, usize>, Vec<Combination>) {
     let listed = Combination::listed();
@@ -18,8 +39,7 @@ fn drawn() -> (BTreeMap<usize, usize>, Vec<Combination>) {
         let mut rng = SplitMix64::new(seed);
         let features = Features::draw(&mut rng);
         let workload = Workload::generate(&mut rng, features);
-        let combinations = workload.streams.iter().filter_map(SimStream::combination);
-        for combination in combinations {
+        for combination in workload.streams.iter().filter_map(drawn_as) {
             match listed.iter().position(|listed| *listed == combination) {
                 Some(index) => *counts.entry(index).or_default() += 1,
                 None => unlisted.push(combination),
@@ -32,7 +52,7 @@ fn drawn() -> (BTreeMap<usize, usize>, Vec<Combination>) {
 #[test]
 fn the_list_holds_each_combination_a_stream_may_be_in_once() {
     let listed = Combination::listed();
-    assert_eq!(listed.len(), 40);
+    assert_eq!(listed.len(), 60);
     assert!(listed.len() <= 64, "a set of them is a 64-bit word");
     for (index, combination) in listed.iter().enumerate() {
         assert!(!listed[..index].contains(combination), "{combination}");
@@ -57,10 +77,16 @@ fn the_workloads_of_a_sweep_draw_every_listed_combination_and_no_other() {
         "drawn, though never listed: {unlisted:?}"
     );
     // Each is drawn often enough that a sweep, whose checks may stop a seed short, reaches it.
-    let rare: Vec<String> = Combination::listed()
+    let listed = Combination::listed();
+    let rare: Vec<String> = listed
         .iter()
-        .enumerate()
-        .map(|(index, combination)| (counts.get(&index).copied().unwrap_or(0), combination))
+        .map(|combination| {
+            let stands = listed
+                .iter()
+                .position(|listed| *listed == on_rows(*combination));
+            let count = stands.and_then(|index| counts.get(&index)).copied();
+            (count.unwrap_or(0), combination)
+        })
         .filter(|(count, _)| *count < 5)
         .map(|(count, combination)| format!("{count} drew {combination}"))
         .collect();
@@ -76,7 +102,7 @@ fn a_combination_is_unreached_until_some_seed_reached_it() {
         read: ReadMode::Full,
         changed: true,
         ends: Ends::Unbounded,
-        end: End::Rows,
+        end: End::Tail,
         write: WriteMode::Merge,
     };
     reached.add_combination(first);

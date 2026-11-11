@@ -88,10 +88,12 @@ pub struct SimStream {
     /// Whether its reads checkpoint after their last batch, until an operator mends its source.
     ///
     /// One that does not sends no checkpoint there, whatever is due, so its reads end on rows: a
-    /// bounded partition read so is done, and does not grow after an incremental read finished it;
-    /// and where it reads incrementally a partition that never ends, it sends no checkpoint at all,
-    /// so the read is refused. A bounded stream whose rows arrive as runs follow it always does,
-    /// since where its reads end is where its rows have arrived, which the runs' timing decides.
+    /// bounded partition read so is done, and does not grow after an incremental read finished it.
+    /// Where it reads incrementally a partition that never ends, it checkpoints as its batches
+    /// come due, so the rows after its last checkpoint are read again by the next read; one that
+    /// checkpoints on demand there sends no checkpoint at all, so the read is refused. A bounded
+    /// stream whose rows arrive as runs follow it always does, since where its reads end is where
+    /// its rows have arrived, which the runs' timing decides.
     pub final_checkpoint: bool,
     /// Rows per pushed batch.
     pub batch_rows: u64,
@@ -305,7 +307,7 @@ impl SimStream {
             reshaping: Reshaping::default(),
             rows: Vec::new(),
         };
-        stream.finish_bounded();
+        stream.fit_partitions();
         stream.reshaping = Reshaping::drawn(features, &stream, mix(salt ^ RESHAPE ^ index));
         if features.settings {
             stream.draw_columns(rng, features);
@@ -412,12 +414,12 @@ impl Excluding {
 }
 
 /// How a stream is read in each phase, whether its partitions end, and whether its reads end on a
-/// checkpoint where it is first read incrementally: drawn apart from the seed's generator, which
-/// so draws as it did before these were drawn.
+/// checkpoint where it is first read incrementally: drawn from a generator of the stream's own,
+/// so the seed's generator draws the same whatever these draw.
 struct Reading {
     reads: [ReadMode; PHASES],
     unbounded: bool,
-    ends: bool,
+    ends_on_checkpoint: bool,
 }
 
 impl Reading {
@@ -428,16 +430,16 @@ impl Reading {
         Self {
             reads: reads(&mut rng, read, write),
             unbounded: rng.chance(500),
-            ends: rng.chance(500),
+            ends_on_checkpoint: rng.chance(500),
         }
     }
 
-    /// Whether the reads of a stream first read as `read` end on a checkpoint: as drawn apart for
-    /// one read incrementally, and half the time from `rng`, the seed's generator, for one read in
-    /// full, which drew it there before the rest were drawn apart.
+    /// Whether the reads of a stream first read as `read` end on a checkpoint, half the time
+    /// either way: for one read incrementally as drawn with the rest, and for one read in full
+    /// from `rng`, the seed's generator, whose draw it takes.
     fn final_checkpoint(&self, read: ReadMode, rng: &mut SplitMix64) -> bool {
         match read {
-            ReadMode::Incremental => self.ends,
+            ReadMode::Incremental => self.ends_on_checkpoint,
             _ => rng.chance(500),
         }
     }
