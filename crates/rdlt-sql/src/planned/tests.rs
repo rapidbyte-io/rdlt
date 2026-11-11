@@ -13,12 +13,12 @@ use datafusion_expr::col;
 use datafusion_expr::logical_plan::builder::{LogicalPlanBuilder, LogicalTableSource};
 use datafusion_sql::sqlparser::dialect::GenericDialect;
 use datafusion_sql::sqlparser::parser::Parser;
-use rdlt_engine::{Bound, NAMED_COLUMNS, Transform, allocated_beyond};
+use rdlt_engine::{Bound, NAMED_COLUMNS, Transform, allocated_beyond, codes};
 
 use super::compact::compacted;
 use super::{logical, within};
 use crate::functions::{ARRAY, TEXT, TEXT_ARRAY};
-use crate::{SQL_DEPTH, Sql, SqlErrorKind, depth};
+use crate::{SQL_CONDITION_DEPTH, SQL_DEPTH, Sql, SqlErrorKind, depth};
 
 fn people() -> RecordBatch {
     RecordBatch::try_from_iter([
@@ -423,7 +423,11 @@ fn depth_of(text: &str) -> usize {
         .try_with_sql(text)
         .and_then(|mut parser| parser.parse_statements())
         .unwrap();
-    parsed.iter().map(depth::depth).max().unwrap()
+    parsed
+        .iter()
+        .map(|statement| depth::nesting(statement).depth)
+        .max()
+        .unwrap()
 }
 
 /// A query of `form`, as deep as the limit admits.
@@ -509,6 +513,53 @@ fn a_query_as_deep_as_the_limit_admits_runs_on_a_small_stack_and_one_deeper_is_r
             "{shown} at {}",
             times + 1
         );
+    }
+}
+
+#[test]
+fn a_case_within_as_many_conditions_as_the_limit_admits_runs_and_one_within_more_is_refused() {
+    // The planner reads the nullability of a `CASE` in a condition again for each operator above
+    // it there, so a nest of them far within the depth limit plans in time exponential in it.
+    let forms: [fn(usize) -> String; 2] = [
+        |levels| {
+            format!(
+                "SELECT {}b{} AS x FROM input",
+                "CASE WHEN ".repeat(levels),
+                " THEN NULL ELSE NULL END".repeat(levels)
+            )
+        },
+        |levels| {
+            format!(
+                "SELECT {}n{} AS x FROM input",
+                "coalesce(".repeat(levels),
+                ", 1)".repeat(levels)
+            )
+        },
+    ];
+    for form in forms {
+        let at = form(SQL_CONDITION_DEPTH + 1);
+        let shown: String = at.chars().take(60).collect();
+        let ran = std::thread::Builder::new()
+            .name("a small stack".to_owned())
+            .stack_size(2 << 20)
+            .spawn(move || {
+                let sql = Sql::parse(&at).map_err(|error| error.to_string())?;
+                let batch = mixed();
+                sql.keep(&batch).map_err(|error| error.to_string())?;
+                let applied = sql.apply(batch).map_err(|error| error.to_string())?;
+                Ok::<_, String>(applied.num_rows())
+            })
+            .unwrap()
+            .join();
+        assert_eq!(ran.unwrap(), Ok(3), "{shown}");
+        for levels in [SQL_CONDITION_DEPTH + 2, 18] {
+            let refused = Sql::parse(&form(levels)).unwrap_err();
+            assert_eq!(
+                (refused.kind(), refused.code()),
+                (SqlErrorKind::Syntax, codes::TRANSFORM_INVALID),
+                "{shown} at {levels}"
+            );
+        }
     }
 }
 

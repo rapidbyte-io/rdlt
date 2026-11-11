@@ -18,7 +18,7 @@ use rdlt_engine::{Bound, Transform, TransformError, TransformStep};
 use crate::contain::contained;
 use crate::dialect::{Guarded, Refused};
 use crate::error::{SqlError, SqlErrorKind};
-use crate::limits::{PARSER_DEPTH, PLANS, SQL_BYTES, SQL_DEPTH};
+use crate::limits::{PARSER_DEPTH, PLANS, SQL_BYTES, SQL_CONDITION_DEPTH, SQL_DEPTH};
 use crate::planned::Planned;
 use crate::{depth, shape, stack};
 
@@ -47,8 +47,9 @@ impl Sql {
     /// # Errors
     ///
     /// A [`SqlError`], coded `transform_invalid`, where `text` is longer than [`SQL_BYTES`], is
-    /// not one query, nests deeper than [`SQL_DEPTH`], asks for what a SQL transform may not,
-    /// or makes a library it is parsed by panic.
+    /// not one query, nests deeper than [`SQL_DEPTH`], nests a `CASE` within more conditions
+    /// than [`SQL_CONDITION_DEPTH`], asks for what a SQL transform may not, or makes a library
+    /// it is parsed by panic.
     pub fn parse(text: &str) -> Result<Self, SqlError> {
         let parsed = contained(|| Self::parsed(text));
         parsed.unwrap_or_else(|| {
@@ -147,8 +148,8 @@ impl Sql {
 /// The query `tokens` hold, a statement of their own, and whether it filters; refused where it
 /// is not a query a SQL transform may hold.
 ///
-/// The parser reads it within a budget, and its depth is measured on the tree before anything
-/// else reads it.
+/// The parser reads it within a budget, and its depth and the conditions its `CASE`s lie within
+/// are measured on the tree before anything else reads it.
 fn read(tokens: Vec<TokenWithSpan>) -> Result<(Statement, bool), SqlError> {
     let dialect = Guarded::reading(&tokens);
     let parsed = Parser::new(&dialect)
@@ -166,11 +167,14 @@ fn read(tokens: Vec<TokenWithSpan>) -> Result<(Statement, bool), SqlError> {
         None => {}
     }
     let mut statements = parsed.map_err(|error| shape::syntax(&error))?;
-    if statements
-        .iter()
-        .any(|statement| depth::depth(statement) > SQL_DEPTH)
-    {
-        return Err(shape::nested());
+    for statement in &statements {
+        let nesting = depth::nesting(statement);
+        if nesting.depth > SQL_DEPTH {
+            return Err(shape::nested());
+        }
+        if nesting.conditions > SQL_CONDITION_DEPTH {
+            return Err(shape::conditioned());
+        }
     }
     let (Some(mut statement), true) = (statements.pop(), statements.is_empty()) else {
         let message = "the text is not one query";

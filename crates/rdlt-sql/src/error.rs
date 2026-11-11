@@ -11,7 +11,9 @@ use rdlt_engine::{Code, codes};
 pub enum SqlErrorKind {
     /// The text is longer than [`SQL_BYTES`](crate::SQL_BYTES).
     TooLong,
-    /// The text is not one statement, or nests deeper than [`SQL_DEPTH`](crate::SQL_DEPTH).
+    /// The text is not one statement, nests deeper than [`SQL_DEPTH`](crate::SQL_DEPTH), or
+    /// nests a `CASE` within more conditions than
+    /// [`SQL_CONDITION_DEPTH`](crate::SQL_CONDITION_DEPTH).
     Syntax,
     /// The query is not a projection of `input`, optionally filtered.
     Shape,

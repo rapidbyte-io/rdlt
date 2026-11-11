@@ -24,7 +24,7 @@ use regex::{Regex, RegexBuilder};
 
 use crate::error::{SqlError, SqlErrorKind};
 use crate::functions::{Call, Listed, listed};
-use crate::limits::{REGEX_BYTES, SQL_DEPTH, SQL_LITERAL_BYTES};
+use crate::limits::{REGEX_BYTES, SQL_CONDITION_DEPTH, SQL_DEPTH, SQL_LITERAL_BYTES};
 
 /// Whether `statement`, a parsed query, filters; refused where it is not one a SQL transform
 /// may hold.
@@ -63,6 +63,17 @@ pub(crate) fn nested() -> SqlError {
     SqlError::new(
         SqlErrorKind::Syntax,
         format!("the text nests deeper than {SQL_DEPTH}"),
+    )
+}
+
+/// The refusal of text nesting a `CASE` within more conditions than [`SQL_CONDITION_DEPTH`].
+pub(crate) fn conditioned() -> SqlError {
+    SqlError::new(
+        SqlErrorKind::Syntax,
+        format!(
+            "the text nests a `CASE` within more than {SQL_CONDITION_DEPTH} condition, a `WHEN` or \
+             an argument of `coalesce` but its last"
+        ),
     )
 }
 

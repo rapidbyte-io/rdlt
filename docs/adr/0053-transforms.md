@@ -178,8 +178,8 @@ determinism under simulation whatever the configuration says.
     up no other's. Identifiers
     are matched as written, time is in UTC, and an output expression other than a bare column is
     named.
-  - SQL is hostile input: text of at most 64 KiB, expressions nested at most 64 deep, literals
-    of at most 4 KiB, regular expressions and `LIKE` patterns only as literals, the former
+  - SQL is hostile input: text of at most 64 KiB, expressions nested at most 64 deep, a `CASE`
+    within one condition at most, literals of at most 4 KiB, regular expressions and `LIKE` patterns only as literals, the former
     compiled under 1 MiB, operators from a list, casts only to the listed scalar types, and
     output columns within the engine's limit. The listed types are booleans, integers signed
     and unsigned, floats, decimals, text, dates, times and timestamps, under their names and the
@@ -196,6 +196,21 @@ determinism under simulation whatever the configuration says.
     recursion limit does not bound, so the depth is measured on the parsed tree: each expression
     lies within as many as lie above it, and a chain of operators is as deep as it has
     operators. A tree deeper than the limit is refused before anything else reads it.
+    DataFusion finds whether a `CASE` can be null by reading the condition of each branch whose
+    result can be, asking whether each part of it can be null again for each operator above
+    that part, and keeps nothing it found: a `CASE` lying in a condition is read again for each
+    operator above it there, so the planner's work multiplies with each condition a `CASE` lies
+    within. Eighteen `CASE`s, each the condition of the next, are 18 deep and take nine seconds
+    to plan as the fuzzer builds rdlt-sql, twice as long a level. `coalesce` is planned as a
+    `CASE` testing each argument but its last and giving it as its result, so a nest of
+    `coalesce`s in first arguments doubles its tree a level too. So a `CASE`, a call of
+    `coalesce` among them, lies within one condition at most, a `WHEN` or an argument of
+    `coalesce` but its last, measured on the parsed tree with its depth and refused alike:
+    `CASE WHEN coalesce(a, b) > 0` and `coalesce(coalesce(a, b), c)` are planned, and either
+    is refused with a `CASE` or a `coalesce` for its `a`. Within one condition the planner's
+    work stays polynomial in how deep the conditions are, about the cube of their depth at
+    worst: a `CASE` in a `WHEN`, each condition 30 `abs` deep, takes twelve seconds to plan as
+    the fuzzer builds rdlt-sql, against three for one `CASE` whose condition is 62 deep.
   - A query's text is parsed, measured and checked, and what is refused dropped, on a stack of
     its own, 4 KiB for each byte of the text, at least 1 MiB and at most 256 MiB, so a short
     query reserves little where a host commits memory strictly. The deepest tree text builds is
@@ -251,6 +266,9 @@ determinism under simulation whatever the configuration says.
   upgraded together.
 - SQL handed a dictionary or a run-end encoded column directly, outside a stream's stage, passes
   it on and tests it for null but computes nothing else from it.
+- A query nesting conditions deeper writes them flat: the conditions of a `CASE` lying in a
+  `WHEN` as the `WHEN`s of one `CASE`, and `coalesce(coalesce(coalesce(a, b), c), d)` as
+  `coalesce(a, b, c, d)`.
 - The stack SQL text is parsed on is sized for sqlparser optimised, as a release builds it, and
   as this workspace's dev profile builds it too: unoptimised, nested `TABLE(a ` takes 4 KiB of
   stack a byte of text, 252 MiB at 64 KiB, all its stack holds, and a nest of 1 KiB outgrows
