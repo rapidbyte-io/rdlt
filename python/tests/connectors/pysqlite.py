@@ -16,14 +16,16 @@ from typing import TypeVar, cast
 import pyarrow as pa
 
 from rdlt.connector import (
+    Capabilities,
     Config,
+    Fence,
     Fenced,
     InvalidConfig,
     InvalidData,
+    OpenContext,
     Opened,
-    answer,
+    WriteStats,
     destination,
-    minimal_capabilities,
 )
 from rdlt.model import Json
 
@@ -122,11 +124,11 @@ class _Writer:
         """Buffers `batch` for its segment."""
         self._buffered.append((segment, batch))
 
-    def flush(self) -> tuple[int, int]:
+    def flush(self) -> WriteStats:
         """Stages what is buffered, under the session's epoch."""
         session = self._session
 
-        def staged() -> tuple[int, int]:
+        def staged() -> WriteStats:
             (epoch,) = session.database.execute(
                 "select epoch from fence where pipeline = ?", (session.pipeline,)
             ).fetchone()
@@ -138,7 +140,7 @@ class _Writer:
                 row = (session.pipeline, session.epoch, segment, self._table, _ipc(batch))
                 session.database.execute("insert into staged values (?, ?, ?, ?, ?)", row)
                 rows, size = rows + batch.num_rows, size + batch.nbytes
-            return rows, size
+            return WriteStats(rows, size)
 
         flushed = _within(session.database, staged)
         self._buffered.clear()
@@ -200,17 +202,10 @@ class _Session:
         epoch, kept = self.database.execute(
             "select epoch, landed from fence where pipeline = ?", (self.pipeline,)
         ).fetchone()
-        landed = None if kept is None else cast("dict[str, Json]", json.loads(kept))
-        after = None if meta["after"] is None else cast("dict[str, Json]", meta["after"])
-        decided = answer(epoch, landed, cast("dict[str, Json]", meta["key"]), after)
-        if decided == "landed" and landed is not None:
+        kept_landed = None if kept is None else cast("dict[str, Json]", json.loads(kept))
+        landed = Fence(epoch, kept_landed).decide(meta)
+        if landed is not None:
             return landed
-        if decided == "fenced":
-            message = f"pipeline {self.pipeline} is at epoch {epoch}"
-            raise Fenced(message)
-        if decided == "stale":
-            message = "the commit expects another commit landed"
-            raise Fenced(message, code="commit_stale")
         rows = size = 0
         staged = self.database.execute(
             "select rowid, segment, tbl, ipc from staged where pipeline = ? and epoch = ?",
@@ -257,7 +252,7 @@ class _Session:
 @destination(
     id="io.example.pysqlite",
     config=SqliteConfig,
-    capabilities=minimal_capabilities(),
+    capabilities=Capabilities.minimal(),
     version="1.0.0",
 )
 class PySqlite:
@@ -271,8 +266,9 @@ class PySqlite:
         """The file opens."""
         _connected(self.path).close()
 
-    def open(self, pipeline: str) -> Opened:
-        """A session of `pipeline` at its next epoch, which the fence row keeps."""
+    def open(self, context: OpenContext) -> Opened:
+        """A session of the pipeline at its next epoch, which the fence row keeps."""
+        pipeline = context.pipeline
         database = _connected(self.path)
 
         def opened() -> tuple[int, dict[str, Json] | None, list[dict[str, Json]]]:

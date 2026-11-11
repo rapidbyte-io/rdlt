@@ -7,10 +7,11 @@ import json
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from rdlt import _native
 from rdlt._weak import weakly_reached
+from rdlt.connector._capabilities import Capabilities
 from rdlt.connector._config import Config, validated
 from rdlt.connector._declared import Placement, declare, declared_as, package_version
 from rdlt.model import Json, _parse
@@ -34,36 +35,19 @@ class Opened:
     state: Sequence[Mapping[str, Json]]
 
 
-def minimal_capabilities() -> dict[str, Json]:
-    """The Rust SDK's `Capabilities` of an append-only destination: where a declaration starts.
+@dataclass(frozen=True, slots=True)
+class OpenContext:
+    """Who is opening a destination's session: the pipeline whose state it reads and writes."""
 
-    It stores scalar types, adds columns, keeps the case of identifiers of up to 63 ASCII word
-    characters, and runs one table writer.
-    """
-    return _parse(_native.minimal_capabilities())
+    pipeline: str
 
 
-def answer(
-    fence_epoch: int,
-    landed: Mapping[str, Json] | None,
-    key: Mapping[str, Json],
-    after: Mapping[str, Json] | None,
-) -> Literal["landed", "fenced", "stale", "apply"]:
-    """How a destination answers the commit `key`, as the Rust SDK's `answer` decides.
+@dataclass(frozen=True, slots=True)
+class WriteStats:
+    """What a table writer's `flush` staged: its rows, and its bytes as the destination counts."""
 
-    The fence row holds `fence_epoch` and the receipt `landed`; the commit expects `after` landed.
-    `landed`: the commit landed already, and its receipt is the answer. `fenced`: a newer session
-    fenced it; raise `Fenced`. `stale`: it expects another commit landed; raise `Fenced` coded
-    `commit_stale`. `apply`: publish it, and keep its receipt in the fence row atomically with it.
-    """
-    landed_key = None if landed is None else landed["key"]
-    if landed_key is not None and landed_key == key:
-        return "landed"
-    if fence_epoch != key["epoch"]:
-        return "fenced"
-    if landed_key != after:
-        return "stale"
-    return "apply"
+    rows: int
+    bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,20 +66,20 @@ def destination(
     *,
     id: str,  # noqa: A002 - the connector's id, as documents name it
     config: type[Config],
-    capabilities: Mapping[str, Json],
+    capabilities: Capabilities,
     version: str | None = None,
 ) -> Callable[[type[T]], type[T]]:
     """Makes a class a destination connector, which the Rust SDK drives.
 
     The class is built from its validated `config`, checked with `check()`, and opened once a
-    load with `open(pipeline)`, answering `Opened`; for certification, `published(table)` yields
-    the `pyarrow.RecordBatch`es a table published. A session has `apply_schema(change)`,
-    `writer(table)`, `discard_staged()`, `commit(meta)` answering its receipt, and `close()`; a
-    table writer has `write(segment, batch)`, taking a `pyarrow.RecordBatch`, and `flush()`,
-    answering the rows and bytes it staged. Each takes and answers the Rust SDK's types as
-    mappings, as their JSON is. `capabilities` is the SDK's `Capabilities`, as
-    `minimal_capabilities()` starts it, and names nothing it does not know. A class that has no
-    `check` or `open`, or that `@source` made, is refused here.
+    load with `open(context)`, an `OpenContext`, answering `Opened`; for certification,
+    `published(table)` yields the `pyarrow.RecordBatch`es a table published. A session has
+    `apply_schema(change)`, `writer(table)`, `discard_staged()`, `commit(meta)` answering its
+    receipt, and `close()`; a table writer has `write(segment, batch)`, taking a
+    `pyarrow.RecordBatch`, and `flush()`, answering the `WriteStats` it staged. Changes, tables,
+    commits and receipts are the Rust SDK's types as mappings, as their JSON is. `capabilities`
+    is a `Capabilities`, as `Capabilities.minimal()` starts it. A class that has no `check` or
+    `open`, or that `@source` made, is refused here.
 
     What the destination keeps, the Rust SDK's `Session` and `TableWriter` say whole:
 
@@ -104,12 +88,12 @@ def destination(
     - What a table writer stages is kept by its session's epoch, invisible until committed;
       `discard_staged()` removes what older epochs staged. What a writer stages once a newer
       session opened is never published: its flush raises `Fenced`, or keeps it apart.
-    - `commit(meta)` decides as `answer` does from the fence row it reads under its transaction's
-      write lock. Where it applies, it publishes what its epoch staged in `meta["segments"]`,
-      removes what was staged in `meta["abandoned"]`, applies `meta["state_delta"]` and writes
-      its receipt into the fence row, all in one transaction. The receipt is
-      `{"key": meta["key"], "committed_at": {"secs_since_epoch": s, "nanos_since_epoch": n},
-      "rows": rows, "bytes": size}`, the rows and bytes it published.
+    - `commit(meta)` decides with `Fence(epoch, landed).decide(meta)`, from the fence row it reads
+      under its transaction's write lock. Where it applies, it publishes what its epoch staged in
+      `meta["segments"]`, removes what was staged in `meta["abandoned"]`, applies
+      `meta["state_delta"]` and writes its receipt into the fence row, all in one transaction.
+      The receipt is `{"key": meta["key"], "committed_at": {"secs_since_epoch": s,
+      "nanos_since_epoch": n}, "rows": rows, "bytes": size}`, the rows and bytes it published.
     - A table belongs to the pipeline that created it: another's schema change or writer raises
       `InvalidConfig(..., code="table_owned")`, and a column declared at another type than the
       table holds raises `InvalidData(..., code="schema_conflict")`.
@@ -125,7 +109,7 @@ def destination(
             if not callable(getattr(connector, method, None)):
                 message = f"{connector.__name__} has no {method}(): a destination needs it"
                 raise TypeError(message)
-        declared = _Declared(connector, id, version, config, json.dumps(dict(capabilities)))
+        declared = _Declared(connector, id, version, config, capabilities._json())
         declare(connector, "destination", declared)
         return connector
 
@@ -167,8 +151,13 @@ class _Writer:
     def flush(self) -> tuple[int, int]:
         """The rows and bytes the flush staged."""
         with self._calls:
-            rows, size = self._writer.flush()
-        return int(rows), int(size)
+            stats = self._writer.flush()
+        if not isinstance(stats, WriteStats):
+            message = (
+                f"flush() answered {type(stats).__name__}: it answers rdlt.connector.WriteStats"
+            )
+            raise TypeError(message)
+        return stats.rows, stats.bytes
 
 
 class _Session:
@@ -231,7 +220,7 @@ class _Connected:
 
     def open(self, pipeline: str) -> tuple[_Session, str]:
         """Opens a session for `pipeline`, with what the open answers beside it as JSON."""
-        opened = self._instance().open(pipeline)
+        opened = self._instance().open(OpenContext(pipeline))
         if not isinstance(opened, Opened):
             message = f"open() answered {type(opened).__name__}: it answers rdlt.connector.Opened"
             raise TypeError(message)
