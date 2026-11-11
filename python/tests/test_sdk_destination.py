@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import gc
+import json
 import textwrap
 import threading
 import time
@@ -14,13 +16,20 @@ import pyarrow as pa
 import pytest
 
 import rdlt
+from rdlt import _native
 from rdlt.connector import (
+    Answer,
+    Capabilities,
     Config,
+    Fence,
+    Fenced,
+    OpenContext,
     Opened,
     Transient,
+    WriteModes,
+    WriteStats,
     answer,
     destination,
-    minimal_capabilities,
     serve,
     source,
     stream,
@@ -149,7 +158,7 @@ def test_a_launcher_that_cannot_start_fails_the_kill_clause_alone(tmp_path: Path
 @destination(
     id="io.example.unread",
     config=memory.MemoryConfig,
-    capabilities=minimal_capabilities(),
+    capabilities=Capabilities.minimal(),
     version="1.0.0",
 )
 class Unread:
@@ -161,9 +170,9 @@ class Unread:
     def check(self) -> None:
         """Memory is always there."""
 
-    def open(self, pipeline: str) -> Opened:
+    def open(self, context: OpenContext) -> Opened:
         """A session of the memory destination."""
-        return self.memory.open(pipeline)
+        return self.memory.open(context)
 
 
 def test_a_destination_that_reads_nothing_back_leaves_those_clauses_unobserved() -> None:
@@ -191,13 +200,51 @@ def test_a_commit_is_answered_as_the_rust_sdk_answers_it(
     after: Mapping[str, Json] | None,
     decided: str,
 ) -> None:
-    assert answer(2, landed, key, after) == decided
+    assert answer(Fence(2, landed), key, after) is Answer(decided)
+
+
+def test_a_fence_decides_a_commit_as_the_rust_sdk_s_does() -> None:
+    receipt: dict[str, Json] = {"key": {"epoch": 2, "seq": 1}, "rows": 3}
+    fence = Fence(2, receipt)
+    assert fence.decide({"key": {"epoch": 2, "seq": 1}, "after": None}) == receipt
+    assert fence.decide({"key": {"epoch": 2, "seq": 2}, "after": {"epoch": 2, "seq": 1}}) is None
+    with pytest.raises(Fenced) as fenced:
+        fence.decide({"key": {"epoch": 1, "seq": 9}, "after": None})
+    assert fenced.value.code is None
+    with pytest.raises(Fenced) as stale:
+        fence.decide({"key": {"epoch": 2, "seq": 3}, "after": {"epoch": 2, "seq": 2}})
+    assert stale.value.code == "commit_stale"
+
+
+def test_a_stale_refusal_names_the_key_expected_and_the_key_that_landed() -> None:
+    landed = Fence(2, {"key": {"epoch": 2, "seq": 3}})
+    with pytest.raises(Fenced) as stale:
+        landed.decide({"key": {"epoch": 2, "seq": 1}, "after": None})
+    assert str(stale.value) == (
+        "commit 1 of epoch 2 expects no commit landed, and commit 3 of epoch 2 did"
+    )
+    with pytest.raises(Fenced) as stale:
+        Fence(2).decide({"key": {"epoch": 2, "seq": 4}, "after": {"epoch": 2, "seq": 3}})
+    assert str(stale.value) == (
+        "commit 4 of epoch 2 expects commit 3 of epoch 2 landed, and no commit did"
+    )
+
+
+def test_the_minimal_capabilities_are_the_rust_sdk_s_and_say_what_they_hold() -> None:
+    minimal = Capabilities.minimal()
+    written = json.loads(minimal._json())  # pyright: ignore[reportPrivateUsage]
+    native = json.loads(_native.minimal_capabilities())
+    assert sorted(written.pop("types")) == sorted(native.pop("types"))
+    assert written == native
+    assert minimal.write_modes == WriteModes(append=True)
+    assert minimal.max_parallel_writers == 1
+    assert "int64" in minimal.types
 
 
 def test_a_class_without_open_is_refused_where_it_is_declared() -> None:
     with pytest.raises(TypeError, match="open"):
 
-        @destination(id="io.example.unopened", config=Config, capabilities=minimal_capabilities())
+        @destination(id="io.example.unopened", config=Config, capabilities=Capabilities.minimal())
         class Unopened:
             def __init__(self, config: Config) -> None:
                 del config
@@ -206,7 +253,11 @@ def test_a_class_without_open_is_refused_where_it_is_declared() -> None:
                 """Nothing to check."""
 
 
-@destination(id="io.example.unknowing", config=Config, capabilities={"append": True})
+@destination(
+    id="io.example.unknowing",
+    config=Config,
+    capabilities=dataclasses.replace(Capabilities.minimal(), max_parallel_writers=0),
+)
 class Unknowing:
     """A destination whose capabilities are not the Rust SDK's."""
 
@@ -216,9 +267,9 @@ class Unknowing:
     def check(self) -> None:
         """Nothing to check."""
 
-    def open(self, pipeline: str) -> Opened:
+    def open(self, context: OpenContext) -> Opened:
         """Never reached: it is refused before it is placed."""
-        raise NotImplementedError(pipeline)
+        raise NotImplementedError(context.pipeline)
 
 
 def test_capabilities_rdlt_cannot_read_are_refused_where_they_are_placed() -> None:
@@ -244,7 +295,7 @@ _FAILED: dict[str, int] = {}
 
 
 @destination(
-    id="io.example.flaky", config=_Flaky, capabilities=minimal_capabilities(), version="1.0.0"
+    id="io.example.flaky", config=_Flaky, capabilities=Capabilities.minimal(), version="1.0.0"
 )
 class Flaky(memory.Memory):
     """The memory destination whose first opens fail as transient, as a restarting service's do."""
@@ -254,13 +305,13 @@ class Flaky(memory.Memory):
         self.failures = config.failures
         self.name = config.store
 
-    def open(self, pipeline: str) -> Opened:
+    def open(self, context: OpenContext) -> Opened:
         """Fails as transient for the first opens its configuration says."""
         failed = _FAILED.setdefault(self.name, 0)
         if failed < self.failures:
             _FAILED[self.name] = failed + 1
             raise Transient("the service is restarting")
-        return super().open(pipeline)
+        return super().open(context)
 
 
 def test_a_failure_s_kind_and_code_reach_the_run(connectors: Path) -> None:
@@ -297,7 +348,7 @@ _HOLDERS: dict[str, _Holder] = {}
 @destination(
     id="io.example.held",
     config=memory.MemoryConfig,
-    capabilities=minimal_capabilities(),
+    capabilities=Capabilities.minimal(),
     version="1.0.0",
 )
 class Held(memory.Memory):
@@ -342,16 +393,16 @@ def test_one_class_declares_one_role() -> None:
         def check(self) -> None:
             """Reads need nothing checked first."""
 
-        def open(self, pipeline: str) -> Opened:
-            raise NotImplementedError(pipeline)
+        def open(self, context: OpenContext) -> Opened:
+            raise NotImplementedError(context.pipeline)
 
     as_destination = destination(
-        id="io.example.both", config=Config, capabilities=minimal_capabilities()
+        id="io.example.both", config=Config, capabilities=Capabilities.minimal()
     )
     with pytest.raises(TypeError, match=r"Read.*@source.*@destination"):
         as_destination(Read)
 
-    @destination(id="io.example.both", config=Config, capabilities=minimal_capabilities())
+    @destination(id="io.example.both", config=Config, capabilities=Capabilities.minimal())
     class Written:
         def __init__(self, config: Config) -> None:
             del config
@@ -359,8 +410,8 @@ def test_one_class_declares_one_role() -> None:
         def check(self) -> None:
             """Nothing to check."""
 
-        def open(self, pipeline: str) -> Opened:
-            raise NotImplementedError(pipeline)
+        def open(self, context: OpenContext) -> Opened:
+            raise NotImplementedError(context.pipeline)
 
     with pytest.raises(TypeError, match=r"Written.*@source.*@destination"):
         source(id="io.example.both", config=Config)(Written)
@@ -389,9 +440,9 @@ class _SlowWriter:
         time.sleep(1)
         _ORDER.append("write ends")
 
-    def flush(self) -> tuple[int, int]:
+    def flush(self) -> WriteStats:
         """Stages nothing."""
-        return 0, 0
+        return WriteStats(0, 0)
 
 
 class _OrderedSession:
@@ -417,7 +468,7 @@ class _OrderedSession:
 
 
 @destination(
-    id="io.example.ordered", config=Config, capabilities=minimal_capabilities(), version="1.0.0"
+    id="io.example.ordered", config=Config, capabilities=Capabilities.minimal(), version="1.0.0"
 )
 class Ordered:
     """A destination whose session records the order of its calls."""
@@ -428,9 +479,9 @@ class Ordered:
     def check(self) -> None:
         """Nothing to check."""
 
-    def open(self, pipeline: str) -> Opened:
+    def open(self, context: OpenContext) -> Opened:
         """A session at the first epoch: a run of one attempt opens once."""
-        del pipeline
+        del context
         return Opened(_OrderedSession(), 1, None, [])
 
 
@@ -493,7 +544,7 @@ def test_a_source_and_a_destination_may_answer_to_one_id(connectors: Path) -> No
 
 def test_two_destination_classes_under_one_id_are_refused() -> None:
     @destination(
-        id="io.example.memory", config=memory.MemoryConfig, capabilities=minimal_capabilities()
+        id="io.example.memory", config=memory.MemoryConfig, capabilities=Capabilities.minimal()
     )
     class Twin(memory.Memory):
         """Another class answering to the memory destination's id."""

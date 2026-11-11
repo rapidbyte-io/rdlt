@@ -1,6 +1,9 @@
 """What a connector raises to say what kind of failure it met; the host reports that kind.
 
-These are a connector's own failures, apart from the `rdlt.*Error` exceptions a run raises.
+These are a connector's own failures, apart from the `rdlt.*Error` exceptions a run raises. Each
+class is one of the Rust SDK's `ConnectorErrorKind`s, named as a Python exception is:
+`ConnectorError` itself is `Internal`, `InvalidConfig` is `Config`, `Unauthorized` is `Auth` and
+`InvalidData` is `Data`; `Transient`, `RateLimited`, `Unsupported` and `Fenced` keep their names.
 """
 
 from __future__ import annotations
@@ -37,13 +40,16 @@ class ConnectorError(Exception):
 
 
 class Transient(ConnectorError):
-    """A failure a retry may mend: the engine tries again after its policy's delay."""
+    """A failure a retry may mend, `ConnectorErrorKind::Transient`: the engine tries again later."""
 
     kind = "transient"
 
 
 class RateLimited(ConnectorError):
-    """The remote system asked to slow down; `retry_after` seconds before a retry, where it said."""
+    """The remote system asked to slow down, `ConnectorErrorKind::RateLimited`.
+
+    `retry_after` is the seconds before a retry, where it said, as Rust's `retry_after()`.
+    """
 
     kind = "rate_limited"
 
@@ -55,31 +61,31 @@ class RateLimited(ConnectorError):
 
 
 class InvalidConfig(ConnectorError):
-    """The configuration is invalid or names something that does not exist."""
+    """The configuration is invalid or names what does not exist, `ConnectorErrorKind::Config`."""
 
     kind = "config"
 
 
 class Unauthorized(ConnectorError):
-    """Credentials are missing, wrong, or lack a permission."""
+    """Credentials are missing, wrong, or lack a permission, `ConnectorErrorKind::Auth`."""
 
     kind = "auth"
 
 
 class InvalidData(ConnectorError):
-    """A value or a batch is malformed."""
+    """A value or a batch is malformed, `ConnectorErrorKind::Data`."""
 
     kind = "data"
 
 
 class Unsupported(ConnectorError):
-    """The request needs what the connector cannot do."""
+    """The request needs what the connector cannot do, `ConnectorErrorKind::Unsupported`."""
 
     kind = "unsupported"
 
 
 class Fenced(ConnectorError):
-    """A newer session holds the destination, so this session may not commit.
+    """A newer session holds the destination, so this one may not commit: `Fenced` in Rust too.
 
     It is coded `commit_stale` where the commit expects another commit landed.
     """

@@ -7,10 +7,18 @@ import sys
 from collections.abc import Sequence
 
 from rdlt import _native
+from rdlt.connector._capabilities import (
+    Capabilities,
+    DeleteModes,
+    IdentifierRules,
+    NestedSupport,
+    SchemaChanges,
+    WriteModes,
+)
 from rdlt.connector._config import Config
 from rdlt.connector._context import Partition, StreamContext, checkpoint
 from rdlt.connector._cursor import Cursor
-from rdlt.connector._destination import Opened, answer, destination, minimal_capabilities
+from rdlt.connector._destination import OpenContext, Opened, WriteStats, destination
 from rdlt.connector._destination import declares as declares_destination
 from rdlt.connector._destination import placed as placed_destination
 from rdlt.connector._failures import (
@@ -23,6 +31,7 @@ from rdlt.connector._failures import (
     Unauthorized,
     Unsupported,
 )
+from rdlt.connector._landed import Answer, Fence, answer
 from rdlt.connector._secret import Secret
 from rdlt.connector._source import ReadStream, source, stream
 from rdlt.connector._source import declares as declares_source
@@ -70,25 +79,34 @@ def _failed(said: str) -> int:
 
 
 __all__ = [
+    "Answer",
+    "Capabilities",
     "Config",
     "ConnectorError",
     "Cursor",
+    "DeleteModes",
+    "Fence",
     "Fenced",
+    "IdentifierRules",
     "InvalidConfig",
     "InvalidData",
+    "NestedSupport",
+    "OpenContext",
     "Opened",
     "Partition",
     "RateLimited",
     "ReadStream",
+    "SchemaChanges",
     "Secret",
     "StreamContext",
     "Transient",
     "Unauthorized",
     "Unsupported",
+    "WriteModes",
+    "WriteStats",
     "answer",
     "checkpoint",
     "destination",
-    "minimal_capabilities",
     "serve",
     "source",
     "stream",

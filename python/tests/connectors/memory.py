@@ -16,14 +16,16 @@ from typing import cast
 import pyarrow as pa
 
 from rdlt.connector import (
+    Capabilities,
     Config,
+    Fence,
     Fenced,
     InvalidConfig,
     InvalidData,
+    OpenContext,
     Opened,
-    answer,
+    WriteStats,
     destination,
-    minimal_capabilities,
 )
 from rdlt.model import Json
 
@@ -142,16 +144,9 @@ class _Session:
     def commit(self, meta: Mapping[str, Json]) -> Mapping[str, Json]:
         with self.store.lock:
             fence = self.store.pipelines[self.pipeline]
-            after = None if meta["after"] is None else _object(meta["after"])
-            decided = answer(fence.epoch, fence.landed, _object(meta["key"]), after)
-            if decided == "landed" and fence.landed is not None:
-                return fence.landed
-            if decided == "fenced":
-                message = f"pipeline {self.pipeline} is at epoch {fence.epoch}"
-                raise Fenced(message)
-            if decided == "stale":
-                message = "the commit expects another commit landed"
-                raise Fenced(message, code="commit_stale")
+            landed = Fence(fence.epoch, fence.landed).decide(meta)
+            if landed is not None:
+                return landed
             rows = size = 0
             for key in [key for key in self.store.staged if key[:2] == (self.pipeline, self.epoch)]:
                 if _within(key[2], meta["segments"]):
@@ -195,7 +190,7 @@ class _Writer:
         """Buffers `batch` for its segment."""
         self._buffered.append((segment, batch))
 
-    def flush(self) -> tuple[int, int]:
+    def flush(self) -> WriteStats:
         """Stages what is buffered, unless a newer session opened."""
         session = self._session
         with session.store.lock:
@@ -209,13 +204,13 @@ class _Writer:
                 session.store.staged.setdefault(key, []).append((self._table, batch))
                 rows, size = rows + batch.num_rows, size + batch.nbytes
             self._buffered.clear()
-        return rows, size
+        return WriteStats(rows, size)
 
 
 @destination(
     id="io.example.memory",
     config=MemoryConfig,
-    capabilities=minimal_capabilities(),
+    capabilities=Capabilities.minimal(),
     version="1.0.0",
 )
 class Memory:
@@ -227,8 +222,9 @@ class Memory:
     def check(self) -> None:
         """Memory is always there."""
 
-    def open(self, pipeline: str) -> Opened:
-        """A session of `pipeline` at its next epoch."""
+    def open(self, context: OpenContext) -> Opened:
+        """A session of the pipeline at its next epoch."""
+        pipeline = context.pipeline
         with self.store.lock:
             fence = self.store.pipelines.setdefault(pipeline, _Pipeline())
             fence.epoch += 1
