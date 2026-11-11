@@ -2,12 +2,36 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from rdlt import _native
 from rdlt.connector._cursor import Cursor
 
 
+@dataclass(frozen=True, slots=True)
+class Partition:
+    """A partition of a stream, as its `partitions` answers it: its id, and whether it never ends.
+
+    Only a full read finishes a partition that never ends: any other read leaves it at its last
+    checkpoint, and the next run reads again what it yielded after that checkpoint. A read of a
+    partition that ends finishes it where the read ends on rows, which commit with it.
+    """
+
+    id: str
+    unbounded: bool = False
+
+    @classmethod
+    def single(cls) -> Partition:
+        """The partition of a stream that is not split, `whole`, which never ends."""
+        return cls("whole", unbounded=True)
+
+
 class StreamContext:
-    """What one partition's read is told: its partition, and whether a checkpoint is due."""
+    """What one partition's read is told: its partition, and whether a checkpoint is due.
+
+    It is what a Rust read is told by its `&Partition` and asks its `Emitter`: Python's read
+    yields what a Rust read emits.
+    """
 
     def __init__(self, native: _native.StreamContext) -> None:
         self._native = native
@@ -17,9 +41,9 @@ class StreamContext:
         return self._native.checkpoint_due()
 
     @property
-    def partition(self) -> str | None:
-        """The partition read, where the stream has partitions."""
-        return self._native.partition
+    def partition(self) -> Partition:
+        """The partition read: `Partition.single()` for a stream that is not split."""
+        return Partition(self._native.partition, unbounded=self._native.unbounded)
 
     @property
     def follows(self) -> bool:

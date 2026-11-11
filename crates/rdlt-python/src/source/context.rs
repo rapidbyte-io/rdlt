@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::exceptions::PyValueError;
 use pyo3::{PyErr, pyclass, pymethods};
+use rdlt_connector::Partition;
 use serde_json::value::RawValue;
 
 /// Whether the engine waits for a checkpoint, as the read last saw it.
@@ -22,7 +23,8 @@ impl Due {
 /// whether a checkpoint is due.
 #[pyclass(module = "rdlt._native", name = "StreamContext", frozen)]
 pub(crate) struct NativeStreamContext {
-    partition: Option<String>,
+    partition: String,
+    unbounded: bool,
     follows: bool,
     resumes: bool,
     due: Due,
@@ -30,10 +32,11 @@ pub(crate) struct NativeStreamContext {
 
 impl NativeStreamContext {
     /// A read's context, and the flag its read sets after each push.
-    pub(crate) fn new(partition: Option<String>, follows: bool, resumes: bool) -> (Self, Due) {
+    pub(crate) fn new(partition: &Partition, follows: bool, resumes: bool) -> (Self, Due) {
         let due = Due::default();
         let context = Self {
-            partition,
+            partition: partition.id().to_string(),
+            unbounded: partition.is_unbounded(),
             follows,
             resumes,
             due: due.clone(),
@@ -49,10 +52,16 @@ impl NativeStreamContext {
         self.due.0.load(Ordering::Relaxed)
     }
 
-    /// The partition read, where the stream has partitions.
+    /// The id of the partition read, `whole` for a stream that is not split.
     #[getter]
-    fn partition(&self) -> Option<String> {
+    fn partition(&self) -> String {
         self.partition.clone()
+    }
+
+    /// Whether the partition read never ends.
+    #[getter]
+    fn unbounded(&self) -> bool {
+        self.unbounded
     }
 
     /// Whether the engine asks the read to follow an unbounded partition once caught up.
