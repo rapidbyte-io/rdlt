@@ -31,31 +31,57 @@ class ClauseResult:
     note: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class Report:
+    """What a certification found, as `rdlt_certify`'s `Report` says it.
+
+    `connector` is the connector's id, and `results` each clause's result, in clause order.
+    """
+
+    connector: str
+    results: tuple[ClauseResult, ...]
+
+
 class Certification:
-    """A certification, run once when its first clause's test runs."""
+    """A certification, as pytest holds it: run once, when its first clause's test runs."""
 
     def __init__(self, role: str, run: Callable[[], str], held: object = None) -> None:
         self.clauses: list[tuple[str, str]] = _native.clauses(role)
         self._run = run
         # What the native side reaches only weakly, held until the certification runs.
         self._held = held
-        self._results: dict[str, ClauseResult] | None = None
+        self._report: Report | None = None
 
-    def result(self, clause: str) -> ClauseResult:
-        """`clause`'s result, running the certification if it has not run."""
-        if self._results is None:
-            report = json.loads(self._run())
-            self._results = {
-                entry["clause"]: ClauseResult(
+    def report(self) -> Report:
+        """The certification's report, running it if it has not run."""
+        if self._report is None:
+            found = json.loads(self._run())
+            results = tuple(
+                ClauseResult(
                     entry["clause"],
                     entry["statement"],
                     entry["outcome"],
                     entry["reason"],
                     entry["note"],
                 )
-                for entry in report["results"]
-            }
-        return self._results[clause]
+                for entry in found["results"]
+            )
+            self._report = Report(found["connector"], results)
+        return self._report
+
+    def result(self, clause: str) -> ClauseResult:
+        """`clause`'s result, running the certification if it has not run.
+
+        Raises:
+            KeyError: the certification holds no clause `clause`.
+        """
+        results = self.report().results
+        for result in results:
+            if result.clause == clause:
+                return result
+        held = ", ".join(result.clause for result in results)
+        message = f"no clause {clause!r} in this certification, whose clauses are {held}"
+        raise KeyError(message)
 
 
 def certify_source(
@@ -104,6 +130,7 @@ def certify_transform(transform: Transform, *, inputs: Sequence[pa.RecordBatch])
 __all__ = [
     "Certification",
     "ClauseResult",
+    "Report",
     "certify_destination",
     "certify_source",
     "certify_transform",
