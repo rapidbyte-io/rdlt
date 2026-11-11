@@ -619,6 +619,54 @@ def test_a_process_exits_while_a_stream_function_lists_its_partitions(
     assert exits_with_seven(tmp_path, connectors, streamed) == 7
 
 
+@pytest.mark.parametrize("ends_on_checkpoint", [False, True], ids=["on-rows", "on-a-checkpoint"])
+def test_an_incremental_read_after_a_full_one_resumes_only_where_it_ended_on_a_checkpoint(
+    ends_on_checkpoint: bool,  # noqa: FBT001
+    tmp_path: Path,
+    connectors: Path,
+) -> None:
+    available = [4]
+    started_from: list[int] = []
+
+    @stream(primary_key="id", cursor=_Since)
+    def users(since: _Since) -> Iterator[object]:
+        started_from.append(since.after)
+        for n in range(since.after + 1, available[0]):
+            yield {"id": n}
+            if n == 1:
+                yield checkpoint(_Since(after=n))
+        if ends_on_checkpoint:
+            yield checkpoint(_Since(after=available[0] - 1))
+
+    every_host = host(tmp_path, connectors)
+    full = rdlt.pipeline(
+        "switched",
+        source=users,
+        destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("users", read="full")],
+    )
+    full.build(every_host).run()
+    available[0] = 6
+    incremental = rdlt.pipeline(
+        "switched",
+        source=users,
+        destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("users", read="incremental")],
+        retry=rdlt.Retry(max_attempts=1),
+    )
+    if ends_on_checkpoint:
+        incremental.build(every_host).run()
+        assert started_from == [-1, 3]
+        assert rows_of(tmp_path, "users") == [(n,) for n in range(6)]
+        return
+    # No cursor follows the rows the full read ended on: read again, they would land twice.
+    with pytest.raises(rdlt.Error) as raised:
+        incremental.build(every_host).run()
+    assert raised.value.report().code == "cursor_missing"
+    assert started_from == [-1]
+    assert rows_of(tmp_path, "users") == [(n,) for n in range(4)]
+
+
 def test_a_stream_named_twice_is_refused_by_the_plan(tmp_path: Path, connectors: Path) -> None:
     @stream()
     def users() -> Iterator[object]:

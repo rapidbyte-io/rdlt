@@ -60,13 +60,16 @@ JSON exactness ADR 0026's.
     checkpoint are not sealed: its next read resumes from that checkpoint and reads them again.
   - A full read seals them with its end, as a bounded partition's, since its next cycle starts
     from the beginning: the cycle lands everything it read, and a `replace` table is whole.
+  - Its seal leaves no cursor past them, so a read of the stream that is not full fails on a
+    partition so finished, a Source error coded `cursor_missing` (ADR 0004), rather than read
+    them again or pass over the partition for good.
   - An incremental read of one that pushes rows and no checkpoint after any fails, a `Source`
     error with the engine's code `checkpoint_missing` that no retry mends, since none of its rows
     could land: the engine judges the source broke the read's contract, as it judges a push the
     read mode does not take (`push_unexpected`), and its message says to checkpoint after the
     last row. A checkpoint before its first row does not count, and a read that pushes nothing
     ends cleanly. A change read is not held to this: a change source may read ahead of its round.
-  - The engine decides both from the stream's read mode, which no source is told.
+  - The engine decides each from the stream's read mode, which no source is told.
   - The plan's proto lists the unbounded ids; a stray id is refused.
   - Change partitions are unbounded, and snapshot partitions stay bounded.
   - The coordinator drains its writers before it closes the session, since a write no commit took

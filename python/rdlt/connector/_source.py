@@ -90,15 +90,17 @@ def stream(
 
     A stream without `partitions` reads `Partition.single()`, which never ends, as a Rust source's
     does, and so does a `Partition(id, unbounded=True)` that `partitions` answers. Read `full`,
-    everything such a read yields commits. Read incrementally, it commits only what it yields
-    before its last checkpoint, and the next run reads it again from there, so it ends on a
-    `checkpoint` to commit its last rows; one that yields rows and no checkpoint after any fails
-    the read, coded `checkpoint_missing`, since nothing it read could land. Any other partition
-    `partitions` answers ends: a read that yields rows after its last checkpoint commits them and
-    finishes the partition, which a later incremental run does not read again, and an incremental
-    read that ends on a `checkpoint` leaves the partition there, for the next to read on from.
-    Each full run reads every partition whole, so a stream without a cursor, read only in full, is
-    read whole every run.
+    everything such a read yields commits, and an incremental read after it resumes from its last
+    `checkpoint` only where it ended on one, and fails otherwise, coded `cursor_missing`, as no
+    cursor follows its last rows. Read incrementally, it commits only what it yields before its
+    last checkpoint, and the next run reads it again from there, so it ends on a `checkpoint` to
+    commit its last rows; one that yields rows and no checkpoint after any fails the read, coded
+    `checkpoint_missing`, since nothing it read could land. Any other partition `partitions`
+    answers ends: a read that yields rows after its last checkpoint commits them and finishes the
+    partition, which a later incremental run does not read again, and an incremental read that ends
+    on a `checkpoint` leaves the partition there, for the next to read on from. Each full run reads
+    every partition whole, so a stream without a cursor, read only in full, is read whole every
+    run.
     """
 
     def made(function: Callable[..., Any]) -> ReadStream:

@@ -9,6 +9,7 @@ use rdlt_connector::{
 use crate::attempt::RunContext;
 use crate::coordinator::{Begun, Cycle, plan_of};
 use crate::error::{Error, ErrorKind, codes};
+use crate::partition::resumed;
 use crate::plan::StreamPlan;
 
 /// How an attempt reads a stream.
@@ -160,15 +161,11 @@ async fn partitions(
             named,
         });
     }
-    let partitions = planned
-        .partitions
-        .into_iter()
-        .filter_map(|partition| match state.partitions.get(partition.id()) {
-            Some(PartitionState::Done) => None,
-            Some(PartitionState::Cursor(cursor)) => Some((partition, Some(cursor.clone()))),
-            None => Some((partition, None)),
-        })
-        .collect();
+    let mut partitions = Vec::new();
+    for partition in planned.partitions {
+        let position = state.partitions.get(partition.id());
+        partitions.extend(resumed(name, partition, position, plan.read_mode())?);
+    }
     Ok(Partitioned {
         phase: state.phase,
         committed: state.partitions.clone(),
