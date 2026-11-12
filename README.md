@@ -321,9 +321,10 @@ at a time, so it needs no lock of its own. `ConnectorError` and its kinds, such 
 `TABLE_OWNED` and the rest are its codes. Barriers, credit, limits, deadlines, fencing and commits
 are the Rust SDK's, beneath it. `rdlt.local(Tickets, config=...)` places a class `Tickets` in
 process, and a launcher ending in `raise SystemExit(rdlt.connector.serve(Tickets))` serves it as a
-connector binary. `test_certify = rdlt.testing.certify_source(Tickets, config=...)` in a test
-module, or `certify_destination`, makes each clause a pytest test, `test_certify[S-RESUME]`, and its
-`report()` is rdlt-certify's report.
+connector binary; `serve(Tickets, Warehouse)` serves a source class and a destination class in one
+process, as Rust's `Served` does. `test_certify = rdlt.testing.certify_source(Tickets, config=...)`
+in a test module, or `certify_destination`, makes each clause a pytest test,
+`test_certify[S-RESUME]`, and its `report()` is rdlt-certify's report.
 
 **Spawned connectors.** `rdlt connector new tickets --lang python` writes a connector project,
 `rdlt-connector-tickets`: a source class, registered as the `rdlt.connectors` entry point

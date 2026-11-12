@@ -20,6 +20,7 @@ import pytest
 
 import rdlt
 from rdlt.testing import certify_source
+from tests.connectors import pysqlite
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 TEMPLATE = REPOSITORY / "crates" / "rdlt-cli" / "templates" / "python"
@@ -140,3 +141,81 @@ def test_a_scaffolded_connector_installs_runs_and_certifies(
     # As the scaffold's own certification, enough rows that the kill comes before the read ends.
     killed = certify_source(tickets, config={"rows": 50_000}, launcher=launcher)
     assert killed.result("K-SOURCE").outcome == "passed"
+
+
+BOTH = '''"""A connector of both roles under one id, which one install serves."""
+
+from rdlt.connector import destination, source
+from rdlt_connector_both.pysqlite import PySqlite, SqliteConfig
+from rdlt_connector_both.tickets import Tickets, TicketsConfig
+
+
+@source(id="io.example.both", config=TicketsConfig, version="1.0.0")
+class BothSource(Tickets):
+    """The tickets source."""
+
+
+@destination(id="io.example.both", config=SqliteConfig, version="1.0.0")
+class BothDestination(PySqlite):
+    """The sqlite3 destination."""
+
+
+CONNECTORS = (BothSource, BothDestination)
+'''
+
+BOTH_PROJECT = """[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rdlt-connector-both"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["rdlt"]
+
+[project.entry-points."rdlt.connectors"]
+"io.example.both" = "rdlt_connector_both:CONNECTORS"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rdlt_connector_both"]
+"""
+
+
+@pytest.mark.network
+@pytest.mark.timeout(1800)
+def test_a_wheel_naming_a_source_and_a_destination_installs_one_connector_of_both_roles(
+    tmp_path: Path, connectors: Path
+) -> None:
+    project = tmp_path / "rdlt-connector-both"
+    package = project / "src" / "rdlt_connector_both"
+    package.mkdir(parents=True)
+    for module in ("tickets", "pysqlite"):
+        shutil.copy2(Path(__file__).parent / "connectors" / f"{module}.py", package)
+    (package / "__init__.py").write_text(BOTH)
+    (project / "pyproject.toml").write_text(BOTH_PROJECT)
+    wheels = tmp_path / "wheels"
+    subprocess.run(
+        [uv(), "build", "--wheel", "--out-dir", wheels, project], check=True, timeout=600
+    )
+    (wheel,) = wheels.glob("rdlt_connector_both-*.whl")
+    python = Path("/usr/bin/python3") if sys.platform == "linux" else Path(sys.executable)
+    install = ["--connectors", connectors, "connector", "install", wheel, "--python", python]
+    requirements_file = requirements(tmp_path)
+    subprocess.run(
+        [RDLT, "--output", "json", *install, "--requirements", requirements_file],
+        check=True,
+        timeout=900,
+    )
+    sandboxed = sys.platform == "linux" and os.environ.get("RDLT_REQUIRE_SANDBOX") == "1"
+    host = rdlt.Host(connectors=connectors, writable=[tmp_path], trust_binaries=not sandboxed)
+    path = tmp_path / "both.db"
+    built = rdlt.pipeline(
+        "both",
+        source=rdlt.Connector("io.example.both", config={"pages": 4, "token": "t0ken"}),
+        destination=rdlt.Connector(
+            "io.example.both", config={"path": str(path)}, access=rdlt.Access(write=[tmp_path])
+        ),
+        streams=[rdlt.stream("tickets", read="incremental")],
+    )
+    assert built.build(host).run().report.rows == 40
+    assert pysqlite.published(str(path), "tickets") == 40

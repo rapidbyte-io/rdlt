@@ -456,8 +456,8 @@ def test_serving_a_class_neither_decorator_made_names_both() -> None:
     class Neither:
         """No connector."""
 
-    with pytest.raises(TypeError, match=r"@source or @destination"):
-        serve(Neither, ["--no-such-flag"])
+    with pytest.raises(TypeError, match=r"Neither.*@source.*@destination"):
+        serve(Neither, args=["--no-such-flag"])
 
 
 _ORDER: list[str] = []

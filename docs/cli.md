@@ -968,7 +968,7 @@ Usage: install [OPTIONS] <WHEEL>
 
 Arguments:
   <WHEEL>
-          The connector's wheel, naming one `rdlt.connectors` entry point: its connector's id and class
+          The connector's wheel, naming one `rdlt.connectors` entry point: its connector's id and what its launcher serves, a class, or a tuple of a source class and a destination class
 
 Options:
       --python <PATH>

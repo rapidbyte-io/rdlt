@@ -14,8 +14,9 @@ import pytest
 import rdlt
 from rdlt.connector import serve
 from tests.connectors import pysqlite
+from tests.connectors.both import BothDestination, BothSource
 from tests.connectors.tickets import Tickets
-from tests.launchers import TESTS, pysqlite_launcher, tickets_launcher
+from tests.launchers import TESTS, both_launcher, pysqlite_launcher, tickets_launcher
 
 
 @pytest.fixture
@@ -73,6 +74,36 @@ def test_a_host_spawns_and_loads_into_a_served_python_destination(
     assert pysqlite.published(str(path), "rows") == 40
 
 
+def test_one_launcher_serves_a_source_and_a_destination_a_host_spawns(
+    tmp_path: Path, connectors: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    served = both_launcher(tmp_path_factory.mktemp("launchers")).parent
+    host = rdlt.Host(connectors=[connectors, served], writable=[tmp_path], trust_binaries=True)
+    path = tmp_path / "both.db"
+    built = rdlt.pipeline(
+        "both",
+        source=rdlt.Connector("io.example.both", config={"pages": 4, "token": "t0ken"}),
+        destination=rdlt.Connector(
+            "io.example.both", config={"path": str(path)}, access=rdlt.Access(write=[tmp_path])
+        ),
+        streams=[rdlt.stream("tickets", read="incremental")],
+    )
+    assert built.build(host).run().report.rows == 40
+    assert pysqlite.published(str(path), "tickets") == 40
+
+
+@pytest.mark.parametrize(
+    "connectors",
+    [(), (Tickets, BothSource), (pysqlite.PySqlite, BothDestination), (Tickets, object)],
+    ids=["nothing", "two sources", "two destinations", "no connector"],
+)
+def test_serve_takes_one_class_of_each_role_at_most(connectors: tuple[type, ...]) -> None:
+    before = signal.getsignal(signal.SIGINT)
+    with pytest.raises(TypeError, match="serve"):
+        serve(*connectors, args=["--no-such-flag"])
+    assert signal.getsignal(signal.SIGINT) == before
+
+
 @pytest.mark.parametrize(
     "failure",
     [
@@ -112,7 +143,7 @@ def test_a_served_connector_ignores_ctrl_c_and_ends_cleanly() -> None:
     script = (
         f"import sys\nsys.path.append({str(TESTS)!r})\n"
         "from rdlt.connector import serve\nfrom tests.connectors.tickets import Tickets\n"
-        f"raise SystemExit(serve(Tickets, ['--rdlt-fd', '{connector_end.fileno()}']))\n"
+        f"raise SystemExit(serve(Tickets, args=['--rdlt-fd', '{connector_end.fileno()}']))\n"
     )
     with host_end:
         served = subprocess.Popen(
@@ -136,6 +167,6 @@ def test_arguments_it_cannot_read_are_said_and_fail_the_launcher(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     before = signal.getsignal(signal.SIGINT)
-    assert serve(Tickets, ["--no-such-flag"]) == 1
+    assert serve(Tickets, args=["--no-such-flag"]) == 1
     assert "--no-such-flag" in capsys.readouterr().err
     assert signal.getsignal(signal.SIGINT) == before

@@ -250,7 +250,7 @@ pub(crate) enum ConnectorAction {
 #[derive(Debug, Args)]
 pub(crate) struct InstallArgs {
     /// The connector's wheel, naming one `rdlt.connectors` entry point: its connector's id and
-    /// class.
+    /// what its launcher serves, a class, or a tuple of a source class and a destination class.
     pub(crate) wheel: PathBuf,
     /// The interpreter the environment is made with, by default `python3` on the path; on Linux
     /// one in the system's directories, which the sandbox shows.
