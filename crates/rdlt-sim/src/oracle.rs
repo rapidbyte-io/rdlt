@@ -308,9 +308,9 @@ impl Simulation {
         settled(seed, &self.world, self.placing.as_ref()).await;
         check_contents(&self.world, &self.relaxed, phase, stopped, seed);
         check_acknowledged(&self.world, stopped, seed);
-        if landed.is_some() {
-            let relaxed = &self.relaxed;
-            check_discards(&self.world, relaxed, phase, &reports, stopped, seed, landed);
+        if let Some(landed) = landed {
+            let (world, relaxed) = (&self.world, &self.relaxed);
+            check_discards(world, relaxed, phase, &reports, stopped, seed, Some(landed));
         }
         stopped
     }
