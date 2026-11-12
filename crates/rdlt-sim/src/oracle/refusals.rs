@@ -10,12 +10,13 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rdlt_connector::{Capabilities, LogicalType};
+use rdlt_connector::{Capabilities, LogicalType, PartitionId, StreamName};
 use rdlt_engine::{Code, Nested, OnUnsupported, SchemaPolicy, codes};
 use rdlt_testkit::canon::storage;
 
 use super::arrivals::{Arrival, arrival, widest};
 use super::expected;
+use crate::destination::committed_next;
 use crate::workload::{Relaxed, Row, SimStream};
 use crate::world::World;
 pub(super) use failures::{Failure, refused, relax, unexplained, unsealed, violation};
@@ -31,8 +32,9 @@ pub(super) struct Prediction {
 }
 
 /// What `phase`'s runs of `world`'s workload may meet, each stream's settings as `relaxed`
-/// leaves them.
-pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize) -> Prediction {
+/// leaves them; where the runs are `exact`, plain runs without faults that read every partition
+/// to its end once, each from where its last commit left it, what their reads meet.
+pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize, exact: bool) -> Prediction {
     let capabilities = world.capabilities();
     let mut prediction = Prediction::default();
     for (stream, relaxed) in world.workload.streams.iter().zip(relaxed) {
@@ -41,7 +43,8 @@ pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize) -> Predi
             .filter(|column| stream.lands(&stream.drift[*column].name))
             .map(|column| Column::new(stream, column, *relaxed, &capabilities).outcome(phase));
         let key = (stream.keys > 0).then(|| key_outcome(stream, *relaxed, &capabilities, phase));
-        if let Some(refusal) = reads::refusal(stream, *relaxed, phase) {
+        let starts = exact.then(|| starts(world, stream));
+        if let Some(refusal) = reads::refusal(stream, *relaxed, phase, starts.as_deref()) {
             prediction.may.insert((stream.name.clone(), refusal.code));
             if refusal.must {
                 prediction.must.insert(stream.name.clone());
@@ -58,6 +61,18 @@ pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize) -> Predi
         }
     }
     prediction
+}
+
+/// Where each partition of `stream` in `world` resumes: from its last commit, or its beginning.
+fn starts(world: &World, stream: &SimStream) -> Vec<usize> {
+    let name = StreamName::new(&stream.name).expect("valid stream name");
+    (0..stream.partitions.len())
+        .map(|partition| {
+            let id = PartitionId::parse(format!("p{partition}")).expect("valid partition id");
+            let next = committed_next(world, &name, &id).unwrap_or(0);
+            usize::try_from(next).unwrap_or(usize::MAX)
+        })
+        .collect()
 }
 
 /// Whether rows of `stream` go before their batch's schema is resolved, in `phase` or before: in a
