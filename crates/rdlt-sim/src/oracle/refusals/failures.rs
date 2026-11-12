@@ -107,6 +107,21 @@ pub(in crate::oracle) fn refused(
     Ok(met)
 }
 
+/// The streams, by index in `world`'s workload, of which `failures` hold a read the engine
+/// refused for want of a checkpoint after its rows.
+pub(in crate::oracle) fn unsealed(world: &World, failures: &[Failure]) -> BTreeSet<usize> {
+    let refused: BTreeSet<&str> = failures
+        .iter()
+        .filter(|failure| failure.is(codes::CHECKPOINT_MISSING))
+        .filter_map(|failure| failure.stream.as_deref())
+        .collect();
+    let streams = world.workload.streams.iter().enumerate();
+    streams
+        .filter(|(_, stream)| refused.contains(stream.name.as_str()))
+        .map(|(index, _)| index)
+        .collect()
+}
+
 /// The first of `failures` a run without faults or disruptions must not meet: anything but a
 /// refusal `prediction` names.
 pub(in crate::oracle) fn unexplained<'a>(

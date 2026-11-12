@@ -28,8 +28,9 @@ use crate::reached::{Reach, Reached};
 use crate::rng::SplitMix64;
 use crate::source::Plans;
 use crate::swarm::Features;
-use crate::workload::{End, Workload};
+use crate::workload::Workload;
 use capabilities::capabilities;
+use ends::Ends;
 use hangs::Hangs;
 pub(crate) use named::{Named, Naming};
 pub(crate) use pressure::Pressure;
@@ -93,8 +94,8 @@ pub struct World {
     /// last batch: after a read that sealed none of its rows was refused, or once no phase is
     /// left to read again the rows its reads left after their last checkpoint.
     mended: Mutex<BTreeSet<usize>>,
-    /// What the first phase's reads of each stream, by index, ended on.
-    ended: Mutex<BTreeSet<(usize, End)>>,
+    /// What the first phase's reads of each stream ended on.
+    pub(crate) ends: Ends,
     phase: AtomicUsize,
     faulty: AtomicBool,
     rng: Mutex<SplitMix64>,
@@ -204,7 +205,7 @@ impl World {
             capabilities: capabilities(rng, features),
             granted: AtomicBool::new(false),
             mended: Mutex::default(),
-            ended: Mutex::default(),
+            ends: Ends::default(),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
             hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
@@ -273,7 +274,7 @@ impl World {
             capabilities,
             granted: AtomicBool::new(false),
             mended: Mutex::default(),
-            ended: Mutex::default(),
+            ends: Ends::default(),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
             hangs: Mutex::new(Hangs::new(rng.clone().next_u64() ^ HANGS)),
@@ -324,13 +325,6 @@ impl World {
     /// Whether the source of stream `stream` was mended to checkpoint after its reads' last batch.
     pub(crate) fn mended(&self, stream: usize) -> bool {
         self.mended.lock().contains(&stream)
-    }
-
-    /// Notes that a read of stream `stream` ended on `end`, where it is the first phase's.
-    pub(crate) fn ended(&self, stream: usize, end: End) {
-        if self.phase() == 0 {
-            self.ended.lock().insert((stream, end));
-        }
     }
 
     /// How many of the `rows` rows of partition `partition` of stream `stream` have arrived.
@@ -390,11 +384,9 @@ impl World {
         let Some(index) = streams.iter().position(|found| found.name == stream) else {
             return;
         };
-        let ended = self.ended.lock();
-        let ends = ended.range((index, End::Checkpoint)..=(index, End::Unmarked));
         let mut reached = self.reached.lock();
-        for (_, end) in ends {
-            reached.add_combination(streams[index].combination(*end));
+        for end in self.ends.of(index) {
+            reached.add_combination(streams[index].combination(end));
         }
     }
 

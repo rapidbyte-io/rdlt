@@ -64,9 +64,11 @@ pub(super) fn at(world: &World, next: usize) -> SimCursor {
 }
 
 /// Notes, in `world`, what the read `reading` of stream `stream` ended on, where it sent the rows
-/// at the offsets `sent` (`ends::end`).
+/// at the offsets `sent` (`ends::end`) and is the first phase's.
 pub(super) fn ended(world: &World, stream: usize, reading: &PlannedRead<'_>, sent: Range<usize>) {
-    if let Some(end) = ends::end(reading.checkpointed(), sent) {
-        world.ended(stream, end);
+    if let Some(end) = ends::end(reading.checkpointed(), sent)
+        && world.phase() == 0
+    {
+        world.ends.note(stream, end);
     }
 }
