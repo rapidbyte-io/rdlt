@@ -1,6 +1,7 @@
 //! The world one simulation shares: its workload, faults, destination store and findings.
 
 mod capabilities;
+pub(crate) mod ends;
 mod hangs;
 mod named;
 mod pressure;
