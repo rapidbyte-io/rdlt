@@ -130,16 +130,18 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   its answer, and the batches a transform or a table writer takes, a transform answers and a
   destination reads back are imported and exported in Python, since pyarrow releases the GIL in
   both. `rdlt._reading` is imported when the package loads, so no thread imports under Rust.
-- **Three cases run under Rust, and are accepted.** Methods of what a generator yields run inside
+- **Four cases run under Rust, and are accepted.** Methods of what a generator yields run inside
   `push` with its Rust frames beneath them: a value's `isoformat` and a UUID's `__str__`, a `list`
   subclass's `__iter__`, `__getattr__` through `hasattr`, a producer's `__arrow_c_array__` and
   `__arrow_c_stream__`, and a Python-backed Arrow reader's next batch. So do a raised exception's
   `__str__`, traceback and declared kind, code and wait, read where a failure is turned into an
   error, and the finalizers of a connector instance and of a destination's sessions and table
-  writers, which run where the native side lets go of what holds them. A slow one of these at the
-  instant of exit can abort the process on CPython 3.11, 3.12 and 3.13.0 to 3.13.7, as above. Moving
-  them means encoding every row, rendering every failure, or releasing every connection, in Python;
-  a process exiting commits nothing further, so no committed data is at risk.
+  writers, which run where the native side lets go of what holds them. So does a user's audit hook,
+  which `_thread.start_new_thread`'s audit event calls as a daemon thread starts the next. A slow
+  one of these at the instant of exit can abort the process on CPython 3.11, 3.12 and 3.13.0 to
+  3.13.7, as above. Moving them means encoding every row, rendering every failure, releasing every
+  connection, or starting every thread, in Python; a process exiting commits nothing further, so no
+  committed data is at risk.
 - **What the native side holds of Python, it reaches weakly.** What the native side holds is opaque
   to Python's collector, so a strong reference from it to a stream function, a transform, a secret
   store or a connector's instance that holds the pipeline it serves could never be collected, and
