@@ -137,8 +137,8 @@ fn hints_are_given_only_for_their_codes_and_say_what_a_weakened_default_costs() 
         }
         if hint.contains("--tables") {
             assert!(
-                hint.contains("drops its table"),
-                "a hint that drops a table says so: {hint}"
+                hint.contains("drops the stream's tables"),
+                "a hint that drops tables says so: {hint}"
             );
         }
     }
