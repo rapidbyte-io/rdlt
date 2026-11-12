@@ -183,7 +183,7 @@ impl NativeNotice {
 
 impl NativeNotice {
     /// What it is pushed as.
-    fn pushed(&self) -> Pushed {
+    pub(crate) fn pushed(&self) -> Pushed {
         match self.behind {
             None => Pushed::Replan,
             Some((records, headroom)) => Pushed::Behind { records, headroom },
