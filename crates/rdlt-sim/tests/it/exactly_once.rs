@@ -72,8 +72,8 @@ fn every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs() {
         !below(0.2, pushes, seeds) && !below(0.1, cursors, seeds),
         "of {seeds} seeds, {pushes} made pushes wait and {cursors} cursors"
     );
-    // A sweep as long as the pull request's shards and the nightly's checks every way a stream may
-    // be read and written.
+    // A sweep as long as a pull request's shard, or longer, checks every way a stream may be read
+    // and written.
     let missed: Vec<String> = unreached(checked.iter().map(|run| run.reached))
         .iter()
         .map(ToString::to_string)
