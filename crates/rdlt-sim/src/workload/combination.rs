@@ -32,9 +32,14 @@ use rdlt_engine::WriteMode;
 use super::{PHASES, SimStream};
 use crate::reached::Reached;
 
-/// How many seeds a sweep runs at least for [`unreached`] to hold it to every combination:
-/// those of the simulation's recipe and of every shard of the pull request's and the nightly's.
-pub const SWEPT: usize = 1000;
+/// How many seeds a sweep runs at least for [`unreached`] to hold it to every combination: a
+/// pull request's shard, and so each of the nightly's and `just ci`'s sweep too.
+///
+/// A shorter sweep, as the simulation recipe's and the coverage run's of a thousand seeds, is held
+/// to none: the rarest combination is reached about six times in a thousand seeds, so a change to
+/// the draws would miss one about once in 135, where 2500 seeds miss one about once in six hundred
+/// thousand.
+pub const SWEPT: usize = 2500;
 
 /// How a stream is read and written, as a sweep reaches it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
