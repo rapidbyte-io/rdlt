@@ -587,8 +587,26 @@ fn closing_a_daemon_thread_off_the_pool_keeps_why_the_pool_last_lost_one() {
     );
 }
 
+/// Runs its code as it is dropped, putting back what a test replaced of a module's, whether the
+/// test passed or failed.
+pub(crate) struct Unpatch(pub(crate) &'static std::ffi::CStr);
+
+impl Drop for Unpatch {
+    fn drop(&mut self) {
+        let put_back = embedded::with(|py| py.run(self.0, None, None));
+        // A test that failed is unwinding already, with its own panic saying why.
+        if !std::thread::panicking() {
+            put_back.expect("what the test replaced is put back");
+        }
+    }
+}
+
+/// Gives daemon threads' starts back, as `builtins.started_by` kept them, and lets go the call
+/// that waits for `builtins.leave`.
+pub(crate) const GIVEN_BACK: &std::ffi::CStr = c"import _thread, builtins\n_thread.start_new_thread = builtins.started_by\nbuiltins.leave.set()";
+
 /// Refuses every daemon thread's start once `builtins.queued` is set, as a process out of
-/// threads does, and gives the start back once `builtins.leave` is.
+/// threads does, and keeps the start for [`GIVEN_BACK`].
 const REFUSAL: &std::ffi::CStr = c"
 import _thread, builtins, threading
 builtins.starting = threading.Event()
@@ -607,12 +625,14 @@ _thread.start_new_thread = refused
 pub(crate) struct Doomed {
     held: std::thread::JoinHandle<Result<Result<Py<PyAny>, PyErr>, Unanswered>>,
     spare: super::Daemon,
+    given_back: Unpatch,
 }
 
 impl Doomed {
     /// Holds the only daemon thread once it has begun to start its spare.
     pub(crate) fn holding() -> Self {
         embedded::with(|py| py.run(REFUSAL, None, None)).unwrap();
+        let given_back = Unpatch(GIVEN_BACK);
         let held = std::thread::spawn(|| blocked(c"lambda: __import__('builtins').leave.wait(30)"));
         let starting: bool = embedded::with(|py| {
             py.eval(c"__import__('builtins').starting.wait(10)", None, None)
@@ -623,7 +643,11 @@ impl Doomed {
         assert!(starting, "the only daemon thread starts its spare");
         let spare = super::IDLE.lock().daemons.last().cloned();
         let spare = spare.expect("the spare waits on the pool");
-        Self { held, spare }
+        Self {
+            held,
+            spare,
+            given_back,
+        }
     }
 
     /// Refuses the spare's start once a call has taken it off the pool, and waits for the refusal
@@ -655,15 +679,11 @@ impl Doomed {
 
     /// Gives starts back, lets the held daemon thread go, and waits for its call's answer.
     pub(crate) fn released(self) {
-        embedded::with(|py| {
-            py.run(
-                c"import _thread, builtins\n_thread.start_new_thread = builtins.started_by\nbuiltins.leave.set()",
-                None,
-                None,
-            )
-        })
-        .unwrap();
-        self.held.join().unwrap().unwrap().unwrap();
+        let Self {
+            held, given_back, ..
+        } = self;
+        drop(given_back);
+        held.join().unwrap().unwrap().unwrap();
     }
 }
 
@@ -717,6 +737,8 @@ reading.threading = types.SimpleNamespace(current_thread=current_thread)
         )
     })
     .unwrap();
+    let threading_back =
+        Unpatch(c"import threading, rdlt._reading as reading\nreading.threading = threading");
     let held = std::thread::spawn(|| blocked(c"lambda: __import__('builtins').leave.wait(30)"));
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !super::IDLE.lock().daemons.is_empty() {
@@ -736,14 +758,8 @@ reading.threading = types.SimpleNamespace(current_thread=current_thread)
         matches!(met, Err(Unanswered::Started(_))),
         "no daemon thread is idle"
     );
-    embedded::with(|py| {
-        py.run(
-            c"import builtins, threading, rdlt._reading as reading\nreading.threading = threading\nbuiltins.leave.set()",
-            None,
-            None,
-        )
-    })
-    .unwrap();
+    drop(threading_back);
+    embedded::with(|py| py.run(c"__import__('builtins').leave.set()", None, None)).unwrap();
     held.join().unwrap().unwrap().unwrap();
     let later = blocked(c"lambda: 7").expect("the daemon thread let go answers");
     embedded::with(|py| assert_eq!(later.unwrap().extract::<i64>(py).unwrap(), 7));
@@ -771,6 +787,10 @@ reading._made = escaping
         )
         .unwrap();
     });
+    // A daemon thread that found `escaping` before it was put back escapes no more.
+    let _made_back = Unpatch(
+        c"import builtins, rdlt._reading as reading\nreading._made = made_by\nbuiltins.escape = None",
+    );
     // A daemon thread finds what makes its next call as it begins to wait: after this call, both
     // that wait find `escaping`.
     blocked(c"lambda: 7").unwrap().unwrap();
