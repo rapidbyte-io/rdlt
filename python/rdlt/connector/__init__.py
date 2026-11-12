@@ -17,6 +17,8 @@ from rdlt.connector._capabilities import (
 )
 from rdlt.connector._config import Config
 from rdlt.connector._context import (
+    Exclusion,
+    Limits,
     Partition,
     PartitionState,
     StreamContext,
@@ -105,11 +107,13 @@ __all__ = [
     "ConnectorError",
     "Cursor",
     "DeleteModes",
+    "Exclusion",
     "Fence",
     "Fenced",
     "IdentifierRules",
     "InvalidConfig",
     "InvalidData",
+    "Limits",
     "NestedSupport",
     "OpenContext",
     "Opened",

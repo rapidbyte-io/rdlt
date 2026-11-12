@@ -53,8 +53,67 @@ class StreamState:
     completed: tuple[int, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class Exclusion:
+    """The top-level columns a stream excludes, by name, as the Rust SDK's `Exclusion` says them.
+
+    A read may leave them out of what it yields, as a database source leaves them out of its
+    query: whatever it yields, the engine drops them. A name no column has excludes nothing.
+    """
+
+    columns: tuple[str, ...] = ()
+    """The columns it excludes, in order."""
+
+    def is_empty(self) -> bool:
+        """Whether it excludes nothing."""
+        return not self.columns
+
+    def contains(self, name: str) -> bool:
+        """Whether it excludes the column `name`."""
+        return name in self.columns
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Limits:
+    """The limits the engine holds a read's pushes to, as the Rust SDK's `Limits` says them.
+
+    A read that keeps within them is refused nothing: rows encode to JSON pushes of at most
+    `json_push_bytes`, each value nested at most `nesting_depth` levels, and a cursor at most
+    `cursor_bytes`.
+    """
+
+    frame_bytes: int
+    """Bytes in one frame."""
+    batch_rows: int
+    """Rows in one batch."""
+    schema_columns: int
+    """Columns in one schema."""
+    nesting_depth: int
+    """Levels a value nests, the row itself the first."""
+    json_push_bytes: int
+    """Bytes in one push of rows as JSON."""
+    cursor_bytes: int
+    """Bytes in one cursor."""
+    config_bytes: int
+    """Bytes in the configuration document."""
+    control_string_bytes: int
+    """Bytes in one string field of a control message."""
+    batch_values: int
+    """Values in one frame."""
+    schema_bytes: int
+    """Bytes in one schema message."""
+    dictionary_bytes: int
+    """Bytes the dictionaries one read holds at once take."""
+    catalog_bytes: int
+    """Bytes in one catalog."""
+    state_bytes: int
+    """Bytes one message that carries state or a stream's positions holds decoded."""
+    control_message_bytes: int
+    """Bytes in any other control message."""
+
+
 class StreamContext:
-    """What one partition's read is told: its partition, and whether a checkpoint is due.
+    """What one partition's read is told: its partition, what it reads within, and when to stop.
 
     It is what a Rust read is told by its `&Partition` and asks its `Emitter`: Python's read
     yields what a Rust read emits.
@@ -81,6 +140,29 @@ class StreamContext:
     def resumes(self) -> bool:
         """Whether the read was given a cursor to start from."""
         return self._native.resumes
+
+    @property
+    def excluded(self) -> Exclusion:
+        """The columns the stream excludes, which the read may leave out of what it yields.
+
+        Whatever it yields, every batch is projected without them, and rows' values of them are
+        skipped.
+        """
+        return Exclusion(tuple(self._native.excluded))
+
+    @property
+    def limits(self) -> Limits:
+        """The limits the engine holds the read's pushes to."""
+        return Limits(**dict(self._native.limits))
+
+    def stopped(self) -> bool:
+        """Whether the engine asked the read to stop, or stopped listening.
+
+        A read that waits for data, as one following its partition does, asks between its waits
+        and returns, as a Rust read selects on its emitter's `stopped()`: its thread then ends
+        with the run, rather than at its next yield.
+        """
+        return self._native.stopped()
 
 
 def checkpoint(cursor: Cursor) -> _native.Checkpoint:

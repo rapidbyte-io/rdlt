@@ -39,6 +39,35 @@ pub(crate) enum Pushed {
     Failed(ConnectorError),
 }
 
+/// Where a partition's thread sends what it pushes, which its out and its context share: none
+/// once the read has said how it ended, which closes the channel at once, since Python's collector
+/// may keep either object, and with it the channel, alive long after.
+#[derive(Clone, Default)]
+pub(crate) struct Outlet(Arc<Mutex<Option<mpsc::Sender<Pushed>>>>);
+
+impl Outlet {
+    /// Opens the outlet onto `sent`.
+    fn open(&self, sent: mpsc::Sender<Pushed>) {
+        *self.0.lock() = Some(sent);
+    }
+
+    /// Where to send, cloned out of the lock, which is never held while a send waits for the
+    /// engine; none once the read has said how it ended.
+    pub(crate) fn sender(&self) -> Option<mpsc::Sender<Pushed>> {
+        self.0.lock().clone()
+    }
+
+    /// Closes the outlet, answering where it sent.
+    fn close(&self) -> Option<mpsc::Sender<Pushed>> {
+        self.0.lock().take()
+    }
+
+    /// Whether the read has gone: it said how it ended, or the engine stopped listening.
+    pub(crate) fn gone(&self) -> bool {
+        self.0.lock().as_ref().is_none_or(mpsc::Sender::is_closed)
+    }
+}
+
 /// A partition's thread, and what it sends.
 pub(crate) struct Reading {
     received: mpsc::Receiver<Pushed>,
@@ -62,8 +91,10 @@ impl Reading {
         // A yield waits for the engine: the channel holds one push while another is sent.
         let (sent, received) = mpsc::channel(1);
         let told = Arc::new(AtomicBool::new(false));
+        let outlet = context.outlet().clone();
+        outlet.open(sent.clone());
         let out = PartitionOut {
-            sent: Mutex::new(Some(sent.clone())),
+            sent: outlet,
             limits,
             told: Arc::clone(&told),
         };
@@ -110,16 +141,14 @@ impl Reading {
 }
 
 /// Sends `pushed`, the GIL released while it waits; false once the read has gone.
-fn send(py: Python<'_>, sent: &mpsc::Sender<Pushed>, pushed: Pushed) -> bool {
+pub(crate) fn send(py: Python<'_>, sent: &mpsc::Sender<Pushed>, pushed: Pushed) -> bool {
     py.detach(|| sent.blocking_send(pushed).is_ok())
 }
 
 /// What a partition's thread pushes to: its read's channel, and the limits a read keeps within.
 #[pyclass(module = "rdlt._native", name = "PartitionOut", frozen)]
 pub(crate) struct PartitionOut {
-    /// None once the read has said how it ended, which closes the channel at once: Python's
-    /// collector may keep this object, and with it the channel, alive long after.
-    sent: Mutex<Option<mpsc::Sender<Pushed>>>,
+    sent: Outlet,
     limits: JsonLimits,
     told: Arc<AtomicBool>,
 }
@@ -129,8 +158,7 @@ impl PartitionOut {
     /// Pushes what the read yielded, in order; false once the read has gone or the item failed
     /// it, the read then being told so.
     fn push(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> bool {
-        // Cloned out of the lock, which is never held while the push waits for the engine.
-        let Some(sent) = self.sent.lock().clone() else {
+        let Some(sent) = self.sent.sender() else {
             return false;
         };
         pushed(py, item, self.limits, &sent)
@@ -140,21 +168,20 @@ impl PartitionOut {
     /// has gone.
     fn has_room(&self) -> bool {
         self.sent
-            .lock()
-            .as_ref()
+            .sender()
             .is_none_or(|sent| sent.is_closed() || sent.capacity() > 0)
     }
 
     /// Says the read yielded everything, and closes its channel.
     fn finished(&self) {
         self.told.store(true, Ordering::Release);
-        self.sent.lock().take();
+        self.sent.close();
     }
 
     /// Says the read ended with `error`, and closes its channel.
     fn failed(&self, py: Python<'_>, error: &Bound<'_, PyAny>) {
         self.told.store(true, Ordering::Release);
-        let Some(sent) = self.sent.lock().take() else {
+        let Some(sent) = self.sent.close() else {
             return;
         };
         let failure = Failure::of(py, &PyErr::from_value(error.clone()));

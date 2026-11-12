@@ -5,8 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::exceptions::PyValueError;
 use pyo3::{PyErr, pyclass, pymethods};
-use rdlt_connector::Partition;
+use rdlt_connector::{Emitter, Partition};
 use serde_json::value::RawValue;
+
+use crate::source::PyCursor;
+use crate::source::partition::Outlet;
 
 /// Whether the engine waits for a checkpoint, as the read last saw it.
 #[derive(Clone, Debug, Default)]
@@ -19,29 +22,78 @@ impl Due {
     }
 }
 
-/// What one partition's read is told: its partition, whether it follows and resumes, and
-/// whether a checkpoint is due.
+/// What a read is told beside its partition, as its emitter says it.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Told {
+    /// Whether the engine asks the read to follow an unbounded partition once caught up.
+    pub(crate) follows: bool,
+    /// Whether the read was given a cursor to start from.
+    pub(crate) resumes: bool,
+    /// The top-level columns the stream excludes, in order.
+    pub(crate) excluded: Vec<String>,
+    /// The limits the engine holds the read's pushes to, each by its field's name in the Rust
+    /// SDK's `Limits`.
+    pub(crate) limits: Vec<(&'static str, u64)>,
+}
+
+impl Told {
+    /// What `out` tells its read.
+    pub(crate) fn of(out: &Emitter<PyCursor>) -> Self {
+        // Taken field by field, since this crate may not name `rdlt-wire`'s type.
+        let limits = out.limits();
+        Self {
+            follows: out.follows(),
+            resumes: out.resumes(),
+            excluded: out.excluded().columns().map(str::to_owned).collect(),
+            limits: vec![
+                ("frame_bytes", limits.frame_bytes),
+                ("batch_rows", limits.batch_rows),
+                ("schema_columns", limits.schema_columns),
+                ("nesting_depth", limits.nesting_depth),
+                ("json_push_bytes", limits.json_push_bytes),
+                ("cursor_bytes", limits.cursor_bytes),
+                ("config_bytes", limits.config_bytes),
+                ("control_string_bytes", limits.control_string_bytes),
+                ("batch_values", limits.batch_values),
+                ("schema_bytes", limits.schema_bytes),
+                ("dictionary_bytes", limits.dictionary_bytes),
+                ("catalog_bytes", limits.catalog_bytes),
+                ("state_bytes", limits.state_bytes),
+                ("control_message_bytes", limits.control_message_bytes),
+            ],
+        }
+    }
+}
+
+/// What one partition's read is told: its partition, what its emitter says, and whether a
+/// checkpoint is due or the read has gone.
 #[pyclass(module = "rdlt._native", name = "StreamContext", frozen)]
 pub(crate) struct NativeStreamContext {
     partition: String,
     unbounded: bool,
-    follows: bool,
-    resumes: bool,
+    told: Told,
     due: Due,
+    /// Where the read sends, which says whether it has gone.
+    outlet: Outlet,
 }
 
 impl NativeStreamContext {
     /// A read's context, and the flag its read sets after each push.
-    pub(crate) fn new(partition: &Partition, follows: bool, resumes: bool) -> (Self, Due) {
+    pub(crate) fn new(partition: &Partition, told: Told) -> (Self, Due) {
         let due = Due::default();
         let context = Self {
             partition: partition.id().to_string(),
             unbounded: partition.is_unbounded(),
-            follows,
-            resumes,
+            told,
             due: due.clone(),
+            outlet: Outlet::default(),
         };
         (context, due)
+    }
+
+    /// Where the read sends, which its thread opens.
+    pub(crate) fn outlet(&self) -> &Outlet {
+        &self.outlet
     }
 }
 
@@ -67,13 +119,30 @@ impl NativeStreamContext {
     /// Whether the engine asks the read to follow an unbounded partition once caught up.
     #[getter]
     fn follows(&self) -> bool {
-        self.follows
+        self.told.follows
     }
 
     /// Whether the read was given a cursor to start from.
     #[getter]
     fn resumes(&self) -> bool {
-        self.resumes
+        self.told.resumes
+    }
+
+    /// The top-level columns the stream excludes, in order.
+    #[getter]
+    fn excluded(&self) -> Vec<String> {
+        self.told.excluded.clone()
+    }
+
+    /// The limits the engine holds the read's pushes to, each by its field's name.
+    #[getter]
+    fn limits(&self) -> Vec<(&'static str, u64)> {
+        self.told.limits.clone()
+    }
+
+    /// Whether the engine asked the read to stop, or stopped listening.
+    fn stopped(&self) -> bool {
+        self.outlet.gone()
     }
 }
 

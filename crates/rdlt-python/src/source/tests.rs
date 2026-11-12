@@ -612,6 +612,60 @@ streams = [stream]";
 }
 
 #[test]
+fn a_read_is_told_what_its_emitter_says() {
+    embedded::with(|py| {
+        let body = "\
+import builtins
+def read(partition, cursor, context):
+    builtins.told = (context.follows, context.resumes, context.excluded, dict(context.limits))
+    yield {'n': 1}
+stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], spec=json.dumps({
+    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'partitioned': False, 'stated': False, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+streams = [stream]";
+        let source_factory = factory(py, body).factory();
+        let runtime = runtime::get(py).unwrap();
+        let (sink, mut feed) = partition_channel(std::num::NonZeroUsize::MIN);
+        // Every field of the limits the emitter holds, by its name, as its `Debug` prints them.
+        let held = format!("{:?}", sink.limits());
+        let held: BTreeMap<String, u64> = held
+            .trim_start_matches("Limits {")
+            .trim_end_matches('}')
+            .split(',')
+            .map(|field| {
+                let (name, value) = field.split_once(':').expect("a field and its value");
+                (
+                    name.trim().to_owned(),
+                    value.trim().parse().expect("a count"),
+                )
+            })
+            .collect();
+        py.detach(|| {
+            runtime.block_on(async {
+                let source = source_factory
+                    .connect(serde_json::json!({}), ConnectContext::new())
+                    .await
+                    .unwrap();
+                let sink = sink.excluding(rdlt_connector::Exclusion::new(["secret"]));
+                let at = rdlt_connector::Cursor::encode(1, &serde_json::json!({})).unwrap();
+                let rows = StreamName::new("rows").unwrap();
+                let request = ReadRequest::new(rows, Partition::single(), Some(at)).following(true);
+                let (read, _) = tokio::join!(source.read(request, sink), feed.recv());
+                read.unwrap();
+            });
+        });
+        let (follows, resumes, excluded, limits): (bool, bool, Vec<String>, BTreeMap<String, u64>) =
+            py.eval(c"__import__('builtins').told", None, None)
+                .unwrap()
+                .extract()
+                .unwrap();
+        assert!(follows);
+        assert!(resumes);
+        assert_eq!(excluded, ["secret"]);
+        assert_eq!(limits, held);
+    });
+}
+
+#[test]
 fn a_stream_s_cursors_are_in_its_format_and_one_of_another_is_refused() {
     embedded::with(|py| {
         let body = "\
