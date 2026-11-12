@@ -3,34 +3,39 @@
 #[cfg(test)]
 mod tests;
 
-use pyo3::{Bound, FromPyObject, Python, pyfunction};
+use pyo3::{Bound, Python, pyfunction};
 use rdlt_connector::serve::Served;
 
 use crate::destination::NativeDestinationFactory;
 use crate::source::NativeSourceFactory;
 
-/// The role a Python connector serves, as its factory says.
-#[derive(FromPyObject)]
-pub(crate) enum Factory<'py> {
-    /// A source's factory.
-    Source(Bound<'py, NativeSourceFactory>),
-    /// A destination's factory.
-    Destination(Bound<'py, NativeDestinationFactory>),
-}
-
-/// Serves the source or destination `factory` makes until its host stops it, as a connector
-/// binary's `main` does with `args`: `--rdlt-fd`, or `--listen` and the TLS flags.
+/// Serves the source `source` makes and the destination `destination` makes, one or both, until
+/// its host stops it, as a connector binary's `main` does with `args`: `--rdlt-fd`, or `--listen`
+/// and the TLS flags.
 ///
 /// The GIL is released while it serves; none is answered once it served cleanly, and otherwise
 /// why it could not.
 #[pyfunction]
-pub(crate) fn serve(py: Python<'_>, args: Vec<String>, factory: Factory<'_>) -> Option<String> {
-    let served = match factory {
-        Factory::Source(source) => Served::new().with_source(source.get().factory()),
-        Factory::Destination(destination) => {
-            Served::new().with_destination(destination.get().factory())
-        }
-    };
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "PyO3 extracts each argument by value"
+)]
+pub(crate) fn serve(
+    py: Python<'_>,
+    args: Vec<String>,
+    source: Option<Bound<'_, NativeSourceFactory>>,
+    destination: Option<Bound<'_, NativeDestinationFactory>>,
+) -> Option<String> {
+    if source.is_none() && destination.is_none() {
+        return Some("nothing is served: serve a source, a destination or both".to_owned());
+    }
+    let mut served = Served::new();
+    if let Some(source) = &source {
+        served = served.with_source(source.get().factory());
+    }
+    if let Some(destination) = &destination {
+        served = served.with_destination(destination.get().factory());
+    }
     let served = py.detach(|| Served::serve_args(args, || served));
     served.err().map(|failed| failed.to_string())
 }

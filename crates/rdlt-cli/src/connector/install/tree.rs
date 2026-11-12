@@ -75,15 +75,21 @@ pub(super) fn launcher(
             length: text.len() - 1,
         });
     }
+    text.extend_from_slice(serving(module, attribute).as_bytes());
+    Ok(text)
+}
+
+/// The Python that serves `module`'s `attribute`: the connector class it names, or each class of
+/// the tuple it names, a source and a destination one process serves together.
+pub(super) fn serving(module: &str, attribute: &str) -> String {
     let head = attribute
         .split_once('.')
         .map_or(attribute, |(head, _)| head);
-    let body = format!(
+    format!(
         "from rdlt.connector import serve\nfrom {module} import {head}\n\
-         raise SystemExit(serve({attribute}))\n"
-    );
-    text.extend_from_slice(body.as_bytes());
-    Ok(text)
+         raise SystemExit(serve(*{attribute}) if isinstance({attribute}, tuple) else \
+         serve({attribute}))\n"
+    )
 }
 
 /// The connector directory `connectors`, made where it is not there, where it lies: the launcher

@@ -14,8 +14,9 @@ first."""
 def _launcher(directory: Path, name: str, connector: str) -> Path:
     """A launcher in `directory`, a directory of its own, serving a test connector.
 
-    It is named `rdlt-connector-<name>` and serves the class `connector` of the module
-    `tests.connectors.<name>`.
+    It is named `rdlt-connector-<name>` and serves what `connector` names of the module
+    `tests.connectors.<name>`, a class or a tuple of a source and a destination, as the launcher
+    `rdlt connector install` writes does.
     """
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"rdlt-connector-{name}"
@@ -23,7 +24,8 @@ def _launcher(directory: Path, name: str, connector: str) -> Path:
         f"#!{sys.executable} -I\n"
         f"import sys\nsys.path.append({str(TESTS)!r})\n"
         f"from rdlt.connector import serve\nfrom tests.connectors.{name} import {connector}\n"
-        f"raise SystemExit(serve({connector}))\n"
+        f"raise SystemExit(serve(*{connector}) if isinstance({connector}, tuple) "
+        f"else serve({connector}))\n"
     )
     path.chmod(stat.S_IRWXU)
     return path
@@ -32,6 +34,11 @@ def _launcher(directory: Path, name: str, connector: str) -> Path:
 def tickets_launcher(directory: Path) -> Path:
     """A launcher serving the tickets source, in `directory`, a directory of its own."""
     return _launcher(directory, "tickets", "Tickets")
+
+
+def both_launcher(directory: Path) -> Path:
+    """A launcher serving both roles of `io.example.both`, in `directory`, one of its own."""
+    return _launcher(directory, "both", "CONNECTORS")
 
 
 def inbox_launcher(directory: Path) -> Path:

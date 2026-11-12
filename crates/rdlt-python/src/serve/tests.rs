@@ -2,7 +2,6 @@ use pyo3::types::PyAnyMethods as _;
 use pyo3::{Bound, Py, PyAny, Python};
 use rdlt_connector::ConnectContext;
 
-use super::Factory;
 use crate::destination::NativeDestinationFactory;
 use crate::embedded;
 use crate::source::NativeSourceFactory;
@@ -63,30 +62,41 @@ fn a_served_python_destination_reads_nothing_back() {
 }
 
 #[test]
-fn bad_arguments_are_answered_before_serving_for_either_factory() {
+fn bad_arguments_are_answered_before_serving_either_role_or_both() {
     embedded::with(|py| {
-        let factories = [
-            Factory::Source(Bound::new(py, source(py, false)).unwrap()),
-            Factory::Destination(Bound::new(py, destination(py)).unwrap()),
-        ];
-        for factory in factories {
-            let said =
-                super::serve(py, vec!["--no-such-flag".to_owned()], factory).expect("refused");
+        let source = || Some(Bound::new(py, source(py, false)).unwrap());
+        let destination = || Some(Bound::new(py, destination(py)).unwrap());
+        for (source, destination) in [
+            (source(), None),
+            (None, destination()),
+            (source(), destination()),
+        ] {
+            let args = vec!["--no-such-flag".to_owned()];
+            let said = super::serve(py, args, source, destination).expect("refused");
             assert!(said.contains("--no-such-flag"), "{said}");
         }
+        let nothing = super::serve(py, vec!["--rdlt-fd".to_owned(), "3".to_owned()], None, None);
+        assert!(nothing.expect("refused").contains("nothing is served"));
     });
 }
 
 #[test]
-fn only_a_source_or_a_destination_is_served() {
+fn a_source_s_and_a_destination_s_factories_alone_are_served() {
     embedded::with(|py| {
         let served = py.import("rdlt._native").unwrap().getattr("serve").unwrap();
-        let refused = served
-            .call1((vec!["--no-such-flag"], "a factory"))
-            .unwrap_err();
-        assert!(
-            refused.is_instance_of::<pyo3::exceptions::PyTypeError>(py),
-            "{refused}"
-        );
+        let text = || {
+            pyo3::types::PyString::new(py, "a factory")
+                .into_any()
+                .unbind()
+        };
+        for given in [(text(), py.None()), (py.None(), text())] {
+            let refused = served
+                .call1((vec!["--no-such-flag"], given.0, given.1))
+                .unwrap_err();
+            assert!(
+                refused.is_instance_of::<pyo3::exceptions::PyTypeError>(py),
+                "{refused}"
+            );
+        }
     });
 }

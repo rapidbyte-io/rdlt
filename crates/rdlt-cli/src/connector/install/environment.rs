@@ -125,18 +125,12 @@ pub(super) fn reachable(facts: &Facts, module: &str, attribute: &str) -> Result<
     });
     match outside {
         None => Ok(()),
-        Some(path) => {
-            let head = attribute
-                .split_once('.')
-                .map_or(attribute, |(head, _)| head);
-            Err(InstallError::InterpreterUnreachable {
-                path: path.clone(),
-                serving: format!(
-                    "from rdlt.connector import serve; from {module} import {head}; \
-                     raise SystemExit(serve({attribute}))"
-                ),
-            })
-        }
+        Some(path) => Err(InstallError::InterpreterUnreachable {
+            path: path.clone(),
+            serving: super::tree::serving(module, attribute)
+                .trim_end()
+                .replace('\n', "; "),
+        }),
     }
 }
 

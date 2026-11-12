@@ -83,13 +83,14 @@ script that started a run and returned.
   `checkpoint_missing`, since none of them could land. Any other partition a stream declares ends: a
   read that ends on rows finishes it, and one that ends on a checkpoint leaves it there. A stream
   without a cursor is read whole every run.
-- **Served mode is the Rust `serve`**, inside the extension, with a connector binary's flags and
-  the GIL released while it serves. A served connector's code runs on Python's daemon threads,
-  as an in-process one's does. SIGINT is ignored before serving: the server takes the signal
-  itself and then calls the handler it found, and Python's would leave a `KeyboardInterrupt` to
-  raise once the server returned. Spawned by a host, the server ignores Ctrl-C, since its host
-  stops it; listening, it stops. Served factories answer no certification probe, though the
-  wheel carries the certifier for its pytest plugin.
+- **Served mode is the Rust `serve`**, inside the extension, with a connector binary's flags and the
+  GIL released while it serves: `serve` takes a source class, a destination class or one of each,
+  whose roles one process serves, as `Served` does. A served connector's code runs on Python's
+  daemon threads, as an in-process one's does. SIGINT is ignored before serving: the server takes
+  the signal itself and then calls the handler it found, and Python's would leave a
+  `KeyboardInterrupt` to raise once the server returned. Spawned by a host, the server ignores
+  Ctrl-C, since its host stops it; listening, it stops. Served factories answer no certification
+  probe, though the wheel carries the certifier for its pytest plugin.
 - **A blocking run answers Ctrl-C as the CLI does**: the first stops the run after its next
   commit and the call waits on; a second cancels the run and raises `KeyboardInterrupt`. A
   cancelled await of a run asks it to stop after its next commit and raises at once, as asyncio
@@ -154,7 +155,8 @@ script that started a run and returned.
   sandbox shows only in the system's directories, so on Linux an install takes an interpreter
   there alone, whether the host sandboxes its connectors or trusts them, since a tree serves
   either host. A connector the host spawns needs nothing written but its scratch directory and
-  `/dev/shm`.
+  `/dev/shm`. An entry point names a class, or a tuple of a source class and a destination class,
+  whose roles the launcher serves in one process.
 - **A thread that goes away is told, not inferred.** A read's end is said by `finished` or
   `failed`, and a call's by its answer; a read whose channel closes without a word fails, so a
   thread that died never reads as a finished partition.
