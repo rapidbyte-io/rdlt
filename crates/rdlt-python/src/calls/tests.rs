@@ -470,15 +470,35 @@ fn a_blocked_call_does_not_delay_another_on_the_same_worker() {
 }
 
 #[test]
-fn a_spare_that_did_not_start_leaves_the_pool_and_the_rest_stay() {
+fn a_closed_daemon_thread_leaves_the_pool_with_the_spares_queued_on_it_and_the_rest_stay() {
     let (kept, _kept_waits) = tokio::sync::mpsc::unbounded_channel();
-    let (spare, _spare_waits) = tokio::sync::mpsc::unbounded_channel();
+    let (doomed, mut doomed_waits) = tokio::sync::mpsc::unbounded_channel();
+    let (carried, carried_waits) = tokio::sync::mpsc::unbounded_channel();
     super::put_back(kept.clone());
-    super::put_back(spare.clone());
-    super::unstarted(&spare, "RuntimeError: no threads left".to_owned());
+    super::put_back(carried.clone());
+    super::put_back(doomed.clone());
+    // Queued on the doomed spare, a call that carries a spare of its own, whose sender is on the
+    // pool.
+    let call = super::Call {
+        prepare: Box::new(|_| Err(pyo3::exceptions::PyValueError::new_err("unmade"))),
+        daemon: doomed.clone(),
+        spare: Some(carried_waits),
+        give: Box::new(|_, _| Box::new(|| ())),
+    };
+    assert!(doomed.send(call).is_ok());
+    let queued = super::closed(
+        &mut doomed_waits,
+        "RuntimeError: no threads left".to_owned(),
+    );
+    assert_eq!(queued.len(), 1, "the call queued is given back");
     let idle = super::IDLE.lock();
-    assert_eq!(idle.daemons.len(), 1, "only the spare left the pool");
+    assert_eq!(
+        idle.daemons.len(),
+        1,
+        "the doomed spare and the one it carried left"
+    );
     assert!(idle.daemons[0].same_channel(&kept));
+    assert!(doomed.is_closed() && carried.is_closed());
     assert_eq!(
         idle.unstarted.as_deref(),
         Some("RuntimeError: no threads left")
@@ -557,19 +577,83 @@ impl Doomed {
 }
 
 #[test]
-fn a_call_that_finds_a_spare_that_did_not_start_says_why_and_a_later_one_is_answered() {
+fn a_call_queued_on_a_spare_that_did_not_start_is_let_go_and_the_next_start_is_tried_afresh() {
     let doomed = Doomed::holding();
-    // Queued on the spare as it starts, a call goes with it, and the spare it asked for stays.
+    // Queued on the spare as it starts, a call goes with it, and so does the spare it asked for.
     let queued = std::thread::spawn(|| blocked(c"lambda: 7"));
     doomed.refused_once_queued();
     assert!(matches!(queued.join().unwrap(), Err(Unanswered::Thread)));
-    let met = blocked(c"lambda: 7");
-    assert!(
-        matches!(&met, Err(Unanswered::Started(why)) if why.contains("no threads left")),
-        "a call that meets a spare that is gone says why none started"
-    );
     doomed.released();
-    let later = blocked(c"lambda: 7").expect("the daemon thread back on the pool answers");
+    // Two calls at once: no spare that is gone lies beneath the daemon thread let go, so the
+    // first's take of it starts a spare afresh, which the second takes.
+    embedded::with(|py| {
+        py.run(
+            c"import builtins, threading; builtins.both = threading.Event()",
+            None,
+            None,
+        )
+    })
+    .unwrap();
+    let first = std::thread::spawn(|| blocked(c"lambda: __import__('builtins').both.wait(10)"));
+    let second = blocked(c"lambda: __import__('builtins').both.set()");
+    assert!(matches!(second, Ok(Ok(_))), "the second call is answered");
+    let first = first.join().unwrap().unwrap().unwrap();
+    embedded::with(|py| {
+        assert!(
+            first.extract::<bool>(py).unwrap(),
+            "the first saw the second"
+        );
+    });
+}
+
+#[test]
+fn a_daemon_thread_a_bug_parks_before_its_first_call_is_handed_none() {
+    // The first daemon thread named, a spare whose loop meets a bug before it first waits.
+    embedded::with(|py| {
+        py.run(
+            c"
+import builtins, threading, time, types, rdlt._reading as reading
+deadline = time.monotonic() + 10
+while not any(t.name == 'rdlt-call' for t in threading.enumerate()) and time.monotonic() < deadline:
+    time.sleep(0.001)
+builtins.leave = threading.Event()
+def current_thread():
+    raise RuntimeError('a bug')
+reading.threading = types.SimpleNamespace(current_thread=current_thread)
+",
+            None,
+            None,
+        )
+    })
+    .unwrap();
+    let held = std::thread::spawn(|| blocked(c"lambda: __import__('builtins').leave.wait(30)"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !super::IDLE.lock().daemons.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the parked spare left the pool"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || sent.send(blocked(c"lambda: 7")).ok());
+    let met = received
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a call is told within 10 s, not queued on the parked thread for good");
+    assert!(
+        matches!(met, Err(Unanswered::Started(_))),
+        "no daemon thread is idle"
+    );
+    embedded::with(|py| {
+        py.run(
+            c"import builtins, threading, rdlt._reading as reading\nreading.threading = threading\nbuiltins.leave.set()",
+            None,
+            None,
+        )
+    })
+    .unwrap();
+    held.join().unwrap().unwrap().unwrap();
+    let later = blocked(c"lambda: 7").expect("the daemon thread let go answers");
     embedded::with(|py| assert_eq!(later.unwrap().extract::<i64>(py).unwrap(), 7));
 }
 
