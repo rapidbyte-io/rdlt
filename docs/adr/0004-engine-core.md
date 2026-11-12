@@ -98,8 +98,9 @@ a run reports and tells must show what it did without changing what it does.
   `plan_mode_invalid` refuses a read mode the stream cannot take: the stream's last full read ended
   on rows with no checkpoint after them, whether it checkpointed before them or never. It names the
   stream, and the partition where the source declared it, as each run plans the stream and as a
-  following run plans it again. Reading the stream in full again, or a reset with its tables, mends
-  it, and a source whose full reads end on a checkpoint never meets it.
+  following run plans it again. It can go on being read in full; a full read that ends on a
+  checkpoint, or a reset with its tables, mends it, and a source whose full reads end on a
+  checkpoint never meets it.
 - **Full reads are cycles.** A `full` read records its generation when it first commits and
   deletes the previous cycle's partition entries; its last commit records it as `completed`. Each
   run remembers the cycle it started or resumed per stream, and state keeps the stream's sixteen

@@ -139,9 +139,9 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     /// one partition by default: read otherwise, data it pushes after its last checkpoint is read
     /// again by its next read, so an incremental read of it ends at a checkpoint to land its
     /// last rows. A full read that finishes one leaves no cursor past what it sealed, so a read
-    /// of the stream that is not full then fails as the engine's `cursor_missing`, until the
-    /// stream is read in full again or reset with its tables: a stream read both ways ends its
-    /// full reads at a checkpoint too. A read the engine asks to follow ([`Emitter::follows`])
+    /// of the stream that is not full then fails as the engine's `cursor_missing`, until a full
+    /// read of it ends at a checkpoint or it is reset with its tables; it can go on being read in
+    /// full meanwhile. A stream read both ways ends its full reads at a checkpoint too. A read the engine asks to follow ([`Emitter::follows`])
     /// keeps its cursor. An on-demand stream answers a barrier pending before its last push with
     /// a checkpoint before that push.
     fn read(

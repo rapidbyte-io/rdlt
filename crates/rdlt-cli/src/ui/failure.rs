@@ -19,7 +19,7 @@ const HINTS: [(&str, &str); 6] = [
     (
         "cursor_missing",
         "keep reading it in full, or `rdlt state reset <document> <stream> --tables`, which \
-         drops its table for the next run to load again from its beginning",
+         drops the stream's tables for the next run to load again from its beginning",
     ),
     (
         "grant_outside",
