@@ -7,8 +7,8 @@ use rdlt_connector::{Checkpointing, Partition, ReadMode};
 
 use super::SimCursor;
 use super::plans::PlannedRead;
-use crate::workload::{End, SimStream};
-use crate::world::World;
+use crate::workload::SimStream;
+use crate::world::{World, ends};
 
 /// What a read serves next: as which read, up to which of its partition's rows, and where it
 /// checkpoints.
@@ -64,16 +64,9 @@ pub(super) fn at(world: &World, next: usize) -> SimCursor {
 }
 
 /// Notes, in `world`, what the read `reading` of stream `stream` ended on, where it sent the rows
-/// at the offsets `sent`: a checkpoint after them, rows after its last checkpoint, or no
-/// checkpoint at all.
+/// at the offsets `sent` (`ends::end`).
 pub(super) fn ended(world: &World, stream: usize, reading: &PlannedRead<'_>, sent: Range<usize>) {
-    if sent.is_empty() {
-        return;
+    if let Some(end) = ends::end(reading.checkpointed(), sent) {
+        world.ended(stream, end);
     }
-    let end = match reading.checkpointed() {
-        Some(at) if at == sent.end as u64 => End::Checkpoint,
-        Some(_) => End::Tail,
-        None => End::Unmarked,
-    };
-    world.ended(stream, end);
 }
