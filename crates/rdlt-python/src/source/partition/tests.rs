@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use pyo3::types::PyAnyMethods as _;
 use pyo3::{Py, PyAny, Python};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Partition, PartitionId};
@@ -12,7 +11,7 @@ use super::{PartitionOut, Pushed, Reading};
 use crate::embedded;
 use crate::json::JsonLimits;
 use crate::runtime;
-use crate::source::context::NativeStreamContext;
+use crate::source::context::{NativeStreamContext, Told};
 
 const LIMITS: JsonLimits = JsonLimits {
     push_bytes: 1 << 20,
@@ -30,7 +29,7 @@ fn stream(py: Python<'_>, body: &str) -> Py<PyAny> {
 }
 
 fn started(py: Python<'_>, body: &str) -> Reading {
-    let (context, _due) = NativeStreamContext::new(&Partition::single(), false, false);
+    let (context, _due) = NativeStreamContext::new(&Partition::single(), Told::default());
     let stream = Arc::new(stream(py, body));
     let whole = "whole".to_owned();
     Reading::start("rdlt-test", stream, whole, None, context, LIMITS).expect("it starts")
@@ -295,9 +294,54 @@ fn a_stopped_read_returns_while_its_generator_is_blocked() {
 }
 
 #[test]
+fn a_read_waiting_for_data_is_told_once_its_read_has_gone() {
+    embedded::with(|py| {
+        py.run(
+            c"import builtins, threading; builtins.gone = threading.Event()",
+            None,
+            None,
+        )
+        .unwrap();
+        let reading = started(
+            py,
+            "import builtins, time\ndef read(p, c, x):\n    builtins.stopped_at_start = x.stopped()\n    yield {'n': 1}\n    while not x.stopped():\n        time.sleep(0.005)\n    builtins.gone.set()",
+        );
+        let runtime = runtime::get(py).unwrap();
+        py.detach(|| {
+            runtime.block_on(async move {
+                let mut reading = reading;
+                let first = tokio::time::timeout(Duration::from_secs(30), reading.next());
+                assert!(matches!(
+                    first.await.expect("within 30 s"),
+                    Some(Pushed::Json(_))
+                ));
+            });
+        });
+        let gone = py.detach(|| {
+            Python::attach(|py| {
+                py.eval(c"__import__('builtins').gone.wait(10)", None, None)
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            })
+        });
+        assert!(gone, "the read never saw that it had gone");
+        let stopped_at_start: bool = py
+            .eval(c"__import__('builtins').stopped_at_start", None, None)
+            .unwrap()
+            .extract()
+            .unwrap();
+        assert!(
+            !stopped_at_start,
+            "a read the engine still reads was told it stopped"
+        );
+    });
+}
+
+#[test]
 fn a_read_is_told_what_its_context_says_a_checkpoint_is_due() {
     embedded::with(|py| {
-        let (context, due) = NativeStreamContext::new(&Partition::single(), false, false);
+        let (context, due) = NativeStreamContext::new(&Partition::single(), Told::default());
         let context = Py::new(py, context).unwrap().into_bound(py);
         let is_due = || -> bool {
             context
@@ -333,19 +377,31 @@ fn a_dict_that_changes_while_it_is_written_fails_the_read_rather_than_the_proces
 fn a_read_s_context_says_its_partition_and_whether_it_follows_and_resumes() {
     embedded::with(|py| {
         let parted = Partition::new(PartitionId::parse("p-1").unwrap()).unbounded();
-        let (context, _due) = NativeStreamContext::new(&parted, true, true);
+        let (context, _due) = NativeStreamContext::new(
+            &parted,
+            Told {
+                follows: true,
+                resumes: true,
+                excluded: vec!["secret".to_owned()],
+                limits: vec![("nesting_depth", 64)],
+            },
+        );
         let context = Py::new(py, context).unwrap().into_bound(py);
         let partition: String = context.getattr("partition").unwrap().extract().unwrap();
         let unbounded: bool = context.getattr("unbounded").unwrap().extract().unwrap();
         let follows: bool = context.getattr("follows").unwrap().extract().unwrap();
         let resumes: bool = context.getattr("resumes").unwrap().extract().unwrap();
+        let excluded: Vec<String> = context.getattr("excluded").unwrap().extract().unwrap();
+        let limits: Vec<(String, u64)> = context.getattr("limits").unwrap().extract().unwrap();
         assert_eq!(partition, "p-1");
         assert!(unbounded);
         assert!(follows);
         assert!(resumes);
+        assert_eq!(excluded, ["secret"]);
+        assert_eq!(limits, [("nesting_depth".to_owned(), 64)]);
 
         let ending = Partition::new(PartitionId::whole());
-        let (context, _due) = NativeStreamContext::new(&ending, false, false);
+        let (context, _due) = NativeStreamContext::new(&ending, Told::default());
         let context = Py::new(py, context).unwrap().into_bound(py);
         let partition: String = context.getattr("partition").unwrap().extract().unwrap();
         let unbounded: bool = context.getattr("unbounded").unwrap().extract().unwrap();
@@ -404,8 +460,10 @@ fn a_checkpoint_keeps_its_cursor_s_numbers_as_it_was_given_them() {
 #[test]
 fn a_read_has_room_until_its_channel_fills_and_again_once_it_has_gone() {
     let (sent, mut received) = mpsc::channel(1);
+    let outlet = super::Outlet::default();
+    outlet.open(sent.clone());
     let out = PartitionOut {
-        sent: Mutex::new(Some(sent.clone())),
+        sent: outlet,
         limits: LIMITS,
         told: Arc::new(AtomicBool::new(false)),
     };

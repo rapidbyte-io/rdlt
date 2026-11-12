@@ -297,23 +297,26 @@ document names a transform its host registered with `host.transform("name", func
 **Connectors.** `rdlt.connector` writes a connector as a class, in the Rust SDK's words. `@source`
 takes its configuration, a pydantic model in which a credential is a `Secret`, which the class's
 `__init__` takes, with a `ConnectContext` where it names `context`; its `@stream` methods yield rows
-and checkpoints; a stream's `partitions` may answer a `Partition(id, unbounded=True)` that never
-ends, which `ctx.partition` then names, and is told the stream's committed `StreamState`, its phase
-and each partition's cursor or `PartitionState.DONE`, where it names `state`; `committed=` is told
-the cursors each commit made durable, and `replayable=False` says it cannot be read again from one;
-`cursor_version=` is the format of its cursors, as Rust's `CURSOR_VERSION` is, so a cursor committed
-in another fails the read, coded `cursor_version`. `@source(acknowledged=True)` says its streams
-tell where they stand outside the engine, as a consumer group's committed offset does, each with its
-`acknowledged=`, which certification's `S-ACK` checks moves only in `committed=`. `@destination`
-takes its configuration and a `Capabilities`, which `Capabilities.minimal()` starts, and an
-`open(context)` answering a session whose table writers stage what a commit publishes, each
-`flush()` answering `WriteStats`; a commit decides with `Fence(epoch, landed).decide(meta)`. A
-session's calls, its writers' included, reach the class one at a time, so it needs no lock of its
-own. `ConnectorError` and its kinds, such as `Transient` and `RateLimited(retry_after=)`, say what
-kind of failure the connector met; `InvalidConfig`, `Unauthorized` and `InvalidData` are Rust's
-`Config`, `Auth` and `Data`, and `COMMIT_STALE`, `TABLE_OWNED` and the rest are its codes. Barriers,
-credit, limits, deadlines, fencing and commits are the Rust SDK's, beneath it.
-`rdlt.local(Tickets, config=...)` places a class `Tickets` in process, and a launcher ending in
+and checkpoints, and a read that names `ctx` is told what a Rust read's `Emitter` says: its
+`partition`, whether it `follows` and `resumes`, the columns its stream `excluded`, an `Exclusion`,
+the `Limits` it keeps within, whether a checkpoint is due and whether it was `stopped()`; a stream's
+`partitions` may answer a `Partition(id, unbounded=True)` that never ends, which `ctx.partition`
+then names, and is told the stream's committed `StreamState`, its phase and each partition's cursor
+or `PartitionState.DONE`, where it names `state`; `committed=` is told the cursors each commit made
+durable, and `replayable=False` says it cannot be read again from one; `cursor_version=` is the
+format of its cursors, as Rust's `CURSOR_VERSION` is, so a cursor committed in another fails the
+read, coded `cursor_version`. `@source(acknowledged=True)` says its streams tell where they stand
+outside the engine, as a consumer group's committed offset does, each with its `acknowledged=`,
+which certification's `S-ACK` checks moves only in `committed=`. `@destination` takes its
+configuration and a `Capabilities`, which `Capabilities.minimal()` starts, and an `open(context)`
+answering a session whose table writers stage what a commit publishes, each `flush()` answering
+`WriteStats`; a commit decides with `Fence(epoch, landed).decide(meta)`. A session's calls, its
+writers' included, reach the class one at a time, so it needs no lock of its own. `ConnectorError`
+and its kinds, such as `Transient` and `RateLimited(retry_after=)`, say what kind of failure the
+connector met; `InvalidConfig`, `Unauthorized` and `InvalidData` are Rust's `Config`, `Auth` and
+`Data`, and `COMMIT_STALE`, `TABLE_OWNED` and the rest are its codes. Barriers, credit, limits,
+deadlines, fencing and commits are the Rust SDK's, beneath it. `rdlt.local(Tickets, config=...)`
+places a class `Tickets` in process, and a launcher ending in
 `raise SystemExit(rdlt.connector.serve(Tickets))` serves it as a connector binary.
 `test_certify = rdlt.testing.certify_source(Tickets, config=...)` in a test module, or
 `certify_destination`, makes each clause a pytest test, `test_certify[S-RESUME]`, and its `report()`

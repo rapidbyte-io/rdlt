@@ -16,6 +16,7 @@ import time
 import weakref
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextvars import ContextVar
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
@@ -29,6 +30,8 @@ from rdlt import _reading
 from rdlt.connector import (
     Config,
     Cursor,
+    Exclusion,
+    Limits,
     Partition,
     PartitionState,
     ReadStream,
@@ -340,6 +343,60 @@ def test_a_class_s_partitions_method_is_told_the_state_where_it_names_it(
     built.build(host(tmp_path, connectors)).run()
     assert told, "the second run planned the stream"
     assert set(told) == {StreamState(0, {"eu": _Since(after=3)})}
+
+
+def test_a_read_is_told_the_columns_its_stream_excludes_and_the_limits_it_keeps_within(
+    tmp_path: Path, connectors: Path
+) -> None:
+    told: list[tuple[Exclusion, Limits]] = []
+
+    @stream(primary_key="id")
+    def users(ctx: StreamContext) -> Iterator[object]:
+        told.append((ctx.excluded, ctx.limits))
+        row: dict[str, object] = {"id": 1, "name": "ada"}
+        if not ctx.excluded.contains("phone"):
+            row["phone"] = "555 0100"
+        yield row
+
+    excluding = rdlt.stream("users", exclude="phone")
+    built = rdlt.pipeline(
+        "excluded", source=users, destination=into_sqlite(tmp_path), streams=[excluding]
+    )
+    built.build(host(tmp_path, connectors)).run()
+    ((excluded, limits),) = told
+    assert excluded == Exclusion(("phone",))
+    assert not excluded.is_empty()
+    assert limits.json_push_bytes > 0
+    assert limits.nesting_depth > 0
+    assert rows_of(tmp_path, "users") == [(1, "ada")]
+    whole = tmp_path / "whole"
+    whole.mkdir()
+    rdlt.pipeline("whole", source=users, destination=into_sqlite(whole)).build(
+        host(tmp_path, connectors)
+    ).run()
+    assert told[-1][0].is_empty()
+    assert told[-1][1] == limits
+
+
+def test_a_following_read_that_waits_for_data_ends_once_it_is_asked_to_stop(
+    tmp_path: Path, connectors: Path
+) -> None:
+    ended = threading.Event()
+
+    @stream(primary_key="id", cursor=_Since)
+    def users(since: _Since, ctx: StreamContext) -> Iterator[object]:
+        yield {"id": since.after + 1}
+        yield checkpoint(_Since(after=since.after + 1))
+        while not ctx.stopped():
+            time.sleep(0.005)
+        ended.set()
+
+    built = rdlt.pipeline(
+        "following", source=users, destination=into_sqlite(tmp_path), until=timedelta(seconds=1)
+    )
+    built.build(host(tmp_path, connectors)).run()
+    assert ended.wait(10), "the read's thread went on after its run"
+    assert rows_of(tmp_path, "users") == [(0,)]
 
 
 def test_a_stream_that_is_not_split_is_told_it_reads_its_single_partition(

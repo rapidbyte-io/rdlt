@@ -24,7 +24,7 @@ use serde_json::value::RawValue;
 use crate::calls;
 use crate::errors::Failure;
 use crate::json::JsonLimits;
-use context::NativeStreamContext;
+use context::{NativeStreamContext, Told};
 use partition::{Pushed, Reading};
 
 /// How often a read that is waiting on its generator looks whether a checkpoint came due.
@@ -313,7 +313,7 @@ impl ReadStream<PythonSource> for PythonStream {
         let cursor = cursor.0.map(|cursor| cursor.get().to_owned());
         let limits = out.limits();
         let limits = JsonLimits::new(limits.json_push_bytes, limits.nesting_depth);
-        let (context, due) = NativeStreamContext::new(partition, out.follows(), out.resumes());
+        let (context, due) = NativeStreamContext::new(partition, Told::of(out));
         due.set(out.checkpoint_due());
         let name = format!("rdlt-read-{}", self.spec.name());
         let mut reading = Reading::start(
