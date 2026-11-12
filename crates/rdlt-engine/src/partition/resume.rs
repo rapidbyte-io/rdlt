@@ -11,9 +11,9 @@ use crate::error::{Error, codes};
 /// # Errors
 ///
 /// `cursor_missing`, a Config error no retry mends, for a partition that never ends which a read
-/// finished, unless the stream is read in full: the rows after its last checkpoint landed, so a
-/// read from that checkpoint would land them twice, and passing over it would miss every row it
-/// gains.
+/// finished, unless the stream is read in full: the rows it read with no checkpoint after them
+/// landed, so a read from before them would land them twice, and passing over it would miss
+/// every row it gains.
 pub(crate) fn resumed(
     stream: &StreamName,
     partition: Partition,
@@ -31,8 +31,9 @@ pub(crate) fn resumed(
 }
 
 /// The refusal of a read that is not full of `stream`'s `partition`, which never ends and which a
-/// read finished on rows after its last checkpoint, as a full read does: in the user's terms, with
-/// what the user can do, and naming the partition only where the source declared it.
+/// read finished on rows with no checkpoint after them, as a full read does, whether it
+/// checkpointed before them or never: in the user's terms, with what the user can do, and naming
+/// the partition only where the source declared it.
 fn cursor_missing(stream: &StreamName, partition: &Partition) -> Error {
     let which = if *partition.id() == PartitionId::whole() {
         String::new()
@@ -40,9 +41,9 @@ fn cursor_missing(stream: &StreamName, partition: &Partition) -> Error {
         format!(" of partition {}", partition.id())
     };
     Error::config(format!(
-        "stream {stream}: its last full read{which} ended on rows after its last checkpoint, so \
-         an incremental read has no position to resume from; keep reading the stream in full, or \
-         reset it with its tables so that incremental reads start from its beginning"
+        "stream {stream}: its last full read{which} ended on rows with no checkpoint after them, \
+         so an incremental read has no position to resume from; keep reading the stream in full, \
+         or reset it with its tables so that incremental reads start from its beginning"
     ))
     .with_code(codes::CURSOR_MISSING)
     .with_stream(stream)
