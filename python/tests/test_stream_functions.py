@@ -30,8 +30,10 @@ from rdlt.connector import (
     Config,
     Cursor,
     Partition,
+    PartitionState,
     ReadStream,
     StreamContext,
+    StreamState,
     checkpoint,
     source,
     stream,
@@ -221,6 +223,125 @@ def test_partitions_answer_ids_and_partitions_alike(tmp_path: Path, connectors: 
     assert rows_of(tmp_path, "users") == [("eu",), ("us",)]
 
 
+def test_partitions_that_name_state_are_told_where_each_partition_stands(
+    tmp_path: Path, connectors: Path
+) -> None:
+    told: list[StreamState] = []
+
+    def planned(state: StreamState) -> list[str]:
+        told.append(state)
+        return ["eu", "us"]
+
+    # "eu" ends on rows, which finishes it; "us" ends on a checkpoint, which leaves it there.
+    @stream(primary_key="id", cursor=_Since, partitions=planned)
+    def users(since: _Since, ctx: StreamContext) -> Iterator[object]:
+        if since.after < 0:
+            yield {"id": ctx.partition.id}
+            if ctx.partition.id == "us":
+                yield checkpoint(_Since(after=7))
+
+    built = rdlt.pipeline("planned", source=users, destination=into_sqlite(tmp_path))
+    built.build(host(tmp_path, connectors)).run()
+    assert told, "the first run planned the stream"
+    assert set(told) == {StreamState()}
+    told.clear()
+    built.build(host(tmp_path, connectors)).run()
+    committed = StreamState(0, {"eu": PartitionState.DONE, "us": _Since(after=7)})
+    assert told, "the second run planned the stream"
+    assert all(state == committed for state in told), told
+
+
+def test_a_plan_is_told_the_full_read_in_progress_and_the_full_reads_completed(
+    tmp_path: Path, connectors: Path
+) -> None:
+    told: list[StreamState] = []
+    committed = threading.Event()
+    interrupted = [False]
+
+    def planned(state: StreamState) -> list[str]:
+        told.append(state)
+        return ["p"]
+
+    def acknowledged(cursors: object) -> None:
+        del cursors
+        committed.set()
+
+    @stream(primary_key="id", cursor=_Since, partitions=planned, committed=acknowledged)
+    def users(since: _Since, ctx: StreamContext) -> Iterator[object]:
+        del ctx
+        if since.after < 1:
+            yield {"id": 1}
+            yield checkpoint(_Since(after=1))
+        if interrupted[0]:
+            assert committed.wait(30), "the checkpoint was not committed within 30 s"
+            message = "interrupted"
+            raise RuntimeError(message)
+
+    built = rdlt.pipeline(
+        "generations",
+        source=users,
+        destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("users", read="full", write=rdlt.replace())],
+        commit=rdlt.Commit(rows=1),
+        retry=rdlt.Retry(max_attempts=1),
+    )
+    built.build(host(tmp_path, connectors)).run()
+    committed.clear()
+    interrupted[0] = True
+    with pytest.raises(rdlt.SourceError):
+        built.build(host(tmp_path, connectors)).run()
+    interrupted[0] = False
+    built.build(host(tmp_path, connectors)).run()
+    # The first two runs each began a full read; the third resumed the second's.
+    first, second, resumed = told
+    assert first == second == StreamState()
+    assert resumed.partitions == {"p": _Since(after=1)}
+    assert resumed.generation is not None
+    assert len(resumed.completed) == 1, resumed
+    assert resumed.generation not in resumed.completed
+    assert rows_of(tmp_path, "users") == [(1,)]
+
+
+def test_a_class_s_partitions_method_is_told_the_state_where_it_names_it(
+    tmp_path: Path, connectors: Path
+) -> None:
+    told: list[StreamState] = []
+
+    @source(id="io.example.planned", config=Config, version="1.0.0")
+    class Planned:
+        def __init__(self, config: Config) -> None:
+            del config
+
+        def check(self) -> None:
+            """Reads need nothing checked first."""
+
+        def regions(self, state: StreamState) -> list[str]:
+            told.append(state)
+            return ["eu"]
+
+        @stream(cursor=_Since, partitions="regions")
+        def users(self, since: _Since, ctx: StreamContext) -> Iterator[object]:
+            del ctx
+            yield {"id": since.after}
+            yield checkpoint(_Since(after=3))
+
+        @stream(cursor=_Since, partitions=lambda _self: ["eu"])
+        def stateless(self, since: _Since, ctx: StreamContext) -> Iterator[object]:
+            del ctx
+            yield {"id": since.after}
+
+    built = rdlt.pipeline(
+        "planned", source=rdlt.local(Planned, config={}), destination=into_sqlite(tmp_path)
+    )
+    built.build(host(tmp_path, connectors)).run()
+    assert told, "the stream's partitions were planned"
+    assert set(told) == {StreamState()}
+    told.clear()
+    built.build(host(tmp_path, connectors)).run()
+    assert told, "the second run planned the stream"
+    assert set(told) == {StreamState(0, {"eu": _Since(after=3)})}
+
+
 def test_a_stream_that_is_not_split_is_told_it_reads_its_single_partition(
     tmp_path: Path, connectors: Path
 ) -> None:
@@ -289,6 +410,7 @@ def test_a_committed_start_is_told_as_the_cursor_a_read_starts_from() -> None:
         None,
         _Since,
         None,
+        stated=False,
         committed=told_of(told),
         acknowledged=None,
         cursor_version=1,
@@ -341,6 +463,7 @@ def test_a_stream_tells_where_it_stands_in_its_own_cursor_type_or_none() -> None
         None,
         _Since,
         None,
+        stated=False,
         committed=None,
         acknowledged=lambda partition: cast("_Since | None", standing[partition]),
         cursor_version=1,

@@ -7,7 +7,7 @@ from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 from typing import Any
 
 from rdlt import _native
-from rdlt.connector._context import Partition, StreamContext
+from rdlt.connector._context import Partition, PartitionState, StreamContext, StreamState
 from rdlt.connector._cursor import Cursor
 
 Read = Callable[..., Iterable[object] | AsyncIterable[object]]
@@ -35,8 +35,9 @@ class Stream:
         read: Read,
         primary_key: tuple[str, ...] | None,
         cursor: type[Cursor] | None,
-        partitions: Callable[[], Sequence[str | Partition]] | None,
+        partitions: Callable[[StreamState], Sequence[str | Partition]] | None,
         *,
+        stated: bool,
         committed: Callable[[Committed], None] | None,
         acknowledged: Acknowledged | None,
         cursor_version: int,
@@ -57,6 +58,7 @@ class Stream:
                 "read_modes": ["full", "incremental"] if cursor else ["full"],
                 "checkpointing": "on_demand" if takes_context else "natural",
                 "partitioned": partitions is not None,
+                "stated": stated,
                 "replayable": replayable,
                 "committed": committed is not None,
                 "acknowledged": acknowledged is not None,
@@ -69,11 +71,25 @@ class Stream:
         """The stream's description, as JSON."""
         return self._spec
 
-    def partitions(self) -> list[tuple[str, bool]]:
-        """Each partition and whether it never ends; none for a stream without partitions."""
+    def partitions(
+        self,
+        phase: int,
+        positions: Sequence[tuple[str, bool, str | None]],
+        generation: int | None,
+        completed: Sequence[int],
+    ) -> list[tuple[str, bool]]:
+        """Each partition and whether it never ends; none for a stream without partitions.
+
+        `phase`, `positions`, `generation` and `completed` are the stream's committed state, each
+        position a partition's id, whether it is done, and its cursor as JSON: none where its
+        `partitions` names no state.
+        """
         if self._partitions is None:
             return []
-        found = self._partitions()
+        stood = {
+            partition: self._position(cursor, done=done) for partition, done, cursor in positions
+        }
+        found = self._partitions(StreamState(phase, stood, generation, tuple(completed)))
         if isinstance(found, str):
             message = f"stream {self._name!r}: partitions are a sequence, not one string"
             raise TypeError(message)
@@ -81,6 +97,12 @@ class Stream:
             (each.id, each.unbounded) if isinstance(each, Partition) else (each, False)
             for each in found
         ]
+
+    def _position(self, cursor: str | None, *, done: bool) -> object:
+        """Where a partition stands: done, or `cursor` read as the stream's, none without one."""
+        if done:
+            return PartitionState.DONE
+        return None if self._cursor is None else _parsed(self._cursor, cursor)
 
     def committed(self, cursors: Sequence[tuple[str, str | None]]) -> None:
         """Tells the author's code that `cursors`, each as JSON, are committed."""

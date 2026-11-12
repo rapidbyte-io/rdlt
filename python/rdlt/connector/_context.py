@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import enum
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any
 
 from rdlt import _native
 from rdlt.connector._cursor import Cursor
@@ -24,6 +27,30 @@ class Partition:
     def single(cls) -> Partition:
         """The partition of a stream that is not split, `whole`, which never ends."""
         return cls("whole", unbounded=True)
+
+
+class PartitionState(enum.Enum):
+    """Where a partition stands that no cursor says, as the Rust SDK's `PartitionState` says it."""
+
+    DONE = "done"
+    """The partition is read to its end."""
+
+
+@dataclass(frozen=True, slots=True)
+class StreamState:
+    """A stream's committed position, as the Rust SDK's `StreamState` is.
+
+    `phase` is the stream's phase, `0` until a plan names another. `partitions` maps each
+    partition's id to where it stands: the stream's cursor, where its next read resumes, `None`
+    for a stream that declares no cursor, or `PartitionState.DONE`, read to its end.
+    `generation` is the full read in progress, which a `replace` stream fills, and `completed`
+    the generations of recently completed full reads, oldest first.
+    """
+
+    phase: int = 0
+    partitions: Mapping[str, Any] = field(default_factory=dict[str, Any], hash=False)
+    generation: int | None = None
+    completed: tuple[int, ...] = ()
 
 
 class StreamContext:

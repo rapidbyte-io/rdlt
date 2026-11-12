@@ -7,12 +7,13 @@ import json
 import types
 from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, TypeVar, cast
 
 from rdlt import _native
 from rdlt._weak import weakly_reached
 from rdlt.connector._config import Config, validated
-from rdlt.connector._context import Partition
+from rdlt.connector._context import Partition, StreamState
 from rdlt.connector._cursor import Cursor
 from rdlt.connector._declared import Placement, built, declare, declared_as, package_version
 from rdlt.connector._streams import Committed, Stream
@@ -28,8 +29,15 @@ _CURSOR_VERSIONS = range(2**16)
 _Answered = Sequence[str | Partition]
 """A stream's partitions, each an id or a `Partition`."""
 
-_PartitionsOf = Callable[[Any], _Answered] | Callable[[], _Answered] | str
-"""A partitioned stream's partitions: a function called as its stream is, or a method's name."""
+_PartitionsOf = (
+    Callable[[Any], _Answered]
+    | Callable[[], _Answered]
+    | Callable[[Any, StreamState], _Answered]
+    | Callable[[StreamState], _Answered]
+    | str
+)
+"""A partitioned stream's partitions: a function called as its stream is, given the stream's
+`StreamState` as `state` where it names one, or a method's name."""
 
 _CommittedBy = Callable[[Any, Committed], None] | Callable[[Committed], None] | str
 """What a stream calls with its committed cursors: a function called as its stream is, or a
@@ -83,10 +91,12 @@ def stream(
 ) -> Callable[[Callable[..., Any]], Any]:
     """Makes a function a stream a pipeline reads as its source, or a method a stream of its class.
 
-    It takes the cursor where one is declared, then `ctx` where it names it, and yields rows,
-    Arrow data and `checkpoint(cursor)`. `partitions` answers the partitions, each an id or a
-    `Partition`, called as the stream is, with the instance where it is a method, or names a
-    method that does; `ctx.partition` then says which one is read. A method stays a method:
+    It takes the cursor where one is declared, then `ctx` where it names it, and yields rows, Arrow
+    data and `checkpoint(cursor)`. `partitions` answers the partitions, each an id or a `Partition`,
+    called as the stream is, with the instance where it is a method, or names a method that does;
+    `ctx.partition` then says which one is read. Where it names a `state` parameter, it is given the
+    stream's committed `StreamState`, as a Rust stream's `partitions` is: its phase, and where each
+    partition stands, a cursor or `PartitionState.DONE`. A method stays a method:
     `self.tickets(since, ctx)` calls it. It makes a `ReadStream`, typed `Any` so it is called and
     overridden as the function or method it was. How its rows land is the pipeline's to say, as
     `rdlt.stream(name, write=...)`, whatever its source. `cursor_version`, 1 unless given, is the
@@ -260,10 +270,15 @@ class _Connected:
             function = self._declared().streams[index].function
             return function(self._instance(), *arguments, **keywords)
 
-        def partitions() -> _Answered:
+        def planner() -> Callable[..., _Answered]:
             of = self._declared().streams[index].partitions
             instance = self._instance()
-            return getattr(instance, of)() if isinstance(of, str) else cast("Any", of)(instance)
+            if isinstance(of, str):
+                return getattr(instance, of)
+            return partial(cast("Callable[..., _Answered]", of), instance)
+
+        def partitions(state: StreamState) -> _Answered:
+            return _planned(planner(), state)
 
         def committed(cursors: Committed) -> None:
             by = self._declared().streams[index].committed
@@ -286,6 +301,7 @@ class _Connected:
             method.primary_key,
             method.cursor,
             None if method.partitions is None else partitions,
+            stated=method.partitions is not None and _names_state(planner()),
             committed=None if method.committed is None else committed,
             acknowledged=None if method.acknowledged is None else acknowledged,
             cursor_version=method.cursor_version,
@@ -325,6 +341,18 @@ def placed(connector: type) -> tuple[_native.SourceFactory, Placement[_Declared]
     return made, placement
 
 
+def _planned(partitions: Callable[..., _Answered], state: StreamState) -> _Answered:
+    """What `partitions` answers, given `state` where it names a `state` parameter."""
+    if _names_state(partitions):
+        return partitions(state=state)
+    return partitions()
+
+
+def _names_state(partitions: Callable[..., _Answered]) -> bool:
+    """Whether `partitions` names a `state` parameter, so it is told the stream's state."""
+    return "state" in inspect.signature(partitions).parameters
+
+
 class _Functions:
     """The in-process source of a pipeline's stream functions, which has nothing to check."""
 
@@ -346,8 +374,8 @@ def _function_stream(made: ReadStream) -> Stream:
     def read(*arguments: object, **keywords: object) -> Iterable[object] | AsyncIterable[object]:
         return reached().function(*arguments, **keywords)
 
-    def partitions() -> _Answered:
-        return cast("Callable[[], _Answered]", reached().partitions)()
+    def partitions(state: StreamState) -> _Answered:
+        return _planned(cast("Callable[..., _Answered]", reached().partitions), state)
 
     def committed(cursors: Committed) -> None:
         cast("Callable[[Committed], None]", reached().committed)(cursors)
@@ -361,6 +389,8 @@ def _function_stream(made: ReadStream) -> Stream:
         made.primary_key,
         made.cursor,
         None if made.partitions is None else partitions,
+        stated=made.partitions is not None
+        and _names_state(cast("Callable[..., _Answered]", made.partitions)),
         committed=None if made.committed is None else committed,
         acknowledged=None if made.acknowledged is None else acknowledged,
         cursor_version=made.cursor_version,

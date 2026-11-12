@@ -16,7 +16,13 @@ from rdlt.connector._capabilities import (
     WriteModes,
 )
 from rdlt.connector._config import Config
-from rdlt.connector._context import Partition, StreamContext, checkpoint
+from rdlt.connector._context import (
+    Partition,
+    PartitionState,
+    StreamContext,
+    StreamState,
+    checkpoint,
+)
 from rdlt.connector._cursor import Cursor
 from rdlt.connector._declared import ConnectContext
 from rdlt.connector._destination import OpenContext, Opened, WriteStats, destination
@@ -108,11 +114,13 @@ __all__ = [
     "OpenContext",
     "Opened",
     "Partition",
+    "PartitionState",
     "RateLimited",
     "ReadStream",
     "SchemaChanges",
     "Secret",
     "StreamContext",
+    "StreamState",
     "Transient",
     "Unauthorized",
     "Unsupported",
