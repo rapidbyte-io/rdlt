@@ -43,17 +43,16 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   pushes: dicts are encoded to JSON in Rust, within the push's bytes and the nesting limit, and
   Arrow producers are imported without a copy. A sync read waits for the engine's credit with the
   GIL released. An async read runs as one task of an event loop of its own, whose thread never
-  waits for the engine: a push that finds no room is sent by a task of the runtime, a notice that
-  finds none waits its turn, and the runtime then writes to a socket the loop watches, so the
-  loop runs the read's other tasks meanwhile and wakes with no other thread taking the GIL. A
-  transform
-  runs on the compute pool, its call made on a daemon thread that holds the GIL for the call
-  alone. No runtime worker waits for the GIL while a run goes on, and none takes it: a daemon
-  thread hands an awaited answer to asyncio through the event loop's `call_soon_threadsafe`, a
-  `StoppedError` made beforehand on the awaiting thread, and none to an await cancelled first. So
-  a pipeline with no Python in it keeps committing while Python holds the GIL. An await whose
-  answer no daemon thread can take waits until one can, or until it is cancelled, as
-  `asyncio.wait_for` does at its timeout.
+  waits for the engine: an item's push that finds no room is sent by a task of the runtime, a
+  notice that finds none waits its turn, and the runtime then writes to a socket the loop
+  watches, so the loop runs the read's other tasks meanwhile and wakes with no other thread taking
+  the GIL. A transform runs on the compute pool, its call made on a daemon thread that holds the
+  GIL for the call alone. No runtime worker waits for the GIL while a run goes on, and none takes
+  it: a daemon thread hands an awaited answer to asyncio through the event loop's
+  `call_soon_threadsafe`, a `StoppedError` made beforehand on the awaiting thread, and none to an
+  await cancelled first. So a pipeline with no Python in it keeps committing while Python holds
+  the GIL. An await whose answer no daemon thread can take waits until one can, or until it is
+  cancelled, as `asyncio.wait_for` does at its timeout.
 - **Exceptions cross whole.** A Python exception becomes the connector's or the transform's
   error: its type and message, shown and bounded as connector text, with its traceback as its
   cause. A connector says what kind of failure it met by raising `rdlt.connector.ConnectorError`
@@ -196,8 +195,8 @@ Rejected:
   answers no probe unless its launcher's own code asks for it.
 - **orjson for rows.** Encoding in Rust keeps the limits where the push is made, and adds no
   dependency.
-- **Waking an async read as an awaited answer is handed over**, through a daemon thread and
-  `call_soon_threadsafe`: every wait would take a daemon thread and the GIL, which a busy loop
+- **Waking an async read through a daemon thread and `call_soon_threadsafe`**, as an awaited
+  answer is handed over: every wait would take a daemon thread and the GIL, which a busy loop
   holds, so the read would fall behind the engine it waits for.
 - **pyo3-async-runtimes for awaitables.** It hands an awaited answer over by taking the GIL on the
   runtime's blocking pool, and given a runtime whose blocking pool were a daemon thread, the

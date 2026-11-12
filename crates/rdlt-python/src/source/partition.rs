@@ -7,8 +7,9 @@
 //! releases it while it reads a stream.
 //!
 //! A sync read's push waits for the engine with the GIL released. An async read's never waits:
-//! a push that finds the channel full is sent by a task of the runtime, which then wakes the
-//! read's event loop through a socket the loop watches, so the loop runs on meanwhile.
+//! an item's push that finds the channel full is sent by a task of the runtime, and a notice that
+//! finds it full is said again once a task has seen room come; the task then wakes the read's
+//! event loop through a socket the loop watches, so the loop runs on meanwhile.
 
 mod pushes;
 mod room;
