@@ -468,3 +468,63 @@ fn a_blocked_call_does_not_delay_another_on_the_same_worker() {
         });
     });
 }
+
+#[test]
+fn a_spare_that_did_not_start_leaves_the_pool_and_the_rest_stay() {
+    let (kept, _kept_waits) = tokio::sync::mpsc::unbounded_channel();
+    let (spare, _spare_waits) = tokio::sync::mpsc::unbounded_channel();
+    super::put_back(kept.clone());
+    super::put_back(spare.clone());
+    super::unstarted(&spare, "RuntimeError: no threads left".to_owned());
+    let idle = super::IDLE.lock();
+    assert_eq!(idle.daemons.len(), 1, "only the spare left the pool");
+    assert!(idle.daemons[0].same_channel(&kept));
+    assert_eq!(
+        idle.unstarted.as_deref(),
+        Some("RuntimeError: no threads left")
+    );
+}
+
+/// Refuses each daemon thread's start half a second after saying it began, as a process out of
+/// threads does, so a call can be queued on a spare that then does not start.
+const SLOW_REFUSAL: &std::ffi::CStr = c"
+import _thread, builtins, threading, time
+builtins.starting = threading.Event()
+builtins.leave = threading.Event()
+def refused(*_):
+    builtins.starting.set()
+    time.sleep(0.5)
+    raise RuntimeError('no threads left')
+_thread.start_new_thread = refused
+";
+
+/// Holds the only daemon thread until `builtins.leave` is set, once it has begun to start its
+/// spare.
+fn holding() -> std::thread::JoinHandle<Result<Result<Py<PyAny>, PyErr>, Unanswered>> {
+    embedded::with(|py| py.run(SLOW_REFUSAL, None, None)).unwrap();
+    let held = std::thread::spawn(|| blocked(c"lambda: __import__('builtins').leave.wait(30)"));
+    let starting: bool = embedded::with(|py| {
+        py.eval(c"__import__('builtins').starting.wait(10)", None, None)
+            .unwrap()
+            .extract()
+            .unwrap()
+    });
+    assert!(starting, "the only daemon thread starts its spare");
+    held
+}
+
+#[test]
+fn a_call_that_finds_a_spare_that_did_not_start_says_why_and_a_later_one_is_answered() {
+    let held = holding();
+    // Queued on the spare as it starts, a call goes with it, and the spare it asked for stays.
+    assert!(matches!(blocked(c"lambda: 7"), Err(Unanswered::Thread)));
+    let met = blocked(c"lambda: 7");
+    assert!(
+        matches!(&met, Err(Unanswered::Started(why)) if why.contains("no threads left")),
+        "a call that meets a spare that is gone says why none started"
+    );
+    embedded::with(|py| py.run(c"__import__('builtins').leave.set()", None, None)).unwrap();
+    held.join().unwrap().unwrap().unwrap();
+    let later = blocked(c"lambda: 7").expect("the daemon thread back on the pool answers");
+    embedded::with(|py| assert_eq!(later.unwrap().extract::<i64>(py).unwrap(), 7));
+}
