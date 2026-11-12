@@ -361,9 +361,9 @@ refused as `interpreter_unreachable`, and such a connector is served with `--lis
 environment holding its wheel instead.
 
 **The GIL** is held for Python's own calls alone. Each partition of a Python source reads on a
-thread of its own and releases the GIL while it waits for the engine, and a transform takes it
-only inside its call, so a pipeline with no Python in it keeps committing while Python runs. On
-free-threaded CPython there is no GIL to hold.
+thread it holds while it reads and releases the GIL while it waits for the engine, and a transform
+takes it only inside its call, so a pipeline with no Python in it keeps committing while Python
+runs. On free-threaded CPython there is no GIL to hold.
 
 **Ctrl-C.** `pipeline.run()` answers it as the command line does: the first stops the run after its
 next commit and waits for it to end, and a second cancels the run and raises `KeyboardInterrupt`.

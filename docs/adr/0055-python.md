@@ -9,18 +9,18 @@ the engine (ADR 0053). Python users want the same pipelines, with their own func
 and transforms, and connector authors want to write connectors in Python without a second
 implementation of the protocol ADRs 0038 to 0050 harden.
 
-The `rdlt` Python package runs its users' code inside the engine's process: stream functions
-and sources read on threads of their own, a secret store answers a build, and transforms take the
-engine's batches. CPython ends a thread that holds or wants the interpreter when the interpreter
-finishes exiting. On 3.11, 3.12 and 3.13.0 to 3.13.7 it does so with `pthread_exit`, whose forced
-unwind through Python running beneath Rust frames, `catch_unwind` among them, aborts the process;
-PyO3 parks a thread whose own wait or attach is unwound, so that thread hangs until the process
-ends, as every such thread does on later versions. An exit with a generator or a transform
+The `rdlt` Python package runs its users' code inside the engine's process: stream functions and
+sources read on threads they hold while they read, a secret store answers a build, and transforms
+take the engine's batches. CPython ends a thread that holds or wants the interpreter when the
+interpreter finishes exiting. On 3.11, 3.12 and 3.13.0 to 3.13.7 it does so with `pthread_exit`,
+whose forced unwind through Python running beneath Rust frames, `catch_unwind` among them, aborts
+the process; PyO3 parks a thread whose own wait or attach is unwound, so that thread hangs until the
+process ends, as every such thread does on later versions. An exit with a generator or a transform
 running is the ordinary end of a script that started a run and returned. Exit has another half: a
-thread that ends runs its libraries' per-thread teardown, OpenSSL's thread state and malloc's
-caches among them, after its last Python instruction, and while the process exits that teardown
-races `exit()`'s handlers and corrupts the heap. An embedder that never finalizes the interpreter,
-as rdlt's own tests are, reaches those handlers moments after its last call.
+thread that ends runs its libraries' per-thread teardown, OpenSSL's thread state and malloc's caches
+among them, after its last Python instruction, and while the process exits that teardown races
+`exit()`'s handlers and corrupts the heap. An embedder that never finalizes the interpreter, as
+rdlt's own tests are, reaches those handlers moments after its last call.
 
 ## Decision
 
@@ -38,16 +38,16 @@ as rdlt's own tests are, reaches those handlers moments after its last call.
   and a connector class placed in process run in the embedding process, trusted as its own code is
   (ADR 0037); a document names a transform or a connector class only once its host registered
   it.
-- **The GIL is held for Python's calls alone.** A source reads each partition on a thread of its
-  own, which holds the GIL while Python runs and while what it yielded becomes pushes: dicts are
-  encoded to JSON in Rust, within the push's bytes and the nesting limit, and Arrow producers are
-  imported without a copy. It waits for the engine's credit with the GIL released, and reads an
-  async generator as one task of an event loop of its own. A transform runs on the compute pool,
-  its call made on a daemon thread that holds the GIL for the call alone. No runtime worker waits
-  for the GIL while a run goes on, and none takes it: an awaited answer, a `StoppedError` among
-  them, is made on a daemon thread and handed to asyncio through the event loop's
-  `call_soon_threadsafe`. So a pipeline with no Python in it keeps committing while Python holds
-  the GIL.
+- **The GIL is held for Python's calls alone.** A source reads each partition on a daemon thread
+  it holds while it reads, which holds the GIL while Python runs and while what it yielded becomes
+  pushes: dicts are encoded to JSON in Rust, within the push's bytes and the nesting limit, and
+  Arrow producers are imported without a copy. It waits for the engine's credit with the GIL
+  released, and reads an async generator as one task of an event loop of its own. A transform
+  runs on the compute pool, its call made on a daemon thread that holds the GIL for the call
+  alone. No runtime worker waits for the GIL while a run goes on, and none takes it: a daemon
+  thread hands an awaited answer to asyncio through the event loop's `call_soon_threadsafe`, a
+  `StoppedError` made beforehand on the awaiting thread, and none to an await cancelled first. So
+  a pipeline with no Python in it keeps committing while Python holds the GIL.
 - **Exceptions cross whole.** A Python exception becomes the connector's or the transform's
   error: its type and message, shown and bounded as connector text, with its traceback as its
   cause. A connector says what kind of failure it met by raising `rdlt.connector.ConnectorError`
@@ -116,20 +116,20 @@ as rdlt's own tests are, reaches those handlers moments after its last call.
   generator's `next`, a source's `check`, a stream's `partitions`, `committed` and `acknowledged`, a
   destination's methods and its sessions' and table writers', a secret store, a transform, runs on a
   daemon thread Python started, running `rdlt/_reading.py`, never on a thread with Rust frames
-  beneath the call. Each call, a partition's read among them, is made on one of the process's
-  daemon threads: the one that went idle last, which has the call to itself, since a worker runs
-  many tasks and one that never returns must not hold up the rest. A call that takes the last idle
-  one has it start another before it calls, so no caller waits for a thread to start. A daemon
-  thread lets go of what a call held, goes back on the pool and then hands the answer over, and
-  none ever ends, so none is tearing down when the process exits: a user's `SystemExit` or
-  `KeyboardInterrupt` is its call's answer, and a thread a bug of rdlt's own escapes waits for
+  beneath the call. Each call, a partition's read among them, is made on one of the process's daemon
+  threads: the one that went idle last, which has the call to itself, since a worker runs many tasks
+  and one that never returns must not hold up the rest. A call that takes the last idle one has it
+  start another before it calls, so no caller waits for a thread to start. A daemon thread lets go
+  of what a call held, goes back on the pool and then hands the answer over, and none ever ends, so
+  none is tearing down when the process exits: a user's `SystemExit` or `KeyboardInterrupt` is its
+  call's answer, and a thread a bug of rdlt's own escapes answers the call it held and waits for
   good. Only threads Python owns start them: the thread that first asks for the runtime or serves,
   and the daemon threads themselves, each saying as text where one did not start. A child forked
-  from a process that had started its own starts afresh. The caller holds no GIL and touches
-  nothing of Python's: it hands the call over as closures, the daemon thread builds its arguments
-  and reads its answer, and the batches a transform or a table writer takes, a transform answers
-  and a destination reads back are imported and exported in Python, since pyarrow releases the GIL
-  in both. `rdlt._reading` is imported when the package loads, so no thread imports under Rust.
+  from a process that had started its own starts afresh. The caller holds no GIL and touches nothing
+  of Python's: it hands the call over as closures, the daemon thread builds its arguments and reads
+  its answer, and the batches a transform or a table writer takes, a transform answers and a
+  destination reads back are imported and exported in Python, since pyarrow releases the GIL in
+  both. `rdlt._reading` is imported when the package loads, so no thread imports under Rust.
 - **Three cases run under Rust, and are accepted.** Methods of what a generator yields run inside
   `push` with its Rust frames beneath them: a value's `isoformat` and a UUID's `__str__`, a `list`
   subclass's `__iter__`, `__getattr__` through `hasattr`, a producer's `__arrow_c_array__` and
