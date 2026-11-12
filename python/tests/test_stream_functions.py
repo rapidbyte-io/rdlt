@@ -319,7 +319,7 @@ def test_a_class_s_partitions_method_is_told_the_state_where_it_names_it(
         def check(self) -> None:
             """Reads need nothing checked first."""
 
-        def regions(self, state: StreamState) -> list[str]:
+        def regions(self, state: StreamState, /) -> list[str]:
             told.append(state)
             return ["eu"]
 
