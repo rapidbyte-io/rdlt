@@ -291,17 +291,20 @@ def serve(calls: _Calls) -> None:
 
     What a call held, its batch among it, is let go before its answer is handed over. A user's
     function's exception, `SystemExit` and `KeyboardInterrupt` among them, is its call's answer;
-    what else escapes is a bug of rdlt's own, said here. The thread then answers the call it held,
-    with its answer where it was read and as unanswered otherwise, and waits for good, off the
-    pool, rather than end.
+    what else escapes is a bug of rdlt's own, said here. The thread then answers what it held or
+    was handed, with its answer where one was read and as unanswered otherwise, and waits for good,
+    off the pool, rather than end.
     """
     try:
         threading.current_thread().name = _IDLE
         while True:
             _made(*calls.next())
     except BaseException:  # noqa: BLE001
-        with contextlib.suppress(BaseException):
+        # Guarded by a `try`, which runs no code of its own as `suppress` would.
+        try:  # noqa: SIM105
             traceback.print_exc()
+        except BaseException:  # noqa: BLE001, S110
+            pass
     # Out of the handler, so what the escape's traceback held of a call, its answer among it, is
     # let go, and the call is told it went unanswered.
     try:
