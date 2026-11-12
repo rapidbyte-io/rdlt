@@ -84,6 +84,10 @@ JSON exactness ADR 0026's.
     last checkpoint to its next read, which reads them again, each landing once; where its source
     checkpoints on demand, it checkpoints nowhere, and is refused `checkpoint_missing` with none
     of its rows landed, until an operator mends the source.
+  - In a seed with neither faults nor disruptions, a run that reads to its end reads each
+    partition once, from where its last commit left it, and the model has a read refused
+    `checkpoint_missing` exactly where it seals none of its rows. So an engine that refuses a read
+    which checkpointed after rows fails the simulation.
   - A quarter of the streams that do not replace their table are read the other way in the next
     phase: an incremental read resumes from the cursor a full read ended on, and a full read after
     an incremental one reads every row again. Where the full read finished a partition that never
