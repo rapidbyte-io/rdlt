@@ -124,9 +124,7 @@ impl Simulation {
         self.world.reports.restart();
         // Each run is held to its own connections' plans: those made before it are forgotten.
         drop(self.world.connections());
-        // Plain runs without faults that read to their ends read each partition once, from where
-        // its last commit left it, so what their reads meet is known exactly.
-        let exact = clean && matches!(scenario, Scenario::Plain) && !until.follows();
+        let exact = self.exact(scenario, clean, until);
         let mut prediction = refusals::predict(&self.world, &self.relaxed, phase, exact);
         if until.follows() {
             // A run that follows the source may end before the rows a refusal needs arrive.
@@ -183,6 +181,19 @@ impl Simulation {
             stopped: answer == Answer::Stopped,
             mended: answer.mended(),
         }
+    }
+
+    /// Whether what the reads of runs of `scenario` reading `until` meet is known exactly: plain
+    /// runs that read every partition to its end read each partition once, from where its last
+    /// commit left it, and in a seed with neither faults nor disruptions no run before them was
+    /// dropped or failed part way, so no commit of one is still on its way to land before they
+    /// open.
+    ///
+    /// Runs that are not `clean`, as those a reset races, are not.
+    fn exact(&self, scenario: Scenario, clean: bool, until: Until) -> bool {
+        let features = self.world.workload.features;
+        let settled = !(features.faults || features.disruptions);
+        settled && clean && matches!(scenario, Scenario::Plain) && !until.follows()
     }
 
     /// Answers a refusal of `stream` coded `code` that `phase`'s runs met, as an operator would:
