@@ -282,13 +282,15 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 15
         run: ./.github/sandbox.sh
-      # On Linux a test that needs a sandbox fails where none can be made, rather than skip.
+      # On Linux a test that needs a sandbox fails where none can be made, rather than skip. Each
+      # version's exits are soaked too: a crash as a process exits is too rare for one run to see.
       - run: |
           read -ra pythons <<< "$PYTHONS"
           just python-wheel "${pythons[@]}"
         env:
           PYTHONS: ${{ matrix.pythons }}
           RDLT_REQUIRE_SANDBOX: ${{ runner.os == 'Linux' && '1' || '0' }}
+          RDLT_EXITS_RUNS: 300
 
   # A thousand seeds under coverage, side by side on the runner's four cores.
   sim-coverage:

@@ -87,8 +87,9 @@ python-wheel-env version:
     echo "CPython $version: $(target/wheel-env/bin/python -VV)"
 
 # Build the release wheel and test it as it ships, on each CPython of `versions` in turn, in an
-# environment of its own; the abi3 wheel is built once. Every version is tested, and the recipe
-# fails after the last if any failed
+# environment of its own; the abi3 wheel is built once. Every version is tested, then its exits
+# soaked `RDLT_EXITS_RUNS` times where that is set, and the recipe fails after the last if any
+# failed
 python-wheel +versions: connectors-build
     #!/usr/bin/env bash
     set -euo pipefail
@@ -97,11 +98,20 @@ python-wheel +versions: connectors-build
     for version in {{ versions }}; do
         just python-wheel-env "$version"
         target/wheel-env/bin/python -m pytest -p no:cacheprovider || failed+=("$version")
+        if (( ${RDLT_EXITS_RUNS:-0} > 0 )); then
+            just python-exits target/wheel-env/bin/python "$RDLT_EXITS_RUNS" || failed+=("$version's exits")
+        fi
     done
     if (( ${#failed[@]} )); then
         echo "the suite failed on CPython ${failed[*]}" >&2
         exit 1
     fi
+
+# Run each script of `python/tests/exits` `runs` times with the interpreter `python`, eight at a
+# time, each within a minute, and fail where one ends otherwise than it says: a script that exits
+# as a run's Python flows, and one that returns once its run ended
+python-exits python runs:
+    {{ python }} python/tests/exits/looped.py {{ runs }}
 
 # The Python package's tests that install from PyPI, against this tree's release wheel on CPython
 # `version`: a connector `rdlt connector new` scaffolds, built, installed as a directory connector
