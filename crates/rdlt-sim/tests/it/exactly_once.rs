@@ -176,6 +176,22 @@ fn a_seed_whose_commits_are_sent_again_and_whose_late_tries_are_refused_passes()
     }
 }
 
+/// The seed of [`a_seed_whose_stream_is_reset_as_cursor_missing_says_passes`].
+const REMEDIED: u64 = 85;
+
+/// A seed whose stream, read in full and then incrementally, is refused `cursor_missing`, reset
+/// with its tables as the refusal says and read again, so the remedy does not drop out of the
+/// simulation unseen.
+#[test]
+fn a_seed_whose_stream_is_reset_as_cursor_missing_says_passes() {
+    let checked = check_exactly_once(Seed::new(REMEDIED));
+    assert!(
+        checked.reached.has(Reach::Remedied),
+        "seed {REMEDIED} no longer reaches {:?}: keep a seed that does",
+        Reach::Remedied
+    );
+}
+
 /// The seed of [`a_seed_whose_rows_only_the_source_held_passes`].
 const SERVED_AGAIN: u64 = 14;
 
