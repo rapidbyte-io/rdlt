@@ -13,9 +13,14 @@ The `rdlt` Python package runs its users' code inside the engine's process: stre
 and sources read on threads of their own, a secret store answers a build, and transforms take the
 engine's batches. CPython ends a thread that holds or wants the interpreter when the interpreter
 finishes exiting. On 3.11, 3.12 and 3.13.0 to 3.13.7 it does so with `pthread_exit`, whose forced
-unwind through Rust frames, `catch_unwind` among them, aborts the process; on later versions the
-thread hangs instead. An exit with a generator or a transform running is the ordinary end of a
-script that started a run and returned.
+unwind through Python running beneath Rust frames, `catch_unwind` among them, aborts the process;
+PyO3 parks a thread whose own wait or attach is unwound, so that thread hangs until the process
+ends, as every such thread does on later versions. An exit with a generator or a transform
+running is the ordinary end of a script that started a run and returned. Exit has another half: a
+thread that ends runs its libraries' per-thread teardown, OpenSSL's thread state and malloc's
+caches among them, after its last Python instruction, and while the process exits that teardown
+races `exit()`'s handlers and corrupts the heap. An embedder that never finalizes the interpreter,
+as rdlt's own tests are, reaches those handlers moments after its last call.
 
 ## Decision
 
@@ -110,14 +115,20 @@ script that started a run and returned.
   generator's `next`, a source's `check`, a stream's `partitions`, `committed` and `acknowledged`, a
   destination's methods and its sessions' and table writers', a secret store, a transform, runs on a
   daemon thread Python started, running `rdlt/_reading.py`, never on a thread with Rust frames
-  beneath the call. A read's thread is one of these. An async call, made from a runtime's worker,
-  runs on a daemon thread of its own, since that worker runs many tasks and one that never returns
-  must not hold up the rest; a thread that waits for each answer in turn, as a compute thread does,
-  keeps one daemon thread for its calls. The caller holds no GIL and touches nothing of Python's: it
-  hands the call over as closures, the daemon thread builds its arguments and reads its answer, and
-  the batches a transform or a table writer takes, a transform answers and a destination reads back
-  are imported and exported in Python, since pyarrow releases the GIL in both. `rdlt._reading` is
-  imported when the package loads, so no thread imports under Rust.
+  beneath the call. Each call, a partition's read among them, is made on one of the process's
+  daemon threads: the one that went idle last, which has the call to itself, since a worker runs
+  many tasks and one that never returns must not hold up the rest. A call that takes the last idle
+  one has it start another before it calls, so no caller waits for a thread to start. A daemon
+  thread lets go of what a call held, goes back on the pool and then hands the answer over, and
+  none ever ends, so none is tearing down when the process exits: a user's `SystemExit` or
+  `KeyboardInterrupt` is its call's answer, and a thread a bug of rdlt's own escapes waits for
+  good. Only threads Python owns start them: the thread that first asks for the runtime or serves,
+  and the daemon threads themselves, each saying as text where one did not start. A child forked
+  from a process that had started its own starts afresh. The caller holds no GIL and touches
+  nothing of Python's: it hands the call over as closures, the daemon thread builds its arguments
+  and reads its answer, and the batches a transform or a table writer takes, a transform answers
+  and a destination reads back are imported and exported in Python, since pyarrow releases the GIL
+  in both. `rdlt._reading` is imported when the package loads, so no thread imports under Rust.
 - **Three cases run under Rust, and are accepted.** Methods of what a generator yields run inside
   `push` with its Rust frames beneath them: a value's `isoformat` and a UUID's `__str__`, a `list`
   subclass's `__iter__`, `__getattr__` through `hasattr`, a producer's `__arrow_c_array__` and
@@ -200,22 +211,24 @@ partition's flush, in Python or not, holds back the pipeline's commits until it 
 barrier's wait ends; the GIL is not what holds them.
 
 A stream that never checkpoints is read as one segment, so its run holds more of it at once.
-On Linux, glibc gives each thread that allocates, every read's and every host's compute threads,
-an arena of its own, and an arena keeps what it freed: across such runs, each on a host of its
-own, resident memory grows while what is in use stays flat. Over six runs of 10,000 batches,
+On Linux, glibc gives each thread that allocates, every daemon thread and every host's compute
+threads, an arena of its own, and an arena keeps what it freed: across such runs, each on a host
+of its own, resident memory grows while what is in use stays flat. Over six runs of 10,000 batches,
 malloc's bytes in use stayed between 10.5 and 10.8 MiB while its free bytes grew from 163 to
 330 MiB; with `MALLOC_ARENA_MAX=2` they stayed under 93 MiB, and checkpointing every hundred
 batches kept them under 41 MiB. `MALLOC_ARENA_MAX` bounds it where a process makes many such
 runs.
 
-An async call costs a thread start, and a compute thread's call a hand-off to the daemon thread
-it keeps. pyarrow's own C++ takes no such care as this ADR does: a daemon thread building arrays
-from Python sequences when the interpreter exits can abort on CPython 3.11 and 3.12 with or
-without `rdlt` in the process, so a transform doing so at the instant of exit can too. Exit is
-the price of an interpreter's own daemon-thread rules, the same as for any daemon thread,
-whatever the interpreter's version.
+A call costs a hand-off to an idle daemon thread. The process keeps as many daemon threads as
+calls it ever made at once, and one more. pyarrow's own C++ takes no such care as this ADR does:
+a daemon thread building arrays from Python sequences when the interpreter exits can abort on
+CPython 3.11 and 3.12 with or without `rdlt` in the process, so a transform doing so at the
+instant of exit can too. Exit is the price of an interpreter's own daemon-thread rules, the same
+as for any daemon thread, whatever the interpreter's version: on 3.11 to 3.13.7, a daemon thread
+running Python as the interpreter finalizes is ended by it, and its teardown runs then.
 
-A transform that never returns keeps its compute thread until the process ends, since Python
-code cannot be interrupted and a transform has no cancellation to pass in. A cancelled run ends
-without it, but once stuck calls reach a host's compute threads, that host's other runs stop. A
-user's function that can block, on a network or a lock, needs a timeout of its own.
+A transform that never returns keeps its compute thread and its daemon thread until the process
+ends, since Python code cannot be interrupted and a transform has no cancellation to pass in. A
+cancelled run ends without it, but once stuck calls reach a host's compute threads, that host's
+other runs stop. A user's function that can block, on a network or a lock, needs a timeout of its
+own.

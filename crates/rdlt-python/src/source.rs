@@ -325,7 +325,7 @@ impl ReadStream<PythonSource> for PythonStream {
             limits,
         )
         .map_err(|error| {
-            ConnectorError::internal(format!("a partition's thread did not start: {error}"))
+            ConnectorError::internal(format!("a partition's read was not begun: {error}"))
         })?;
         // A generator that yields nothing for a while still answers a barrier that arrives.
         let mut refresh = tokio::time::interval(DUE_REFRESH);

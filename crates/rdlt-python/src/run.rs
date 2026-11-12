@@ -241,10 +241,11 @@ impl NativeRun {
     pub(crate) fn wait_async<'py>(&self, py: Python<'py>) -> Result<Bound<'py, PyAny>, PyErr> {
         runtime::get(py)?;
         let receiver = self.ended();
+        // Made here, on Python's own thread: the runtime's worker that ends the await takes no
+        // GIL, and drops it unused once the run ended.
+        let stopped = errors::stopped(py);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let ended = ended(receiver)
-                .await
-                .ok_or_else(|| Python::attach(errors::stopped))?;
+            let ended = ended(receiver).await.ok_or(stopped)?;
             Ok((ended.outcome.clone(), ended.error.clone()))
         })
     }

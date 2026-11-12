@@ -33,23 +33,42 @@ fn native(
 }
 
 #[test]
-fn a_thread_that_did_not_start_says_why_as_the_error_s_cause() {
-    let transform = embedded::with(|py| {
+fn a_transform_that_finds_no_daemon_thread_says_why_the_last_did_not_start() {
+    let (holding, quick) = embedded::with(|py| {
         py.run(
-            c"import rdlt._reading as reading\n\
-              def refused(calls):\n    raise RuntimeError('no threads left')\n\
-              reading.serve = refused\n",
+            c"import _thread, builtins, threading\n\
+              builtins.entered = threading.Event()\n\
+              builtins.leave = threading.Event()\n\
+              def refused(*_):\n    raise RuntimeError('no threads left')\n\
+              _thread.start_new_thread = refused\n",
             None,
             None,
         )
         .unwrap();
-        native(py, "lambda batch: batch", false, None).transform()
+        let holding = "lambda batch: (__import__('builtins').entered.set(), __import__('builtins').leave.wait(30), batch)[-1]";
+        (
+            native(py, holding, false, None).transform(),
+            native(py, "lambda batch: batch", false, None).transform(),
+        )
     });
-    let failed = transform
-        .apply(input())
-        .expect_err("no thread answers the call");
-    let cause = std::error::Error::source(&failed).expect("why it did not start");
-    assert!(cause.to_string().contains("no threads left"), "{cause}");
+    std::thread::scope(|scope| {
+        // Takes the only daemon thread, whose spare is refused before it calls.
+        let held = scope.spawn(|| holding.apply(input()));
+        let entered = embedded::with(|py| {
+            py.eval(c"__import__('builtins').entered.wait(30)", None, None)
+                .unwrap()
+                .extract::<bool>()
+                .unwrap()
+        });
+        assert!(entered, "the first call holds its daemon thread");
+        let failed = quick.apply(input()).expect_err("no daemon thread is idle");
+        assert!(failed.to_string().contains("no threads left"), "{failed}");
+        embedded::with(|py| {
+            py.eval(c"__import__('builtins').leave.set()", None, None)
+                .unwrap();
+        });
+        held.join().unwrap().expect("the first call is answered");
+    });
 }
 
 const DOUBLED: &str = "lambda batch: batch.append_column('doubled', __import__('pyarrow.compute', fromlist=['multiply']).multiply(batch.column('n'), 2))";

@@ -1,26 +1,30 @@
-//! One Python function called from Rust, on a daemon thread of Python's own.
+//! One Python function called from Rust, on one of the process's daemon threads.
 //!
 //! A user's function never runs with Rust frames beneath it: an interpreter that exits ends the
 //! thread that runs it, and on `CPython` 3.11, 3.12 and early 3.13 that unwind through Rust frames
 //! aborts the process (ADR 0055). The caller holds no GIL and touches nothing of Python's: it
 //! hands the call over as closures, and its arguments are built and its answer read on the
-//! daemon thread. An async call has a daemon thread of its own, since a runtime's worker runs many
-//! tasks and one that never returns must not hold up the rest; a thread that waits for each
-//! answer in turn keeps one for its calls.
+//! daemon thread. A call takes the daemon thread that went idle last, and one that takes the last
+//! idle one has it start another before it calls, so no caller waits for a thread to start. No
+//! daemon thread ends: one that ended would run its libraries' teardown, which races the
+//! process's exit.
 
 #[cfg(test)]
 mod tests;
 
-use std::cell::RefCell;
-use std::sync::mpsc;
+use std::mem;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAnyMethods as _, PyModule, PyTuple};
 use pyo3::{Bound, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
 use tokio::runtime::{Handle, RuntimeFlavor};
-use tokio::sync::oneshot;
-use tokio::task::JoinError;
+use tokio::sync::{mpsc, oneshot};
+
+use crate::errors;
 
 /// What a call answered: what it returned, or what it raised.
 pub(crate) type Answered<'py> = Result<Bound<'py, PyAny>, PyErr>;
@@ -31,27 +35,207 @@ type Prepare = Box<
         + Send,
 >;
 
-/// Where a call's answer goes, read on the daemon thread with the GIL held.
-type Give = Box<dyn for<'py> FnOnce(Python<'py>, Answered<'py>) + Send>;
+/// Reads a call's answer on the daemon thread, the GIL held, and gives what hands it over.
+type Give = Box<dyn for<'py> FnOnce(Python<'py>, Answered<'py>) -> Handover + Send>;
+
+/// Hands a call's answer, read, to its caller.
+pub(crate) type Handover = Box<dyn FnOnce() + Send>;
+
+/// Where a daemon thread is handed its calls.
+type Daemon = mpsc::UnboundedSender<Call>;
+
+/// The calls a daemon thread waits for.
+type Waiting = mpsc::UnboundedReceiver<Call>;
 
 /// A call as `rdlt._reading` unpacks it: the function, its arguments, and where to answer.
 type Offered<'py> = (Bound<'py, PyAny>, Bound<'py, PyTuple>, Py<CallAnswer>);
+
+/// A call no daemon thread took, to be dropped outside the pool's lock, and why.
+type Unhanded = (Prepare, Give, Unanswered);
 
 /// A call for a daemon thread to make.
 struct Call {
     prepare: Prepare,
     give: Give,
+    /// The daemon thread it was handed to, put back once its answer is read.
+    daemon: Daemon,
+    /// The daemon thread to start before the call is made, where it took the last idle one.
+    spare: Option<(Daemon, Waiting)>,
+}
+
+/// What a daemon thread does once a call has let go of what it held: it goes back on the pool,
+/// then hands the answer over.
+struct Done {
+    daemon: Daemon,
+    handover: Handover,
+}
+
+impl Done {
+    fn hand_over(self) {
+        put_back(self.daemon);
+        (self.handover)();
+    }
+}
+
+/// The process's daemon threads that wait for a call, the last to go idle on top.
+///
+/// Its lock is held only inside the functions below that take and give back Rust values alone,
+/// since a daemon thread takes it with the GIL held: nothing under it runs Python, drops a Python
+/// object, or waits.
+struct Idle {
+    /// The process whose daemon threads these are: a forked child's copy names its parent.
+    pid: u32,
+    daemons: Vec<Daemon>,
+    /// Why the last daemon thread asked for did not start.
+    unstarted: Option<String>,
+}
+
+static IDLE: Mutex<Idle> = Mutex::new(Idle {
+    pid: 0,
+    daemons: Vec::new(),
+    unstarted: None,
+});
+
+/// The process whose daemon threads the pool holds, once one has started there; read before the
+/// lock, which a forked child may find held by a thread its parent had.
+static STARTED: AtomicU32 = AtomicU32::new(0);
+
+/// How long a process that has started no daemon thread waits for the pool's lock: a lock held
+/// as its parent forked is never released.
+const CLAIM: Duration = Duration::from_secs(1);
+
+/// What a caller is told where this process has started no daemon thread.
+const NONE_STARTED: &str = "no daemon thread was started in this process";
+
+/// Hands a call to the daemon thread that went idle last, giving it a spare to start where it was
+/// the last.
+fn handed(prepare: Prepare, give: Give) -> Result<(), Unhanded> {
+    let mut idle = IDLE.lock();
+    let Some(daemon) = idle.daemons.pop() else {
+        let why = idle.unstarted.clone();
+        let why = why.unwrap_or_else(|| NONE_STARTED.to_owned());
+        return Err((prepare, give, Unanswered::Started(why)));
+    };
+    let spare = idle.daemons.is_empty().then(mpsc::unbounded_channel);
+    let kept = spare.as_ref().map(|(sender, _)| sender.clone());
+    let call = Call {
+        prepare,
+        give,
+        daemon: daemon.clone(),
+        spare,
+    };
+    if let Err(unsent) = daemon.send(call) {
+        let Call { prepare, give, .. } = unsent.0;
+        return Err((prepare, give, Unanswered::Thread));
+    }
+    idle.daemons.extend(kept);
+    Ok(())
+}
+
+/// Puts `daemon` back on top of the pool, idle.
+fn put_back(daemon: Daemon) {
+    IDLE.lock().daemons.push(daemon);
+}
+
+/// Takes `spare`, whose thread did not start, off the pool, saying why.
+fn unstarted(spare: &Daemon, why: String) {
+    let mut idle = IDLE.lock();
+    idle.daemons.retain(|daemon| !daemon.same_channel(spare));
+    idle.unstarted = Some(why);
+}
+
+/// Makes the pool process `pid`'s, forgetting a parent's copy unread; false where its lock stays
+/// held, as by a thread a fork left behind.
+fn claimed(pid: u32) -> bool {
+    let Some(mut idle) = IDLE.try_lock_for(CLAIM) else {
+        return false;
+    };
+    if idle.pid != pid {
+        // Their channels may be mid-change on a thread the fork left behind: never touched.
+        mem::forget(mem::take(&mut idle.daemons));
+        idle.pid = pid;
+        idle.unstarted = None;
+    }
+    true
+}
+
+/// Puts `daemon`, started in process `pid`, on the pool, which callers there use from now on.
+fn adopted(pid: u32, daemon: Daemon) {
+    IDLE.lock().daemons.push(daemon);
+    STARTED.store(pid, Ordering::Release);
+}
+
+/// The calls one daemon thread waits for, and what it hands over once a call has let go of what
+/// it held.
+#[pyclass(module = "rdlt._native", name = "Calls", frozen)]
+struct Calls {
+    waiting: Mutex<Waiting>,
+    done: Arc<Mutex<Option<Done>>>,
+}
+
+impl Calls {
+    fn new(waiting: Waiting) -> Self {
+        Self {
+            waiting: Mutex::new(waiting),
+            done: Arc::default(),
+        }
+    }
+}
+
+#[pymethods]
+impl Calls {
+    /// Hands over the last call's answer, then waits, the GIL released, for the next call.
+    ///
+    /// A call whose arguments cannot be built is answered with why, here.
+    fn next<'py>(&self, py: Python<'py>) -> Result<Offered<'py>, PyErr> {
+        let done = self.done.lock().take();
+        if let Some(done) = done {
+            done.hand_over();
+        }
+        loop {
+            let call = py.detach(|| self.waiting.lock().blocking_recv()).expect(
+                "a daemon thread waiting for a call is on the pool, which holds its sender",
+            );
+            if let Some((sender, waiting)) = call.spare {
+                spare(py, &sender, waiting);
+            }
+            match (call.prepare)(py) {
+                Ok((function, arguments)) => {
+                    let answer = CallAnswer {
+                        give: Mutex::new(Some((call.give, call.daemon))),
+                        done: Arc::clone(&self.done),
+                    };
+                    return Ok((function, arguments, Py::new(py, answer)?));
+                }
+                Err(error) => {
+                    let handover = (call.give)(py, Err(error));
+                    Done {
+                        daemon: call.daemon,
+                        handover,
+                    }
+                    .hand_over();
+                }
+            }
+        }
+    }
 }
 
 /// Where a call's thread says how it ended.
 #[pyclass(module = "rdlt._native", name = "CallAnswer", frozen)]
-struct CallAnswer(Mutex<Option<Give>>);
+struct CallAnswer {
+    /// How the answer is read, and the daemon thread reading it; none once it has been.
+    give: Mutex<Option<(Give, Daemon)>>,
+    done: Arc<Mutex<Option<Done>>>,
+}
 
 impl CallAnswer {
+    /// Reads `answered`, which is handed over once the call has let go of what it held; a panic
+    /// here leaves the daemon thread off the pool.
     fn give<'py>(&self, py: Python<'py>, answered: Answered<'py>) {
-        let give = self.0.lock().take();
-        if let Some(give) = give {
-            give(py, answered);
+        let given = self.give.lock().take();
+        if let Some((give, daemon)) = given {
+            let handover = give(py, answered);
+            *self.done.lock() = Some(Done { daemon, handover });
         }
     }
 }
@@ -69,32 +253,6 @@ impl CallAnswer {
     }
 }
 
-/// The calls one thread of Rust hands its daemon thread, which ends with them once that thread
-/// has ended.
-#[pyclass(module = "rdlt._native", name = "Calls", frozen)]
-struct Calls(Mutex<mpsc::Receiver<Call>>);
-
-#[pymethods]
-impl Calls {
-    /// The next call to make, the GIL released while it waits; none once its thread has ended.
-    ///
-    /// A call whose arguments cannot be built is answered with why, here.
-    fn next<'py>(&self, py: Python<'py>) -> Result<Option<Offered<'py>>, PyErr> {
-        loop {
-            let Some(call) = py.detach(|| self.0.lock().recv().ok()) else {
-                return Ok(None);
-            };
-            match (call.prepare)(py) {
-                Ok((function, arguments)) => {
-                    let answer = Py::new(py, CallAnswer(Mutex::new(Some(call.give))))?;
-                    return Ok(Some((function, arguments, answer)));
-                }
-                Err(error) => (call.give)(py, Err(error)),
-            }
-        }
-    }
-}
-
 /// The package's module of thread bodies, imported once: the package imports it as it loads.
 pub(crate) fn reading(py: Python<'_>) -> Result<Bound<'_, PyModule>, PyErr> {
     static READING: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
@@ -103,18 +261,65 @@ pub(crate) fn reading(py: Python<'_>) -> Result<Bound<'_, PyModule>, PyErr> {
     Ok(reading.bind(py).clone())
 }
 
-thread_local! {
-    /// This thread's daemon thread, started at its first call and kept for the next.
-    static SERVED: RefCell<Option<mpsc::Sender<Call>>> = const { RefCell::new(None) };
+/// Starts a daemon thread making the calls `calls` waits for, through `_thread` called from here,
+/// so no bytecode runs beneath this thread's Rust frames.
+fn launched(py: Python<'_>, calls: &Bound<'_, Calls>) -> Result<(), PyErr> {
+    let serve = reading(py)?.getattr(intern!(py, "serve"))?;
+    py.import("_thread")?
+        .getattr(intern!(py, "start_new_thread"))?
+        .call1((serve, (calls,)))?;
+    Ok(())
 }
 
-/// Starts a daemon thread that makes each call its sender is handed, and ends once that sender is
-/// dropped.
-fn serving(py: Python<'_>) -> Result<mpsc::Sender<Call>, PyErr> {
-    let (sender, calls) = mpsc::channel();
-    let calls = Py::new(py, Calls(Mutex::new(calls)))?;
-    reading(py)?.call_method1(intern!(py, "serve"), (calls,))?;
-    Ok(sender)
+/// What `error` says: its type and its message.
+fn said(py: Python<'_>, error: &PyErr) -> String {
+    let message = error
+        .value(py)
+        .str()
+        .map(|text| text.to_string())
+        .unwrap_or_default();
+    format!("{}: {message}", errors::type_name(py, error))
+}
+
+/// Starts the daemon thread `sender` hands calls to; one that does not start leaves the pool,
+/// saying why, before what waits for it is let go.
+fn spare(py: Python<'_>, sender: &Daemon, waiting: Waiting) {
+    match Bound::new(py, Calls::new(waiting)) {
+        Ok(calls) => {
+            if let Err(error) = launched(py, &calls) {
+                unstarted(sender, said(py, &error));
+            }
+        }
+        Err(error) => unstarted(sender, said(py, &error)),
+    }
+}
+
+/// Starts this process's first daemon thread, on the asking thread, which Python owns: once per
+/// process, so a child forked from one that had started its own starts afresh.
+///
+/// # Errors
+///
+/// [`Unanswered::Started`] where the thread did not start, or where the pool stays locked, as by
+/// a thread the fork left behind.
+pub(crate) fn ready(py: Python<'_>) -> Result<(), Unanswered> {
+    let pid = std::process::id();
+    if STARTED.load(Ordering::Acquire) == pid {
+        return Ok(());
+    }
+    if !claimed(pid) {
+        return Err(Unanswered::Started(
+            "the process was forked while its parent handed a call over: start it with \
+             multiprocessing's spawn or forkserver method"
+                .to_owned(),
+        ));
+    }
+    let (daemon, waiting) = mpsc::unbounded_channel();
+    let started = Bound::new(py, Calls::new(waiting)).and_then(|calls| launched(py, &calls));
+    if let Err(error) = started {
+        return Err(Unanswered::Started(said(py, &error)));
+    }
+    adopted(pid, daemon);
+    Ok(())
 }
 
 /// Why a call has no answer.
@@ -123,52 +328,39 @@ pub(crate) enum Unanswered {
     /// The call's thread ended without answering.
     #[error("the call's thread ended without answering")]
     Thread,
-    /// The call's thread did not start.
-    #[error("the call's thread did not start")]
-    Started(#[source] PyErr),
-    /// Starting the call panicked.
-    #[error("the call was not started")]
-    Joined(#[from] JoinError),
+    /// No daemon thread was idle and the last asked for did not start, or none was started in
+    /// this process: why, as text, since the exception would need the GIL wherever it was read.
+    #[error("the call's thread did not start: {0}")]
+    Started(String),
 }
 
-/// Hands the call `prepare` builds to this thread's daemon thread; `give` receives what it
-/// returned or raised on that thread, and is dropped unanswered once its thread ended without
+/// Hands the call `prepare` builds to the daemon thread that went idle last; `give` reads what it
+/// returned or raised on that thread, and is dropped unanswered where that thread ended without
 /// answering.
 ///
-/// The caller holds no GIL; the first call of a thread takes it, to start that thread's daemon.
+/// The caller holds no GIL, and waits for nothing here.
 ///
 /// # Errors
 ///
-/// [`Unanswered::Started`] where the daemon thread did not start.
+/// [`Unanswered`] where no daemon thread could take the call.
 pub(crate) fn start<P, G>(prepare: P, give: G) -> Result<(), Unanswered>
 where
     P: for<'py> FnOnce(Python<'py>) -> Result<(Bound<'py, PyAny>, Bound<'py, PyTuple>), PyErr>
         + Send
         + 'static,
-    G: for<'py> FnOnce(Python<'py>, Answered<'py>) + Send + 'static,
+    G: for<'py> FnOnce(Python<'py>, Answered<'py>) -> Handover + Send + 'static,
 {
-    let call = Call {
-        prepare: Box::new(prepare),
-        give: Box::new(give),
-    };
-    SERVED.with_borrow_mut(|served| {
-        let sender = match served {
-            Some(sender) => sender,
-            None => served.insert(Python::attach(serving).map_err(Unanswered::Started)?),
-        };
-        if sender.send(call).is_err() {
-            // Its daemon thread ended: the next call starts another.
-            *served = None;
-            return Err(Unanswered::Thread);
-        }
-        Ok(())
-    })
+    if STARTED.load(Ordering::Acquire) != std::process::id() {
+        return Err(Unanswered::Started(NONE_STARTED.to_owned()));
+    }
+    // A call no daemon thread took is dropped here, outside the pool's lock.
+    handed(Box::new(prepare), Box::new(give)).map_err(|(_, _, why)| why)
 }
 
-/// Calls the function `prepare` names, with the arguments it builds, on this thread's daemon
-/// thread, and answers `finish` of what it returned or raised; the caller waits here, the GIL
-/// released, for a thread with no runtime to await on, and where this thread is a runtime's
-/// worker, that worker's other tasks move to another thread meanwhile.
+/// Calls the function `prepare` names, with the arguments it builds, on a daemon thread, and
+/// answers `finish` of what it returned or raised; the caller waits here, the GIL released, for a
+/// thread with no runtime to await on, and where this thread is a runtime's worker, that
+/// worker's other tasks move to another thread meanwhile.
 ///
 /// # Errors
 ///
@@ -181,10 +373,13 @@ where
         + 'static,
     F: for<'py> FnOnce(Python<'py>, Answered<'py>) -> T + Send + 'static,
 {
-    let (sender, received) = mpsc::channel();
+    let (sender, received) = std::sync::mpsc::channel();
     away_from_the_runtime(move || {
         start(prepare, move |py, answered| {
-            sender.send(finish(py, answered)).ok();
+            let finished = finish(py, answered);
+            Box::new(move || {
+                sender.send(finished).ok();
+            })
         })?;
         received.recv().map_err(|_| Unanswered::Thread)
     })
@@ -199,8 +394,8 @@ fn away_from_the_runtime<R>(wait: impl FnOnce() -> R) -> R {
     }
 }
 
-/// Calls the function `prepare` names, with the arguments it builds, on a daemon thread of its
-/// own, and answers `finish` of what it returned or raised on that thread.
+/// Calls the function `prepare` names, with the arguments it builds, on a daemon thread, and
+/// answers `finish` of what it returned or raised on that thread.
 ///
 /// A caller that stops waiting leaves the call to end, its answer dropped, since Python code
 /// cannot be interrupted.
@@ -217,20 +412,11 @@ where
     F: for<'py> FnOnce(Python<'py>, Answered<'py>) -> T + Send + 'static,
 {
     let (sender, received) = oneshot::channel();
-    let call = Call {
-        prepare: Box::new(prepare),
-        give: Box::new(move |py, answered| {
-            sender.send(finish(py, answered)).ok();
-        }),
-    };
-    tokio::task::spawn_blocking(move || {
-        Python::attach(|py| {
-            // Handed over and its sender dropped, so the thread ends with this call.
-            serving(py)?.send(call).ok();
-            Ok::<(), PyErr>(())
+    start(prepare, move |py, answered| {
+        let finished = finish(py, answered);
+        Box::new(move || {
+            sender.send(finished).ok();
         })
-    })
-    .await?
-    .map_err(Unanswered::Started)?;
+    })?;
     received.await.map_err(|_| Unanswered::Thread)
 }

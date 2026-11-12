@@ -1,16 +1,17 @@
 """The threads Python code runs on: nothing but Python lies beneath a user's function.
 
-A read's thread and a call's thread are Python's own, started by `_thread`, which returns at
-once: an interpreter that exits ends them in Python's frames, and what starts them makes no wait
-of its own, so none lands on an exiting interpreter with Rust beneath it.
+Every call from Rust, a partition's read among them, is made on one of the process's daemon
+threads, which `_thread` starts and which run `serve` for as long as the process lives: an
+interpreter that exits ends them in Python's frames, or leaves them waiting, and none ends on its
+own, since a thread that ends runs its libraries' teardown, which races the process's exit.
 """
 
 from __future__ import annotations
 
 import _thread
 import asyncio
-import sys
 import threading
+import traceback
 from collections import deque
 from collections.abc import AsyncIterable, Callable, Iterable
 from contextvars import ContextVar
@@ -18,28 +19,6 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     import pyarrow as pa
-
-
-def _ended() -> None:
-    """Lets `threading` forget this thread, which is ending, as CPython 3.13 and later do.
-
-    Before 3.13, `threading` keeps for ever the object `current_thread()` makes for a thread
-    `_thread` started, unless a later thread has its ident:
-    https://github.com/python/cpython/issues/114423. Its registry and lock are looked up on each
-    call, since a forked child's `threading` makes new ones.
-    """
-    if sys.version_info < (3, 13):
-        registry = vars(threading)
-        with registry["_active_limbo_lock"]:
-            registry["_active"].pop(_thread.get_ident(), None)
-
-
-def _forgotten(run: Callable[..., None], *arguments: object) -> None:
-    """Runs `run`, then lets `threading` forget this thread, once what `run` held is let go."""
-    try:
-        run(*arguments)
-    finally:
-        _ended()
 
 
 # An async read waits for room in the engine with its event loop free: for this many turns of
@@ -129,14 +108,18 @@ class _Answer(Protocol):
 
 
 class _Calls(Protocol):
-    """What one thread of Rust hands its daemon thread to call."""
+    """The calls a daemon thread is handed."""
 
-    def next(self) -> tuple[Callable[..., object], tuple[object, ...], _Answer] | None:
-        """The next call to make, waiting for it; `None` once its thread of Rust has ended."""
+    def next(self) -> tuple[Callable[..., object], tuple[object, ...], _Answer]:
+        """Hands over the last call's answer, then waits for the next call to make."""
         ...
 
 
-def start(  # noqa: PLR0917
+_IDLE = "rdlt-call"
+"""The name of a daemon thread that waits for a call, or makes one other than a read."""
+
+
+def read(  # noqa: PLR0917
     name: str,
     stream: _Stream,
     partition: str,
@@ -144,20 +127,12 @@ def start(  # noqa: PLR0917
     context: object,
     out: Out,
 ) -> None:
-    """Reads the partition on a daemon thread of its own named `name`."""
-    _thread.start_new_thread(_forgotten, (_read, name, stream, partition, cursor, context, out))
+    """Reads the partition to its end, naming this daemon thread `name` meanwhile.
 
-
-def _read(  # noqa: PLR0917
-    name: str,
-    stream: _Stream,
-    partition: str,
-    cursor: str | None,
-    context: object,
-    out: Out,
-) -> None:
-    """Reads the partition to its end and says how it ended."""
-    threading.current_thread().name = name
+    It says how the read ended, through `out`.
+    """
+    thread = threading.current_thread()
+    thread.name = name
     try:
         opened = stream.read(partition, cursor, context)
         if hasattr(opened, "__aiter__"):
@@ -168,6 +143,8 @@ def _read(  # noqa: PLR0917
         out.failed(error)
     else:
         out.finished()
+    finally:
+        thread.name = _IDLE
 
 
 def _read_sync(opened: Iterable[object], out: Out) -> None:
@@ -303,16 +280,27 @@ async def _room(out: Out) -> None:
 
 
 def serve(calls: _Calls) -> None:
-    """Makes each call `calls` hands over on a daemon thread of its own, until `calls` closes."""
-    _thread.start_new_thread(_forgotten, (_served, calls))
+    """Makes each call `calls` is handed, on this daemon thread, for as long as the process lives.
+
+    What a call held, its batch among it, is let go before its answer is handed over. A user's
+    function's exception, `SystemExit` and `KeyboardInterrupt` among them, is its call's answer;
+    what else escapes is a bug of rdlt's own, said here, and the thread then waits for good, off
+    the pool, rather than end.
+    """
+    threading.current_thread().name = _IDLE
+    try:
+        while True:
+            _made(*calls.next())
+    except BaseException:  # noqa: BLE001
+        traceback.print_exc()
+        _parked()
 
 
-def _served(calls: _Calls) -> None:
-    threading.current_thread().name = "rdlt-call"
-    while (call := calls.next()) is not None:
-        _made(*call)
-        # What a call held, its batch among it, stays no longer than the call.
-        del call
+def _parked() -> None:
+    """Waits for good with the GIL released, as a thread never woken."""
+    never = _thread.allocate_lock()
+    never.acquire()
+    never.acquire()
 
 
 def _made(function: Callable[..., object], arguments: tuple[object, ...], answer: _Answer) -> None:
