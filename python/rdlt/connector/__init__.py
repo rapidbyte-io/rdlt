@@ -62,15 +62,12 @@ def serve(connector: type, args: Sequence[str] | None = None) -> int:
     `raise SystemExit(serve(Tickets))`. Spawned by a host it serves the socket `--rdlt-fd` names;
     run with `--listen` and the TLS flags it serves hosts over mutual TLS. It runs on the main
     thread, and answers Ctrl-C as a connector binary does: spawned, it ignores it, since its host
-    stops it; listening, it stops. Arguments it cannot read, and a destination's capabilities
-    rdlt cannot read, are said on its standard error before it serves, and fail it.
+    stops it; listening, it stops. Arguments it cannot read are said on its standard error
+    before it serves, and fail it.
     """
     placed: tuple[_native.SourceFactory | _native.DestinationFactory, object]
     if declares_destination(connector):
-        try:
-            placed = placed_destination(connector)
-        except ValueError as refused:
-            return _failed(str(refused))
+        placed = placed_destination(connector)
     elif declares_source(connector):
         placed = placed_source(connector)
     else:

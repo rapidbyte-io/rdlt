@@ -18,7 +18,6 @@ import pyarrow as pa
 from rdlt.connector import (
     SCHEMA_CONFLICT,
     TABLE_OWNED,
-    Capabilities,
     Config,
     Fence,
     Fenced,
@@ -212,7 +211,6 @@ class _Writer:
 @destination(
     id="io.example.memory",
     config=MemoryConfig,
-    capabilities=Capabilities.minimal(),
     version="1.0.0",
 )
 class Memory:

@@ -254,7 +254,6 @@ class _Session:
 @destination(
     id="io.example.pysqlite",
     config=SqliteConfig,
-    capabilities=Capabilities.minimal(),
     version="1.0.0",
 )
 class PySqlite:
@@ -263,6 +262,10 @@ class PySqlite:
     def __init__(self, config: SqliteConfig) -> None:
         self.path = config.path
         _connected(self.path).close()
+
+    def capabilities(self) -> Capabilities:
+        """An append-only destination's, as a Rust destination's `capabilities` answers them."""
+        return Capabilities.minimal()
 
     def check(self) -> None:
         """The file opens."""

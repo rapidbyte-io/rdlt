@@ -157,6 +157,25 @@ fn commit(meta: &CommitMeta) -> Result<String> {
     Ok(told.to_string())
 }
 
+/// What a Python destination's `capabilities()` answered as JSON, read as the Rust SDK's.
+///
+/// Capabilities rdlt cannot read, or that name a key it does not know, are refused as an
+/// internal error: the destination is built wrong.
+fn capabilities(answered: &str) -> Result<Capabilities> {
+    let not_rdlt_s = |error: serde_json::Error| {
+        ConnectorError::internal(format!("the capabilities are not rdlt's: {error}"))
+    };
+    let given: serde_json::Value = serde_json::from_str(answered).map_err(not_rdlt_s)?;
+    let capabilities: Capabilities = serde_json::from_value(given.clone()).map_err(not_rdlt_s)?;
+    let known = serde_json::to_value(&capabilities).expect("capabilities serialize");
+    if let Some(key) = unknown(&given, &known) {
+        return Err(ConnectorError::internal(format!(
+            "the capabilities name {key}, which rdlt does not know"
+        )));
+    }
+    Ok(capabilities)
+}
+
 /// The first key `given` holds, at any depth, that `known` does not: a capability rdlt does not
 /// know, as its dotted path.
 fn unknown(given: &serde_json::Value, known: &serde_json::Value) -> Option<String> {
@@ -179,7 +198,7 @@ struct OpenedJson {
     state: Vec<Kept>,
 }
 
-/// A connected Python destination, and what its class declared it can store.
+/// A connected Python destination, and what its instance says it can store.
 pub(crate) struct PythonDestination {
     connected: Arc<Py<PyAny>>,
     capabilities: Capabilities,
@@ -335,12 +354,11 @@ impl TableWriter for PythonWriter {
     }
 }
 
-/// A destination written in Python: its spec, what it can store, whether it reads back what it
-/// published, and the callable that connects it.
+/// A destination written in Python: its spec, whether it reads back what it published, and the
+/// callable that connects it.
 #[pyclass(module = "rdlt._native", name = "DestinationFactory", frozen)]
 pub(crate) struct NativeDestinationFactory {
     spec: ConnectorSpec,
-    capabilities: Capabilities,
     reads_back: bool,
     connect: Arc<Py<PyAny>>,
 }
@@ -352,7 +370,6 @@ impl NativeDestinationFactory {
         id: &str,
         version: String,
         config_schema: &str,
-        capabilities: &str,
         reads_back: bool,
         connect: Py<PyAny>,
     ) -> std::result::Result<Self, PyErr> {
@@ -362,25 +379,12 @@ impl NativeDestinationFactory {
         let config_schema = serde_json::from_str(config_schema).map_err(|error| {
             PyValueError::new_err(format!("the configuration's schema is not JSON: {error}"))
         })?;
-        let not_rdlt_s = |error: serde_json::Error| {
-            PyValueError::new_err(format!("the capabilities are not rdlt's: {error}"))
-        };
-        let given: serde_json::Value = serde_json::from_str(capabilities).map_err(not_rdlt_s)?;
-        let capabilities: Capabilities =
-            serde_json::from_value(given.clone()).map_err(not_rdlt_s)?;
-        let known = serde_json::to_value(&capabilities).expect("capabilities serialize");
-        if let Some(key) = unknown(&given, &known) {
-            return Err(PyValueError::new_err(format!(
-                "the capabilities name {key}, which rdlt does not know"
-            )));
-        }
         Ok(Self {
             spec: ConnectorSpec {
                 id,
                 version,
                 config_schema,
             },
-            capabilities,
             reads_back,
             connect: Arc::new(connect),
         })
@@ -395,16 +399,16 @@ impl NativeDestinationFactory {
 
 impl NativeDestinationFactory {
     /// What connects the destination: the callable, on a daemon thread, with the configuration's
-    /// JSON and the host its connect context names.
+    /// JSON and the host its connect context names, then the instance's `capabilities()`.
     fn connecting(
         &self,
     ) -> impl Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<PythonDestination>>
     + Send
     + Sync
     + 'static {
-        let (connect, capabilities) = (Arc::clone(&self.connect), self.capabilities.clone());
+        let connect = Arc::clone(&self.connect);
         move |config, context| {
-            let (connect, capabilities) = (Arc::clone(&connect), capabilities.clone());
+            let connect = Arc::clone(&connect);
             let host = context.host().map(str::to_owned);
             Box::pin(async move {
                 let config = config.to_string();
@@ -415,9 +419,17 @@ impl NativeDestinationFactory {
                     |answered| Ok(answered.unbind()),
                 )
                 .await?;
+                let connected = Arc::new(connected);
+                let answered: String = method(
+                    &connected,
+                    "capabilities",
+                    |py| Ok(PyTuple::empty(py)),
+                    |answered| answered.extract(),
+                )
+                .await?;
                 Ok(PythonDestination {
-                    connected: Arc::new(connected),
-                    capabilities,
+                    connected,
+                    capabilities: capabilities(&answered)?,
                 })
             })
         }
@@ -443,4 +455,10 @@ impl NativeDestinationFactory {
 #[pyfunction]
 pub(crate) fn minimal_capabilities() -> String {
     json(&Capabilities::minimal())
+}
+
+/// Why rdlt cannot read `answered`, capabilities as JSON; none where it can.
+#[pyfunction]
+pub(crate) fn unreadable_capabilities(answered: &str) -> Option<String> {
+    capabilities(answered).err().map(|error| error.to_string())
 }

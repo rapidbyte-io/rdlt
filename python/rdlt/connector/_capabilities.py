@@ -79,6 +79,16 @@ class Capabilities:
     identifiers: IdentifierRules
     max_parallel_writers: int
 
+    def __post_init__(self) -> None:
+        """Refuses capabilities the Rust SDK's `Capabilities` cannot hold, as no writers.
+
+        Raises:
+            ValueError: rdlt cannot read them.
+        """
+        refused = _native.unreadable_capabilities(self._json())
+        if refused is not None:
+            raise ValueError(refused)
+
     @classmethod
     def minimal(cls) -> Capabilities:
         """An append-only destination's, as the Rust SDK's `Capabilities::minimal()`.

@@ -3,7 +3,7 @@ use pyo3::{Bound, Py, PyAny, Python};
 use rdlt_connector::ConnectContext;
 
 use super::Factory;
-use crate::destination::{NativeDestinationFactory, minimal_capabilities};
+use crate::destination::NativeDestinationFactory;
 use crate::embedded;
 use crate::source::NativeSourceFactory;
 
@@ -25,12 +25,10 @@ fn source(py: Python<'_>, acknowledges: bool) -> NativeSourceFactory {
 }
 
 fn destination(py: Python<'_>) -> NativeDestinationFactory {
-    let capabilities = minimal_capabilities();
     NativeDestinationFactory::new(
         "io.example.served",
         "1.0.0".to_owned(),
         "{}",
-        &capabilities,
         true,
         connect(py),
     )

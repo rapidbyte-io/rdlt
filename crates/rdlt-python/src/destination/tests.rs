@@ -13,7 +13,7 @@ use rdlt_connector::{
 use rdlt_connector_reference::MemorySource;
 use serde_json::json;
 
-use super::{NativeDestinationFactory, minimal_capabilities};
+use super::{NativeDestinationFactory, minimal_capabilities, unreadable_capabilities};
 use crate::embedded;
 use crate::pipeline::NativePipeline;
 
@@ -64,7 +64,7 @@ fn a_python_destination_loads_what_the_engine_writes_exactly_once() {
 }
 
 /// A destination that records each call it is given, as the protocol's JSON, in `calls`; its
-/// `open` answers `opened`.
+/// `open` answers `opened`, and its `capabilities` what `capabilities` holds.
 const RECORDER: &str = "\
 import json
 calls = []
@@ -91,6 +91,8 @@ class Session:
     def close(self):
         calls.append(['close'])
 class Connected:
+    def capabilities(self):
+        return capabilities
     def check(self):
         calls.append(['check'])
     def open(self, pipeline):
@@ -112,9 +114,19 @@ fn recorder(opened: &str) -> (NativeDestinationFactory, Py<PyAny>) {
 
 /// The recorder's factory, which reads back where `reads_back`, and the list of its calls.
 fn recorder_reading(opened: &str, reads_back: bool) -> (NativeDestinationFactory, Py<PyAny>) {
+    recorder_saying(opened, reads_back, &minimal_capabilities())
+}
+
+/// The recorder's factory, whose instances say `capabilities`, and the list of its calls.
+fn recorder_saying(
+    opened: &str,
+    reads_back: bool,
+    capabilities: &str,
+) -> (NativeDestinationFactory, Py<PyAny>) {
     embedded::with(|py| {
         let globals = PyDict::new(py);
         globals.set_item("opened", opened).unwrap();
+        globals.set_item("capabilities", capabilities).unwrap();
         py.run(
             &std::ffi::CString::new(RECORDER).unwrap(),
             Some(&globals),
@@ -126,7 +138,6 @@ fn recorder_reading(opened: &str, reads_back: bool) -> (NativeDestinationFactory
             "io.example.recorder",
             "1.0.0".to_owned(),
             "{}",
-            &minimal_capabilities(),
             reads_back,
             connect,
         )
@@ -389,7 +400,6 @@ fn what_the_destination_raises_is_the_connector_s_error_of_its_kind_and_code() {
             "io.example.raising",
             "1.0.0".to_owned(),
             "{}",
-            &minimal_capabilities(),
             false,
             connect,
         )
@@ -415,33 +425,12 @@ fn a_factory_refuses_what_describes_no_destination() {
                 .unwrap()
                 .unbind()
         };
-        let capabilities = minimal_capabilities();
-        let with = |pointer: &str, key: &str| {
-            let mut given: serde_json::Value = serde_json::from_str(&capabilities).unwrap();
-            given.pointer_mut(pointer).unwrap()[key] = json!(true);
-            given.to_string()
-        };
-        let (in_mode, at_top) = (with("/write_modes", "upsert"), with("", "drop_table"));
-        for (id, schema, capabilities, said) in [
-            ("No Id", "{}", capabilities.as_str(), "is no connector id"),
-            (
-                "io.example.x",
-                "{",
-                capabilities.as_str(),
-                "schema is not JSON",
-            ),
-            ("io.example.x", "{}", r#"{"append": true}"#, "capabilities"),
-            ("io.example.x", "{}", in_mode.as_str(), "write_modes.upsert"),
-            ("io.example.x", "{}", at_top.as_str(), "drop_table"),
+        for (id, schema, said) in [
+            ("No Id", "{}", "is no connector id"),
+            ("io.example.x", "{", "schema is not JSON"),
         ] {
-            let refused = NativeDestinationFactory::new(
-                id,
-                "1.0.0".to_owned(),
-                schema,
-                capabilities,
-                true,
-                connect(),
-            );
+            let refused =
+                NativeDestinationFactory::new(id, "1.0.0".to_owned(), schema, true, connect());
             let error = refused.err().expect("refused");
             assert!(
                 error.is_instance_of::<pyo3::exceptions::PyValueError>(py),
@@ -453,7 +442,6 @@ fn a_factory_refuses_what_describes_no_destination() {
             "io.example.x",
             "1.0.0".to_owned(),
             r#"{"type": "object"}"#,
-            &minimal_capabilities(),
             true,
             connect(),
         )
@@ -464,6 +452,50 @@ fn a_factory_refuses_what_describes_no_destination() {
             json!({ "type": "object" })
         );
     });
+}
+
+#[test]
+fn a_destination_whose_capabilities_rdlt_cannot_read_fails_where_it_is_built() {
+    let minimal = minimal_capabilities();
+    let with = |pointer: &str, key: &str| {
+        let mut given: serde_json::Value = serde_json::from_str(&minimal).unwrap();
+        given.pointer_mut(pointer).unwrap()[key] = json!(true);
+        given.to_string()
+    };
+    let (in_mode, at_top) = (with("/write_modes", "upsert"), with("", "drop_table"));
+    for (capabilities, said) in [
+        (r#"{"append": true}"#, "not rdlt's"),
+        (in_mode.as_str(), "write_modes.upsert"),
+        (at_top.as_str(), "drop_table"),
+    ] {
+        let (factory, _calls) = recorder_saying("{}", false, capabilities);
+        let factory = factory.factory();
+        let error = within(factory.connect(json!({}), ConnectContext::new()))
+            .err()
+            .expect("refused");
+        assert_eq!(error.kind(), ConnectorErrorKind::Internal, "{said}");
+        assert!(error.to_string().contains(said), "{error}");
+    }
+}
+
+#[test]
+fn capabilities_rdlt_cannot_read_are_said_where_they_are_made() {
+    assert_eq!(unreadable_capabilities(&minimal_capabilities()), None);
+    let mut given: serde_json::Value = serde_json::from_str(&minimal_capabilities()).unwrap();
+    given["max_parallel_writers"] = json!(0);
+    let said = unreadable_capabilities(&given.to_string()).expect("no writers is refused");
+    assert!(said.contains("not rdlt's"), "{said}");
+}
+
+#[test]
+fn each_instance_says_what_it_can_store() {
+    let mut merging = Capabilities::minimal();
+    merging.write_modes.merge = true;
+    let said = serde_json::to_string(&merging).unwrap();
+    let (factory, _calls) = recorder_saying("{}", false, &said);
+    let factory = factory.factory();
+    let destination = within(factory.connect(json!({}), ConnectContext::new())).unwrap();
+    assert_eq!(destination.capabilities(), &merging);
 }
 
 /// Connects `factory`'s destination, opens a session and commits `meta` in it.
