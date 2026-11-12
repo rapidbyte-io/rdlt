@@ -505,6 +505,27 @@ fn a_closed_daemon_thread_leaves_the_pool_with_the_spares_queued_on_it_and_the_r
     );
 }
 
+#[test]
+fn closing_a_daemon_thread_off_the_pool_keeps_why_the_pool_last_lost_one() {
+    let (doomed, mut doomed_waits) = tokio::sync::mpsc::unbounded_channel::<super::Call>();
+    super::put_back(doomed.clone());
+    drop(super::closed(
+        &mut doomed_waits,
+        "RuntimeError: no threads left".to_owned(),
+    ));
+    // A thread parked off the pool, whose sender went with the call it held.
+    let (_parked, mut parked_waits) = tokio::sync::mpsc::unbounded_channel::<super::Call>();
+    drop(super::closed(
+        &mut parked_waits,
+        super::ABANDONED.to_owned(),
+    ));
+    assert_eq!(
+        super::IDLE.lock().unstarted.as_deref(),
+        Some("RuntimeError: no threads left"),
+        "a closing that took no sender off the pool says nothing of why it is empty"
+    );
+}
+
 /// Refuses every daemon thread's start once `builtins.queued` is set, as a process out of
 /// threads does, and gives the start back once `builtins.leave` is.
 const REFUSAL: &std::ffi::CStr = c"
