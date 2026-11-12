@@ -205,6 +205,40 @@ fn an_async_call_s_daemon_thread_makes_the_next_async_call() {
     });
 }
 
+/// Whether the forked child this runs in has two calls at once answered, the second taking a
+/// daemon thread beneath the first's, where a copy of the parent's would lie.
+fn a_forked_child_s_calls_answered(py: Python<'_>) -> bool {
+    // Each step said before it is taken, so a child that dies says where.
+    let step = |step: &str| eprintln!("forked child: {step}");
+    step("forked; importing threading");
+    py.run(
+        c"import builtins, threading; builtins.both = threading.Event()",
+        None,
+        None,
+    )
+    .unwrap();
+    step("getting the runtime");
+    let answered = runtime::get(py).is_ok()
+        && py.detach(|| {
+            step("starting the first call's thread");
+            let first =
+                std::thread::spawn(|| blocked(c"lambda: __import__('builtins').both.wait(10)"));
+            step("making the second call");
+            let second = blocked(c"lambda: __import__('builtins').both.set()");
+            step("joining the first call");
+            matches!(second, Ok(Ok(_)))
+                && first.join().is_ok_and(|first| {
+                    first.is_ok_and(|waited| {
+                        waited.is_ok_and(|waited| {
+                            embedded::with(|py| waited.extract::<bool>(py).unwrap_or(false))
+                        })
+                    })
+                })
+        });
+    step(if answered { "answered" } else { "unanswered" });
+    answered
+}
+
 #[test]
 fn a_forked_child_s_first_call_is_answered() {
     embedded::with(|py| {
@@ -220,29 +254,7 @@ fn a_forked_child_s_first_call_is_answered() {
         let os = py.import("os").unwrap();
         let child: i64 = os.call_method0("fork").unwrap().extract().unwrap();
         if child == 0 {
-            py.run(
-                c"import builtins, threading; builtins.both = threading.Event()",
-                None,
-                None,
-            )
-            .unwrap();
-            let answered = runtime::get(py).is_ok()
-                && py.detach(|| {
-                    // Two calls at once: the second takes a daemon thread beneath the first's,
-                    // where a copy of the parent's would lie.
-                    let first = std::thread::spawn(|| {
-                        blocked(c"lambda: __import__('builtins').both.wait(10)")
-                    });
-                    let second = blocked(c"lambda: __import__('builtins').both.set()");
-                    matches!(second, Ok(Ok(_)))
-                        && first.join().is_ok_and(|first| {
-                            first.is_ok_and(|waited| {
-                                waited.is_ok_and(|waited| {
-                                    embedded::with(|py| waited.extract::<bool>(py).unwrap_or(false))
-                                })
-                            })
-                        })
-                });
+            let answered = a_forked_child_s_calls_answered(py);
             os.call_method1("_exit", (if answered { 0 } else { 3 },))
                 .unwrap();
         }
