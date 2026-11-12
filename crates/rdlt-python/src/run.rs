@@ -240,8 +240,11 @@ impl NativeRun {
     /// An awaitable of what `wait` answers, completed on the event loop's thread; dropping it,
     /// as cancelling its asyncio task does, leaves the run to its handles.
     pub(crate) fn wait_async<'py>(&self, py: Python<'py>) -> Result<Bound<'py, PyAny>, PyErr> {
-        awaitable(py, ended(self.ended()), |py, ended| {
-            let ended = ended.ok_or_else(|| errors::stopped(py))?;
+        // Made here, on Python's own thread, so no Python runs beneath a daemon thread's Rust
+        // frames to make it.
+        let stopped = errors::stopped(py);
+        awaitable(py, ended(self.ended()), move |py, ended| {
+            let ended = ended.ok_or(stopped)?;
             (ended.outcome.clone(), ended.error.clone()).into_bound_py_any(py)
         })
     }

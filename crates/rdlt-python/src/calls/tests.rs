@@ -575,3 +575,88 @@ reading._made = escaping
         }
     }
 }
+
+/// The globals of an await made on a loop since closed, whose answer `released` lets it have and
+/// whose loop's `call_soon_threadsafe` marks the thread that calls it, and sets `handed`.
+fn awaited_on_a_closed_loop(
+    released: tokio::sync::oneshot::Receiver<()>,
+) -> Py<pyo3::types::PyDict> {
+    let released = parking_lot::Mutex::new(Some(released));
+    embedded::with(|py| {
+        let make = pyo3::types::PyCFunction::new_closure(py, None, None, move |arguments, _| {
+            let released = released.lock().take().expect("made once");
+            let answered = async move {
+                released.await.ok();
+                7_i64
+            };
+            crate::awaitable::awaitable(arguments.py(), answered, |py, n| {
+                pyo3::IntoPyObjectExt::into_bound_py_any(n, py)
+            })
+            .map(pyo3::Bound::unbind)
+        })
+        .unwrap();
+        let globals = pyo3::types::PyDict::new(py);
+        globals.set_item("make", make).unwrap();
+        py.run(
+            c"
+import asyncio, builtins, threading
+builtins.local = threading.local()
+loop = asyncio.new_event_loop()
+async def begun():
+    return make()
+awaited = loop.run_until_complete(begun())
+handed = threading.Event()
+closed = loop.call_soon_threadsafe
+def recorded(*arguments, **keywords):
+    builtins.local.mark = 1
+    handed.set()
+    return closed(*arguments, **keywords)
+loop.call_soon_threadsafe = recorded
+loop.close()
+",
+            Some(&globals),
+            None,
+        )
+        .unwrap();
+        globals.unbind()
+    })
+}
+
+#[test]
+fn an_await_whose_loop_closed_first_leaves_its_daemon_thread_to_the_next_call() {
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let globals = awaited_on_a_closed_loop(released);
+    release.send(()).unwrap();
+    let handed: bool = embedded::with(|py| {
+        py.eval(c"handed.wait(30)", Some(globals.bind(py)), None)
+            .unwrap()
+            .extract()
+            .unwrap()
+    });
+    assert!(handed, "the answer was handed to the closed loop");
+    // Back on the pool, the daemon thread that handed it over is the top: two wait, it and the
+    // spare it started.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while super::IDLE.lock().daemons.len() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the daemon thread went back on the pool"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let marked = blocked(MARK).unwrap().unwrap();
+    embedded::with(|py| {
+        assert_eq!(
+            marked.extract::<i64>(py).unwrap(),
+            1,
+            "the next call is made on the daemon thread that handed the answer over"
+        );
+        // A closed loop's refusal stays in `awaited`, which says nothing of it.
+        py.run(
+            c"import rdlt._reading as reading\nreading.awaited(loop, awaited, 7, None)",
+            Some(globals.bind(py)),
+            None,
+        )
+        .unwrap();
+    });
+}
