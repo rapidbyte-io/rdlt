@@ -9,8 +9,9 @@ Each call starts in a context of its own, as on a fresh thread. Thread-local sta
 the thread's, as in any pool.
 
 An async read runs on an event loop of its own on its daemon thread, which never waits for the
-engine: what finds no room in the engine is sent by the runtime, which then makes a socket the
-loop watches readable, so the loop runs its other tasks meanwhile.
+engine: an item's push that finds no room is sent by the runtime, and a notice that finds none
+waits for the runtime to see room come, the runtime then making a socket the loop watches
+readable, so the loop runs its other tasks meanwhile.
 """
 
 from __future__ import annotations
