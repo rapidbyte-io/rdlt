@@ -35,7 +35,8 @@ def ended(script: str) -> tuple[str, str]:
             text=True,
         )
     except subprocess.TimeoutExpired as late:
-        return "timeout", str(late.stderr or "")
+        # What a run said before its minute ran out comes as bytes, whatever `text` asked.
+        return "timeout", (late.stderr or b"").decode(errors="replace")
     if done.returncode < 0:
         return signal.Signals(-done.returncode).name, done.stderr
     return str(done.returncode), done.stderr

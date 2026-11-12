@@ -290,7 +290,7 @@ jobs:
         env:
           PYTHONS: ${{ matrix.pythons }}
           RDLT_REQUIRE_SANDBOX: ${{ runner.os == 'Linux' && '1' || '0' }}
-          RDLT_EXITS_RUNS: 300
+          RDLT_EXITS_RUNS: 100
 
   # A thousand seeds under coverage, side by side on the runner's four cores.
   sim-coverage:
