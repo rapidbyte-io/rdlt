@@ -1,8 +1,3 @@
-#![expect(
-    clippy::disallowed_methods,
-    reason = "a test's own threads read what a partition pushed attached, as an embedder's do"
-)]
-
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
@@ -227,7 +222,7 @@ fn a_yield_waits_for_the_read_to_take_the_one_before_and_frees_the_gil_meanwhile
             "import builtins\ndef read(p, c, x):\n    while True:\n        builtins.produced += 1\n        yield {'n': builtins.produced}",
         );
         let produced = || {
-            Python::attach(|py| {
+            embedded::with(|py| {
                 py.eval(c"__import__('builtins').produced", None, None)
                     .unwrap()
                     .extract::<u64>()
@@ -286,7 +281,7 @@ fn a_stopped_read_returns_while_its_generator_is_blocked() {
         py.run(c"import builtins; builtins.release.set()", None, None)
             .unwrap();
         let closed = py.detach(|| {
-            Python::attach(|py| {
+            embedded::with(|py| {
                 py.eval(c"__import__('builtins').closed.wait(10)", None, None)
                     .unwrap()
                     .extract::<bool>()
@@ -353,7 +348,7 @@ fn a_read_waiting_for_data_is_told_once_its_read_has_gone() {
             });
         });
         let gone = py.detach(|| {
-            Python::attach(|py| {
+            embedded::with(|py| {
                 py.eval(c"__import__('builtins').gone.wait(10)", None, None)
                     .unwrap()
                     .extract::<bool>()
