@@ -144,6 +144,8 @@ def read(  # noqa: PLR0917
             _read_async(cast("AsyncIterable[object]", opened), out, context)
         else:
             _read_sync(cast("Iterable[object]", opened), out)
+        # What the read held is let go before the engine is told it ended.
+        del opened
     except BaseException as error:  # noqa: BLE001
         out.failed(error)
     else:
