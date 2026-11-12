@@ -174,7 +174,7 @@ pub(crate) async fn run(
     let (outcome, first) = until_ended(&mut run, interrupts, &lines, ui, &title).await;
     ui.cleared().await;
     drop(lines);
-    let done = tokio::time::Instant::now() + FINISHING;
+    let done = finishing_by();
     let unwritten = match writer {
         Some(writer) => match told(writer, done).await {
             Some(failure) => failure,
@@ -360,6 +360,11 @@ async fn next_of<S: Stream + Unpin>(events: &mut Option<S>) -> Option<S::Item> {
     }
 }
 
+/// The instant by which what a run leaves behind, its events and their lines, must be done.
+fn finishing_by() -> tokio::time::Instant {
+    tokio::time::Instant::now() + FINISHING
+}
+
 /// What `task` answered, once it ended or `done` passes: a reader that stopped reading is left
 /// behind, and the task abandoned.
 async fn told<T>(mut task: JoinHandle<T>, done: tokio::time::Instant) -> Option<T> {
@@ -445,6 +450,15 @@ mod tests {
         events: impl IntoIterator<Item = Event>,
     ) -> impl Stream<Item = Result<Event, Lagged>> + Unpin {
         tokio_stream::iter(events.into_iter().map(Ok).collect::<Vec<_>>())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_task_that_ends_within_the_finishing_bound_is_waited_for() {
+        let slow = tokio::spawn(async {
+            tokio::time::sleep(FINISHING / 2).await;
+            7
+        });
+        assert_eq!(told(slow, finishing_by()).await, Some(7));
     }
 
     #[tokio::test]
