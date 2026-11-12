@@ -395,13 +395,20 @@ def awaited(
     loop: asyncio.AbstractEventLoop,
     future: asyncio.Future[object],
     value: object,
-    error: BaseException | None,
+    error: BaseException | str | None,
 ) -> None:
     """Hands `value`, or `error` where there is one, to `future` on its event loop `loop`.
 
+    An `error` given as text is the report of a failure of rdlt's own, raised as its `rdlt.Error`.
     Nothing is handed to a future already done, as a cancelled one is, or through a loop that has
     closed.
     """
+    if isinstance(error, str):
+        from rdlt.errors import (  # noqa: PLC0415 - loaded with the package
+            _from_report,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        error = _from_report(error)
 
     def settled() -> None:
         if future.done():

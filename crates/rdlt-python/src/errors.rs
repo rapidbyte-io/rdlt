@@ -52,11 +52,17 @@ pub(crate) fn stopped(py: Python<'_>) -> PyErr {
 
 /// The exception of `kind` for a failure of this module's own.
 fn own(py: Python<'_>, kind: &str, code: Option<&str>, message: &str) -> PyErr {
+    from_report(py, &reported(kind, code, message))
+}
+
+/// The `ErrorReport`, as JSON, of a failure of this module's own of `kind`, coded `code` and
+/// saying `message`.
+pub(crate) fn reported(kind: &str, code: Option<&str>, message: &str) -> String {
     let report = serde_json::json!({
         "kind": kind, "origin": "engine", "stream": null, "code": code,
         "connector_code": null, "message": message, "causes": [], "retryable": false,
     });
-    from_report(py, &report.to_string())
+    report.to_string()
 }
 
 /// `error`'s type, with its module where that is not `builtins`: `tickets.ApiError`.

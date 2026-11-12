@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use pyo3::types::PyAnyMethods as _;
+use pyo3::types::{PyAnyMethods as _, PyString};
 use pyo3::{Bound, IntoPyObject as _, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
 use tokio::task::{AbortHandle, JoinError};
 
@@ -97,17 +97,17 @@ where
                 .lock()
                 .take()
                 .expect("an answer is taken by one call, the last offered");
-            let answered = outcome
-                .map_err(|joined| {
-                    errors::internal(
-                        py,
-                        &format!("an awaited task ended without its answer: {joined}"),
-                    )
-                })
-                .and_then(|value| answer(py, value));
-            let (value, error) = match answered {
-                Ok(value) => (value, None),
-                Err(error) => (py.None().into_bound(py), Some(error.into_value(py))),
+            let none = py.None().into_bound(py);
+            // A panic is handed over as its report's text, which `_reading.awaited` raises, so no
+            // Python runs beneath these frames to make the exception.
+            let (value, error) = match outcome.map(|value| answer(py, value)) {
+                Ok(Ok(value)) => (value, None),
+                Ok(Err(error)) => (none, Some(error.into_value(py).into_bound(py).into_any())),
+                Err(joined) => {
+                    let message = format!("an awaited task ended without its answer: {joined}");
+                    let report = errors::reported("internal", None, &message);
+                    (none, Some(PyString::new(py, &report).into_any()))
+                }
             };
             Ok((hand, (event_loop, awaited, value, error).into_pyobject(py)?))
         },
