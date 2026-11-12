@@ -17,6 +17,10 @@ use crate::runtime;
 const EXECUTABLE: Option<&str> = option_env!("RDLT_PYTHON_EXECUTABLE");
 
 /// Runs `f` attached to the embedded interpreter, started and prepared once per process.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test binary's own threads are the embedder's, as a script's main thread is"
+)]
 pub(crate) fn with<R>(f: impl for<'py> FnOnce(Python<'py>) -> R) -> R {
     static PREPARED: Once = Once::new();
     PREPARED.call_once(|| {
