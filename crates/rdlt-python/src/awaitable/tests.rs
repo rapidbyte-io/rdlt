@@ -76,13 +76,20 @@ fn an_await_whose_future_panicked_raises_an_internal_error() {
 #[test]
 fn an_await_whose_panic_cannot_be_raised_as_its_error_raises_why() {
     embedded::with(|py| {
-        py.run(
-            c"import rdlt.errors\ndef unreported(*_):\n    raise ValueError('unreported')\nrdlt.errors._from_report = unreported",
-            None,
-            None,
-        )
-        .unwrap();
-        let raised = awaited(py, AWAITED, |py| {
+        let unreported = c"
+import asyncio, rdlt.errors
+def unreported(*_):
+    raise ValueError('unreported')
+async def main():
+    return await asyncio.wait_for(make(), 30)
+reported = rdlt.errors._from_report
+rdlt.errors._from_report = unreported
+try:
+    answer = asyncio.run(main())
+finally:
+    rdlt.errors._from_report = reported
+";
+        let raised = awaited(py, unreported, |py| {
             awaitable(
                 py,
                 async { panic!("a bug in an awaited future") },
@@ -191,6 +198,7 @@ fn a_cancelled_await_lets_go_of_its_future() {
         let cancelled = c"
 import asyncio, rdlt._reading as reading
 handed = []
+hand = reading.awaited
 reading.awaited = lambda *answered: handed.append(answered)
 async def main():
     awaited = make()
@@ -198,7 +206,10 @@ async def main():
     awaited.cancel()
     await asyncio.sleep(0.3)
     return awaited.cancelled() and not handed
-answer = asyncio.run(main())
+try:
+    answer = asyncio.run(main())
+finally:
+    reading.awaited = hand
 ";
         let answer = awaited(py, cancelled, move |py| {
             let guard = Dropped(Arc::clone(&held));

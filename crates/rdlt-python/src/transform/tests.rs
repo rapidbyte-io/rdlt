@@ -8,7 +8,7 @@ use rdlt::Transform as _;
 use rdlt_connector_reference::{ChangesSource, MemoryDestination};
 
 use super::NativeTransform;
-use crate::calls::tests::Within;
+use crate::calls::tests::{GIVEN_BACK, Unpatch, Within};
 use crate::{embedded, runtime};
 
 fn input() -> RecordBatch {
@@ -35,17 +35,21 @@ fn native(
 
 #[test]
 fn a_transform_that_finds_no_daemon_thread_says_why_the_last_did_not_start() {
-    let (holding, quick) = embedded::with(|py| {
+    embedded::with(|py| {
         py.run(
             c"import _thread, builtins, threading\n\
               builtins.entered = threading.Event()\n\
               builtins.leave = threading.Event()\n\
+              builtins.started_by = _thread.start_new_thread\n\
               def refused(*_):\n    raise RuntimeError('no threads left')\n\
               _thread.start_new_thread = refused\n",
             None,
             None,
         )
-        .unwrap();
+    })
+    .unwrap();
+    let given_back = Unpatch(GIVEN_BACK);
+    let (holding, quick) = embedded::with(|py| {
         let holding = "lambda batch: (__import__('builtins').entered.set(), __import__('builtins').leave.wait(30), batch)[-1]";
         (
             native(py, holding, false, None).transform(),
@@ -64,10 +68,9 @@ fn a_transform_that_finds_no_daemon_thread_says_why_the_last_did_not_start() {
         assert!(entered, "the first call holds its daemon thread");
         let failed = quick.apply(input()).expect_err("no daemon thread is idle");
         assert!(failed.to_string().contains("no threads left"), "{failed}");
-        embedded::with(|py| {
-            py.eval(c"__import__('builtins').leave.set()", None, None)
-                .unwrap();
-        });
+        // Gives starts back and lets the held call go; where an assertion above fails, the guard
+        // does so as the scope unwinds, before the scope waits for that call.
+        drop(given_back);
         held.join().unwrap().expect("the first call is answered");
     });
 }
