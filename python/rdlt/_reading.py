@@ -302,14 +302,12 @@ class Router:
         try:
             while self._waiting:
                 said, kind, done = self._waiting[0]
-                if said is _REST:
-                    sent = self._out.resume()
-                elif done is not None and done.done():
-                    # A yield cancelled before its item was sent.
+                if done is not None and done.done():
+                    # A yield cancelled: no more of its item is made or sent, as a Rust read
+                    # dropped sends no more.
                     self._waiting.popleft()
                     continue
-                else:
-                    sent = self._out.send(said)
+                sent = self._out.resume() if said is _REST else self._out.send(said)
                 if sent is None:
                     if kind is None:
                         self._waiting[0] = (_REST, None, done)

@@ -1066,3 +1066,55 @@ async def read(p, c, x):
         assert!(left.is_empty(), "descriptors left open: {left:?}");
     });
 }
+
+#[test]
+fn an_async_read_cancelled_mid_item_makes_no_more_of_it_while_it_cleans_up() {
+    embedded::with(|py| {
+        let reading = started(
+            py,
+            "import asyncio, builtins
+import pyarrow as pa
+builtins.made = 0
+builtins.cancelled_at = None
+def batches():
+    for n in range(1000):
+        builtins.made += 1
+        yield pa.record_batch({'n': [n]})
+async def read(p, c, x):
+    read_task = asyncio.current_task()
+    async def cancelling():
+        await asyncio.sleep(0)
+        read_task.cancel()
+        builtins.cancelled_at = builtins.made
+    builtins.canceller = asyncio.create_task(cancelling())
+    try:
+        yield pa.RecordBatchReader.from_batches(pa.schema([('n', pa.int64())]), batches())
+    finally:
+        # A cleanup that awaits, as closing a client session does, while the engine takes on.
+        await asyncio.sleep(0.2)",
+        );
+        let runtime = runtime::get(py).unwrap();
+        let pushed = py.detach(|| {
+            runtime.block_on(async move {
+                let mut reading = reading;
+                // Nothing is taken until the read is cancelled, its item waiting for room.
+                assert!(came_true("cancelled_at is not None").await);
+                let mut pushed = Vec::new();
+                while let Some(next) = tokio::time::timeout(Duration::from_secs(30), reading.next())
+                    .await
+                    .expect("within 30 s")
+                {
+                    pushed.push(next);
+                }
+                pushed
+            })
+        });
+        let Some((Pushed::Failed(error), _)) = pushed.split_last() else {
+            panic!("the cancellation last: {pushed:?}")
+        };
+        assert_eq!(error.code(), Some("asyncio.exceptions.cancelled_error"));
+        let made: usize = builtin("made");
+        let cancelled_at: usize = builtin("cancelled_at");
+        assert_eq!(made, cancelled_at, "batches were made after the cancel");
+    });
+}
