@@ -73,6 +73,10 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
         destination::minimal_capabilities,
         module
     )?)?;
+    module.add_function(pyo3::wrap_pyfunction!(
+        destination::unreadable_capabilities,
+        module
+    )?)?;
     module.add_function(pyo3::wrap_pyfunction!(certify::clauses, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(certify::certify_source, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(

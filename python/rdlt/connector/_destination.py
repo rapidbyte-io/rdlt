@@ -58,29 +58,31 @@ class _Declared:
     id: str
     version: str | None
     config: type[Config]
-    capabilities: str
-    """The Rust SDK's `Capabilities`, as JSON."""
 
 
 def destination(
     *,
     id: str,  # noqa: A002 - the connector's id, as documents name it
     config: type[Config],
-    capabilities: Capabilities,
     version: str | None = None,
 ) -> Callable[[type[T]], type[T]]:
     """Makes a class a destination connector, which the Rust SDK drives.
 
     The class is built from its validated `config`, and a `ConnectContext` as `context` where its
-    `__init__` names one, checked with `check()`, and opened once a
-    load with `open(context)`, an `OpenContext`, answering `Opened`; for certification,
-    `published(table)` yields the `pyarrow.RecordBatch`es a table published. A session has
-    `apply_schema(change)`, `writer(table)`, `discard_staged()`, `commit(meta)` answering its
-    receipt, and `close()`; a table writer has `write(segment, batch)`, taking a
+    `__init__` names one, asked what it can store with `capabilities()`, checked with `check()`,
+    and opened once a load with `open(context)`, an `OpenContext`, answering `Opened`; for
+    certification, `published(table)` yields the `pyarrow.RecordBatch`es a table published. A
+    session has `apply_schema(change)`, `writer(table)`, `discard_staged()`, `commit(meta)`
+    answering its receipt, and `close()`; a table writer has `write(segment, batch)`, taking a
     `pyarrow.RecordBatch`, and `flush()`, answering the `WriteStats` it staged. Changes, tables,
-    commits and receipts are the Rust SDK's types as mappings, as their JSON is. `capabilities`
-    is a `Capabilities`, as `Capabilities.minimal()` starts it. A class that has no `check` or
-    `open`, or that `@source` made, is refused here.
+    commits and receipts are the Rust SDK's types as mappings, as their JSON is.
+
+    `capabilities()` answers a `Capabilities`, as `Capabilities.minimal()` starts it, and is
+    `Capabilities.minimal()` where the class has none, as a Rust destination's `capabilities`
+    answers what this instance can store, which may depend on its configuration or on what it
+    connected to. It is asked once, as the instance is built, and capabilities rdlt cannot read
+    fail it there. A class that has no `check` or `open`, whose `capabilities` is no method, or
+    that `@source` made, is refused here.
 
     What the destination keeps, the Rust SDK's `Session` and `TableWriter` say whole:
 
@@ -110,8 +112,14 @@ def destination(
             if not callable(getattr(connector, method, None)):
                 message = f"{connector.__name__} has no {method}(): a destination needs it"
                 raise TypeError(message)
-        declared = _Declared(connector, id, version, config, capabilities._json())
-        declare(connector, "destination", declared)
+        said = getattr(connector, "capabilities", None)
+        if said is not None and not callable(said):
+            message = (
+                f"{connector.__name__}.capabilities is no method: it is capabilities(self), "
+                "answering a Capabilities"
+            )
+            raise TypeError(message)
+        declare(connector, "destination", _Declared(connector, id, version, config))
         return connector
 
     return made
@@ -215,6 +223,23 @@ class _Connected:
     def _instance(self) -> Any:  # noqa: ANN401 - the author's class
         return self._placement().connections[self]
 
+    def capabilities(self) -> str:
+        """What the instance says it can store, as the Rust SDK's `Capabilities` JSON.
+
+        Raises:
+            TypeError: it answered what is no `Capabilities`.
+        """
+        instance = self._instance()
+        said = getattr(instance, "capabilities", None)
+        found = Capabilities.minimal() if said is None else said()
+        if not isinstance(found, Capabilities):
+            message = (
+                f"capabilities() answered {type(found).__name__}: it answers "
+                "rdlt.connector.Capabilities"
+            )
+            raise TypeError(message)
+        return found._json()
+
     def check(self) -> None:
         """Verifies the destination can be opened."""
         self._instance().check()
@@ -251,9 +276,6 @@ def placed(connector: type) -> tuple[_native.DestinationFactory, Placement[_Decl
 
     The native factory reaches the placement through a weak reference: what may still connect
     holds it in the open, as the host or the pipeline builder that placed the class does.
-
-    Raises:
-        ValueError: its capabilities are not the Rust SDK's.
     """
     declared = declaration(connector)
     placement = Placement(declared)
@@ -270,7 +292,6 @@ def placed(connector: type) -> tuple[_native.DestinationFactory, Placement[_Decl
         declared.id,
         declared.version or package_version(connector.__module__.split(".")[0]),
         json.dumps(declared.config.model_json_schema()),
-        declared.capabilities,
         callable(getattr(connector, "published", None)),
         connect,
     )

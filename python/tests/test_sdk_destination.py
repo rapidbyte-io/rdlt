@@ -159,7 +159,6 @@ def test_a_launcher_that_cannot_start_fails_the_kill_clause_alone(tmp_path: Path
 @destination(
     id="io.example.unread",
     config=memory.MemoryConfig,
-    capabilities=Capabilities.minimal(),
     version="1.0.0",
 )
 class Unread:
@@ -245,7 +244,7 @@ def test_the_minimal_capabilities_are_the_rust_sdk_s_and_say_what_they_hold() ->
 def test_a_class_without_open_is_refused_where_it_is_declared() -> None:
     with pytest.raises(TypeError, match="open"):
 
-        @destination(id="io.example.unopened", config=Config, capabilities=Capabilities.minimal())
+        @destination(id="io.example.unopened", config=Config)
         class Unopened:
             def __init__(self, config: Config) -> None:
                 del config
@@ -254,37 +253,77 @@ def test_a_class_without_open_is_refused_where_it_is_declared() -> None:
                 """Nothing to check."""
 
 
-@destination(
-    id="io.example.unknowing",
-    config=Config,
-    capabilities=dataclasses.replace(Capabilities.minimal(), max_parallel_writers=0),
-)
-class Unknowing:
-    """A destination whose capabilities are not the Rust SDK's."""
+class _Writes(Config):
+    writers: int = 1
+    replaces: bool = False
 
-    def __init__(self, config: Config) -> None:
-        del config
+
+@destination(id="io.example.configured", config=_Writes)
+class Configured:
+    """A destination whose capabilities its configuration says, and which never loads."""
+
+    def __init__(self, config: _Writes) -> None:
+        self.config = config
+
+    def capabilities(self) -> Capabilities:
+        """Replaces where its configuration says so, with as many writers as it says."""
+        modes = WriteModes(append=True, replace=self.config.replaces)
+        minimal = Capabilities.minimal()
+        return dataclasses.replace(
+            minimal, write_modes=modes, max_parallel_writers=self.config.writers
+        )
 
     def check(self) -> None:
         """Nothing to check."""
 
     def open(self, context: OpenContext) -> Opened:
-        """Never reached: it is refused before it is placed."""
+        """Never reached: no test loads it."""
         raise NotImplementedError(context.pipeline)
 
 
-def test_capabilities_rdlt_cannot_read_are_refused_where_they_are_placed() -> None:
-    with pytest.raises(ValueError, match="capabilities"):
-        rdlt.Host().destination(Unknowing)
+@stream(primary_key="id")
+def _rows() -> Iterator[object]:
+    yield {"id": 1}
 
 
-def test_capabilities_rdlt_cannot_read_are_said_and_fail_the_launcher(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert serve(Unknowing, ["--rdlt-fd", "3"]) == 1
-    said = capsys.readouterr().err
-    assert "the capabilities are not rdlt's" in said, said
-    assert "Traceback" not in said, said
+def _built(config: Mapping[str, Json], write: rdlt.WriteMode) -> rdlt.Pipeline:
+    destination = rdlt.local(Configured, config=config)
+    rows = rdlt.stream("_rows", write=write)
+    built = rdlt.pipeline("configured", source=_rows, destination=destination, streams=[rows])
+    return built.build(rdlt.Host())
+
+
+def test_each_instance_says_what_it_can_store() -> None:
+    with pytest.raises(rdlt.ConfigError) as refused:
+        _built({}, rdlt.replace())
+    assert refused.value.code == "write_mode_unsupported"
+    _built({"replaces": True}, rdlt.replace())
+
+
+def test_capabilities_rdlt_cannot_read_are_refused_where_they_are_made() -> None:
+    with pytest.raises(ValueError, match="not rdlt's"):
+        dataclasses.replace(Capabilities.minimal(), max_parallel_writers=0)
+    with pytest.raises(rdlt.DestinationError) as refused:
+        _built({"writers": 0}, rdlt.append())
+    assert refused.value.report().connector_code == "value_error"
+
+
+def test_capabilities_that_are_no_method_are_refused_where_they_are_declared() -> None:
+    with pytest.raises(TypeError, match="capabilities"):
+
+        @destination(id="io.example.static", config=Config)
+        class Static:
+            capabilities = Capabilities.minimal()
+
+            def __init__(self, config: Config) -> None:
+                del config
+
+            def check(self) -> None:
+                """Nothing to check."""
+
+            def open(self, context: OpenContext) -> Opened:
+                """Never reached."""
+                raise NotImplementedError(context.pipeline)
 
 
 class _Flaky(Config):
@@ -295,9 +334,7 @@ class _Flaky(Config):
 _FAILED: dict[str, int] = {}
 
 
-@destination(
-    id="io.example.flaky", config=_Flaky, capabilities=Capabilities.minimal(), version="1.0.0"
-)
+@destination(id="io.example.flaky", config=_Flaky, version="1.0.0")
 class Flaky(memory.Memory):
     """The memory destination whose first opens fail as transient, as a restarting service's do."""
 
@@ -349,7 +386,6 @@ _HOLDERS: dict[str, _Holder] = {}
 @destination(
     id="io.example.held",
     config=memory.MemoryConfig,
-    capabilities=Capabilities.minimal(),
     version="1.0.0",
 )
 class Held(memory.Memory):
@@ -397,13 +433,11 @@ def test_one_class_declares_one_role() -> None:
         def open(self, context: OpenContext) -> Opened:
             raise NotImplementedError(context.pipeline)
 
-    as_destination = destination(
-        id="io.example.both", config=Config, capabilities=Capabilities.minimal()
-    )
+    as_destination = destination(id="io.example.both", config=Config)
     with pytest.raises(TypeError, match=r"Read.*@source.*@destination"):
         as_destination(Read)
 
-    @destination(id="io.example.both", config=Config, capabilities=Capabilities.minimal())
+    @destination(id="io.example.both", config=Config)
     class Written:
         def __init__(self, config: Config) -> None:
             del config
@@ -468,9 +502,7 @@ class _OrderedSession:
         _ORDER.append("close")
 
 
-@destination(
-    id="io.example.ordered", config=Config, capabilities=Capabilities.minimal(), version="1.0.0"
-)
+@destination(id="io.example.ordered", config=Config, version="1.0.0")
 class Ordered:
     """A destination whose session records the order of its calls."""
 
@@ -544,9 +576,7 @@ def test_a_source_and_a_destination_may_answer_to_one_id(connectors: Path) -> No
 
 
 def test_two_destination_classes_under_one_id_are_refused() -> None:
-    @destination(
-        id="io.example.memory", config=memory.MemoryConfig, capabilities=Capabilities.minimal()
-    )
+    @destination(id="io.example.memory", config=memory.MemoryConfig)
     class Twin(memory.Memory):
         """Another class answering to the memory destination's id."""
 

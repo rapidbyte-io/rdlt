@@ -180,8 +180,7 @@ class Host:
         to reach only weakly.
 
         Raises:
-            ValueError: another destination class answers to the id, or its capabilities are not
-                the Rust SDK's.
+            ValueError: another destination class answers to the id.
         """
         answers = _destination.declaration(connector).id
         connectors = registered_once(self._connectors, "destination", answers, connector)
