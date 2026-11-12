@@ -494,70 +494,79 @@ fn readable(py: Python<'_>, watched: i32, seconds: u8) -> bool {
     py.eval(&code, None, None).unwrap().is_truthy().unwrap()
 }
 
+/// An out onto a channel of one, as a read's is, and the channel's receiving end.
+fn out_of_one() -> (PartitionOut, mpsc::Receiver<Pushed>) {
+    let (sent, received) = mpsc::channel(1);
+    let outlet = super::Outlet::default();
+    outlet.open(sent);
+    let out = PartitionOut {
+        sent: outlet,
+        limits: LIMITS,
+        told: Arc::new(AtomicBool::new(false)),
+        room: parking_lot::Mutex::default(),
+    };
+    (out, received)
+}
+
+/// The row `{'n': n}`.
+fn row(py: Python<'_>, n: u8) -> pyo3::Bound<'_, PyAny> {
+    let code = std::ffi::CString::new(format!("{{'n': {n}}}")).unwrap();
+    py.eval(&code, None, None).unwrap()
+}
+
+/// A replan, as `rdlt._native.Notice` makes one.
+fn replan(py: Python<'_>) -> pyo3::Bound<'_, crate::source::context::NativeNotice> {
+    let notice = py
+        .import("rdlt._native")
+        .unwrap()
+        .getattr("Notice")
+        .unwrap();
+    notice.call_method0("replan").unwrap().cast_into().unwrap()
+}
+
+/// The kind of the next push `received` holds, none once its senders are gone.
+fn taken(py: Python<'_>, received: &mut mpsc::Receiver<Pushed>) -> Option<&'static str> {
+    let runtime = runtime::get(py).unwrap();
+    py.detach(|| runtime.block_on(received.recv()))
+        .map(|pushed| kind(&pushed))
+}
+
 #[test]
 fn an_async_send_answers_at_once_and_the_runtime_sends_what_found_no_room() {
     embedded::with(|py| {
-        let (sent, mut received) = mpsc::channel(1);
-        let outlet = super::Outlet::default();
-        outlet.open(sent);
-        let out = PartitionOut {
-            sent: outlet,
-            limits: LIMITS,
-            told: Arc::new(AtomicBool::new(false)),
-            room: parking_lot::Mutex::default(),
-        };
+        let (out, mut received) = out_of_one();
         let watched = out.watched().unwrap();
-        let row = |n: u8| {
-            let code = std::ffi::CString::new(format!("{{'n': {n}}}")).unwrap();
-            py.eval(&code, None, None).unwrap()
-        };
-        let notice = py
-            .import("rdlt._native")
-            .unwrap()
-            .getattr("Notice")
-            .unwrap()
-            .call_method0("replan")
-            .unwrap();
-        let runtime = runtime::get(py).unwrap();
-        let mut taken = || {
-            py.detach(|| runtime.block_on(received.recv()))
-                .map(|pushed| kind(&pushed))
-        };
+        let notice = replan(py);
 
-        assert_eq!(out.send(py, &row(1)), Some(true));
-        assert_eq!(out.send(py, &row(2)), None, "the channel is full");
+        assert_eq!(out.send(py, &row(py, 1)), Some(true));
+        assert_eq!(out.send(py, &row(py, 2)), None, "the channel is full");
         assert_eq!(out.resume(py), None, "the row still waits for room");
-        assert_eq!(taken(), Some("json"));
-        assert!(
-            readable(py, watched, 5),
-            "the loop is woken once the row was sent"
-        );
+        assert_eq!(taken(py, &mut received), Some("json"));
+        let woken = "the loop is woken once the row was sent";
+        assert!(readable(py, watched, 5), "{woken}");
         out.woken();
         assert!(
             !readable(py, watched, 0),
             "a wake taken wakes the loop no more"
         );
         assert_eq!(out.resume(py), Some(true));
-        assert_eq!(taken(), Some("json"));
+        assert_eq!(taken(py, &mut received), Some("json"));
 
-        assert_eq!(out.send(py, &row(3)), Some(true));
-        assert_eq!(
-            out.send(py, &notice),
-            None,
-            "a notice is not taken without room"
-        );
-        assert_eq!(taken(), Some("json"));
+        assert_eq!(out.send(py, &row(py, 3)), Some(true));
+        let unsaid = "a notice is not taken without room";
+        assert_eq!(out.notify(py, &notice), None, "{unsaid}");
+        assert_eq!(taken(py, &mut received), Some("json"));
         assert!(readable(py, watched, 5), "the loop is woken once room came");
         out.woken();
         assert!(
             !readable(py, watched, 0),
             "a wake taken wakes the loop no more"
         );
-        assert_eq!(out.send(py, &notice), Some(true));
-        assert_eq!(taken(), Some("replan"));
+        assert_eq!(out.notify(py, &notice), Some(true));
+        assert_eq!(taken(py, &mut received), Some("replan"));
 
         drop(received);
-        assert_eq!(out.send(py, &row(4)), Some(false), "the read has gone");
+        assert_eq!(out.send(py, &row(py, 4)), Some(false), "the read has gone");
     });
 }
 
@@ -1163,6 +1172,23 @@ async def read(p, c, x):
                 ["batch", "batch", "batch", "batch", "behind", "json"],
                 "{case}"
             );
+        }
+    });
+}
+
+#[test]
+fn a_notice_object_yielded_fails_a_read_as_what_is_no_row() {
+    embedded::with(|py| {
+        let reads = [
+            "from rdlt._native import Notice\ndef read(p, c, x):\n    yield Notice.replan()",
+            "from rdlt._native import Notice\nasync def read(p, c, x):\n    yield Notice.replan()",
+        ];
+        for body in reads {
+            let pushed = drained(py, started(py, body));
+            let [Pushed::Failed(error)] = &pushed[..] else {
+                panic!("one failure: {pushed:?}")
+            };
+            assert_eq!(error.code(), Some("json_not_object"), "{body}");
         }
     });
 }
