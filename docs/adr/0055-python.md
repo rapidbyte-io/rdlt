@@ -120,18 +120,20 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   daemon thread Python started, running `rdlt/_reading.py`, never on a thread with Rust frames
   beneath the call. Each call, a partition's read among them, is made on one of the process's daemon
   threads: the one that went idle last, which has the call to itself, since a worker runs many tasks
-  and one that never returns must not hold up the rest. A call that takes the last idle one has it
-  start another before it calls, so no caller waits for a thread to start. A daemon thread lets go
-  of what a call held, goes back on the pool and then hands the answer over, and none ever ends, so
-  none is tearing down when the process exits: a user's `SystemExit` or `KeyboardInterrupt` is its
-  call's answer, and a thread a bug of rdlt's own escapes answers the call it held and waits for
-  good. Only threads Python owns start them: the thread that first asks for the runtime or serves,
-  and the daemon threads themselves, each saying as text where one did not start. A child forked
-  from a process that had started its own starts afresh. The caller holds no GIL and touches nothing
-  of Python's: it hands the call over as closures, the daemon thread builds its arguments and reads
-  its answer, and the batches a transform or a table writer takes, a transform answers and a
-  destination reads back are imported and exported in Python, since pyarrow releases the GIL in
-  both. `rdlt._reading` is imported when the package loads, so no thread imports under Rust.
+  and one that never returns must not hold up the rest. Each call starts in a context of its own, as
+  on a fresh thread. Thread-local state, by contrast, is the thread's, as in any pool. A call that
+  takes the last idle one has it start another before it calls, so no caller waits for a thread to
+  start. A daemon thread lets go of what a call held, goes back on the pool and then hands the
+  answer over, and none ever ends, so none is tearing down when the process exits: a user's
+  `SystemExit` or `KeyboardInterrupt` is its call's answer, and a thread a bug of rdlt's own escapes
+  answers the call it held and waits for good. Only threads Python owns start them: the thread that
+  first asks for the runtime or serves, and the daemon threads themselves, each saying as text where
+  one did not start. A child forked from a process that had started its own starts afresh. The
+  caller holds no GIL and touches nothing of Python's: it hands the call over as closures, the
+  daemon thread builds its arguments and reads its answer, and the batches a transform or a table
+  writer takes, a transform answers and a destination reads back are imported and exported in
+  Python, since pyarrow releases the GIL in both. `rdlt._reading` is imported when the package
+  loads, so no thread imports under Rust.
 - **Four cases run under Rust, and are accepted.** Methods of what a generator yields run inside
   `push` with its Rust frames beneath them: a value's `isoformat` and a UUID's `__str__`, a `list`
   subclass's `__iter__`, `__getattr__` through `hasattr`, a producer's `__arrow_c_array__` and
