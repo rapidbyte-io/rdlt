@@ -18,7 +18,7 @@ use super::arrivals::{Arrival, arrival, widest};
 use super::expected;
 use crate::workload::{Relaxed, Row, SimStream};
 use crate::world::World;
-pub(super) use failures::{Failure, refused, relax, unexplained, violation};
+pub(super) use failures::{Failure, refused, relax, unexplained, unsealed, violation};
 use keys::key_outcome;
 
 /// The refusals a phase's runs may meet.

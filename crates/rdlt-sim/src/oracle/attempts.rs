@@ -160,6 +160,10 @@ impl Simulation {
             reports.extend(executed.reports);
         }
         kept_to_the_protocol(&failures, seed, phase);
+        // What the reads ended on counts where the engine took them.
+        self.world
+            .ends
+            .keep(&refusals::unsealed(&self.world, &failures));
         let refused = refusals::refused(&failures, &prediction)
             .unwrap_or_else(|finding| panic!("seed {seed}: phase {phase}: {finding}"));
         if clean {
@@ -174,10 +178,7 @@ impl Simulation {
             succeeded,
             failure,
             stopped: answer == Answer::Stopped,
-            mended: match answer {
-                Answer::Mended(pipeline) => Some(pipeline),
-                _ => None,
-            },
+            mended: answer.mended(),
         }
     }
 
@@ -222,6 +223,16 @@ enum Answer {
     Mended(usize),
     /// It stops short.
     Stopped,
+}
+
+impl Answer {
+    /// The pipeline, by its index, that must succeed again, where an operator mended its source.
+    fn mended(self) -> Option<usize> {
+        match self {
+            Self::Mended(pipeline) => Some(pipeline),
+            Self::Relaxed | Self::Stopped => None,
+        }
+    }
 }
 
 /// Checks that none of `failures` breaks the wire protocol, which no fault excuses.
