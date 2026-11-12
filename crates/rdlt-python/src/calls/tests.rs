@@ -308,7 +308,7 @@ fn a_daemon_thread_whose_answer_panicked_waits_for_good_and_another_makes_the_ne
                     panic!("a bug in the reader of an answer")
                 },
             );
-            assert!(matches!(lost, Err(Unanswered::Thread)));
+            assert!(matches!(lost, Err(Unanswered::Dropped)));
             let answered = blocked(c"lambda: 7").expect("another daemon thread answers");
             embedded::with(|py| {
                 assert_eq!(answered.unwrap().extract::<i64>(py).unwrap(), 7);
@@ -582,7 +582,7 @@ fn a_call_queued_on_a_spare_that_did_not_start_is_let_go_and_the_next_start_is_t
     // Queued on the spare as it starts, a call goes with it, and so does the spare it asked for.
     let queued = std::thread::spawn(|| blocked(c"lambda: 7"));
     doomed.refused_once_queued();
-    assert!(matches!(queued.join().unwrap(), Err(Unanswered::Thread)));
+    assert!(matches!(queued.join().unwrap(), Err(Unanswered::Dropped)));
     doomed.released();
     // Two calls at once: no spare that is gone lies beneath the daemon thread let go, so the
     // first's take of it starts a spare afresh, which the second takes.
@@ -698,7 +698,7 @@ reading._made = escaping
             Ok(value) if answered => {
                 embedded::with(|py| assert_eq!(value.unwrap().extract::<i64>(py).unwrap(), 7));
             }
-            Err(Unanswered::Thread) if !answered => {}
+            Err(Unanswered::Dropped) if !answered => {}
             other => panic!("escaping answered {answered}: told {:?}", other.err()),
         }
     }

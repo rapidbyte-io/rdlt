@@ -178,7 +178,8 @@ fn closed(waiting: &mut Waiting, why: String) -> Vec<Call> {
 /// Makes the pool process `pid`'s, forgetting a parent's copy unread; false where its lock stays
 /// held, as by a thread a fork left behind.
 ///
-/// It waits for the lock with the GIL released, since a daemon thread takes it holding the GIL.
+/// It waits for the lock with the GIL released, so its wait of up to [`CLAIM`], for a lock a fork
+/// left held or a concurrent first start, stalls no other Python thread.
 fn claimed(py: Python<'_>, pid: u32) -> bool {
     py.detach(|| {
         let Some(mut idle) = IDLE.try_lock_for(CLAIM) else {
@@ -378,9 +379,10 @@ pub(crate) fn ready(py: Python<'_>) -> Result<(), Unanswered> {
 /// Why a call has no answer.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Unanswered {
-    /// The call's thread ended without answering.
-    #[error("the call's thread ended without answering")]
-    Thread,
+    /// The call was let go unmade, or its answer before it was read: its daemon thread did not
+    /// start, or met a bug of rdlt's own.
+    #[error("the call was let go without its answer")]
+    Dropped,
     /// No daemon thread was idle and the last asked for did not start, or none was started in
     /// this process: why, as text, since the exception would need the GIL wherever it was read.
     #[error("the call's thread did not start: {0}")]
@@ -388,8 +390,8 @@ pub(crate) enum Unanswered {
 }
 
 /// Hands the call `prepare` builds to the daemon thread that went idle last; `give` reads what it
-/// returned or raised on that thread, and is dropped unanswered where that thread ended without
-/// answering.
+/// returned or raised on that thread, and is dropped unanswered where the call is let go without
+/// its answer.
 ///
 /// The caller holds no GIL, and waits for nothing here.
 ///
@@ -417,7 +419,7 @@ where
 ///
 /// # Errors
 ///
-/// [`Unanswered`] where the call's thread ended without answering or did not start.
+/// [`Unanswered`] where the call was let go without its answer, or its thread did not start.
 pub(crate) fn blocking<T, P, F>(prepare: P, finish: F) -> Result<T, Unanswered>
 where
     T: Send + 'static,
@@ -434,7 +436,7 @@ where
                 sender.send(finished).ok();
             })
         })?;
-        received.recv().map_err(|_| Unanswered::Thread)
+        received.recv().map_err(|_| Unanswered::Dropped)
     })
 }
 
@@ -455,7 +457,7 @@ fn away_from_the_runtime<R>(wait: impl FnOnce() -> R) -> R {
 ///
 /// # Errors
 ///
-/// [`Unanswered`] where the call's thread ended without answering or did not start.
+/// [`Unanswered`] where the call was let go without its answer, or its thread did not start.
 pub(crate) async fn call<T, P, F>(prepare: P, finish: F) -> Result<T, Unanswered>
 where
     T: Send + 'static,
@@ -471,5 +473,5 @@ where
             sender.send(finished).ok();
         })
     })?;
-    received.await.map_err(|_| Unanswered::Thread)
+    received.await.map_err(|_| Unanswered::Dropped)
 }
