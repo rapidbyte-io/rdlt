@@ -80,6 +80,10 @@ class _Stream(Protocol):
         """Tells the stream its cursors are committed."""
         ...
 
+    def acknowledged(self, partition: str) -> str | None:
+        """Where the stream stands for `partition` outside the engine, as JSON."""
+        ...
+
     def read(self, partition: str, cursor: str | None, context: object) -> object:
         """Opens the partition's read: an iterator or an async iterable of what it yields."""
         ...
@@ -255,3 +259,8 @@ def partitions(stream: _Stream) -> list[tuple[str, bool]]:
 def committed(stream: _Stream, cursors: list[tuple[str, str | None]]) -> None:
     """Tells `stream` that `cursors`, each a partition's and as JSON, are committed."""
     stream.committed(cursors)
+
+
+def acknowledged(stream: _Stream, partition: str) -> str | None:
+    """Where `stream` stands for `partition` outside the engine, as JSON; `None` where nowhere."""
+    return stream.acknowledged(partition)

@@ -232,10 +232,38 @@ pub fn source_factory<C: SourceConnector>() -> Box<dyn SourceFactory> {
 }
 
 /// The factory of a source described at run time: its spec, and what connects it.
-struct Described<C, F> {
+pub(super) struct Described<C, F> {
     spec: ConnectorSpec,
     connect: F,
     connector: PhantomData<fn() -> C>,
+}
+
+impl<C, F> Described<C, F>
+where
+    C: SourceConnector,
+    F: Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<C>>
+        + Send
+        + Sync
+        + 'static,
+{
+    /// The source `spec` names, which `connect` makes from its whole configuration.
+    pub(super) fn new(spec: ConnectorSpec, connect: F) -> Self {
+        Self {
+            spec,
+            connect,
+            connector: PhantomData,
+        }
+    }
+
+    /// Connects `C` with `config` through the function that describes it.
+    pub(super) fn adapted(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> impl Future<Output = Result<SourceAdapter<C>>> + Send + 'static {
+        let connecting = (self.connect)(config, context);
+        async move { assembled(connecting.await?) }
+    }
 }
 
 impl<C, F> SourceFactory for Described<C, F>
@@ -255,8 +283,8 @@ where
         config: serde_json::Value,
         context: ConnectContext,
     ) -> BoxFuture<'_, Result<Box<dyn Source>>> {
-        let connecting = (self.connect)(config, context);
-        Box::pin(async move { Ok(Box::new(assembled(connecting.await?)?) as Box<dyn Source>) })
+        let adapting = self.adapted(config, context);
+        Box::pin(async move { Ok(Box::new(adapting.await?) as Box<dyn Source>) })
     }
 }
 
@@ -264,7 +292,9 @@ where
 /// language is: `spec` names it and `connect` makes it from its whole configuration.
 ///
 /// `C`'s `ID`, `VERSION`, `Config` and `connect` are not read; `spec` and `connect` stand for
-/// them. Every other part of the source is `C`'s, its streams', and the SDK's choreography.
+/// them. Every other part of the source is `C`'s, its streams', and the SDK's choreography. It
+/// never tells where the source stands outside the engine: certification asks that of
+/// `acknowledging_source_factory_from`, which the `certify` feature adds.
 pub fn source_factory_from<C, F>(spec: ConnectorSpec, connect: F) -> Box<dyn SourceFactory>
 where
     C: SourceConnector,
@@ -273,11 +303,7 @@ where
         + Sync
         + 'static,
 {
-    Box::new(Described {
-        spec,
-        connect,
-        connector: PhantomData,
-    })
+    Box::new(Described::new(spec, connect))
 }
 
 pub(super) fn factory<C: SourceConnector>() -> Factory<C> {

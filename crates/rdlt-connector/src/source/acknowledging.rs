@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::adapter::{Factory, SourceAdapter, adapted, factory};
+use super::adapter::{Described, Factory, SourceAdapter, adapted, factory};
 use super::{
     ACKNOWLEDGED_CODE, AcknowledgedReader, Acknowledging, Source, SourceConnector, SourceFactory,
 };
@@ -82,4 +82,70 @@ impl<C: SourceConnector> SourceFactory for AcknowledgingFactory<C> {
 /// attribute checks it at compile time.
 pub fn acknowledging_source_factory<C: SourceConnector>() -> Box<dyn SourceFactory> {
     Box::new(AcknowledgingFactory(factory::<C>()))
+}
+
+/// [`Described`], which also tells where its connector stands.
+struct AcknowledgingDescribed<C, F>(Described<C, F>);
+
+impl<C, F> SourceFactory for AcknowledgingDescribed<C, F>
+where
+    C: SourceConnector,
+    F: Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<C>>
+        + Send
+        + Sync
+        + 'static,
+{
+    fn spec(&self) -> &ConnectorSpec {
+        self.0.spec()
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, Result<Box<dyn Source>>> {
+        self.0.connect(config, context)
+    }
+
+    fn acknowledges(&self) -> bool {
+        true
+    }
+
+    fn connect_acknowledging(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, Result<Acknowledging>> {
+        // The reader is connected apart from the source it tells of, so it answers what the
+        // source keeps beyond a connection, not what one connection was told.
+        let source = self.0.adapted(config.clone(), context.clone());
+        let reader = self.0.adapted(config, context);
+        Box::pin(async move {
+            Ok((
+                Arc::new(source.await?) as Arc<dyn Source>,
+                Arc::new(reader.await?) as Arc<dyn AcknowledgedReader>,
+            ))
+        })
+    }
+}
+
+/// The engine-facing factory for a source known only at run time, as
+/// [`source_factory_from`](super::source_factory_from) makes, which also tells where it stands
+/// outside the engine, for certification.
+///
+/// It stands for [`SourceConnector::ACKNOWLEDGES`], which is not read, as `spec` and `connect`
+/// stand for the rest of what `C` would say of itself: a source described as one that tells is
+/// served by this factory, and one that does not by `source_factory_from`.
+pub fn acknowledging_source_factory_from<C, F>(
+    spec: ConnectorSpec,
+    connect: F,
+) -> Box<dyn SourceFactory>
+where
+    C: SourceConnector,
+    F: Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<C>>
+        + Send
+        + Sync
+        + 'static,
+{
+    Box::new(AcknowledgingDescribed(Described::new(spec, connect)))
 }

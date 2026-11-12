@@ -29,7 +29,7 @@ use crate::state::StreamState;
 #[cfg(feature = "certify")]
 pub use acknowledged::{AcknowledgedReader, Acknowledging};
 #[cfg(feature = "certify")]
-pub use acknowledging::acknowledging_source_factory;
+pub use acknowledging::{acknowledging_source_factory, acknowledging_source_factory_from};
 pub use adapter::{source_factory, source_factory_from};
 pub use plan::{InvalidPlan, Partition, PartitionPlan};
 pub use sent::{POSITION_UNSENT, Sent};
