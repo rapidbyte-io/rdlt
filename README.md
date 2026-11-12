@@ -514,8 +514,8 @@ configuration.
   `retention_lost`. With `RetentionLoss::Reset` it reads on from the earliest data kept and the
   rows in between are lost; only an incremental stream of a source that can read again may reset.
 - A stream read in full and then incrementally resumes from the cursor its last full read ended
-  on. Where that read ended on rows after its last checkpoint, in a partition that never ends, no
-  position resumes it, and the incremental read fails as `cursor_missing`. Keep reading it in
+  on. Where that read ended on rows with no checkpoint after them, in a partition that never ends,
+  no position resumes it, and the incremental read fails as `cursor_missing`. Keep reading it in
   full, or reset it with its tables so that incremental reads start from its beginning:
   `rdlt state reset <document> <stream> --tables`, `Pipeline::reset` with `ResetScope::Tables`,
   or `pipeline.reset(stream, tables=True)` in Python. A source whose reads end on a checkpoint

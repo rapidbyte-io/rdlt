@@ -18,9 +18,8 @@ const HINTS: [(&str, &str); 6] = [
     ),
     (
         "cursor_missing",
-        "the stream's last full read ended on rows after its last checkpoint; keep reading it \
-         in full, or `rdlt state reset <document> <stream> --tables`, which drops its table for \
-         the next run to load again from its beginning",
+        "keep reading it in full, or `rdlt state reset <document> <stream> --tables`, which \
+         drops its table for the next run to load again from its beginning",
     ),
     (
         "grant_outside",
