@@ -294,54 +294,70 @@ transform, and `@rdlt.filter()` makes one that answers which rows to keep, as a 
 document names a transform its host registered with `host.transform("name", function)` as
 `{"code": "name"}`, and `rdlt.testing.certify_transform` runs the transform clauses against one.
 
-**Connectors.** `rdlt.connector` writes a connector as a class, in the Rust SDK's words. `@source`
-takes its configuration, a pydantic model in which a credential is a `Secret`, which the class's
-`__init__` takes, with a `ConnectContext` where it names `context`; its `@stream` methods yield rows
-and checkpoints, and a read that names `ctx` is told what a Rust read's `Emitter` says: its
-`partition`, whether it `follows` and `resumes`, the columns its stream `excluded`, an `Exclusion`,
-the `Limits` it keeps within, whether a checkpoint is due and whether it was `stopped()`, and it
-says the stream's partitions changed with `ctx.replan()` and how far behind its source it is with
-`ctx.behind(records, Headroom(...))`, which the run's report totals for each stream; a stream's
-`partitions` may answer a `Partition(id, unbounded=True)` that never ends, which `ctx.partition`
-then names, and is told the stream's committed `StreamState`, its phase and each partition's cursor
-or `PartitionState.DONE`, where it names `state`; `committed=` is told the cursors each commit made
-durable, and `replayable=False` says it cannot be read again from one; `cursor_version=` is the
-format of its cursors, as Rust's `CURSOR_VERSION` is, so a cursor committed in another fails the
-read, coded `cursor_version`. `@source(acknowledged=True)` says its streams tell where they stand
-outside the engine, as a consumer group's committed offset does, each with its `acknowledged=`,
-which certification's `S-ACK` checks moves only in `committed=`. `@destination` takes its
-configuration; its instance's `capabilities()` answers what it can store, a `Capabilities`, which
-`Capabilities.minimal()` starts and which it is where the class has none, as a Rust destination's
-`capabilities` does, and its `open(context)` answers a session whose table writers stage what a
-commit publishes, each `flush()` answering `WriteStats`; a commit decides with
-`Fence(epoch, landed).decide(meta)`. A session's calls, its writers' included, reach the class one
-at a time, so it needs no lock of its own. `ConnectorError` and its kinds, such as `Transient` and
-`RateLimited(retry_after=)`, say what kind of failure the connector met; `InvalidConfig`,
-`Unauthorized` and `InvalidData` are Rust's `Config`, `Auth` and `Data`, and `COMMIT_STALE`,
-`TABLE_OWNED` and the rest are its codes. Barriers, credit, limits, deadlines, fencing and commits
-are the Rust SDK's, beneath it. `rdlt.local(Tickets, config=...)` places a class `Tickets` in
-process, and a launcher ending in `raise SystemExit(rdlt.connector.serve(Tickets))` serves it as a
-connector binary; `serve(Tickets, Warehouse)` serves a source class and a destination class in one
-process, as Rust's `Served` does. `test_certify = rdlt.testing.certify_source(Tickets, config=...)`
-in a test module, or `certify_destination`, makes each clause a pytest test,
-`test_certify[S-RESUME]`, and its `report()` is rdlt-certify's report; given
-`rdlt.Connector("io.example.tickets", endpoint="grpcs://host:port")` and
-`remote=rdlt.Tls(cert=..., key=..., ca=...)`, they certify a connector listening there over mutual
-TLS, as rdlt-certify's `Target::listening` does.
+**Connectors.** `rdlt.connector` writes a connector as a class, in the Rust SDK's words.
+Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, beneath it.
+
+- **Sources.** `@source` takes its configuration, a pydantic model in which a credential is a
+  `Secret`, which the class's `__init__` takes, with a `ConnectContext` where it names `context`.
+  Its `@stream` methods yield rows and checkpoints. `cursor_version=` is the format of a stream's
+  cursors, as Rust's `CURSOR_VERSION` is, so a cursor committed in another fails the read, coded
+  `cursor_version`. `committed=` is told the cursors each commit made durable, and
+  `replayable=False` says the stream cannot be read again from one. `@source(acknowledged=True)`
+  says its streams tell where they stand outside the engine, as a consumer group's committed
+  offset does, each with its `acknowledged=`, which certification's `S-ACK` checks moves only in
+  `committed=`.
+- **Partitions.** A stream's `partitions` may answer a `Partition(id, unbounded=True)` that never
+  ends, which `ctx.partition` then names. Where it names `state`, it is told the stream's
+  committed `StreamState`: its phase, each partition's cursor or `PartitionState.DONE`, the
+  `generation` of the full read in progress and the full reads `completed`.
+- **The context.** A read that names `ctx` is told what a Rust read's `Emitter` says: its
+  `partition`, whether it `follows` and `resumes`, the columns its stream `excluded`, an
+  `Exclusion`, the `Limits` it keeps within, whether a checkpoint is due and whether it was
+  `stopped()`. It says the stream's partitions changed with `ctx.replan()`, and how far behind its
+  source it is with `ctx.behind(records, Headroom(...))`, which the run's report totals for each
+  stream. In an async read both return at once, and are sent in their turn, so the event loop
+  keeps running.
+- **Destinations.** `@destination` takes its configuration. Its instance's `capabilities()`
+  answers what it can store, a `Capabilities`, which `Capabilities.minimal()` starts and which it
+  is where the class has none, as a Rust destination's `capabilities` does; capabilities Rust's
+  cannot hold, as no writers, are refused where they are made. Its `open(context)` answers a
+  session whose table writers stage what a commit publishes, each `flush()` answering
+  `WriteStats`; a commit decides with `Fence(epoch, landed).decide(meta)`. A session's calls, its
+  writers' included, reach the class one at a time, so it needs no lock of its own.
+- **Errors.** `ConnectorError` and its kinds, such as `Transient` and `RateLimited(retry_after=)`,
+  say what kind of failure the connector met. `InvalidConfig`, `Unauthorized` and `InvalidData`
+  are Rust's `Config`, `Auth` and `Data`, and `COMMIT_STALE`, `TABLE_OWNED` and the rest are its
+  codes.
+- **Serving.** `rdlt.local(Tickets, config=...)` places a class `Tickets` in process, and a
+  launcher ending in `raise SystemExit(rdlt.connector.serve(Tickets))` serves it as a connector
+  binary. `serve(Tickets, Warehouse)` serves a source class and a destination class in one
+  process, as Rust's `Served` does. A class served so answers no certification probe, as a Rust
+  binary's plain factory answers none; a launcher that serves
+  `acknowledging_source_factory(Tickets)` or `readable_destination_factory(Warehouse)` answers
+  them, as a Rust binary whose `main` serves those factories does. The launcher
+  `rdlt connector install` writes refuses those, as a Rust release serves no probe.
+- **Certification.** `test_certify = rdlt.testing.certify_source(Tickets, config=...)` in a test
+  module, or `certify_destination`, makes each clause a pytest test, `test_certify[S-RESUME]`, and
+  its `report()` is rdlt-certify's report. Given
+  `rdlt.Connector("io.example.tickets", endpoint="grpcs://host:port")` and
+  `remote=rdlt.Tls(cert=..., key=..., ca=...)`, they certify a connector listening there over
+  mutual TLS, as rdlt-certify's `Target::listening` does.
 
 **Spawned connectors.** `rdlt connector new tickets --lang python` writes a connector project,
 `rdlt-connector-tickets`: a source class, registered as the `rdlt.connectors` entry point
-`io.example.tickets`, and a certification test that passes as written. `rdlt connector install`
-installs its wheel as a directory connector, `rdlt-connector-tickets/` in the first connector
-directory: an environment of its own, whose launcher, `bin/rdlt-connector`, a host spawns and
-sandboxes as it does a binary. None of the connector's code runs while it is installed. With
-`--requirements`, a file of every package the wheel needs, each with its hash, pip installs those
-alone; until `rdlt`'s wheel is published, that file names one built from the repository,
+`io.example.tickets`, and a certification test that passes as written. An entry point names a class,
+or a tuple of a source class and a destination class, such as `CONNECTORS = (Tickets, Warehouse)`,
+whose roles the installed launcher serves in one process. `rdlt connector install` installs its
+wheel as a directory connector, `rdlt-connector-tickets/` in the first connector directory: an
+environment of its own, whose launcher, `bin/rdlt-connector`, a host spawns and sandboxes as it does
+a binary. None of the connector's code runs while it is installed. With `--requirements`, a file of
+every package the wheel needs, each with its hash, pip installs those alone; until `rdlt`'s wheel is
+published, that file names one built from the repository,
 `rdlt @ file:///<its path> --hash=sha256:<its digest>`, as
 [`python/tests/test_directory.py`](python/tests/test_directory.py) writes it. On Linux the
 environment's interpreter must lie in the system's directories, which the sandbox shows, such as
-`--python /usr/bin/python3.12`: one beneath a home directory, as uv, pyenv and mise install them,
-is refused as `interpreter_unreachable`, and such a connector is served with `--listen` from an
+`--python /usr/bin/python3.12`: one beneath a home directory, as uv, pyenv and mise install them, is
+refused as `interpreter_unreachable`, and such a connector is served with `--listen` from an
 environment holding its wheel instead.
 
 **The GIL** is held for Python's own calls alone. Each partition of a Python source reads on a
