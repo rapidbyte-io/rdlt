@@ -7,6 +7,7 @@ use pyo3::{Bound, Python, pyfunction};
 use rdlt_connector::serve::Served;
 use rdlt_connector::{DestinationFactory, SourceFactory};
 
+use crate::calls;
 use crate::destination::NativeDestinationFactory;
 use crate::source::NativeSourceFactory;
 
@@ -30,6 +31,11 @@ pub(crate) fn serve(
 ) -> Option<String> {
     if source.is_none() && destination.is_none() {
         return Some("nothing is served: serve a source, a destination or both".to_owned());
+    }
+    // The server's calls need a daemon thread to take them, which this thread, Python's own,
+    // starts.
+    if let Err(unready) = calls::ready(py) {
+        return Some(unready.to_string());
     }
     let mut served = Served::new();
     if let Some((source, probed)) = &source {

@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use pyo3::types::{IntoPyDict as _, PyAnyMethods as _, PyDictMethods as _, PyTuple};
+use pyo3::types::{
+    IntoPyDict as _, PyAnyMethods as _, PyDictMethods as _, PyTuple, PyTypeMethods as _,
+};
 use pyo3::{Py, PyAny, PyErr, Python};
 
 use super::{Unanswered, call};
@@ -268,30 +270,87 @@ fn a_call_whose_arguments_cannot_be_built_is_answered_with_why() {
 }
 
 #[test]
-fn a_daemon_thread_that_ended_is_replaced_at_a_later_call() {
+fn a_daemon_thread_whose_answer_panicked_waits_for_good_and_another_makes_the_next_call() {
     embedded::with(|py| {
-        py.detach(|| {
-            // A panic while the answer is read ends the daemon thread that read it.
+        let parked = py.detach(|| {
+            // A panic while the answer is read is a bug of rdlt's own: the daemon thread that
+            // read it leaves the pool.
+            let (ident, read) = std::sync::mpsc::channel();
             let lost = super::blocking(
-                |py| Ok((py.eval(c"lambda: 1", None, None)?, PyTuple::empty(py))),
-                |_, _| -> () { panic!("a bug in the reader of an answer") },
+                |py| {
+                    let ident =
+                        py.eval(c"lambda: __import__('threading').get_ident()", None, None)?;
+                    Ok((ident, PyTuple::empty(py)))
+                },
+                move |_, answered| -> () {
+                    ident
+                        .send(answered.unwrap().extract::<u64>().unwrap())
+                        .unwrap();
+                    panic!("a bug in the reader of an answer")
+                },
             );
             assert!(matches!(lost, Err(Unanswered::Thread)));
-            // Calls handed over before the daemon thread is gone are lost with it.
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
-            loop {
-                match blocked(c"lambda: 7") {
-                    Ok(answered) => {
-                        Python::attach(|py| {
-                            assert_eq!(answered.unwrap().extract::<i64>(py).unwrap(), 7);
-                        });
-                        return;
-                    }
-                    Err(Unanswered::Thread) if std::time::Instant::now() < deadline => {}
-                    Err(other) => panic!("no answer by the deadline: {other}"),
-                }
-            }
+            let answered = blocked(c"lambda: 7").expect("another daemon thread answers");
+            Python::attach(|py| {
+                assert_eq!(answered.unwrap().extract::<i64>(py).unwrap(), 7);
+            });
+            read.recv().unwrap()
         });
+        let watched = c"
+import sys, time
+deadline = time.monotonic() + 10
+while (frame := sys._current_frames().get(ident)) is not None and frame.f_code.co_name != '_parked' and time.monotonic() < deadline:
+    time.sleep(0.01)
+waits = frame is not None and frame.f_code.co_name == '_parked'
+";
+        let locals = [("ident", parked)].into_py_dict(py).unwrap();
+        py.run(watched, None, Some(&locals)).unwrap();
+        let waits: bool = locals
+            .get_item("waits")
+            .unwrap()
+            .unwrap()
+            .extract()
+            .unwrap();
+        assert!(
+            waits,
+            "the daemon thread whose answer panicked waits for good, never ending"
+        );
+    });
+}
+
+#[test]
+fn a_function_that_raises_to_end_its_thread_or_process_is_answered_and_its_thread_called_again() {
+    let raising = [
+        (c"lambda: (setattr(__import__('builtins').local, 'mark', 1), __import__('sys').exit(3))", "SystemExit"),
+        (c"lambda: (setattr(__import__('builtins').local, 'mark', 1), __import__('_thread').exit())", "SystemExit"),
+        (c"lambda: (setattr(__import__('builtins').local, 'mark', 1), (_ for _ in ()).throw(KeyboardInterrupt))", "KeyboardInterrupt"),
+        (c"lambda: (setattr(__import__('builtins').local, 'mark', 1), (_ for _ in ()).throw(GeneratorExit))", "GeneratorExit"),
+    ];
+    embedded::with(|py| {
+        for (code, raised) in raising {
+            py.run(
+                c"import builtins, threading; builtins.local = threading.local()",
+                None,
+                None,
+            )
+            .unwrap();
+            let (answered, marked) = py.detach(|| {
+                let answered = blocked(code).expect("the call is answered");
+                let marked = blocked(MARK).unwrap().unwrap();
+                (answered, marked)
+            });
+            let error = answered.expect_err("it raised");
+            assert_eq!(
+                error.get_type(py).name().unwrap().to_string(),
+                raised,
+                "{code:?} answers what it raised"
+            );
+            assert_eq!(
+                marked.extract::<i64>(py).unwrap(),
+                1,
+                "{code:?}: the next call is made on the daemon thread that raised"
+            );
+        }
     });
 }
 

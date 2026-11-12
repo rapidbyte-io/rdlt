@@ -1,6 +1,6 @@
 //! The interpreter a test binary embeds: the development environment's packages importable, the
-//! repository's `python/` first on `sys.path`, and this crate's module installed as
-//! `rdlt._native` before anything imports the package.
+//! repository's `python/` first on `sys.path`, this crate's module installed as `rdlt._native`
+//! before anything imports the package, and the first daemon thread started.
 
 use std::path::Path;
 use std::sync::Once;
@@ -9,6 +9,7 @@ use std::time::Duration;
 use pyo3::types::{PyAnyMethods as _, PyDict, PyDictMethods as _, PyModule};
 use pyo3::{PyErr, Python};
 
+use crate::calls;
 use crate::run::NativeRun;
 use crate::runtime;
 
@@ -20,7 +21,10 @@ pub(crate) fn with<R>(f: impl for<'py> FnOnce(Python<'py>) -> R) -> R {
     static PREPARED: Once = Once::new();
     PREPARED.call_once(|| {
         Python::initialize();
-        Python::attach(|py| prepare(py).expect("the embedded interpreter is prepared"));
+        Python::attach(|py| {
+            prepare(py).expect("the embedded interpreter is prepared");
+            calls::ready(py).expect("the first daemon thread starts");
+        });
     });
     Python::attach(f)
 }

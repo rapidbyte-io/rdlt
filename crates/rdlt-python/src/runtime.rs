@@ -13,7 +13,7 @@ use pyo3::{PyErr, Python};
 use tokio::runtime::{Builder, Runtime};
 use tokio::task::JoinHandle;
 
-use crate::errors;
+use crate::{calls, errors};
 
 /// The runtime, once built, and the id of the process that built it.
 static RUNTIME: Mutex<Option<(&'static Runtime, u32)>> = Mutex::new(None);
@@ -32,12 +32,12 @@ enum Unavailable {
     NoThreads(io::Error),
 }
 
-/// The process's runtime, built now if none is.
+/// The process's runtime, built now if none is, with a daemon thread started to take its calls.
 ///
 /// # Errors
 ///
 /// `rdlt.InternalError` in a child forked from a process whose runtime was built, and where the
-/// runtime's threads do not start.
+/// runtime's threads or the daemon thread do not start.
 pub(crate) fn get(py: Python<'_>) -> Result<&'static Runtime, PyErr> {
     let pid = std::process::id();
     // Released before any error is built: building one runs Python, which may switch the GIL.
@@ -65,7 +65,7 @@ pub(crate) fn get(py: Python<'_>) -> Result<&'static Runtime, PyErr> {
             },
         }
     };
-    answer.map_err(|unavailable| match unavailable {
+    let runtime = answer.map_err(|unavailable| match unavailable {
         Unavailable::Forked => errors::internal(
             py,
             "rdlt cannot run in a process forked from one whose runtime had started: start the \
@@ -74,7 +74,11 @@ pub(crate) fn get(py: Python<'_>) -> Result<&'static Runtime, PyErr> {
         Unavailable::NoThreads(error) => {
             errors::internal(py, &format!("the runtime's threads did not start: {error}"))
         }
-    })
+    })?;
+    // The calls a run makes need a daemon thread to take them, which this thread, Python's own,
+    // starts.
+    calls::ready(py).map_err(|unready| errors::internal(py, &unready.to_string()))?;
+    Ok(runtime)
 }
 
 /// What a wait does with the exception a signal's handler raised.

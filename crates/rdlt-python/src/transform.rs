@@ -55,13 +55,9 @@ impl PythonTransform {
             },
         )
         .map_err(|unanswered| {
-            let error = TransformError::new(format!(
+            TransformError::new(format!(
                 "a call into Python ended without its answer: {unanswered}"
-            ));
-            match std::error::Error::source(&unanswered) {
-                Some(cause) => error.with_cause(cause.to_string()),
-                None => error,
-            }
+            ))
         })?
     }
 }

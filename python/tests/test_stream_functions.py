@@ -1373,19 +1373,9 @@ def ended_threads() -> list[threading.Thread]:
     return [thread for thread in threading.enumerate() if thread.ident not in running]
 
 
-def test_a_read_s_threads_leave_nothing_in_threading_once_they_end(
-    tmp_path: Path, connectors: Path
-) -> None:
-    @stream(name="parted", partitions=lambda: [str(n) for n in range(32)])
-    def parted(ctx: StreamContext) -> Iterator[object]:
-        yield {"partition": ctx.partition.id}
-
-    built = rdlt.pipeline("parted", source=parted, destination=into_sqlite(tmp_path))
-    assert built.build(host(tmp_path, connectors)).run().report.rows == 32
-    deadline = time.monotonic() + 30
-    while ended := ended_threads():
-        assert time.monotonic() < deadline, f"threading holds {len(ended)} threads that ended"
-        time.sleep(0.05)
+def reading_threads() -> list[threading.Thread]:
+    """The daemon threads of rdlt's that `threading` holds."""
+    return [thread for thread in threading.enumerate() if thread.name.startswith("rdlt-")]
 
 
 class Logged:
@@ -1404,27 +1394,54 @@ class Logged:
         logging.getLogger(__name__).warning("closed")
 
 
-def test_rows_that_log_as_they_are_let_go_leave_nothing_in_threading(
-    tmp_path: Path, connectors: Path
+@stream(name="parted", partitions=lambda: [str(n) for n in range(32)])
+def parted(ctx: StreamContext) -> Iterator[object]:
+    yield {"partition": ctx.partition.id}
+
+
+@stream(name="logged", partitions=lambda: [str(n) for n in range(32)])
+def logged(ctx: StreamContext) -> Iterator[object]:
+    return Logged(ctx.partition.id)
+
+
+@pytest.mark.parametrize("read", [parted, logged], ids=["rows", "rows_that_log_as_let_go"])
+def test_a_run_s_reads_leave_threading_only_daemon_threads_that_wait_fewer_than_its_reads(
+    tmp_path: Path, connectors: Path, read: ReadStream
 ) -> None:
-    @stream(name="logged", partitions=lambda: [str(n) for n in range(8)])
-    def logged(ctx: StreamContext) -> Iterator[object]:
-        return Logged(ctx.partition.id)
-
-    built = rdlt.pipeline("logged", source=logged, destination=into_sqlite(tmp_path))
-    assert built.build(host(tmp_path, connectors)).run().report.rows == 8
+    built = rdlt.pipeline(
+        "parted",
+        source=read,
+        destination=into_sqlite(tmp_path),
+        resources=rdlt.Resources(partitions=2),
+    )
+    assert built.build(host(tmp_path, connectors)).run().report.rows == 32
     deadline = time.monotonic() + 30
-    while ended := ended_threads():
-        assert time.monotonic() < deadline, f"threading holds {len(ended)} threads that ended"
+    while (ended := ended_threads()) or any(t.name != "rdlt-call" for t in reading_threads()):
+        assert time.monotonic() < deadline, f"threading holds {ended} and {reading_threads()}"
         time.sleep(0.05)
+    assert len(reading_threads()) < 32, "a run keeps daemon threads for what it reads at once"
 
 
-def test_a_thread_of_a_forked_child_ends_though_threading_s_lock_was_held_at_the_fork() -> None:
+def test_a_forked_child_s_first_run_is_answered_though_threading_s_lock_was_held_at_the_fork(
+    tmp_path: Path,
+) -> None:
     script = textwrap.dedent(
-        """
+        f"""
         import os, signal, sys, threading, time, warnings
         warnings.simplefilter("ignore")
-        from rdlt import _reading
+        sys.path.append({str(Path(__file__).parents[1])!r})
+        import rdlt
+        from rdlt.connector import stream
+        from tests.connectors import memory
+
+        @stream(name="rows")
+        def rows():
+            yield {{"id": 1}}
+
+        @rdlt.transform()
+        def kept(batch):
+            return batch
+
         held, release = threading.Event(), threading.Event()
         def hold():
             with vars(threading)["_active_limbo_lock"]:
@@ -1434,20 +1451,25 @@ def test_a_thread_of_a_forked_child_ends_though_threading_s_lock_was_held_at_the
         held.wait()
         child = os.fork()
         if child == 0:
-            _reading._ended()
-            os._exit(0)
+            outcome = rdlt.pipeline(
+                "forked",
+                source=rows,
+                destination=rdlt.local(memory.Memory, config={{"store": "forked"}}),
+                streams=[rdlt.stream("rows", transform=[kept])],
+            ).build(rdlt.Host()).run()
+            os._exit(0 if outcome.report.status is rdlt.RunStatus.SUCCEEDED else 3)
         release.set()
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 30
         while not (ended := os.waitpid(child, os.WNOHANG))[0]:
             if time.monotonic() > deadline:
                 os.kill(child, signal.SIGKILL)
                 os.waitpid(child, 0)
-                sys.exit("the child's thread never ended")
+                sys.exit("the child's run never ended")
             time.sleep(0.05)
         sys.exit(os.waitstatus_to_exitcode(ended[1]))
         """
     )
     finished = subprocess.run(
-        [sys.executable, "-c", script], timeout=30, check=False, capture_output=True
+        [sys.executable, "-c", script], timeout=60, check=False, capture_output=True, cwd=tmp_path
     )
     assert finished.returncode == 0, finished.stderr

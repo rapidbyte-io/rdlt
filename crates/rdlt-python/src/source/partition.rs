@@ -1,9 +1,10 @@
-//! One partition of a Python source, read on a thread of its own.
+//! One partition of a Python source, read as a call on one of the process's daemon threads.
 //!
-//! The thread is a Python daemon thread running `rdlt._reading`, so a generator runs with only
-//! Python beneath it: an interpreter that exits ends the thread in Python's own frames. The
-//! Rust side, [`PartitionOut`], holds the GIL only while Python runs and while it turns what
-//! Python yielded into pushes; it releases it while it waits for the engine or reads a stream.
+//! The daemon thread runs `rdlt._reading`, so a generator runs with only Python beneath it: an
+//! interpreter that exits ends the thread in Python's own frames. The read holds its daemon
+//! thread until it ends, which then waits for another call. The Rust side, [`PartitionOut`],
+//! holds the GIL only while Python runs and while it turns what Python yielded into pushes; it
+//! releases it while it waits for the engine or reads a stream.
 
 #[cfg(test)]
 mod tests;
@@ -15,13 +16,13 @@ use arrow_array::RecordBatch;
 use bytes::Bytes;
 use parking_lot::Mutex;
 use pyo3::types::PyAnyMethods as _;
-use pyo3::{Bound, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
+use pyo3::{Bound, IntoPyObject as _, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
 use rdlt_connector::{ConnectorError, Headroom};
 use serde_json::value::RawValue;
 use tokio::sync::mpsc;
 
 use crate::arrow::{Produced, produced};
-use crate::calls;
+use crate::calls::{self, Unanswered};
 use crate::errors::Failure;
 use crate::json::{self, JsonLimits};
 use crate::source::context::{NativeCheckpoint, NativeStreamContext};
@@ -77,18 +78,22 @@ impl Outlet {
     }
 }
 
-/// A partition's thread, and what it sends.
+/// A partition's read, and what it sends.
 pub(crate) struct Reading {
     received: mpsc::Receiver<Pushed>,
-    /// Whether the thread said how the read ended.
+    /// Whether the read said how it ended.
     told: Arc<AtomicBool>,
 }
 
 impl Reading {
-    /// Starts reading, on a thread named `name`, what `stream.read(partition, cursor, context)`
-    /// returns: an iterator or an async iterator.
+    /// Starts reading, on a daemon thread named `name` meanwhile, what
+    /// `stream.read(partition, cursor, context)` returns: an iterator or an async iterator.
     ///
-    /// Nothing here takes the GIL on the caller's thread.
+    /// Nothing here takes the GIL or waits.
+    ///
+    /// # Errors
+    ///
+    /// [`Unanswered`] where no daemon thread could take the read.
     pub(crate) fn start(
         name: &str,
         stream: Arc<Py<PyAny>>,
@@ -96,41 +101,36 @@ impl Reading {
         cursor: Option<String>,
         context: NativeStreamContext,
         limits: JsonLimits,
-    ) -> std::io::Result<Self> {
+    ) -> Result<Self, Unanswered> {
         // A yield waits for the engine: the channel holds one push while another is sent.
         let (sent, received) = mpsc::channel(1);
         let told = Arc::new(AtomicBool::new(false));
         let outlet = context.outlet().clone();
-        outlet.open(sent.clone());
+        outlet.open(sent);
         let out = PartitionOut {
-            sent: outlet,
+            sent: outlet.clone(),
             limits,
             told: Arc::clone(&told),
         };
+        let unread = (outlet, Arc::clone(&told));
         let name = name.to_owned();
-        std::thread::Builder::new()
-            .name("rdlt-read-start".to_owned())
-            .spawn(move || {
-                let told_of_start = Arc::clone(&out.told);
-                let started = Python::try_attach(|py| {
-                    let context = Py::new(py, context)?;
-                    let out = Py::new(py, out)?;
-                    calls::reading(py)?.call_method1(
-                        intern!(py, "start"),
-                        (name, stream.as_ref(), partition, cursor, context, out),
-                    )?;
-                    Ok::<(), PyErr>(())
-                });
-                let failure = match started {
-                    Some(Ok(())) => return,
-                    Some(Err(error)) => {
-                        Python::attach(|py| Failure::of(py, &error).connector_error())
-                    }
-                    None => ConnectorError::internal("the interpreter is exiting"),
-                };
-                told_of_start.store(true, Ordering::Release);
-                sent.blocking_send(Pushed::Failed(failure)).ok();
-            })?;
+        calls::start(
+            move |py| {
+                let context = Py::new(py, context)?;
+                let out = Py::new(py, out)?;
+                let read = calls::reading(py)?.getattr(intern!(py, "read"))?;
+                let arguments = (name, stream.as_ref(), partition, cursor, context, out);
+                Ok((read, arguments.into_pyobject(py)?))
+            },
+            move |py, answered| {
+                // A read that never began, or raised past what it says itself, is told here.
+                if let Err(error) = answered {
+                    let (outlet, told) = unread;
+                    failed(py, &outlet, &told, &error);
+                }
+                Box::new(|| ())
+            },
+        )?;
         Ok(Self { received, told })
     }
 
@@ -189,13 +189,23 @@ impl PartitionOut {
 
     /// Says the read ended with `error`, and closes its channel.
     fn failed(&self, py: Python<'_>, error: &Bound<'_, PyAny>) {
-        self.told.store(true, Ordering::Release);
-        let Some(sent) = self.sent.close() else {
-            return;
-        };
-        let failure = Failure::of(py, &PyErr::from_value(error.clone()));
-        send(py, &sent, Pushed::Failed(failure.connector_error()));
+        failed(
+            py,
+            &self.sent,
+            &self.told,
+            &PyErr::from_value(error.clone()),
+        );
     }
+}
+
+/// Tells the read whose channel `outlet` holds that it ended with `error`, and closes it.
+fn failed(py: Python<'_>, outlet: &Outlet, told: &AtomicBool, error: &PyErr) {
+    told.store(true, Ordering::Release);
+    let Some(sent) = outlet.close() else {
+        return;
+    };
+    let failure = Failure::of(py, error);
+    send(py, &sent, Pushed::Failed(failure.connector_error()));
 }
 
 /// Sends what `item` is as pushes; false once the read has gone or the item failed it.
