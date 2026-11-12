@@ -18,6 +18,7 @@ from rdlt.connector._capabilities import (
 from rdlt.connector._config import Config
 from rdlt.connector._context import (
     Exclusion,
+    Headroom,
     Limits,
     Partition,
     PartitionState,
@@ -110,6 +111,7 @@ __all__ = [
     "Exclusion",
     "Fence",
     "Fenced",
+    "Headroom",
     "IdentifierRules",
     "InvalidConfig",
     "InvalidData",

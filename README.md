@@ -299,7 +299,9 @@ takes its configuration, a pydantic model in which a credential is a `Secret`, w
 `__init__` takes, with a `ConnectContext` where it names `context`; its `@stream` methods yield rows
 and checkpoints, and a read that names `ctx` is told what a Rust read's `Emitter` says: its
 `partition`, whether it `follows` and `resumes`, the columns its stream `excluded`, an `Exclusion`,
-the `Limits` it keeps within, whether a checkpoint is due and whether it was `stopped()`; a stream's
+the `Limits` it keeps within, whether a checkpoint is due and whether it was `stopped()`, and it
+says the stream's partitions changed with `ctx.replan()` and how far behind its source it is with
+`ctx.behind(records, Headroom(...))`, which the run's report totals for each stream; a stream's
 `partitions` may answer a `Partition(id, unbounded=True)` that never ends, which `ctx.partition`
 then names, and is told the stream's committed `StreamState`, its phase and each partition's cursor
 or `PartitionState.DONE`, where it names `state`; `committed=` is told the cursors each commit made

@@ -26,11 +26,12 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import rdlt
-from rdlt import _reading
+from rdlt import _native, _reading
 from rdlt.connector import (
     Config,
     Cursor,
     Exclusion,
+    Headroom,
     Limits,
     Partition,
     PartitionState,
@@ -397,6 +398,77 @@ def test_a_following_read_that_waits_for_data_ends_once_it_is_asked_to_stop(
     built.build(host(tmp_path, connectors)).run()
     assert ended.wait(10), "the read's thread went on after its run"
     assert rows_of(tmp_path, "users") == [(0,)]
+
+
+def test_an_async_read_s_lag_goes_through_its_router_and_is_totalled_in_the_report(
+    tmp_path: Path, connectors: Path
+) -> None:
+    routed: list[bool] = []
+
+    @stream(primary_key="id")
+    async def users(ctx: StreamContext) -> AsyncIterator[object]:
+        native = ctx._native  # pyright: ignore[reportPrivateUsage]
+        routed.append(_reading.router(native) is not None)
+        ctx.behind(5, Headroom(bytes=500))
+        yield {"id": 1}
+
+    built = rdlt.pipeline("routed", source=users, destination=into_sqlite(tmp_path))
+    streams = built.build(host(tmp_path, connectors)).run().report.streams
+    assert routed == [True]
+    assert streams["users"].raw["behind"] == 5
+
+
+def test_a_report_totals_how_far_behind_its_source_each_stream_s_reads_last_were(
+    tmp_path: Path, connectors: Path
+) -> None:
+    behind = {"eu": 3, "us": 4}
+
+    @stream(primary_key="id", cursor=_Since, partitions=lambda: ["eu", "us"])
+    def users(since: _Since, ctx: StreamContext) -> Iterator[object]:
+        records = behind[ctx.partition.id]
+        ctx.behind(records, Headroom(bytes=records * 100, time=timedelta(seconds=records)))
+        yield {"id": f"{ctx.partition.id}-{since.after}"}
+        yield checkpoint(_Since(after=0))
+
+    @stream(primary_key="id")
+    def quiet() -> Iterator[object]:
+        yield {"id": 1}
+
+    built = rdlt.pipeline("lagged", source=[users, quiet], destination=into_sqlite(tmp_path))
+    streams = built.build(host(tmp_path, connectors)).run().report.streams
+    assert streams["users"].raw["behind"] == 7
+    headroom = cast("dict[str, object]", streams["users"].raw["headroom"])
+    assert headroom["bytes"] == 300
+    assert headroom["time"] is not None
+    # A stream whose source says nothing leaves it unknown.
+    assert streams["quiet"].raw["behind"] is None
+
+
+def test_a_following_run_plans_again_as_soon_as_a_read_says_its_partitions_changed(
+    tmp_path: Path, connectors: Path
+) -> None:
+    grown = threading.Event()
+
+    def planned() -> list[Partition]:
+        return [Partition(name, unbounded=True) for name in ("a", "b")[: 1 + grown.is_set()]]
+
+    # The run plans every minute: only the read's word starts the partition added in time.
+    @stream(primary_key="id", cursor=_Since, partitions=planned)
+    def users(since: _Since, ctx: StreamContext) -> Iterator[object]:
+        if since.after < 0:
+            yield {"id": ctx.partition.id}
+            yield checkpoint(_Since(after=0))
+        if not grown.is_set():
+            grown.set()
+            ctx.replan()
+        while not ctx.stopped():
+            time.sleep(0.005)
+
+    built = rdlt.pipeline(
+        "replanned", source=users, destination=into_sqlite(tmp_path), until=timedelta(seconds=3)
+    )
+    built.build(host(tmp_path, connectors)).run()
+    assert sorted(set(rows_of(tmp_path, "users"))) == [("a",), ("b",)]
 
 
 def test_a_stream_that_is_not_split_is_told_it_reads_its_single_partition(
@@ -1077,8 +1149,144 @@ def test_an_async_read_leaves_its_event_loop_running_while_the_engine_is_full() 
         yield {"n": 1}
         await opened
 
-    asyncio.run(_reading.pushed(reading(), cast("_reading.Out", out)))
+    asyncio.run(_reading.pushed(reading(), cast("_reading.Out", out), object()))
     assert out.room_at_push is True
+
+
+class _Notice:
+    """What the native `Notice` makes, as the tests below read it."""
+
+    @staticmethod
+    def replan() -> tuple[object, ...]:
+        return ("replan",)
+
+    @staticmethod
+    def behind(records: int, bytes: int | None, time: timedelta | None) -> tuple[object, ...]:  # noqa: A002 - the Rust SDK's `Headroom` field
+        return ("behind", records, bytes, time)
+
+
+class _Engine:
+    """A read's out and its context at once, whose room a test gives: a send without it fails."""
+
+    def __init__(self) -> None:
+        self.room = False
+        self.sent: list[object] = []
+
+    def has_room(self) -> bool:
+        return self.room
+
+    def push(self, item: object) -> bool:
+        assert self.room, "a push waited for the engine"
+        self.sent.append(item)
+        return True
+
+    def notify(self, notice: object) -> None:
+        assert self.room, "a notice waited for the engine"
+        self.sent.append(notice)
+
+
+def _routed(reading: Callable[[StreamContext, _Engine], AsyncIterator[object]]) -> list[object]:
+    """What the async read `reading` makes, given its context and the engine, sent in order."""
+    engine = _Engine()
+    ctx = StreamContext(cast("_native.StreamContext", engine))
+    read = _reading.pushed(reading(ctx, engine), cast("_reading.Out", engine), engine)
+    asyncio.run(asyncio.wait_for(read, timeout=30))
+    return engine.sent
+
+
+def test_an_async_read_s_notices_leave_its_event_loop_running_while_the_engine_is_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_native, "Notice", _Notice)
+    ticks = 0
+
+    async def ticking() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    async def reading(ctx: StreamContext, engine: _Engine) -> AsyncIterator[object]:
+        ticker = asyncio.create_task(ticking())
+        engine.room = True
+        yield {"n": 1}
+        engine.room = False
+        ctx.behind(5, Headroom())
+        ctx.behind(3, Headroom(bytes=10))
+        ctx.replan()
+        seen = ticks
+        while ticks < seen + 3:
+            await asyncio.sleep(0)
+        assert engine.sent == [{"n": 1}], "a notice went before the engine had room"
+        engine.room = True
+        yield {"n": 2}
+        ticker.cancel()
+
+    # The second lag, said before the first was sent, replaced it.
+    expected = [{"n": 1}, ("behind", 3, 10, None), ("replan",), {"n": 2}]
+    assert _routed(reading) == expected
+
+
+def test_an_async_read_s_notices_said_after_its_last_yield_are_sent_before_it_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_native, "Notice", _Notice)
+    held: list[asyncio.Task[None]] = []
+
+    async def reading(ctx: StreamContext, engine: _Engine) -> AsyncIterator[object]:
+        async def giving() -> None:
+            for _ in range(3):
+                await asyncio.sleep(0)
+            engine.room = True
+
+        engine.room = True
+        yield {"n": 1}
+        engine.room = False
+        ctx.behind(5, Headroom())
+        ctx.replan()
+        # Room comes only once the read has ended.
+        held.append(asyncio.create_task(giving()))
+
+    assert _routed(reading) == [{"n": 1}, ("behind", 5, None, None), ("replan",)]
+
+
+def test_an_async_read_s_alternating_notices_keep_one_of_each_kind_between_yields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_native, "Notice", _Notice)
+
+    async def reading(ctx: StreamContext, engine: _Engine) -> AsyncIterator[object]:
+        engine.room = True
+        yield {"n": 1}
+        engine.room = False
+        for records in range(100):
+            ctx.behind(records, Headroom())
+            ctx.replan()
+        engine.room = True
+        yield {"n": 2}
+
+    # A replan said again is said once, and a lag is its newest.
+    expected = [{"n": 1}, ("behind", 99, None, None), ("replan",), {"n": 2}]
+    assert _routed(reading) == expected
+
+
+def test_a_sync_read_s_notices_are_sent_as_it_says_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_native, "Notice", _Notice)
+    sent: list[object] = []
+
+    class Engine:
+        def notify(self, notice: object) -> None:
+            sent.append(notice)
+
+    ctx = StreamContext(cast("_native.StreamContext", Engine()))
+    ctx.behind(5, Headroom())
+    ctx.behind(3, Headroom(time=timedelta(seconds=1)))
+    ctx.replan()
+    assert sent == [
+        ("behind", 5, None, None),
+        ("behind", 3, None, timedelta(seconds=1)),
+        ("replan",),
+    ]
 
 
 def test_a_string_is_not_a_list_of_partitions(tmp_path: Path, connectors: Path) -> None:

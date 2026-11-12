@@ -17,6 +17,7 @@ __all__ = [
     "DestinationFactory",
     "Events",
     "Host",
+    "Notice",
     "Pipeline",
     "Run",
     "SourceFactory",
@@ -121,6 +122,14 @@ class StreamContext:
     @property
     def limits(self) -> list[tuple[str, int]]: ...
     def stopped(self) -> bool: ...
+    def notify(self, notice: Notice) -> None: ...
+
+@final
+class Notice:
+    @staticmethod
+    def replan() -> Notice: ...
+    @staticmethod
+    def behind(records: int, bytes: int | None, time: timedelta | None) -> Notice: ...
 
 class _Stream(Protocol):
     @property

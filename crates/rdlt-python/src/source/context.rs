@@ -2,14 +2,15 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use pyo3::exceptions::PyValueError;
-use pyo3::{PyErr, pyclass, pymethods};
-use rdlt_connector::{Emitter, Partition};
+use pyo3::{Bound, PyErr, Python, pyclass, pymethods};
+use rdlt_connector::{Emitter, Headroom, Partition};
 use serde_json::value::RawValue;
 
 use crate::source::PyCursor;
-use crate::source::partition::Outlet;
+use crate::source::partition::{self, Outlet, Pushed};
 
 /// Whether the engine waits for a checkpoint, as the read last saw it.
 #[derive(Clone, Debug, Default)]
@@ -143,6 +144,50 @@ impl NativeStreamContext {
     /// Whether the engine asked the read to stop, or stopped listening.
     fn stopped(&self) -> bool {
         self.outlet.gone()
+    }
+
+    /// Gives the engine `notice` after what the read yielded before, waiting for the engine with
+    /// the GIL released; nothing once the read has gone, which its next yield then finds.
+    fn notify(&self, py: Python<'_>, notice: &Bound<'_, NativeNotice>) {
+        if let Some(sent) = self.outlet.sender() {
+            partition::send(py, &sent, notice.get().pushed());
+        }
+    }
+}
+
+/// What a read tells the engine beside what it yields, made where the read says it, so a value
+/// the engine cannot take fails the read there: its partitions changed, or how far behind it is.
+#[pyclass(module = "rdlt._native", name = "Notice", frozen)]
+pub(crate) struct NativeNotice {
+    /// How far behind the read is, none for a change of its partitions.
+    behind: Option<(u64, Headroom)>,
+}
+
+#[pymethods]
+impl NativeNotice {
+    /// That the stream's partitions changed.
+    #[staticmethod]
+    fn replan() -> Self {
+        Self { behind: None }
+    }
+
+    /// That the read is `records` behind its source's newest, and that the source keeps `bytes`
+    /// more, or for `time` more, before it drops where the read stands.
+    #[staticmethod]
+    fn behind(records: u64, bytes: Option<u64>, time: Option<Duration>) -> Self {
+        Self {
+            behind: Some((records, Headroom { bytes, time })),
+        }
+    }
+}
+
+impl NativeNotice {
+    /// What it is pushed as.
+    fn pushed(&self) -> Pushed {
+        match self.behind {
+            None => Pushed::Replan,
+            Some((records, headroom)) => Pushed::Behind { records, headroom },
+        }
     }
 }
 

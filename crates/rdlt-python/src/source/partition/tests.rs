@@ -64,6 +64,8 @@ fn rows_batches_and_checkpoints_arrive_in_the_order_they_were_yielded() {
                 Pushed::Json(_) => "json",
                 Pushed::Batch(_) => "batch",
                 Pushed::Checkpoint(_) => "checkpoint",
+                Pushed::Replan => "replan",
+                Pushed::Behind { .. } => "behind",
                 Pushed::Failed(error) => panic!("failed: {error}"),
             })
             .collect();
@@ -289,6 +291,34 @@ fn a_stopped_read_returns_while_its_generator_is_blocked() {
         assert!(
             closed,
             "the generator was not closed once its thread could end"
+        );
+    });
+}
+
+#[test]
+fn a_replan_and_a_lag_reach_the_read_among_what_it_yielded() {
+    embedded::with(|py| {
+        let reading = started(
+            py,
+            "import datetime\nfrom rdlt._native import Notice\ndef read(p, c, x):\n    yield {'n': 1}\n    x.notify(Notice.replan())\n    x.notify(Notice.behind(3, 10, datetime.timedelta(seconds=2)))\n    yield {'n': 2}",
+        );
+        let pushed = drained(py, reading);
+        let [
+            Pushed::Json(_),
+            Pushed::Replan,
+            Pushed::Behind { records, headroom },
+            Pushed::Json(_),
+        ] = &pushed[..]
+        else {
+            panic!("a row, a replan, a lag and a row: {pushed:?}")
+        };
+        assert_eq!(*records, 3);
+        assert_eq!(
+            *headroom,
+            rdlt_connector::Headroom {
+                bytes: Some(10),
+                time: Some(Duration::from_secs(2)),
+            }
         );
     });
 }

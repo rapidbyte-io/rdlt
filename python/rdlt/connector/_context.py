@@ -5,9 +5,10 @@ from __future__ import annotations
 import enum
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
-from rdlt import _native
+from rdlt import _native, _reading
 from rdlt.connector._cursor import Cursor
 
 
@@ -112,6 +113,21 @@ class Limits:
     """Bytes in any other control message."""
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Headroom:
+    """How much more a source's retention keeps before it drops where a read stands.
+
+    It says it by bytes, by time or by both, as the Rust SDK's `Headroom` does, and by neither
+    where the source does not say. Retention is a pipeline's buffer through an outage, so an
+    operator watches the headroom; the engine reports it, and none of its decisions reads it.
+    """
+
+    bytes: int | None = None
+    """Bytes the source may still take before it drops where the read stands."""
+    time: timedelta | None = None
+    """How long before it drops where the read stands."""
+
+
 class StreamContext:
     """What one partition's read is told: its partition, what it reads within, and when to stop.
 
@@ -163,6 +179,37 @@ class StreamContext:
         with the run, rather than at its next yield.
         """
         return self._native.stopped()
+
+    def replan(self) -> None:
+        """Tells the engine the stream's partitions changed, after what the read yielded before.
+
+        As a topic's partitions increased or a consumer's rebalanced, a run that follows its
+        source plans the stream again now, rather than at its next interval. A sync read waits,
+        as its yield does, for the engine to take it. An async read's call returns at once, and
+        the notice is sent in its turn, so the event loop keeps running; said again before it was
+        sent, it is sent once. Said from another thread, it is sent as a sync read's is, and may
+        take the room the loop's next send was to have, which that send then waits for.
+        """
+        self._notify(_native.Notice.replan(), "replan")
+
+    def behind(self, records: int, headroom: Headroom) -> None:
+        """Tells the engine the read is `records` behind its source's newest, and its `headroom`.
+
+        The source measures both: the run's report says the stream's lag, over its partitions,
+        and its least headroom of each measure. A sync read waits, as its yield does, for the
+        engine to take it. An async read's call returns at once, and the lag is sent in its turn,
+        so the event loop keeps running; a lag said again before it was sent replaces it. Said
+        from another thread, it is sent as a sync read's is, and may take the room the loop's next
+        send was to have, which that send then waits for.
+        """
+        self._notify(_native.Notice.behind(records, headroom.bytes, headroom.time), "behind")
+
+    def _notify(self, notice: _native.Notice, kind: str) -> None:
+        router = _reading.router(self._native)
+        if router is None:
+            self._native.notify(notice)
+        else:
+            router.notify(notice, kind)
 
 
 def checkpoint(cursor: Cursor) -> _native.Checkpoint:
