@@ -6,12 +6,14 @@
 #[cfg(test)]
 mod tests;
 
+use std::mem;
+
 use bytes::Bytes;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{
     PyAnyMethods as _, PyBool, PyBoolMethods as _, PyDict, PyDictMethods as _, PyFloat,
-    PyFloatMethods as _, PyInt, PyList, PyString, PyStringMethods as _, PyTuple, PyType,
-    PyTypeMethods as _,
+    PyFloatMethods as _, PyInt, PyIterator, PyList, PyString, PyStringMethods as _, PyTuple,
+    PyType, PyTypeMethods as _,
 };
 use pyo3::{Bound, Py, PyAny, PyErr, Python};
 use rdlt_connector::ConnectorError;
@@ -322,36 +324,6 @@ impl Writer<'_, '_> {
     }
 }
 
-/// The push being filled, and where a full one goes.
-struct Cut<F> {
-    limit: usize,
-    filling: Vec<u8>,
-    send: F,
-}
-
-impl<F: FnMut(Bytes) -> bool> Cut<F> {
-    /// Adds `line`; false once the send refused a push, so no more is written.
-    fn add(&mut self, line: &[u8], row: usize) -> Result<bool, Unwritten> {
-        if line.len() > self.limit {
-            return Err(Unwritten::Large {
-                row,
-                bytes: line.len(),
-                limit: self.limit,
-            });
-        }
-        if self.filling.len() + line.len() > self.limit && !self.flush() {
-            return Ok(false);
-        }
-        self.filling.extend_from_slice(line);
-        Ok(true)
-    }
-
-    /// Hands over what is filling; false once the send refused it.
-    fn flush(&mut self) -> bool {
-        self.filling.is_empty() || (self.send)(Bytes::from(std::mem::take(&mut self.filling)))
-    }
-}
-
 /// One row, `number` of its yield, as a JSON line.
 fn line(
     py: Python<'_>,
@@ -377,40 +349,103 @@ fn line(
     Ok(writer.out)
 }
 
-/// Writes `rows`, a mapping or a list or tuple of mappings, as JSON lines, each full push of at
-/// most `limits.push_bytes` handed to `send` as it fills, before the next row is written; true
-/// when every row was sent, false where `send` answered false.
-///
-/// # Errors
-///
-/// An [`Unwritten`] for the first row that is no mapping, holds a value with no JSON form, nests
-/// past `limits.depth`, or is larger than a whole push.
-pub(crate) fn each_push(
-    py: Python<'_>,
-    rows: &Bound<'_, PyAny>,
+/// The rows of one yield, as JSON lines cut into pushes of at most `limits.push_bytes`, written
+/// a push at a time: no row is read past the first that does not fit the push being filled.
+pub(crate) struct Rows {
+    /// The rows not yet read; none once every row has been.
+    left: Option<Left>,
+    /// The rows read.
+    read: usize,
     limits: JsonLimits,
-    send: impl FnMut(Bytes) -> bool,
-) -> Result<bool, Unwritten> {
-    let typed = Typed::of(py).map_err(|error| raised(py, &error))?;
-    let mut cut = Cut {
-        limit: limits.push_bytes,
-        filling: Vec::new(),
-        send,
-    };
-    if rows.is_instance_of::<PyDict>() {
-        if !cut.add(&line(py, &typed, rows, 1, limits)?, 1)? {
-            return Ok(false);
-        }
-    } else if rows.is_instance_of::<PyList>() || rows.is_instance_of::<PyTuple>() {
-        let iterator = rows.try_iter().map_err(|error| raised(py, &error))?;
-        for (row, number) in iterator.zip(1..) {
-            let row = row.map_err(|error| raised(py, &error))?;
-            if !cut.add(&line(py, &typed, &row, number, limits)?, number)? {
-                return Ok(false);
+    filling: Vec<u8>,
+}
+
+/// The rows of a yield not yet read.
+enum Left {
+    /// A mapping yielded alone.
+    One(Py<PyDict>),
+    /// A list's or a tuple's.
+    Many(Py<PyIterator>),
+}
+
+impl Rows {
+    /// The rows `rows` holds: a mapping, or a list or tuple of mappings.
+    ///
+    /// # Errors
+    ///
+    /// [`Unwritten::NotObject`] for anything else, and [`Unwritten::Raised`] where a list's
+    /// iteration raised.
+    pub(crate) fn new(
+        py: Python<'_>,
+        rows: &Bound<'_, PyAny>,
+        limits: JsonLimits,
+    ) -> Result<Self, Unwritten> {
+        let left = if let Ok(row) = rows.cast::<PyDict>() {
+            Left::One(row.clone().unbind())
+        } else if rows.is_instance_of::<PyList>() || rows.is_instance_of::<PyTuple>() {
+            let iterator = rows.try_iter().map_err(|error| raised(py, &error))?;
+            Left::Many(iterator.unbind())
+        } else {
+            return Err(Unwritten::NotObject { row: 1 });
+        };
+        Ok(Self {
+            left: Some(left),
+            read: 0,
+            limits,
+            filling: Vec::new(),
+        })
+    }
+
+    /// The next push: a full one, or the last, which the rows ran out filling; none after it.
+    ///
+    /// # Errors
+    ///
+    /// An [`Unwritten`] for the first row that is no mapping, holds a value with no JSON form,
+    /// nests past `limits.depth`, or is larger than a whole push.
+    pub(crate) fn next(&mut self, py: Python<'_>) -> Result<Option<Bytes>, Unwritten> {
+        if self.left.is_some() {
+            let typed = Typed::of(py).map_err(|error| raised(py, &error))?;
+            while let Some(row) = self.row(py)? {
+                self.read += 1;
+                let line = line(py, &typed, &row, self.read, self.limits)?;
+                if line.len() > self.limits.push_bytes {
+                    return Err(Unwritten::Large {
+                        row: self.read,
+                        bytes: line.len(),
+                        limit: self.limits.push_bytes,
+                    });
+                }
+                if self.filling.len() + line.len() > self.limits.push_bytes {
+                    let full = mem::replace(&mut self.filling, line);
+                    return Ok(Some(Bytes::from(full)));
+                }
+                self.filling.extend_from_slice(&line);
             }
         }
-    } else {
-        return Err(Unwritten::NotObject { row: 1 });
+        if self.filling.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Bytes::from(mem::take(&mut self.filling))))
     }
-    Ok(cut.flush())
+
+    /// The next row, none once every row has been read.
+    fn row<'py>(&mut self, py: Python<'py>) -> Result<Option<Bound<'py, PyAny>>, Unwritten> {
+        let row = match &self.left {
+            None => None,
+            Some(Left::One(row)) => {
+                let row = row.bind(py).clone().into_any();
+                self.left = None;
+                Some(row)
+            }
+            Some(Left::Many(iterator)) => {
+                let next = iterator.bind(py).clone().next();
+                let row = next.transpose().map_err(|error| raised(py, &error))?;
+                if row.is_none() {
+                    self.left = None;
+                }
+                row
+            }
+        };
+        Ok(row)
+    }
 }
