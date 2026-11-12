@@ -72,8 +72,14 @@ class _Stream(Protocol):
         """The stream's description, as JSON."""
         ...
 
-    def partitions(self) -> Iterable[tuple[str, bool]]:
-        """Each partition to read, and whether it never ends."""
+    def partitions(
+        self,
+        phase: int,
+        positions: list[tuple[str, bool, str | None]],
+        generation: int | None,
+        completed: list[int],
+    ) -> Iterable[tuple[str, bool]]:
+        """Each partition to read, and whether it never ends, given the stream's state."""
         ...
 
     def committed(self, cursors: list[tuple[str, str | None]]) -> None:
@@ -251,9 +257,19 @@ def checked(source: _Source) -> None:
     source.check()
 
 
-def partitions(stream: _Stream) -> list[tuple[str, bool]]:
-    """The partitions of `stream`, each with whether it never ends."""
-    return list(stream.partitions())
+def partitions(
+    stream: _Stream,
+    phase: int,
+    positions: list[tuple[str, bool, str | None]],
+    generation: int | None,
+    completed: list[int],
+) -> list[tuple[str, bool]]:
+    """The partitions of `stream`, each with whether it never ends, given its committed state.
+
+    The state is its phase, each partition's position, its id, whether it is done and its cursor
+    as JSON, the full read in progress and the full reads recently completed.
+    """
+    return list(stream.partitions(phase, positions, generation, completed))
 
 
 def committed(stream: _Stream, cursors: list[tuple[str, str | None]]) -> None:

@@ -14,9 +14,9 @@ use pyo3::types::{PyAnyMethods as _, PyTuple};
 use pyo3::{Bound, IntoPyObject as _, Py, PyAny, PyErr, Python, pyclass, pymethods};
 use rdlt_connector::{
     BoxFuture, Checkpointing, ConnectContext, ConnectorError, ConnectorId, ConnectorSpec, Emitter,
-    Partition, PartitionId, ReadMode, ReadStream, Result, ResultExt as _, SourceConnector,
-    SourceFactory, StreamName, StreamSpec, StreamState, Streams, acknowledging_source_factory_from,
-    source_factory_from,
+    Partition, PartitionId, PartitionState, ReadMode, ReadStream, Result, ResultExt as _,
+    SourceConnector, SourceFactory, StreamName, StreamSpec, StreamState, Streams,
+    acknowledging_source_factory_from, source_factory_from,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -74,6 +74,8 @@ struct Declared {
     read_modes: Vec<ReadMode>,
     checkpointing: Checkpointing,
     partitioned: bool,
+    /// Whether its partitions are told where each partition stands.
+    stated: bool,
     replayable: bool,
     /// Whether the stream is told which of its cursors are committed.
     committed: bool,
@@ -85,10 +87,13 @@ struct Declared {
 
 /// One stream of a Python source.
 #[derive(Clone)]
+#[expect(clippy::struct_excessive_bools, reason = "the flags its spec says")]
 pub(crate) struct PythonStream {
     spec: StreamSpec,
     stream: Arc<Py<PyAny>>,
     partitioned: bool,
+    /// Whether its `partitions` is told where each partition stands.
+    stated: bool,
     committed: bool,
     acknowledged: bool,
     cursor_version: u16,
@@ -114,12 +119,36 @@ impl PythonStream {
             spec,
             stream: Arc::new(stream),
             partitioned: declared.partitioned,
+            stated: declared.stated,
             committed: declared.committed,
             acknowledged: declared.acknowledged,
             cursor_version: declared.cursor_version,
         })
     }
+
+    /// Where each partition stands in `state`, as a Python stream is told it: its id, whether it
+    /// is done, and its cursor as JSON, read in the stream's format.
+    fn positions(&self, state: &StreamState) -> Result<Vec<Position>> {
+        state
+            .partitions
+            .iter()
+            .map(|(id, position)| {
+                Ok(match position {
+                    PartitionState::Done => (id.to_string(), true, None),
+                    PartitionState::Cursor(cursor) => {
+                        let PyCursor(cursor) = cursor.decode(self.cursor_version)?;
+                        let cursor = cursor.map(|cursor| cursor.get().to_owned());
+                        (id.to_string(), false, cursor)
+                    }
+                })
+            })
+            .collect()
+    }
 }
+
+/// Where a partition stands, as a Python stream is told it: its id, whether it is done, and its
+/// cursor's JSON text.
+type Position = (String, bool, Option<String>);
 
 /// A connected Python source.
 pub(crate) struct PythonSource {
@@ -177,15 +206,34 @@ impl ReadStream<PythonSource> for PythonStream {
     async fn partitions(
         &self,
         _source: &PythonSource,
-        _state: &StreamState,
+        state: &StreamState,
     ) -> Result<Vec<Partition>> {
         if !self.partitioned {
             return Ok(vec![Partition::single()]);
         }
+        // A cursor is read only where the stream's `partitions` is told the state, as a Rust
+        // stream that ignores its state reads none.
+        let positions = if self.stated {
+            self.positions(state)?
+        } else {
+            Vec::new()
+        };
+        let phase = state.phase;
+        let generation = state.generation.map(|generation| generation.0);
+        let completed: Vec<u64> = state.completed.iter().map(|done| done.0).collect();
         let stream = Arc::clone(&self.stream);
         let keys: Vec<(String, bool)> = called(
             "partitions",
-            move |py| (stream.clone_ref(py),).into_pyobject(py),
+            move |py| {
+                let arguments = (
+                    stream.clone_ref(py),
+                    phase,
+                    positions,
+                    generation,
+                    completed,
+                );
+                arguments.into_pyobject(py)
+            },
             |answered| answered.extract(),
         )
         .await?;
