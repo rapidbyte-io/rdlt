@@ -7,6 +7,10 @@ own, since a thread that ends runs its libraries' teardown, which races the proc
 
 Each call starts in a context of its own, as on a fresh thread. Thread-local state, by contrast, is
 the thread's, as in any pool.
+
+An async read runs on an event loop of its own on its daemon thread, which never waits for the
+engine: what finds no room in the engine is sent by the runtime, which then makes a socket the
+loop watches readable, so the loop runs its other tasks meanwhile.
 """
 
 from __future__ import annotations
@@ -25,21 +29,38 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
 
-# An async read waits for room in the engine with its event loop free: for this many turns of
-# the loop, since room usually comes at once, then with this many seconds between asks.
-_TURNS_BEFORE_PAUSING = 100
-_PAUSE = 0.001
-
-
 class Out(Protocol):
     """The native side of a partition's read."""
 
     def push(self, item: object) -> bool:
-        """Pushes what the read yielded; false once the read has ended or the item failed it."""
+        """Pushes what a sync read yielded, waiting for the engine.
+
+        False once the read has ended or the item failed it.
+        """
         ...
 
-    def has_room(self) -> bool:
-        """Whether a push would be answered without waiting for the engine."""
+    def send(self, said: object) -> bool | None:
+        """Sends what an async read yielded, or a notice it said, without waiting for the engine.
+
+        False once the read has ended or the item failed it, and none where it waits for room,
+        which `watched` then says came: the rest of an item is sent by `resume`, and a notice
+        that found no room was not taken, to be sent again.
+        """
+        ...
+
+    def resume(self) -> bool | None:
+        """Sends the rest of the item whose push waited for room, as `send` does.
+
+        None while that push still waits.
+        """
+        ...
+
+    def watched(self) -> int:
+        """The descriptor readable once what waited for room was sent, or room came."""
+        ...
+
+    def woken(self) -> None:
+        """Takes what made the watched descriptor readable."""
         ...
 
     def finished(self) -> None:
@@ -48,14 +69,6 @@ class Out(Protocol):
 
     def failed(self, error: BaseException) -> None:
         """Says the read ended with `error`."""
-        ...
-
-
-class _Context(Protocol):
-    """A read's native context, as its router sends through it."""
-
-    def notify(self, notice: object) -> None:
-        """Gives the engine `notice`, waiting until the engine takes it."""
         ...
 
 
@@ -179,7 +192,7 @@ async def pushed(opened: AsyncIterable[object], out: Out, context: object) -> No
     What it yields and what its context `context` tells the engine are sent in the order they
     were said, none of them waiting for the engine with the event loop held.
     """
-    router = Router(out, context)
+    router = Router(out, context, asyncio.get_running_loop())
     token = _ROUTER.set(router)
     iterator = aiter(opened)
     try:
@@ -212,44 +225,60 @@ def router(context: object) -> Router | None:
 class Router:
     """Sends what an async read yields and what its context tells the engine, in the order said.
 
-    Each is sent at once where the engine has room and nothing said before it waits. Otherwise it
-    waits its turn, and a task sends it once the engine has room, so the loop keeps running. A
-    yield returns once its item is sent, as a sync read's waits for the engine; a notice returns
-    at once. A Rust read awaits each notice, so it holds one at a time; the router holds, after the
-    last yield waiting, at most one of each kind, a replan being said once and a lag being its
-    newest, which is what the engine makes of a Rust read's.
+    Each is sent at once where nothing said before it waits; one at a time, so what is said while
+    an item is sent goes after the whole of it. What finds no room is sent once the engine has
+    room, the loop waiting meanwhile for a socket the native side makes readable. A yield returns
+    once its item is sent, as a sync read's waits for the engine; a notice returns at once. A
+    Rust read awaits each notice, so it holds one at a time; the router holds, after the last
+    yield waiting, at most one of each kind, a replan being said once and a lag being its newest,
+    which is what the engine makes of a Rust read's.
     """
 
-    def __init__(self, out: Out, context: object) -> None:
+    def __init__(self, out: Out, context: object, loop: asyncio.AbstractEventLoop) -> None:
         self.context = context
         self.thread = threading.get_ident()
         self._out = out
-        # What waits its turn: an item, the kind of notice it is, none for a yield, and the future
-        # its yield waits on.
+        self._loop = loop
+        # What waits its turn: an item, the rest of one part-sent, or a notice; the kind of notice
+        # it is, none for a yield; and the future its yield waits on.
         self._waiting: deque[tuple[object, str | None, asyncio.Future[bool] | None]] = deque()
         self._sending: asyncio.Task[None] | None = None
+        self._woken: asyncio.Future[None] | None = None
+        self._watched = out.watched()
+        try:
+            loop.add_reader(self._watched, self._wake)
+        except NotImplementedError as refused:
+            message = (
+                "an async read waits for room in the engine through a socket its event loop "
+                f"watches, and {type(loop).__name__} cannot watch one: it has no add_reader"
+            )
+            raise RuntimeError(message) from refused
 
     async def yielded(self, item: object) -> bool:
         """Sends `item` after what was said before it; false once the read has gone."""
-        if not self._waiting and self._out.has_room():
-            return self._out.push(item)
-        done: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        if not self._waiting and self._sending is None:
+            sent = self._out.send(item)
+            if sent is not None:
+                return sent
+            item = _REST
+        done: asyncio.Future[bool] = self._loop.create_future()
         self._wait(item, None, done)
         return await done
 
     def notify(self, notice: object, kind: str) -> None:
         """Gives the engine `notice`, of `kind`, after what was said before it."""
-        if not self._waiting and self._out.has_room():
-            cast("_Context", self.context).notify(notice)
-            return
-        # One of its kind said since the last yield waiting is said again by this one.
-        for index in range(len(self._waiting) - 1, -1, -1):
-            said = self._waiting[index][1]
-            if said is None:
-                break
-            if said == kind:
-                del self._waiting[index]
-                break
+        if not self._waiting and self._sending is None:
+            if self._out.send(notice) is not None:
+                return
+        else:
+            # One of its kind said since the last yield waiting is said again by this one.
+            for index in range(len(self._waiting) - 1, -1, -1):
+                said = self._waiting[index][1]
+                if said is None:
+                    break
+                if said == kind:
+                    del self._waiting[index]
+                    break
         self._wait(notice, kind, None)
 
     async def sent(self) -> None:
@@ -258,35 +287,53 @@ class Router:
             await self._sending
 
     def stop(self) -> None:
-        """Stops sending, dropping what waits."""
+        """Stops sending, dropping what waits, and stops watching for room."""
         self._waiting.clear()
         if self._sending is not None:
             self._sending.cancel()
+        self._loop.remove_reader(self._watched)
 
-    def _wait(self, item: object, kind: str | None, done: asyncio.Future[bool] | None) -> None:
-        self._waiting.append((item, kind, done))
+    def _wait(self, said: object, kind: str | None, done: asyncio.Future[bool] | None) -> None:
+        self._waiting.append((said, kind, done))
         if self._sending is None:
-            self._sending = asyncio.get_running_loop().create_task(self._send())
+            self._sending = self._loop.create_task(self._send())
 
     async def _send(self) -> None:
         try:
             while self._waiting:
-                await _room(self._out)
-                item, kind, done = self._waiting.popleft()
-                if kind is not None:
-                    cast("_Context", self.context).notify(item)
-                elif done is not None and not done.done():
-                    done.set_result(self._out.push(item))
+                said, kind, done = self._waiting[0]
+                if said is _REST:
+                    sent = self._out.resume()
+                elif done is not None and done.done():
+                    # A yield cancelled before its item was sent.
+                    self._waiting.popleft()
+                    continue
+                else:
+                    sent = self._out.send(said)
+                if sent is None:
+                    if kind is None:
+                        self._waiting[0] = (_REST, None, done)
+                    await self._room()
+                    continue
+                self._waiting.popleft()
+                if done is not None and not done.done():
+                    done.set_result(sent)
         finally:
             self._sending = None
 
+    async def _room(self) -> None:
+        self._woken = self._loop.create_future()
+        await self._woken
 
-async def _room(out: Out) -> None:
-    """Waits for the engine to have room, so what else runs on the loop keeps running."""
-    turns = 0
-    while not out.has_room():
-        await asyncio.sleep(0 if turns < _TURNS_BEFORE_PAUSING else _PAUSE)
-        turns += 1
+    def _wake(self) -> None:
+        self._out.woken()
+        woken = self._woken
+        if woken is not None and not woken.done():
+            woken.set_result(None)
+
+
+_REST = object()
+"""What waits in place of an item whose push waited for room: the rest of it, which goes first."""
 
 
 def serve(calls: _Calls) -> None:

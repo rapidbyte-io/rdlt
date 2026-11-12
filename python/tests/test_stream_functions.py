@@ -7,6 +7,7 @@ import contextlib
 import gc
 import json
 import logging
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -1127,32 +1128,6 @@ def test_a_task_an_async_stream_function_leaves_running_is_cancelled_and_cleans_
     assert cleaned == [True]
 
 
-def test_an_async_read_leaves_its_event_loop_running_while_the_engine_is_full() -> None:
-    class Full:
-        room = False
-        room_at_push: bool | None = None
-
-        def has_room(self) -> bool:
-            return self.room
-
-        def push(self, _item: object) -> bool:
-            self.room_at_push = self.room
-            return True
-
-    out = Full()
-
-    async def opening() -> None:
-        out.room = True
-
-    async def reading() -> AsyncIterator[object]:
-        opened = asyncio.create_task(opening())
-        yield {"n": 1}
-        await opened
-
-    asyncio.run(_reading.pushed(reading(), cast("_reading.Out", out), object()))
-    assert out.room_at_push is True
-
-
 class _Notice:
     """What the native `Notice` makes, as the tests below read it."""
 
@@ -1166,23 +1141,56 @@ class _Notice:
 
 
 class _Engine:
-    """A read's out and its context at once, whose room a test gives: a send without it fails."""
+    """A read's out and its context at once, whose room a test gives.
+
+    What finds no room waits for it: an item is kept and sent once room came, as the native side
+    sends it, and a notice is not taken. Giving room makes the descriptor the read watches
+    readable.
+    """
 
     def __init__(self) -> None:
-        self.room = False
+        self._room = False
         self.sent: list[object] = []
+        self._kept: list[object] = []
+        self._watched, self._rung = socket.socketpair()
+        self._watched.settimeout(0)
 
-    def has_room(self) -> bool:
-        return self.room
+    @property
+    def room(self) -> bool:
+        return self._room
 
-    def push(self, item: object) -> bool:
-        assert self.room, "a push waited for the engine"
-        self.sent.append(item)
+    @room.setter
+    def room(self, room: bool) -> None:
+        self._room = room
+        if room:
+            self._rung.send(b"\0")
+
+    def send(self, said: object) -> bool | None:
+        if self._room:
+            self.sent.append(said)
+            return True
+        # The tests' notices are what `_Notice` makes, tuples; anything else is an item.
+        if not isinstance(said, tuple):
+            self._kept.append(said)
+        return None
+
+    def resume(self) -> bool | None:
+        if not self._room:
+            return None
+        self.sent.extend(self._kept)
+        self._kept.clear()
         return True
 
-    def notify(self, notice: object) -> None:
-        assert self.room, "a notice waited for the engine"
-        self.sent.append(notice)
+    def watched(self) -> int:
+        return self._watched.fileno()
+
+    def woken(self) -> None:
+        with contextlib.suppress(BlockingIOError):
+            self._watched.recv(64)
+
+    def close(self) -> None:
+        self._watched.close()
+        self._rung.close()
 
 
 def _routed(reading: Callable[[StreamContext, _Engine], AsyncIterator[object]]) -> list[object]:
@@ -1190,8 +1198,45 @@ def _routed(reading: Callable[[StreamContext, _Engine], AsyncIterator[object]]) 
     engine = _Engine()
     ctx = StreamContext(cast("_native.StreamContext", engine))
     read = _reading.pushed(reading(ctx, engine), cast("_reading.Out", engine), engine)
-    asyncio.run(asyncio.wait_for(read, timeout=30))
+    try:
+        asyncio.run(asyncio.wait_for(read, timeout=30))
+    finally:
+        engine.close()
     return engine.sent
+
+
+def test_an_async_read_leaves_its_event_loop_running_while_the_engine_is_full() -> None:
+    async def reading(_ctx: StreamContext, engine: _Engine) -> AsyncIterator[object]:
+        async def opening() -> None:
+            engine.room = True
+
+        opened = asyncio.create_task(opening())
+        yield {"n": 1}
+        await opened
+
+    assert _routed(reading) == [{"n": 1}]
+
+
+def test_an_async_read_on_a_loop_that_cannot_watch_a_socket_fails_rather_than_waits() -> None:
+    class Unwatching(asyncio.SelectorEventLoop):
+        def add_reader(self, *_: object) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+            raise NotImplementedError
+
+    async def reading() -> AsyncIterator[object]:
+        yield {"n": 1}
+
+    engine = _Engine()
+    read = _reading.pushed(reading(), cast("_reading.Out", engine), engine)
+    try:
+        with (
+            asyncio.Runner(loop_factory=Unwatching) as runner,
+            pytest.raises(RuntimeError) as raised,
+        ):
+            runner.run(read)
+    finally:
+        engine.close()
+    assert isinstance(raised.value.__cause__, NotImplementedError)
+    assert engine.sent == []
 
 
 def test_an_async_read_s_notices_leave_its_event_loop_running_while_the_engine_is_full(

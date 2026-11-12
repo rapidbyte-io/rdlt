@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-STATUSES = {"flowing.py": 7, "ran.py": 0}
+STATUSES = {"awaiting.py": 7, "flowing.py": 7, "ran.py": 0}
 """Each script run, and the status it exits with."""
 AT_ONCE = 8
 """Runs at once: two for each of a runner's four cores, since a run waits on its engine more than

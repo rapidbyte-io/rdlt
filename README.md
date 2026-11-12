@@ -316,7 +316,8 @@ Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, ben
   `stopped()`. It says the stream's partitions changed with `ctx.replan()`, and how far behind its
   source it is with `ctx.behind(records, Headroom(...))`, which the run's report totals for each
   stream. In an async read both return at once, and are sent in their turn, so the event loop
-  keeps running.
+  keeps running; a yield waits until its item is sent, with the loop running meanwhile, however
+  slow the destination.
 - **Destinations.** `@destination` takes its configuration. Its instance's `capabilities()`
   answers what it can store, a `Capabilities`, which `Capabilities.minimal()` starts and which it
   is where the class has none, as a Rust destination's `capabilities` does; capabilities Rust's

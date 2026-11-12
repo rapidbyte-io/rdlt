@@ -4,12 +4,19 @@
 //! interpreter that exits ends the thread in Python's own frames. The read holds its daemon
 //! thread until it ends, which then waits for another call. The Rust side, [`PartitionOut`],
 //! holds the GIL only while Python runs and while it turns what Python yielded into pushes; it
-//! releases it while it waits for the engine or reads a stream.
+//! releases it while it reads a stream.
+//!
+//! A sync read's push waits for the engine with the GIL released. An async read's never waits:
+//! a push that finds the channel full is sent by a task of the runtime, which then wakes the
+//! read's event loop through a socket the loop watches, so the loop runs on meanwhile.
 
 mod pushes;
+mod room;
 #[cfg(test)]
 mod tests;
 
+use std::mem;
+use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -21,12 +28,15 @@ use pyo3::{Bound, IntoPyObject as _, Py, PyAny, PyErr, Python, intern, pyclass, 
 use rdlt_connector::{ConnectorError, Headroom};
 use serde_json::value::RawValue;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::calls::{self, Unanswered};
 use crate::errors::Failure;
 use crate::json::JsonLimits;
-use crate::source::context::NativeStreamContext;
+use crate::runtime;
+use crate::source::context::{NativeNotice, NativeStreamContext};
 use pushes::Pushes;
+use room::Room;
 
 /// What a partition's thread sends its read.
 #[derive(Debug)]
@@ -112,6 +122,7 @@ impl Reading {
             sent: outlet.clone(),
             limits,
             told: Arc::clone(&told),
+            room: Mutex::default(),
         };
         let unread = (outlet, Arc::clone(&told));
         let name = name.to_owned();
@@ -155,18 +166,21 @@ pub(crate) fn send(py: Python<'_>, sent: &mpsc::Sender<Pushed>, pushed: Pushed) 
     py.detach(|| sent.blocking_send(pushed).is_ok())
 }
 
-/// What a partition's thread pushes to: its read's channel, and the limits a read keeps within.
+/// What a partition's thread pushes to: its read's channel, the limits a read keeps within, and
+/// what an async read has waiting for room.
 #[pyclass(module = "rdlt._native", name = "PartitionOut", frozen)]
 pub(crate) struct PartitionOut {
     sent: Outlet,
     limits: JsonLimits,
     told: Arc<AtomicBool>,
+    /// Locked only by the read's own thread, for Rust alone: nothing under it runs Python.
+    room: Mutex<Room>,
 }
 
 #[pymethods]
 impl PartitionOut {
-    /// Pushes what the read yielded, in order; false once the read has gone or the item failed
-    /// it, the read then being told so.
+    /// Pushes what a sync read yielded, in order, waiting for the engine with the GIL released;
+    /// false once the read has gone or the item failed it, the read then being told so.
     fn push(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> bool {
         let Some(sent) = self.sent.sender() else {
             return false;
@@ -174,28 +188,148 @@ impl PartitionOut {
         pushed(py, item, self.limits, &sent)
     }
 
-    /// Whether a push would be answered without waiting for the engine, as one is once the read
-    /// has gone.
-    fn has_room(&self) -> bool {
-        self.sent
-            .sender()
-            .is_none_or(|sent| sent.is_closed() || sent.capacity() > 0)
+    /// Sends what an async read said, an item or a notice, without waiting for the engine: true
+    /// once all of it is in the channel, false once the read has gone or the item failed it, and
+    /// none where it waits for room, which `watched` then says has come.
+    ///
+    /// The runtime sends an item's push that found no room, and `resume` then sends its rest. A
+    /// notice that found none is not taken: it is said again once room came.
+    fn send(&self, py: Python<'_>, said: &Bound<'_, PyAny>) -> Option<bool> {
+        let Some(sender) = self.sent.sender() else {
+            return Some(false);
+        };
+        if let Ok(notice) = said.cast::<NativeNotice>() {
+            return match sender.try_send(notice.get().pushed()) {
+                Ok(()) => Some(true),
+                Err(TrySendError::Closed(_)) => Some(false),
+                Err(TrySendError::Full(_)) => self.waits(py, &sender, None, None),
+            };
+        }
+        match Pushes::of(py, said, self.limits) {
+            Ok(pushes) => self.sending(py, &sender, pushes),
+            Err(error) => Some(self.fail(py, &sender, error)),
+        }
     }
 
-    /// Says the read yielded everything, and closes its channel.
+    /// Sends the rest of the item whose push waited for room, as `send` does; none while that
+    /// push still waits.
+    fn resume(&self, py: Python<'_>) -> Option<bool> {
+        let landed = self.room.lock().landed();
+        let (sent, rest) = landed?;
+        let sender = self.sent.sender().filter(|_| sent);
+        match (sender, rest) {
+            (None, _) => Some(false),
+            (Some(_), None) => Some(true),
+            (Some(sender), Some(pushes)) => self.sending(py, &sender, pushes),
+        }
+    }
+
+    /// The descriptor of the socket that is readable once what waited for room was sent, or
+    /// room came; it is made at the first ask, and closes once the read has said how it ended
+    /// and the runtime has let go of it.
+    fn watched(&self) -> Result<RawFd, PyErr> {
+        Ok(self.room.lock().watched()?)
+    }
+
+    /// Takes what made the watched socket readable.
+    fn woken(&self) {
+        self.room.lock().woken();
+    }
+
+    /// Says the read yielded everything, lets go of what waits for room, and closes its channel.
     fn finished(&self) {
         self.told.store(true, Ordering::Release);
+        let room = mem::take(&mut *self.room.lock());
         self.sent.close();
+        drop(room);
     }
 
-    /// Says the read ended with `error`, and closes its channel.
+    /// Says the read ended with `error`, lets go of what waits for room, and closes its channel.
     fn failed(&self, py: Python<'_>, error: &Bound<'_, PyAny>) {
+        let room = mem::take(&mut *self.room.lock());
+        drop(room);
         failed(
             py,
             &self.sent,
             &self.told,
             &PyErr::from_value(error.clone()),
         );
+    }
+}
+
+impl PartitionOut {
+    /// Sends `pushes` while the channel has room; the first push that finds none waits for it,
+    /// the rest kept for `resume`.
+    fn sending(
+        &self,
+        py: Python<'_>,
+        sender: &mpsc::Sender<Pushed>,
+        mut pushes: Pushes,
+    ) -> Option<bool> {
+        loop {
+            match pushes.next(py) {
+                Ok(None) => return Some(true),
+                Ok(Some(push)) => match sender.try_send(push) {
+                    Ok(()) => {}
+                    Err(TrySendError::Closed(_)) => return Some(false),
+                    Err(TrySendError::Full(push)) => {
+                        return self.waits(py, sender, Some(push), Some(pushes));
+                    }
+                },
+                Err(error) => return Some(self.fail(py, sender, error)),
+            }
+        }
+    }
+
+    /// Has the runtime send `push`, or wait for room where there is none, keeping `rest`: none,
+    /// the read waits, or false where nothing could wait for it, the read then failing.
+    fn waits(
+        &self,
+        py: Python<'_>,
+        sender: &mpsc::Sender<Pushed>,
+        push: Option<Pushed>,
+        rest: Option<Pushes>,
+    ) -> Option<bool> {
+        let waited = match runtime::get(py) {
+            Ok(runtime) => self.room.lock().wait(runtime, sender, push),
+            Err(error) => Err(std::io::Error::other(error.to_string())),
+        };
+        match waited {
+            Ok(()) => {
+                if let Some(rest) = rest {
+                    self.room.lock().keep(rest);
+                }
+                None
+            }
+            Err(why) => {
+                // What was left of the item goes outside the lock: dropping it may run Python.
+                drop(rest);
+                let error = ConnectorError::internal(format!(
+                    "an async read could not wait for room in the engine: {why}"
+                ));
+                Some(self.fail(py, sender, error))
+            }
+        }
+    }
+
+    /// Ends the read with `error`: nothing is sent after it, and it reaches the engine once the
+    /// channel has room, without the loop waiting for it; false, the read has gone.
+    fn fail(&self, py: Python<'_>, sender: &mpsc::Sender<Pushed>, error: ConnectorError) -> bool {
+        self.told.store(true, Ordering::Release);
+        self.sent.close();
+        if let Err(TrySendError::Full(failure)) = sender.try_send(Pushed::Failed(error)) {
+            match runtime::get(py) {
+                // Not the read's to cancel: it ends once the engine takes it or stops.
+                Ok(runtime) => drop(runtime.spawn({
+                    let sender = sender.clone();
+                    async move { sender.send(failure).await.ok() }
+                })),
+                Err(_) => {
+                    send(py, sender, failure);
+                }
+            }
+        }
+        false
     }
 }
 
