@@ -343,9 +343,12 @@ def placed(connector: type) -> tuple[_native.SourceFactory, Placement[_Declared]
 
 def _planned(partitions: Callable[..., _Answered], state: StreamState) -> _Answered:
     """What `partitions` answers, given `state` where it names a `state` parameter."""
-    if _names_state(partitions):
-        return partitions(state=state)
-    return partitions()
+    named = inspect.signature(partitions).parameters.get("state")
+    if named is None:
+        return partitions()
+    if named.kind is inspect.Parameter.POSITIONAL_ONLY:
+        return partitions(state)
+    return partitions(state=state)
 
 
 def _names_state(partitions: Callable[..., _Answered]) -> bool:
