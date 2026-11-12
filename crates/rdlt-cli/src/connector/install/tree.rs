@@ -80,15 +80,15 @@ pub(super) fn launcher(
 }
 
 /// The Python that serves `module`'s `attribute`: the connector class it names, or each class of
-/// the tuple it names, a source and a destination one process serves together.
+/// the tuple it names, a source and a destination one process serves together, and nothing else,
+/// so an installed connector serves no certification probe.
 pub(super) fn serving(module: &str, attribute: &str) -> String {
     let head = attribute
         .split_once('.')
         .map_or(attribute, |(head, _)| head);
     format!(
-        "from rdlt.connector import serve\nfrom {module} import {head}\n\
-         raise SystemExit(serve(*{attribute}) if isinstance({attribute}, tuple) else \
-         serve({attribute}))\n"
+        "from rdlt.connector._serve import installed\nfrom {module} import {head}\n\
+         raise SystemExit(installed({attribute}))\n"
     )
 }
 

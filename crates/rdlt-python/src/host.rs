@@ -42,10 +42,10 @@ pub(crate) struct Settings {
 /// `rdlt.Tls`'s files: the host's certificate and key, and the CA its connectors' certificates
 /// chain to.
 #[derive(FromPyObject)]
-struct TlsFiles {
-    cert: PathBuf,
-    key: PathBuf,
-    ca: PathBuf,
+pub(crate) struct TlsFiles {
+    pub(crate) cert: PathBuf,
+    pub(crate) key: PathBuf,
+    pub(crate) ca: PathBuf,
 }
 
 /// What a host's operator allows; a pipeline is built against a host made from it.

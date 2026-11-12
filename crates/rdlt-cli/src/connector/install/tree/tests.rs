@@ -18,10 +18,9 @@ fn a_launcher_imports_its_entry_point_and_serves_it_with_the_tree_s_interpreter(
     let (module, attribute) = target("tickets.source:Sources.Tickets").unwrap();
     let written = launcher(tree, module, attribute).unwrap();
     let expected = "#!/connectors/rdlt-connector-tickets/bin/python -I\n\
-                    from rdlt.connector import serve\n\
+                    from rdlt.connector._serve import installed\n\
                     from tickets.source import Sources\n\
-                    raise SystemExit(serve(*Sources.Tickets) if isinstance(Sources.Tickets, \
-                    tuple) else serve(Sources.Tickets))\n";
+                    raise SystemExit(installed(Sources.Tickets))\n";
     assert_eq!(String::from_utf8(written).unwrap(), expected);
 }
 

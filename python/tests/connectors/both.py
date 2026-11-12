@@ -5,7 +5,7 @@ Its source is the tickets source, and its destination the sqlite3 destination.
 
 from __future__ import annotations
 
-from rdlt.connector import destination, source
+from rdlt.connector import acknowledging_source_factory, destination, source
 from tests.connectors.pysqlite import PySqlite, SqliteConfig
 from tests.connectors.tickets import Tickets, TicketsConfig
 
@@ -23,3 +23,9 @@ class BothDestination(PySqlite):
 CONNECTORS = (BothSource, BothDestination)
 """What its `rdlt.connectors` entry point names: a source and a destination, which one launcher
 serves."""
+
+PROBED = acknowledging_source_factory(BothSource)
+"""Its source with the probe certification asks, which an installed launcher refuses."""
+
+PROBED_PAIR = (acknowledging_source_factory(BothSource), BothDestination)
+"""Its pair with the source's probe, which an installed launcher refuses too."""

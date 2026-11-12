@@ -8,15 +8,23 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 import rdlt
-from rdlt.connector import serve
+from rdlt.connector import (
+    OpenContext,
+    Opened,
+    acknowledging_source_factory,
+    destination,
+    readable_destination_factory,
+    serve,
+)
 from tests.connectors import pysqlite
 from tests.connectors.both import BothDestination, BothSource
 from tests.connectors.tickets import Tickets
-from tests.launchers import TESTS, both_launcher, pysqlite_launcher, tickets_launcher
+from tests.launchers import TESTS, both_launcher, launcher, pysqlite_launcher, tickets_launcher
 
 
 @pytest.fixture
@@ -94,14 +102,64 @@ def test_one_launcher_serves_a_source_and_a_destination_a_host_spawns(
 
 @pytest.mark.parametrize(
     "connectors",
-    [(), (Tickets, BothSource), (pysqlite.PySqlite, BothDestination), (Tickets, object)],
-    ids=["nothing", "two sources", "two destinations", "no connector"],
+    [
+        (),
+        (Tickets, BothSource),
+        (pysqlite.PySqlite, BothDestination),
+        (Tickets, object),
+        (acknowledging_source_factory(Tickets), BothSource),
+        ([Tickets],),
+    ],
+    ids=[
+        "nothing",
+        "two sources",
+        "two destinations",
+        "no connector",
+        "two sources probed",
+        "a list",
+    ],
 )
-def test_serve_takes_one_class_of_each_role_at_most(connectors: tuple[type, ...]) -> None:
+def test_serve_takes_one_class_of_each_role_at_most(connectors: tuple[object, ...]) -> None:
     before = signal.getsignal(signal.SIGINT)
     with pytest.raises(TypeError, match="serve"):
-        serve(*connectors, args=["--no-such-flag"])
+        serve(*cast("tuple[type, ...]", connectors), args=["--no-such-flag"])
     assert signal.getsignal(signal.SIGINT) == before
+
+
+@destination(id="io.example.unpublished", config=pysqlite.SqliteConfig)
+class Unpublished:
+    """A destination with no `published(table)`, which reads nothing back."""
+
+    def __init__(self, config: pysqlite.SqliteConfig) -> None:
+        del config
+
+    def check(self) -> None:
+        """Nothing to check."""
+
+    def open(self, context: OpenContext) -> Opened:
+        """Never reached: it is only declared."""
+        raise NotImplementedError(context.pipeline)
+
+
+@pytest.mark.parametrize("named", ["PROBED", "PROBED_PAIR"])
+def test_the_installed_launcher_refuses_a_probed_factory_alone_or_in_its_pair(
+    named: str, tmp_path: Path
+) -> None:
+    refused = launcher(tmp_path, "both", named)
+    ran = subprocess.run([refused], capture_output=True, text=True, timeout=60, check=False)
+    assert ran.returncode != 0
+    assert "acknowledging_source_factory(BothSource)" in ran.stderr, ran.stderr
+    assert "a launcher's own code" in ran.stderr, ran.stderr
+
+
+def test_a_probe_is_asked_of_a_class_that_can_answer_it() -> None:
+    with pytest.raises(TypeError, match="no source"):
+        acknowledging_source_factory(pysqlite.PySqlite)
+    with pytest.raises(TypeError, match="no destination"):
+        readable_destination_factory(Tickets)
+    with pytest.raises(TypeError, match="published"):
+        readable_destination_factory(Unpublished)
+    assert serve(acknowledging_source_factory(Tickets), args=["--no-such-flag"]) == 1
 
 
 @pytest.mark.parametrize(

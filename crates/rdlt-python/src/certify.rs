@@ -8,19 +8,69 @@ use std::path::PathBuf;
 use arrow_array::RecordBatch;
 use arrow_pyarrow::FromPyArrow as _;
 use pyo3::exceptions::PyValueError;
-use pyo3::{Bound, PyAny, PyErr, Python, pyfunction};
+use pyo3::{Bound, FromPyObject, PyAny, PyErr, Python, pyfunction};
 use rdlt_certify::{
-    Clause, KILL_CLAUSES, PROTOCOL_CLAUSES, Probe, Report, SOURCE_CLAUSES, TRANSFORM_CLAUSES,
-    Target, TransformInputs, Unprobed,
+    Clause, ConnectorRef, Endpoint, Identity, KILL_CLAUSES, PROTOCOL_CLAUSES, Probe, Remote,
+    Report, SOURCE_CLAUSES, TRANSFORM_CLAUSES, Target, TransformInputs, Unprobed,
 };
 use rdlt_connector::ConnectorId;
 use rdlt_connector::serve::Served;
 use rdlt_connector::testing::{Outcome, Reason};
 
 use crate::destination::NativeDestinationFactory;
+use crate::host::TlsFiles;
 use crate::source::NativeSourceFactory;
 use crate::transform::NativeTransform;
 use crate::{errors, runtime};
+
+/// A connector listening at an endpoint over mutual TLS, as `rdlt.testing` names one: its id, its
+/// endpoint, and `rdlt.Tls`'s files, the host's identity and the CA its certificate chains to.
+#[derive(FromPyObject)]
+pub(crate) struct Listening(String, String, TlsFiles);
+
+impl Listening {
+    /// The target that reaches the connector, as `rdlt_certify::Target::listening` does, and its
+    /// id.
+    fn target(self) -> Result<(Target, ConnectorId), PyErr> {
+        let Self(id, endpoint, tls) = self;
+        let id = ConnectorId::parse(&id).map_err(|error| {
+            PyValueError::new_err(format!("{id:?} is no connector id: {error}"))
+        })?;
+        // Not repeated: an endpoint may hold a credential.
+        Endpoint::parse(&endpoint).map_err(|error| {
+            PyValueError::new_err(format!("{error}: an endpoint is grpcs://host:port"))
+        })?;
+        let identity = Identity {
+            cert: tls.cert,
+            key: tls.key,
+        };
+        let reference = ConnectorRef::new(id.clone()).endpoint(endpoint);
+        Ok((
+            Target::listening(Remote::new(identity, tls.ca), reference),
+            id,
+        ))
+    }
+}
+
+/// What a source's certification reaches: the source a factory makes, served in this process,
+/// or one listening at an endpoint.
+#[derive(FromPyObject)]
+pub(crate) enum Source<'py> {
+    /// Served in this process over a socket pair.
+    Served(Bound<'py, NativeSourceFactory>),
+    /// Listening at an endpoint.
+    Listening(Listening),
+}
+
+/// What a destination's certification reaches: the destination a factory makes, served in this
+/// process, or one listening at an endpoint.
+#[derive(FromPyObject)]
+pub(crate) enum Destination<'py> {
+    /// Served in this process over a socket pair.
+    Served(Bound<'py, NativeDestinationFactory>),
+    /// Listening at an endpoint.
+    Listening(Listening),
+}
 
 fn listed(role: &str) -> Result<Vec<Clause>, PyErr> {
     let families: Vec<&[Clause]> = match role {
@@ -73,21 +123,26 @@ fn reported(report: &Report) -> String {
     serde_json::json!({ "connector": report.connector, "results": results }).to_string()
 }
 
-/// Certifies the source `factory` makes, served in this process over a socket pair, telling where
-/// it stands where its class says it does; with `launcher`, the installed binary of the same
-/// connector, its kill clause spawns that.
+/// Certifies `source`: the source a factory makes, served in this process over a socket pair and
+/// telling where it stands where its class says it does, or one listening at an endpoint; with
+/// `launcher`, the installed binary of the same connector, its kill clause spawns that.
 #[pyfunction]
-#[pyo3(signature = (factory, config, launcher = None))]
+#[pyo3(signature = (source, config, launcher = None))]
 pub(crate) fn certify_source(
     py: Python<'_>,
-    factory: &NativeSourceFactory,
+    source: Source<'_>,
     config: &str,
     launcher: Option<PathBuf>,
 ) -> Result<String, PyErr> {
     let config = configured(config)?;
-    let source = factory.acknowledging();
-    let id: ConnectorId = source.spec().id.clone();
-    let mut target = Target::served(Served::new().with_source(source));
+    let (mut target, id) = match source {
+        Source::Served(factory) => {
+            let source = factory.get().acknowledging();
+            let id: ConnectorId = source.spec().id.clone();
+            (Target::served(Served::new().with_source(source)), id)
+        }
+        Source::Listening(listening) => listening.target()?,
+    };
     if let Some(launcher) = launcher {
         target = target.kill_target(Target::trusted_binary(id, launcher));
     }
@@ -97,22 +152,32 @@ pub(crate) fn certify_source(
     Ok(reported(&report))
 }
 
-/// Certifies the destination `factory` makes, served in this process over a socket pair and
-/// read back through it; with `launcher`, the installed binary of the same connector, its kill
-/// clause spawns that.
+/// Certifies `destination`: the destination a factory makes, served in this process over a
+/// socket pair, or one listening at an endpoint, read back through it, where it reads back; with
+/// `launcher`, the installed binary of the same connector, its kill clause spawns that.
 #[pyfunction]
-#[pyo3(signature = (factory, config, launcher = None))]
+#[pyo3(signature = (destination, config, launcher = None))]
 pub(crate) fn certify_destination(
     py: Python<'_>,
-    factory: &NativeDestinationFactory,
+    destination: Destination<'_>,
     config: &str,
     launcher: Option<PathBuf>,
 ) -> Result<String, PyErr> {
     let config = configured(config)?;
-    let destination = factory.readable();
-    let id: ConnectorId = destination.spec().id.clone();
-    let mut target = Target::served(Served::new().with_destination(destination));
-    let killed_elsewhere = launcher.is_some();
+    // What a launcher published is read back through the connector this process serves, where it
+    // serves one.
+    let (mut target, id, killed_elsewhere) = match destination {
+        Destination::Served(factory) => {
+            let destination = factory.get().readable();
+            let id: ConnectorId = destination.spec().id.clone();
+            let served = Target::served(Served::new().with_destination(destination));
+            (served, id, launcher.is_some())
+        }
+        Destination::Listening(listening) => {
+            let (target, id) = listening.target()?;
+            (target, id, false)
+        }
+    };
     if let Some(launcher) = launcher {
         target = target.kill_target(Target::trusted_binary(id, launcher));
     }

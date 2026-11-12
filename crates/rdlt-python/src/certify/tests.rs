@@ -15,11 +15,12 @@ fn a_python_source_s_certification_reports_every_clause_in_its_listed_order() {
                 None,
             )
             .unwrap();
-        let factory: pyo3::PyRef<'_, NativeSourceFactory> =
+        let factory: pyo3::Bound<'_, NativeSourceFactory> =
             made.get_item(0).unwrap().extract().unwrap();
         let config = serde_json::json!({ "pages": 6, "token": "t0ken" }).to_string();
+        let source = super::Source::Served(factory);
         let report: serde_json::Value =
-            serde_json::from_str(&super::certify_source(py, &factory, &config, None).unwrap())
+            serde_json::from_str(&super::certify_source(py, source, &config, None).unwrap())
                 .unwrap();
         let ids: Vec<&str> = report["results"]
             .as_array()
@@ -91,10 +92,11 @@ fn a_python_destination_s_certification_reports_every_clause_in_its_listed_order
                 None,
             )
             .unwrap();
-        let factory: pyo3::PyRef<'_, NativeDestinationFactory> =
+        let factory: pyo3::Bound<'_, NativeDestinationFactory> =
             made.get_item(0).unwrap().extract().unwrap();
         let config = serde_json::json!({ "store": "certified-in-rust" }).to_string();
-        let certified = super::certify_destination(py, &factory, &config, None).unwrap();
+        let destination = super::Destination::Served(factory);
+        let certified = super::certify_destination(py, destination, &config, None).unwrap();
         let report: serde_json::Value = serde_json::from_str(&certified).unwrap();
         let results = report["results"].as_array().unwrap();
         let ids: Vec<&str> = results
@@ -132,6 +134,65 @@ fn a_python_destination_s_certification_reports_every_clause_in_its_listed_order
             .filter(|result| result["outcome"] == "failed")
             .collect();
         assert!(failed.is_empty(), "{failed:?}");
+    });
+}
+
+/// A connector listening at `endpoint`, as `id`, reached with TLS files that are not there.
+fn listening(id: &str, endpoint: &str) -> super::Listening {
+    let absent = std::path::PathBuf::from("/nonexistent/rdlt-certify");
+    let tls = crate::host::TlsFiles {
+        cert: absent.join("host.pem"),
+        key: absent.join("host.key"),
+        ca: absent.join("ca.pem"),
+    };
+    super::Listening(id.to_owned(), endpoint.to_owned(), tls)
+}
+
+#[test]
+fn a_connector_that_cannot_be_reached_where_it_listens_fails_every_clause() {
+    embedded::with(|py| {
+        let config = serde_json::json!({}).to_string();
+        let reached = listening("io.example.unreached", "grpcs://localhost:1");
+        let source = super::Source::Listening(reached);
+        let report: serde_json::Value =
+            serde_json::from_str(&super::certify_source(py, source, &config, None).unwrap())
+                .unwrap();
+        assert_eq!(report["connector"], "grpcs://localhost:1");
+        let results = report["results"].as_array().unwrap();
+        assert_eq!(results.len(), super::clauses("source").unwrap().len());
+        assert!(
+            results.iter().all(|result| result["outcome"] == "failed"),
+            "{report}"
+        );
+        let reached = listening("io.example.unreached", "grpcs://localhost:1");
+        let destination = super::Destination::Listening(reached);
+        let report: serde_json::Value = serde_json::from_str(
+            &super::certify_destination(py, destination, &config, None).unwrap(),
+        )
+        .unwrap();
+        let results = report["results"].as_array().unwrap();
+        assert!(
+            results.iter().all(|result| result["outcome"] == "failed"),
+            "{report}"
+        );
+    });
+}
+
+#[test]
+fn a_listening_connector_is_named_by_its_id_and_an_endpoint() {
+    embedded::with(|py| {
+        let config = serde_json::json!({}).to_string();
+        for (id, endpoint) in [
+            ("Not An Id", "grpcs://localhost:1"),
+            ("io.example.x", "http://localhost:1"),
+        ] {
+            let source = super::Source::Listening(listening(id, endpoint));
+            let refused = super::certify_source(py, source, &config, None).unwrap_err();
+            assert!(
+                refused.is_instance_of::<pyo3::exceptions::PyValueError>(py),
+                "{refused}"
+            );
+        }
     });
 }
 

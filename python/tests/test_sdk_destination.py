@@ -37,7 +37,7 @@ from rdlt.connector import (
 )
 from rdlt.model import Json
 from rdlt.testing import certify_destination
-from tests.clauses import outcomes
+from tests.clauses import DESTINATION_UNMET, outcomes
 from tests.connectors import memory
 from tests.connectors.pysqlite import PySqlite
 from tests.launchers import pysqlite_launcher
@@ -108,24 +108,6 @@ def test_the_destination_clauses_pass_clause_by_clause(pytester: pytest.Pytester
     # Served in process, a kill cuts the connection, and the passed clause's note says so.
     result.stdout.fnmatch_lines(["*Captured note call*", "cut: *"])
     assert result.ret == pytest.ExitCode.OK
-
-
-DESTINATION_UNMET = [
-    "P-CREDIT",
-    "D-REPLACE",
-    "D-MERGE",
-    "D-DELETE",
-    "D-PARTIAL",
-    "D-TRUNCATE",
-    "D-HIST",
-    "D-CHILDREN",
-    "D-WRITERS",
-    "D-DROP",
-]
-"""The clauses the append-only sqlite3 destination declares it does not meet, each saying why.
-
-A destination grants credit and spends none; the rest are what its capabilities leave out.
-"""
 
 
 def test_a_launcher_s_kill_clause_kills_the_installed_destination(
