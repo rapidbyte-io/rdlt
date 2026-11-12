@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use pyo3::types::{PyAnyMethods as _, PyTuple};
+use pyo3::types::{IntoPyDict as _, PyAnyMethods as _, PyDictMethods as _, PyTuple};
 use pyo3::{Py, PyAny, PyErr, Python};
 
 use super::{Unanswered, call};
@@ -126,61 +126,124 @@ fn one_thread_s_calls_share_one_daemon_thread() {
     });
 }
 
+/// Marks the thread a call is made on, a mark seen only there, and answers its id: a thread's id
+/// is reused once the thread has ended, so a fresh id proves nothing.
+const MARKED: &std::ffi::CStr = c"lambda: (setattr(__import__('builtins').local, 'mark', 1), __import__('threading').get_ident())[1]";
+
+/// Answers the mark of the thread a call is made on, 0 where it has none.
+const MARK: &std::ffi::CStr = c"lambda: getattr(__import__('builtins').local, 'mark', 0)";
+
 #[test]
-fn a_thread_s_calls_are_made_on_its_own_daemon_thread() {
+fn a_daemon_thread_outlives_its_thread_of_rust_and_makes_another_s_call() {
     embedded::with(|py| {
-        let ident = c"lambda: __import__('threading').get_ident()";
-        let (mine, theirs): (u64, u64) = py.detach(|| {
-            let mine = blocked(ident).unwrap().unwrap();
-            let theirs = std::thread::spawn(move || blocked(ident).unwrap().unwrap())
+        py.run(
+            c"import builtins, threading; builtins.local = threading.local()",
+            None,
+            None,
+        )
+        .unwrap();
+        let first = py.detach(|| {
+            std::thread::spawn(|| blocked(MARKED).unwrap().unwrap())
                 .join()
-                .unwrap();
-            Python::attach(|py| {
-                (
-                    mine.extract::<u64>(py).unwrap(),
-                    theirs.extract::<u64>(py).unwrap(),
-                )
-            })
+                .unwrap()
         });
-        assert_ne!(
-            mine, theirs,
-            "each thread of Rust has its own daemon thread"
+        let watched = c"
+import sys, time
+deadline = time.monotonic() + 1
+while ident in sys._current_frames() and time.monotonic() < deadline:
+    time.sleep(0.01)
+alive = ident in sys._current_frames()
+";
+        let locals = [("ident", first)].into_py_dict(py).unwrap();
+        py.run(watched, None, Some(&locals)).unwrap();
+        let alive: bool = locals
+            .get_item("alive")
+            .unwrap()
+            .unwrap()
+            .extract()
+            .unwrap();
+        assert!(
+            alive,
+            "the daemon thread lived on for a second once its thread of Rust had ended"
+        );
+        let marked = py.detach(|| {
+            std::thread::spawn(|| blocked(MARK).unwrap().unwrap())
+                .join()
+                .unwrap()
+        });
+        assert_eq!(
+            marked.extract::<i64>(py).unwrap(),
+            1,
+            "a later thread's call is made on the daemon thread the first one's was"
         );
     });
 }
 
 #[test]
-fn a_daemon_thread_ends_once_its_thread_of_rust_has() {
+fn an_async_call_s_daemon_thread_makes_the_next_async_call() {
     embedded::with(|py| {
         py.run(
-            c"import builtins, threading; builtins.ident = None",
+            c"import builtins, threading; builtins.local = threading.local()",
             None,
             None,
         )
         .unwrap();
-        let finished = py.detach(|| {
-            let spawned = std::thread::spawn(|| {
-                blocked(c"lambda: setattr(__import__('builtins'), 'ident', __import__('threading').get_ident())")
-                    .unwrap()
-                    .unwrap();
-            });
-            spawned.join().unwrap();
-            Python::attach(|py| {
-                let script = c"
-import builtins, sys, threading, time
-deadline = time.monotonic() + 10
-while builtins.ident in sys._current_frames() and time.monotonic() < deadline:
-    time.sleep(0.01)
-builtins.ended = builtins.ident not in sys._current_frames()
+        calling(py, MARKED, |_, returned| {
+            returned.unwrap();
+        })
+        .unwrap();
+        let marked = calling(py, MARK, |_, returned| {
+            returned.and_then(|value| value.extract::<i64>()).unwrap()
+        })
+        .unwrap();
+        assert_eq!(
+            marked, 1,
+            "the second call is made on the daemon thread the first one's was"
+        );
+    });
+}
+
+#[test]
+fn a_forked_child_s_first_call_is_answered() {
+    embedded::with(|py| {
+        // The parent's daemon threads are not in the child, which starts its own.
+        let first = py.detach(|| blocked(c"lambda: 1"));
+        assert!(matches!(first, Ok(Ok(_))), "the parent's call is answered");
+        py.run(
+            c"import warnings; warnings.simplefilter('ignore', DeprecationWarning)",
+            None,
+            None,
+        )
+        .unwrap();
+        let os = py.import("os").unwrap();
+        let child: i64 = os.call_method0("fork").unwrap().extract().unwrap();
+        if child == 0 {
+            let answered = runtime::get(py).is_ok()
+                && py.detach(|| blocked(c"lambda: 7")).is_ok_and(|answered| {
+                    answered.is_ok_and(|value| value.extract::<i64>(py).is_ok_and(|n| n == 7))
+                });
+            os.call_method1("_exit", (if answered { 0 } else { 3 },))
+                .unwrap();
+        }
+        let waited = c"
+import os, signal, time
+deadline = time.monotonic() + 30
+while not (ended := os.waitpid(child, os.WNOHANG))[0] and time.monotonic() < deadline:
+    time.sleep(0.05)
+if not ended[0]:
+    os.kill(child, signal.SIGKILL)
+    os.waitpid(child, 0)
+status = os.waitstatus_to_exitcode(ended[1]) if ended[0] else None
 ";
-                py.run(script, None, None).unwrap();
-                py.eval(c"__import__('builtins').ended", None, None)
-                    .unwrap()
-                    .extract::<bool>()
-                    .unwrap()
-            })
-        });
-        assert!(finished, "the daemon thread ended with its thread of Rust");
+        let locals = [("child", child)].into_py_dict(py).unwrap();
+        py.run(waited, None, Some(&locals)).unwrap();
+        let status: Option<i64> = locals
+            .get_item("status")
+            .unwrap()
+            .unwrap()
+            .extract()
+            .unwrap();
+        assert_eq!(status, Some(0), "the child's call is answered within 30 s");
     });
 }
 
