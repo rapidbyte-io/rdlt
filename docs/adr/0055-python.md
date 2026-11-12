@@ -44,9 +44,10 @@ as rdlt's own tests are, reaches those handlers moments after its last call.
   imported without a copy. It waits for the engine's credit with the GIL released, and reads an
   async generator as one task of an event loop of its own. A transform runs on the compute pool,
   its call made on a daemon thread that holds the GIL for the call alone. No runtime worker waits
-  for the GIL while a run goes on: an awaited answer is handed to asyncio from the runtime's
-  blocking pool, and a worker takes the GIL only to raise `StoppedError` for an await whose run
-  was cancelled. So a pipeline with no Python in it keeps committing while Python holds the GIL.
+  for the GIL while a run goes on, and none takes it: an awaited answer, a `StoppedError` among
+  them, is made on a daemon thread and handed to asyncio through the event loop's
+  `call_soon_threadsafe`. So a pipeline with no Python in it keeps committing while Python holds
+  the GIL.
 - **Exceptions cross whole.** A Python exception becomes the connector's or the transform's
   error: its type and message, shown and bounded as connector text, with its traceback as its
   cause. A connector says what kind of failure it met by raising `rdlt.connector.ConnectorError`
@@ -185,6 +186,9 @@ Rejected:
   answers no probe unless its launcher's own code asks for it.
 - **orjson for rows.** Encoding in Rust keeps the limits where the push is made, and adds no
   dependency.
+- **pyo3-async-runtimes for awaitables.** It hands an awaited answer over by taking the GIL on the
+  runtime's blocking pool, and given a runtime whose blocking pool were a daemon thread, the
+  closure it hands over would still call asyncio beneath that thread's Rust frames.
 
 ## Consequences
 

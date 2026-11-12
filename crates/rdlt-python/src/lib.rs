@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 
 mod arrow;
+mod awaitable;
 mod calls;
 mod certify;
 mod destination;
