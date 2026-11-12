@@ -1118,3 +1118,51 @@ async def read(p, c, x):
         assert_eq!(made, cancelled_at, "batches were made after the cancel");
     });
 }
+
+#[test]
+fn a_notice_said_while_an_item_is_made_reaches_the_engine_after_the_whole_item() {
+    embedded::with(|py| {
+        // Said as the item's first batch is made, in the send that begins it, and as its third
+        // is, once the item has waited for room.
+        let said_at = [
+            ("first", 0, "    pass"),
+            (
+                "waited",
+                2,
+                "    builtins.ticker = asyncio.create_task(ticking())",
+            ),
+        ];
+        for (case, at, starting) in said_at {
+            let body = format!(
+                "{TICKING}import pyarrow as pa
+from rdlt.connector import Headroom, StreamContext
+def batches(ctx):
+    for n in range(4):
+        if n == {at}:
+            ctx.behind(n, Headroom())
+        yield pa.record_batch({{'n': [n]}})
+async def read(p, c, x):
+{starting}
+    ctx = StreamContext(x)
+    yield pa.RecordBatchReader.from_batches(pa.schema([('n', pa.int64())]), batches(ctx))
+    yield {{'n': 9}}"
+            );
+            let reading = started(py, &body);
+            if case == "waited" {
+                // Nothing is taken until the item waits for room, its loop then turning.
+                let runtime = runtime::get(py).unwrap();
+                py.detach(|| {
+                    runtime.block_on(async {
+                        assert!(came_true("ticks > 0").await, "{case}");
+                    });
+                });
+            }
+            let kinds: Vec<&str> = drained(py, reading).iter().map(kind).collect();
+            assert_eq!(
+                kinds,
+                ["batch", "batch", "batch", "batch", "behind", "json"],
+                "{case}"
+            );
+        }
+    });
+}

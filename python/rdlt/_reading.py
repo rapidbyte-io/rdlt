@@ -259,13 +259,22 @@ class Router:
 
     async def yielded(self, item: object) -> bool:
         """Sends `item` after what was said before it; false once the read has gone."""
-        if not self._waiting and self._sending is None:
-            sent = self._out.send(item)
-            if sent is not None:
-                return sent
-            item = _REST
-        done: asyncio.Future[bool] = self._loop.create_future()
-        self._wait(item, None, done)
+        done: asyncio.Future[bool]
+        if self._waiting or self._sending is not None:
+            done = self._loop.create_future()
+            self._wait(item, None, done)
+            return await done
+        # The item holds the head while it is made into pushes, so what its making says, as a
+        # stream's generator may, goes after the whole of it.
+        self._waiting.append((_REST, None, None))
+        sent = self._out.send(item)
+        if sent is not None:
+            self._waiting.popleft()
+            return sent
+        done = self._loop.create_future()
+        self._waiting[0] = (_REST, None, done)
+        if self._sending is None:
+            self._sending = self._loop.create_task(self._send())
         return await done
 
     def notify(self, notice: object, kind: str) -> None:
