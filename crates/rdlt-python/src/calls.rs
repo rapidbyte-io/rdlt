@@ -10,7 +10,7 @@
 //! process's exit.
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::mem;
 use std::sync::Arc;
