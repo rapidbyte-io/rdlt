@@ -37,8 +37,8 @@ use crate::reached::Reached;
 /// pull request's shard, and so each of the nightly's and `just ci`'s sweep too.
 ///
 /// A shorter sweep, as the simulation recipe's and the coverage run's of a thousand seeds, is held
-/// to none: the rarest combination is reached about six times in a thousand seeds, so a change to
-/// the draws would miss one about once in 135, where 2500 seeds miss one about once in six hundred
+/// to none: the rarest combination is reached about five times in a thousand seeds, so a change to
+/// the draws would miss one about once in 95, where 2500 seeds miss one about once in two hundred
 /// thousand.
 pub const SWEPT: usize = 2500;
 
