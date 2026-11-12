@@ -6,6 +6,7 @@
 //! holds the GIL only while Python runs and while it turns what Python yielded into pushes; it
 //! releases it while it waits for the engine or reads a stream.
 
+mod pushes;
 #[cfg(test)]
 mod tests;
 
@@ -21,11 +22,11 @@ use rdlt_connector::{ConnectorError, Headroom};
 use serde_json::value::RawValue;
 use tokio::sync::mpsc;
 
-use crate::arrow::{Produced, produced};
 use crate::calls::{self, Unanswered};
 use crate::errors::Failure;
-use crate::json::{self, JsonLimits};
-use crate::source::context::{NativeCheckpoint, NativeStreamContext};
+use crate::json::JsonLimits;
+use crate::source::context::NativeStreamContext;
+use pushes::Pushes;
 
 /// What a partition's thread sends its read.
 #[derive(Debug)]
@@ -208,59 +209,33 @@ fn failed(py: Python<'_>, outlet: &Outlet, told: &AtomicBool, error: &PyErr) {
     send(py, &sent, Pushed::Failed(failure.connector_error()));
 }
 
-/// Sends what `item` is as pushes; false once the read has gone or the item failed it.
+/// Sends what `item` is as pushes, each waiting for the engine; false once the read has gone or
+/// the item failed it.
 fn pushed(
     py: Python<'_>,
     item: &Bound<'_, PyAny>,
     limits: JsonLimits,
     sent: &mpsc::Sender<Pushed>,
 ) -> bool {
-    if let Ok(checkpoint) = item.cast::<NativeCheckpoint>() {
-        return send(
-            py,
-            sent,
-            Pushed::Checkpoint(checkpoint.get().cursor().to_owned()),
-        );
-    }
-    match produced(item) {
-        Ok(Some(Produced::Batch(batch))) => return send(py, sent, Pushed::Batch(batch)),
-        Ok(Some(Produced::Stream(mut reader))) => {
-            loop {
-                // A stream reads its next batch with the GIL released; one that needs Python
-                // takes it.
-                let next = py.detach(|| reader.next());
-                let pushed = match next {
-                    None => return true,
-                    Some(Ok(batch)) => Pushed::Batch(batch),
-                    Some(Err(error)) => {
-                        let error = ConnectorError::data(format!(
-                            "an Arrow stream yielded an error: {error}"
-                        ))
-                        .with_code("arrow_stream");
-                        send(py, sent, Pushed::Failed(error));
-                        return false;
-                    }
-                };
-                if !send(py, sent, pushed) {
+    let mut pushes = match Pushes::of(py, item, limits) {
+        Ok(pushes) => pushes,
+        Err(error) => {
+            send(py, sent, Pushed::Failed(error));
+            return false;
+        }
+    };
+    loop {
+        match pushes.next(py) {
+            Ok(None) => return true,
+            Ok(Some(push)) => {
+                if !send(py, sent, push) {
                     return false;
                 }
             }
-        }
-        Ok(None) => {}
-        Err(error) => {
-            send(
-                py,
-                sent,
-                Pushed::Failed(Failure::of(py, &error).connector_error()),
-            );
-            return false;
-        }
-    }
-    match json::each_push(py, item, limits, |json| send(py, sent, Pushed::Json(json))) {
-        Ok(delivered) => delivered,
-        Err(unwritten) => {
-            send(py, sent, Pushed::Failed(unwritten.connector_error()));
-            false
+            Err(error) => {
+                send(py, sent, Pushed::Failed(error));
+                return false;
+            }
         }
     }
 }

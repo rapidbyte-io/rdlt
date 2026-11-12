@@ -3,7 +3,7 @@ use proptest::prelude::*;
 use pyo3::types::PyAnyMethods as _;
 use pyo3::{Bound, PyAny, Python};
 
-use super::{JsonLimits, Unwritten, each_push};
+use super::{JsonLimits, Rows, Unwritten};
 use crate::embedded;
 
 const WIDE: JsonLimits = JsonLimits {
@@ -16,12 +16,11 @@ fn pushes(
     rows: &Bound<'_, PyAny>,
     limits: JsonLimits,
 ) -> Result<Vec<Bytes>, Unwritten> {
+    let mut rows = Rows::new(py, rows, limits)?;
     let mut written = Vec::new();
-    let finished = each_push(py, rows, limits, |push| {
+    while let Some(push) = rows.next(py)? {
         written.push(push);
-        true
-    })?;
-    assert!(finished, "nothing here asks the writing to stop");
+    }
     Ok(written)
 }
 
@@ -103,21 +102,34 @@ fn rows_are_cut_into_pushes_within_the_limit_and_none_is_lost() {
 }
 
 #[test]
-fn a_full_push_is_handed_over_before_the_next_row_is_written() {
+fn a_full_push_is_answered_before_any_row_past_the_next_is_read() {
     embedded::with(|py| {
-        let rows = evaluated(py, "[{'pad': 'x' * 100} for n in range(10)]");
+        py.run(
+            c"import builtins
+class Counted(list):
+    def __iter__(self):
+        for row in list.__iter__(self):
+            builtins.read += 1
+            yield row
+builtins.read = 0
+builtins.rows = Counted({'pad': 'x' * 100} for n in range(10))
+",
+            None,
+            None,
+        )
+        .unwrap();
+        let rows = evaluated(py, "__import__('builtins').rows");
         let limits = JsonLimits {
             push_bytes: 256,
             depth: 64,
         };
-        let mut seen = 0;
-        let finished = each_push(py, &rows, limits, |_| {
-            seen += 1;
-            false
-        })
-        .unwrap();
-        assert!(!finished, "the read went away");
-        assert_eq!(seen, 1, "the writing stopped at the first refused push");
+        let mut written = Rows::new(py, &rows, limits).unwrap();
+        let first = written.next(py).unwrap().expect("a full push");
+        assert_eq!(lines(&[first]).len(), 2, "two rows fill a push");
+        let read: usize = evaluated(py, "__import__('builtins').read")
+            .extract()
+            .unwrap();
+        assert_eq!(read, 3, "only the row that did not fit was read past it");
     });
 }
 
