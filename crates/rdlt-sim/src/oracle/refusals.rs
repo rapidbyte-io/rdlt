@@ -17,6 +17,7 @@ use rdlt_testkit::canon::storage;
 use super::arrivals::{Arrival, arrival, widest};
 use super::expected;
 use crate::destination::committed_next;
+use crate::reached::Reach;
 use crate::workload::{Relaxed, Row, SimStream};
 use crate::world::World;
 pub(super) use failures::{Failure, refused, relax, unexplained, unsealed, violation};
@@ -44,11 +45,20 @@ pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize, exact: b
             .map(|column| Column::new(stream, column, *relaxed, &capabilities).outcome(phase));
         let key = (stream.keys > 0).then(|| key_outcome(stream, *relaxed, &capabilities, phase));
         let starts = exact.then(|| starts(world, stream));
-        if let Some(refusal) = reads::refusal(stream, *relaxed, phase, starts.as_deref()) {
-            prediction.may.insert((stream.name.clone(), refusal.code));
-            if refusal.must {
-                prediction.must.insert(stream.name.clone());
+        match reads::refusal(stream, *relaxed, phase, starts.as_deref()) {
+            Some(refusal) => {
+                prediction.may.insert((stream.name.clone(), refusal.code));
+                if refusal.must {
+                    prediction.must.insert(stream.name.clone());
+                }
             }
+            None if starts
+                .as_deref()
+                .is_some_and(|starts| reads::held(stream, *relaxed, phase, starts)) =>
+            {
+                world.reach(Reach::Exact);
+            }
+            None => {}
         }
         let pruning = prunes(stream, phase);
         for outcome in columns.chain(key) {

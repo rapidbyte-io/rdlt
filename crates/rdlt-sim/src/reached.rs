@@ -30,6 +30,9 @@ pub enum Reach {
     /// A stream refused `cursor_missing` was reset with its tables, as the refusal says, and read
     /// again from its beginning.
     Remedied,
+    /// A plain run without faults held a read of more than a checkpoint group, which a run with
+    /// them may see refused, to meet no refusal.
+    Exact,
     /// A hostile host configured one connection twice at once.
     ConfiguredTwice,
     /// A hostile host opened sessions beyond a connection's share.
@@ -58,7 +61,7 @@ pub enum Reach {
 
 impl Reach {
     /// Every path, in the order a timing line names them.
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 22] = [
         Self::ConnectorStopped,
         Self::LinkCut,
         Self::Crashed,
@@ -69,6 +72,7 @@ impl Reach {
         Self::EmptyChild,
         Self::ResetRefused,
         Self::Remedied,
+        Self::Exact,
         Self::ConfiguredTwice,
         Self::SessionsBeyond,
         Self::Renamed,

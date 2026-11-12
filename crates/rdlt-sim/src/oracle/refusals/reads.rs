@@ -41,29 +41,16 @@ pub(super) fn refusal(
     if !stream.unbounded || !ends_on_rows || stream.reads[phase] != ReadMode::Incremental {
         return None;
     }
-    let partitions = 0..stream.partitions.len();
+    let mut partitions = 0..stream.partitions.len();
     let finished = phase.checked_sub(1).is_some_and(|last| {
         stream.reads[last] == ReadMode::Full
-            && partitions
-                .clone()
-                .any(|partition| !stream.rows(partition, last).is_empty())
+            && partitions.any(|partition| !stream.rows(partition, last).is_empty())
     });
     if finished && relaxed.reset != Some(phase) {
         let code = codes::CURSOR_MISSING;
         return Some(Refusal { code, must: true });
     }
-    // The batches each partition's read in the phase pushes, from where the partition stands.
-    let size = usize::try_from(stream.batch_rows).unwrap_or(1);
-    let batches: Vec<usize> = partitions
-        .map(|partition| {
-            let rows = stream.rows(partition, phase).len();
-            let begins = starts.map_or_else(
-                || stream.begins(partition, phase, relaxed),
-                |starts| starts[partition],
-            );
-            rows.saturating_sub(begins).div_ceil(size)
-        })
-        .collect();
+    let batches = batches(stream, relaxed, phase, starts);
     let every = usize::try_from(stream.checkpoint_every).unwrap_or(1);
     let unsealed = |count: &usize| *count > 0 && (!stream.tails() || *count <= every);
     let code = codes::CHECKPOINT_MISSING;
@@ -74,6 +61,41 @@ pub(super) fn refusal(
     } else {
         None
     }
+}
+
+/// Whether, of `stream`, whose reads `refusal` holds to meet no refusal from `starts`, a read in
+/// `phase` pushes more than a checkpoint group: one a run with faults or disruptions may see
+/// refused, where an earlier read in the phase left it only the rows after its last checkpoint.
+pub(super) fn held(stream: &SimStream, relaxed: Relaxed, phase: usize, starts: &[usize]) -> bool {
+    let every = usize::try_from(stream.checkpoint_every).unwrap_or(1);
+    let incremental = stream.reads[phase] == ReadMode::Incremental;
+    stream.tails()
+        && incremental
+        && relaxed.mended.is_none()
+        && batches(stream, relaxed, phase, Some(starts))
+            .iter()
+            .any(|count| *count > every)
+}
+
+/// The batches each partition of `stream` pushes as `phase` reads it, as `relaxed` leaves it: from
+/// the offset `starts` gives, or else from where the model has the partition stand.
+fn batches(
+    stream: &SimStream,
+    relaxed: Relaxed,
+    phase: usize,
+    starts: Option<&[usize]>,
+) -> Vec<usize> {
+    let size = usize::try_from(stream.batch_rows).unwrap_or(1);
+    (0..stream.partitions.len())
+        .map(|partition| {
+            let rows = stream.rows(partition, phase).len();
+            let begins = starts.map_or_else(
+                || stream.begins(partition, phase, relaxed),
+                |starts| starts[partition],
+            );
+            rows.saturating_sub(begins).div_ceil(size)
+        })
+        .collect()
 }
 
 #[cfg(test)]

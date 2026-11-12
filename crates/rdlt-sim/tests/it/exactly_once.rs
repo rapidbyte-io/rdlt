@@ -192,6 +192,22 @@ fn a_seed_whose_stream_is_reset_as_cursor_missing_says_passes() {
     );
 }
 
+/// The seed of [`a_seed_whose_plain_runs_hold_a_long_tail_read_to_no_refusal_passes`].
+const EXACT: u64 = 40;
+
+/// A seed whose plain runs without faults hold a read of more than a checkpoint group, which a
+/// run with faults may see refused, to meet no refusal, so the exact prediction of reads'
+/// refusals does not drop out of the simulation unseen.
+#[test]
+fn a_seed_whose_plain_runs_hold_a_long_tail_read_to_no_refusal_passes() {
+    let checked = check_exactly_once(Seed::new(EXACT));
+    assert!(
+        checked.reached.has(Reach::Exact),
+        "seed {EXACT} no longer reaches {:?}: keep a seed that does",
+        Reach::Exact
+    );
+}
+
 /// The seed of [`a_seed_whose_rows_only_the_source_held_passes`].
 const SERVED_AGAIN: u64 = 14;
 
