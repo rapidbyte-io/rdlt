@@ -1,4 +1,4 @@
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::{Array as _, BooleanArray, Int64Array, RecordBatch};
@@ -8,6 +8,7 @@ use rdlt::Transform as _;
 use rdlt_connector_reference::{ChangesSource, MemoryDestination};
 
 use super::NativeTransform;
+use crate::calls::tests::Within;
 use crate::{embedded, runtime};
 
 fn input() -> RecordBatch {
@@ -276,10 +277,11 @@ fn a_blocked_output_leaves_the_runtime_its_worker() {
     });
     // One worker: this task runs only because the inference left it. Read here on a channel,
     // since a blocked worker would stop the runtime's own timers too.
-    let (ran, has_run) = mpsc::channel();
-    drop(runtime.spawn(async move { ran.send(7) }));
+    let has_run = Within::new();
+    let ran = has_run.clone();
+    drop(runtime.spawn(async move { ran.give(7) }));
     let answered = has_run
-        .recv_timeout(Duration::from_secs(20))
+        .wait(Duration::from_secs(20))
         .expect("the worker was not held");
     assert_eq!(answered, 7);
     embedded::with(|py| {

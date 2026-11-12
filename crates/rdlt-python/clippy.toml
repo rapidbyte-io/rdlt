@@ -9,6 +9,10 @@ too-many-lines-threshold = 60
 disallowed-methods = [
   { path = "pyo3::marker::Python::attach", reason = "a thread of Rust's never takes the GIL: hand the call to a daemon thread through crate::calls" },
   { path = "pyo3::marker::Python::try_attach", reason = "a thread of Rust's never takes the GIL: hand the call to a daemon thread through crate::calls" },
+  { path = "std::sync::mpsc::channel", reason = "parks on a dispatch semaphore on macOS, which a forked child cannot wait on: wait through parking_lot" },
+  { path = "std::sync::mpsc::sync_channel", reason = "parks on a dispatch semaphore on macOS, which a forked child cannot wait on: wait through parking_lot" },
+  { path = "std::thread::park", reason = "parks on a dispatch semaphore on macOS, which a forked child cannot wait on: wait through parking_lot" },
+  { path = "std::thread::park_timeout", reason = "parks on a dispatch semaphore on macOS, which a forked child cannot wait on: wait through parking_lot" },
 ]
 disallowed-types = [
   { path = "std::sync::Mutex", reason = "STYLE.md: blocking locks are parking_lot's, which do not poison" },

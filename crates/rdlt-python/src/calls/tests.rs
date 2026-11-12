@@ -32,6 +32,34 @@ fn calling<T: Send + 'static>(
     })
 }
 
+/// A one-shot a test waits on within a bound, through `parking_lot`, as a forked child can.
+pub(crate) struct Within<T>(std::sync::Arc<(parking_lot::Mutex<Option<T>>, parking_lot::Condvar)>);
+
+impl<T> Clone for Within<T> {
+    fn clone(&self) -> Self {
+        Self(std::sync::Arc::clone(&self.0))
+    }
+}
+
+impl<T> Within<T> {
+    pub(crate) fn new() -> Self {
+        Self(std::sync::Arc::default())
+    }
+
+    pub(crate) fn give(&self, value: T) {
+        *self.0.0.lock() = Some(value);
+        self.0.1.notify_all();
+    }
+
+    /// What was given, within `bound`; none where nothing was.
+    pub(crate) fn wait(&self, bound: Duration) -> Option<T> {
+        let deadline = std::time::Instant::now() + bound;
+        let mut given = self.0.0.lock();
+        while given.is_none() && !self.0.1.wait_until(&mut given, deadline).timed_out() {}
+        given.take()
+    }
+}
+
 /// A call of `code`, a callable expression, with no arguments, its answer waited for here.
 fn blocked(code: &'static std::ffi::CStr) -> Result<Result<Py<PyAny>, PyErr>, Unanswered> {
     super::blocking(
@@ -306,7 +334,8 @@ fn a_daemon_thread_whose_answer_panicked_waits_for_good_and_another_makes_the_ne
         let parked = py.detach(|| {
             // A panic while the answer is read is a bug of rdlt's own: the daemon thread that
             // read it leaves the pool.
-            let (ident, read) = std::sync::mpsc::channel();
+            let ident = Within::new();
+            let read = ident.clone();
             let lost = super::blocking(
                 |py| {
                     let ident =
@@ -314,9 +343,7 @@ fn a_daemon_thread_whose_answer_panicked_waits_for_good_and_another_makes_the_ne
                     Ok((ident, PyTuple::empty(py)))
                 },
                 move |_, answered| -> () {
-                    ident
-                        .send(answered.unwrap().extract::<u64>().unwrap())
-                        .unwrap();
+                    ident.give(answered.unwrap().extract::<u64>().unwrap());
                     panic!("a bug in the reader of an answer")
                 },
             );
@@ -325,7 +352,8 @@ fn a_daemon_thread_whose_answer_panicked_waits_for_good_and_another_makes_the_ne
             embedded::with(|py| {
                 assert_eq!(answered.unwrap().extract::<i64>(py).unwrap(), 7);
             });
-            read.recv().unwrap()
+            read.wait(Duration::from_secs(10))
+                .expect("the answer was read")
         });
         let watched = c"
 import sys, time
@@ -668,10 +696,11 @@ reading.threading = types.SimpleNamespace(current_thread=current_thread)
         );
         std::thread::sleep(Duration::from_millis(1));
     }
-    let (sent, received) = std::sync::mpsc::channel();
-    std::thread::spawn(move || sent.send(blocked(c"lambda: 7")).ok());
-    let met = received
-        .recv_timeout(Duration::from_secs(10))
+    let told = Within::new();
+    let telling = told.clone();
+    std::thread::spawn(move || telling.give(blocked(c"lambda: 7")));
+    let met = told
+        .wait(Duration::from_secs(10))
         .expect("a call is told within 10 s, not queued on the parked thread for good");
     assert!(
         matches!(met, Err(Unanswered::Started(_))),
@@ -722,10 +751,11 @@ reading._made = escaping
                 .setattr("escape", py.eval(escape, None, None).unwrap())
                 .unwrap();
         });
-        let (sent, received) = std::sync::mpsc::channel();
-        std::thread::spawn(move || sent.send(blocked(c"lambda: 7")).ok());
-        let told = received
-            .recv_timeout(Duration::from_secs(10))
+        let telling = Within::new();
+        let teller = telling.clone();
+        std::thread::spawn(move || teller.give(blocked(c"lambda: 7")));
+        let told = telling
+            .wait(Duration::from_secs(10))
             .expect("the call is answered, or told it went unanswered, within 10 s");
         match told {
             Ok(value) if answered => {
