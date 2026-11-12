@@ -194,16 +194,19 @@ async def pushed(opened: AsyncIterable[object], out: Out, context: object) -> No
     """
     router = Router(out, context, asyncio.get_running_loop())
     token = _ROUTER.set(router)
-    iterator = aiter(opened)
+    # The router stops watching for room however the iteration ends, its cleanup's raising too.
     try:
-        async for item in iterator:
-            if not await router.yielded(item):
-                return
-        await router.sent()
+        iterator = aiter(opened)
+        try:
+            async for item in iterator:
+                if not await router.yielded(item):
+                    return
+            await router.sent()
+        finally:
+            aclose = getattr(iterator, "aclose", None)
+            if aclose is not None:
+                await aclose()
     finally:
-        aclose = getattr(iterator, "aclose", None)
-        if aclose is not None:
-            await aclose()
         router.stop()
         _ROUTER.reset(token)
 

@@ -15,7 +15,7 @@ import textwrap
 import threading
 import time
 import weakref
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterator, Sequence
 from contextvars import ContextVar
 from datetime import timedelta
 from pathlib import Path
@@ -1215,6 +1215,55 @@ def test_an_async_read_leaves_its_event_loop_running_while_the_engine_is_full() 
         await opened
 
     assert _routed(reading) == [{"n": 1}]
+
+
+class _Gone(_Engine):
+    """An engine that has stopped: nothing it is sent is taken."""
+
+    def send(self, said: object) -> bool | None:
+        return False
+
+
+class _IterationError(Exception):
+    """What a read's iteration raised in a test."""
+
+
+class _Unopened:
+    """An async iterable whose iteration cannot begin."""
+
+    def __aiter__(self) -> AsyncIterator[object]:
+        raise _IterationError
+
+
+async def _cleaned_up_badly() -> AsyncIterator[object]:
+    try:
+        yield {"n": 1}
+    finally:
+        raise _IterationError
+
+
+@pytest.mark.parametrize(
+    "opened", [_cleaned_up_badly, _Unopened], ids=["its-cleanup-raises", "it-cannot-begin"]
+)
+def test_an_async_read_stops_watching_for_room_however_its_iteration_ends(
+    opened: Callable[[], AsyncIterable[object]],
+) -> None:
+    unwatched: list[int] = []
+
+    class Recording(asyncio.SelectorEventLoop):
+        def remove_reader(self, fd: object) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
+            unwatched.append(cast("int", fd))
+            return super().remove_reader(cast("int", fd))
+
+    engine = _Gone()
+    watched = engine.watched()
+    read = _reading.pushed(opened(), cast("_reading.Out", engine), engine)
+    try:
+        with asyncio.Runner(loop_factory=Recording) as runner, pytest.raises(_IterationError):
+            runner.run(read)
+    finally:
+        engine.close()
+    assert unwatched == [watched]
 
 
 def test_an_async_read_on_a_loop_that_cannot_watch_a_socket_fails_rather_than_waits() -> None:
