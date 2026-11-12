@@ -225,9 +225,28 @@ fn a_forked_child_s_first_call_is_answered() {
         let os = py.import("os").unwrap();
         let child: i64 = os.call_method0("fork").unwrap().extract().unwrap();
         if child == 0 {
+            py.run(
+                c"import builtins, threading; builtins.both = threading.Event()",
+                None,
+                None,
+            )
+            .unwrap();
             let answered = runtime::get(py).is_ok()
-                && py.detach(|| blocked(c"lambda: 7")).is_ok_and(|answered| {
-                    answered.is_ok_and(|value| value.extract::<i64>(py).is_ok_and(|n| n == 7))
+                && py.detach(|| {
+                    // Two calls at once: the second takes a daemon thread beneath the first's,
+                    // where a copy of the parent's would lie.
+                    let first = std::thread::spawn(|| {
+                        blocked(c"lambda: __import__('builtins').both.wait(10)")
+                    });
+                    let second = blocked(c"lambda: __import__('builtins').both.set()");
+                    matches!(second, Ok(Ok(_)))
+                        && first.join().is_ok_and(|first| {
+                            first.is_ok_and(|waited| {
+                                waited.is_ok_and(|waited| {
+                                    Python::attach(|py| waited.extract::<bool>(py).unwrap_or(false))
+                                })
+                            })
+                        })
                 });
             os.call_method1("_exit", (if answered { 0 } else { 3 },))
                 .unwrap();
