@@ -115,6 +115,10 @@ class _Calls(Protocol):
         """Hands over the last call's answer, then waits for the next call to make."""
         ...
 
+    def abandon(self) -> None:
+        """Hands over the last call's answer, where one waits, without waiting for another."""
+        ...
+
 
 _IDLE = "rdlt-call"
 """The name of a daemon thread that waits for a call, or makes one other than a read."""
@@ -285,18 +289,23 @@ def serve(calls: _Calls) -> None:
 
     What a call held, its batch among it, is let go before its answer is handed over. A user's
     function's exception, `SystemExit` and `KeyboardInterrupt` among them, is its call's answer;
-    what else escapes is a bug of rdlt's own, said here, and the thread then waits for good, off
-    the pool, rather than end.
+    what else escapes is a bug of rdlt's own, said here. The thread then answers the call it held,
+    with its answer where it was read and as unanswered otherwise, and waits for good, off the
+    pool, rather than end.
     """
-    threading.current_thread().name = _IDLE
     try:
+        threading.current_thread().name = _IDLE
         while True:
             _made(*calls.next())
     except BaseException:  # noqa: BLE001
-        try:
+        with contextlib.suppress(BaseException):
             traceback.print_exc()
-        finally:
-            _parked()
+    # Out of the handler, so what the escape's traceback held of a call, its answer among it, is
+    # let go, and the call is told it went unanswered.
+    try:
+        calls.abandon()
+    finally:
+        _parked()
 
 
 def _parked() -> None:

@@ -196,6 +196,15 @@ impl Calls {
 
 #[pymethods]
 impl Calls {
+    /// Hands over the last call's answer, where one waits, without going back on the pool: the
+    /// daemon thread is about to wait for good.
+    fn abandon(&self) {
+        let done = self.done.lock().take();
+        if let Some(done) = done {
+            (done.handover)();
+        }
+    }
+
     /// Hands over the last call's answer, then waits, the GIL released, for the next call.
     ///
     /// A call whose arguments cannot be built is answered with why, here.

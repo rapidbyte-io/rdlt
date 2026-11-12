@@ -528,3 +528,50 @@ fn a_call_that_finds_a_spare_that_did_not_start_says_why_and_a_later_one_is_answ
     let later = blocked(c"lambda: 7").expect("the daemon thread back on the pool answers");
     embedded::with(|py| assert_eq!(later.unwrap().extract::<i64>(py).unwrap(), 7));
 }
+
+#[test]
+fn a_daemon_thread_a_bug_escapes_answers_the_call_it_held_before_it_waits_for_good() {
+    // Escaping once the answer was read, the answer is handed over; escaping before, the call is
+    // told it went unanswered.
+    embedded::with(|py| {
+        py.run(
+            c"
+import builtins, rdlt._reading as reading
+made_by = reading._made
+def escaping(*made):
+    if builtins.escape != 'before':
+        made_by(*made)
+    if builtins.escape is not None:
+        raise RuntimeError('a bug')
+builtins.escape = None
+reading._made = escaping
+",
+            None,
+            None,
+        )
+        .unwrap();
+    });
+    // A daemon thread finds what makes its next call as it begins to wait: after this call, both
+    // that wait find `escaping`.
+    blocked(c"lambda: 7").unwrap().unwrap();
+    for (escape, answered) in [(c"'after'", true), (c"'before'", false)] {
+        embedded::with(|py| {
+            let builtins = py.import("builtins").unwrap();
+            builtins
+                .setattr("escape", py.eval(escape, None, None).unwrap())
+                .unwrap();
+        });
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sent.send(blocked(c"lambda: 7")).ok());
+        let told = received
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the call is answered, or told it went unanswered, within 10 s");
+        match told {
+            Ok(value) if answered => {
+                embedded::with(|py| assert_eq!(value.unwrap().extract::<i64>(py).unwrap(), 7));
+            }
+            Err(Unanswered::Thread) if !answered => {}
+            other => panic!("escaping answered {answered}: told {:?}", other.err()),
+        }
+    }
+}
