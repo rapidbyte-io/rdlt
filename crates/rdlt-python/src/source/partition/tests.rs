@@ -290,7 +290,7 @@ fn a_stopped_read_returns_while_its_generator_is_blocked() {
         });
         assert!(
             closed,
-            "the generator was not closed once its thread could end"
+            "the generator was not closed once its read had gone"
         );
     });
 }

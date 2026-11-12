@@ -136,13 +136,13 @@ impl Reading {
 
     /// The next push, none once the read ended.
     ///
-    /// A thread that ended without saying how fails the read: a thread that died must not read
-    /// as a partition read to its end.
+    /// A read let go without saying how it ended fails: a read whose thread met a bug must not
+    /// read as a partition read to its end.
     pub(crate) async fn next(&mut self) -> Option<Pushed> {
         let pushed = self.received.recv().await;
         if pushed.is_none() && !self.told.swap(true, Ordering::AcqRel) {
             return Some(Pushed::Failed(ConnectorError::internal(
-                "a partition's thread ended without saying how its read ended",
+                "a partition's read was let go without saying how it ended",
             )));
         }
         pushed
