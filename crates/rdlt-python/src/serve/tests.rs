@@ -41,31 +41,35 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 #[test]
-fn a_served_python_connector_serves_no_probe() {
+fn a_served_python_connector_serves_no_probe_unless_its_launcher_asks() {
     // Even a source whose class says it tells where it stands.
     for acknowledges in [false, true] {
-        let factory = embedded::with(|py| source(py, acknowledges).factory());
+        let factory = embedded::with(|py| super::source_served(&source(py, acknowledges), false));
         assert!(!factory.acknowledges());
         let asked = runtime()
             .block_on(factory.connect_acknowledging(serde_json::json!({}), ConnectContext::new()));
         assert_eq!(asked.err().expect("refused").code(), Some("acknowledged"));
+        let asked = embedded::with(|py| super::source_served(&source(py, acknowledges), true));
+        assert_eq!(asked.acknowledges(), acknowledges, "as its class says");
     }
 }
 
 #[test]
-fn a_served_python_destination_reads_nothing_back() {
-    let factory = embedded::with(|py| destination(py).factory());
+fn a_served_python_destination_reads_back_only_where_its_launcher_asks() {
+    let factory = embedded::with(|py| super::destination_served(&destination(py), false));
     assert!(!factory.reads_back());
     let asked =
         runtime().block_on(factory.connect_reading(serde_json::json!({}), ConnectContext::new()));
     assert_eq!(asked.err().expect("refused").code(), Some("published"));
+    let asked = embedded::with(|py| super::destination_served(&destination(py), true));
+    assert!(asked.reads_back());
 }
 
 #[test]
 fn bad_arguments_are_answered_before_serving_either_role_or_both() {
     embedded::with(|py| {
-        let source = || Some(Bound::new(py, source(py, false)).unwrap());
-        let destination = || Some(Bound::new(py, destination(py)).unwrap());
+        let source = || Some((Bound::new(py, source(py, false)).unwrap(), false));
+        let destination = || Some((Bound::new(py, destination(py)).unwrap(), true));
         for (source, destination) in [
             (source(), None),
             (None, destination()),

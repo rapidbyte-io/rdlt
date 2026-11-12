@@ -15,16 +15,12 @@ import pytest
 import rdlt
 from rdlt.connector import Config, Cursor, checkpoint, source, stream
 from rdlt.testing import certify_source, certify_transform
-from tests.clauses import outcomes
+from tests.clauses import KILLED_PAGES, SOURCE_PASSED, SOURCE_UNTOLD, outcomes
 from tests.connectors.inbox import Inbox
 from tests.connectors.tickets import Tickets
 from tests.launchers import inbox_launcher, tickets_launcher
 
 TESTS = Path(__file__).resolve().parents[1]
-
-# About 40,000 rows, a megabyte, as rdlt-certify's own kill fixtures are: a load that outlasts the
-# commits K-SOURCE's kills follow, so they land while the source is still read.
-KILLED_PAGES = 4_000
 
 CERTIFIED = """
 import sys
@@ -116,28 +112,6 @@ def test_an_unobserved_clause_fails_saying_it_went_unobserved(pytester: pytest.P
     result.stdout.fnmatch_lines(["*test_certify[[]T-KEYS[]] SKIPPED*"])
     result.stdout.fnmatch_lines(["*T-REPLAY: *", "*went unobserved: no input holds a row*"])
     assert result.ret == pytest.ExitCode.TESTS_FAILED
-
-
-SOURCE_UNTOLD = ["S-ACK"]
-"""The clauses a source that does not tell where it stands outside the engine is not held to."""
-
-SOURCE_PASSED = [
-    "P-HANDSHAKE",
-    "P-ORDER",
-    "P-ROLE",
-    "P-LIMITS",
-    "P-HEARTBEAT",
-    "P-MALFORMED",
-    "P-CREDIT",
-    "S-CHECK",
-    "S-DISCOVER",
-    "S-PLAN",
-    "S-RESUME",
-    "S-PARTITION",
-    "S-STOP",
-    "S-BARRIER",
-    "K-SOURCE",
-]
 
 
 def test_a_launcher_s_kill_clause_kills_the_installed_connector(tmp_path: Path) -> None:

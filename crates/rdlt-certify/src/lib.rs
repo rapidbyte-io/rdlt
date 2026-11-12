@@ -35,6 +35,8 @@ pub use rdlt_connector::testing::{
     Clause, ClauseResult, DESTINATION_CLAUSES, Observed, Outcome, Probe, REASON_BYTES, Reason,
     Report, SOURCE_CLAUSES, Unprobed, Verdict,
 };
+// What `Target::listening` takes, for a certifier that reaches an endpoint through this crate alone.
+pub use rdlt_host::{ConnectorRef, Endpoint, Identity, Remote};
 pub use registry::{Family, clauses, markdown};
 pub use report::{json, line, plain};
 pub use target::Target;

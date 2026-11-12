@@ -89,8 +89,11 @@ script that started a run and returned.
   daemon threads, as an in-process one's does. SIGINT is ignored before serving: the server takes
   the signal itself and then calls the handler it found, and Python's would leave a
   `KeyboardInterrupt` to raise once the server returned. Spawned by a host, the server ignores
-  Ctrl-C, since its host stops it; listening, it stops. Served factories answer no certification
-  probe, though the wheel carries the certifier for its pytest plugin.
+  Ctrl-C, since its host stops it; listening, it stops. A class `serve` is handed answers no
+  certification probe, as a Rust binary's plain factory answers none (ADR 0044); handed as
+  `acknowledging_source_factory(C)` or `readable_destination_factory(C)`, it answers those its class
+  can, as a Rust binary's `main` serving those factories does. The installed launcher refuses one,
+  alone or in a pair, as a Rust release serves no probe.
 - **A blocking run answers Ctrl-C as the CLI does**: the first stops the run after its next
   commit and the call waits on; a second cancels the run and raises `KeyboardInterrupt`. A
   cancelled await of a run asks it to stop after its next commit and raises at once, as asyncio
@@ -101,7 +104,8 @@ script that started a run and returned.
   clause, over an in-process socket pair, a destination read back through its `published` and a
   source that says it tells where it stands asked through its streams' `acknowledged`, the kill
   clause spawning the installed launcher where one is given; a clause that applies and went
-  unobserved fails its test.
+  unobserved fails its test. Given a connector's id and endpoint and the host's TLS, they certify
+  the connector listening there over mutual TLS, as rdlt-certify's listening target does.
 - **User Python has only Python beneath it.** Every function of a user's that Rust calls, a
   generator's `next`, a source's `check`, a stream's `partitions`, `committed` and `acknowledged`, a
   destination's methods and its sessions' and table writers', a secret store, a transform, runs on a
@@ -166,8 +170,8 @@ Rejected:
   into a connector class would read differently, and would be rewritten to become a connector.
 - **A Python implementation of the protocol.** It would be a second implementation of what ADRs
   0038 to 0050 harden.
-- **Two packages, the certifier apart.** One wheel is what a user installs, and served factories
-  answer no probe by construction.
+- **Two packages, the certifier apart.** One wheel is what a user installs, and a served class
+  answers no probe unless its launcher's own code asks for it.
 - **orjson for rows.** Encoding in Rust keeps the limits where the push is made, and adds no
   dependency.
 
@@ -185,10 +189,10 @@ its first line names is held by its path, and the packages beside it are the ope
 An interpreter upgraded in place, or a package the operator changes in the tree, changes what
 runs under the same digest, as a native binary's shared libraries do.
 
-A process forked after the runtime started is refused in the child with `rdlt.InternalError`,
-which names multiprocessing's spawn and forkserver methods. The wheel carries rdlt-certify's
-code, and a served connector never serves its probes. The nightly workflow tests the wheel on
-CPython 3.11 to 3.15 and on free-threaded 3.14, on Linux and macOS.
+A process forked after the runtime started is refused in the child with `rdlt.InternalError`, which
+names multiprocessing's spawn and forkserver methods. The wheel carries rdlt-certify's code, and a
+served connector serves a probe only where its launcher's own code asks for it. The nightly workflow
+tests the wheel on CPython 3.11 to 3.15 and on free-threaded 3.14, on Linux and macOS.
 
 A commit's barrier waits, up to its limit, for every partition still reading that checkpoints
 when asked to, as the generator does, so within one pipeline a transform that runs long on such a

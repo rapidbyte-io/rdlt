@@ -324,7 +324,10 @@ process, and a launcher ending in `raise SystemExit(rdlt.connector.serve(Tickets
 connector binary; `serve(Tickets, Warehouse)` serves a source class and a destination class in one
 process, as Rust's `Served` does. `test_certify = rdlt.testing.certify_source(Tickets, config=...)`
 in a test module, or `certify_destination`, makes each clause a pytest test,
-`test_certify[S-RESUME]`, and its `report()` is rdlt-certify's report.
+`test_certify[S-RESUME]`, and its `report()` is rdlt-certify's report; given
+`rdlt.Connector("io.example.tickets", endpoint="grpcs://host:port")` and
+`remote=rdlt.Tls(cert=..., key=..., ca=...)`, they certify a connector listening there over mutual
+TLS, as rdlt-certify's `Target::listening` does.
 
 **Spawned connectors.** `rdlt connector new tickets --lang python` writes a connector project,
 `rdlt-connector-tickets`: a source class, registered as the `rdlt.connectors` entry point

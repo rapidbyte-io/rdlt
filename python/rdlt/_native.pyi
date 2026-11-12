@@ -224,14 +224,20 @@ class Run:
     def wait_async(self) -> Awaitable[tuple[str, str | None]]: ...
 
 def serve(
-    args: Sequence[str], source: SourceFactory | None, destination: DestinationFactory | None
+    args: Sequence[str],
+    source: tuple[SourceFactory, bool] | None,
+    destination: tuple[DestinationFactory, bool] | None,
 ) -> str | None: ...
 def clauses(role: str) -> list[tuple[str, str]]: ...
 def certify_source(
-    factory: SourceFactory, config: str, launcher: str | PathLike[str] | None = None
+    source: SourceFactory | tuple[str, str, _Tls],
+    config: str,
+    launcher: str | PathLike[str] | None = None,
 ) -> str: ...
 def certify_destination(
-    factory: DestinationFactory, config: str, launcher: str | PathLike[str] | None = None
+    destination: DestinationFactory | tuple[str, str, _Tls],
+    config: str,
+    launcher: str | PathLike[str] | None = None,
 ) -> str: ...
 def certify_transform(transform: Transform, inputs: Sequence[pa.RecordBatch]) -> str: ...
 def minimal_capabilities() -> str: ...
