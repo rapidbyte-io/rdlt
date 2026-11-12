@@ -20,18 +20,34 @@ def owned(names: list[str]) -> bool:
 
 
 STARTS = """
-import sys, threading
+import _thread, sys, threading
 
 starters = []
 
 
-def audited(event, arguments):
-    if event == "_thread.start_new_thread" and arguments[0].__module__ == "rdlt._reading":
+def started(function):
+    if function.__module__ == "rdlt._reading":
         known = vars(threading)["_active"].get(threading.get_ident())
         starters.append("unknown" if known is None else known.name)
 
 
-sys.addaudithook(audited)
+def audited(event, arguments):
+    if event == "_thread.start_new_thread":
+        started(arguments[0])
+
+
+start_new_thread = _thread.start_new_thread
+
+
+def recorded(function, *arguments):
+    started(function)
+    return start_new_thread(function, *arguments)
+
+
+if sys.argv[2] == "audited":
+    sys.addaudithook(audited)
+else:
+    _thread.start_new_thread = recorded
 sys.path.append(sys.argv[1])
 
 import rdlt
@@ -62,12 +78,21 @@ sys.exit(0 if outcome.report.status is rdlt.RunStatus.SUCCEEDED else 3)
 """
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 12), reason="CPython 3.11 audits no thread `_thread` starts"
+@pytest.mark.parametrize(
+    "seen",
+    [
+        pytest.param(
+            "audited",
+            marks=pytest.mark.skipif(
+                sys.version_info < (3, 12), reason="CPython 3.11 audits no thread `_thread` starts"
+            ),
+        ),
+        "wrapped",
+    ],
 )
-def test_every_thread_rdlt_starts_is_started_by_a_thread_python_owns() -> None:
+def test_every_thread_rdlt_starts_is_started_by_a_thread_python_owns(seen: str) -> None:
     finished = subprocess.run(
-        [sys.executable, "-c", STARTS, str(PYTHON)],
+        [sys.executable, "-c", STARTS, str(PYTHON), seen],
         timeout=60,
         check=False,
         capture_output=True,
