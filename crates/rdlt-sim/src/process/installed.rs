@@ -107,9 +107,14 @@ fn written(path: &Path, contents: &[u8]) {
 /// spec its built factory names, and `C` connected from the whole configuration.
 fn described_source<C: SourceConnector>() -> Box<dyn SourceFactory> {
     let spec = source_factory::<C>().spec().clone();
-    source_factory_from::<C, _>(spec, |config, context| {
-        Box::pin(async move { C::connect(parse_config(&config)?, &context).await })
-    })
+    source_factory_from::<C, _, _>(
+        spec,
+        |config, context| {
+            Box::pin(async move { C::connect(parse_config(&config)?, &context).await })
+        },
+        // Its streams' types say their cursors' formats.
+        |_, _| None,
+    )
 }
 
 /// The factory of destination `C` described at run time, as [`described_source`] describes a

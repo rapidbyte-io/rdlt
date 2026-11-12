@@ -58,10 +58,10 @@ script that started a run and returned.
   the fault and the kind of value, never the value.
 - **One way to write a source, in the Rust SDK's words.** `rdlt.connector` names what the Rust SDK
   names, in Python's case: `ConnectorError` and its kinds, `RateLimited`'s `retry_after`, a
-  `ReadStream` that `@stream` makes, its `Partition`s, `committed`, `acknowledged` and
-  `replayable`, a source's `acknowledged`, `Cursor`,
-  `checkpoint`, the `ConnectContext` a connector's `__init__` takes where it names one, a
-  destination's `Capabilities`, `OpenContext`, `WriteStats` and `Fence`, the failure codes, such as
+  `ReadStream` that `@stream` makes, its `Partition`s, `committed`, `acknowledged` and `replayable`,
+  a source's `acknowledged`, `Cursor` and a stream's `cursor_version`, `checkpoint`, the
+  `ConnectContext` a connector's `__init__` takes where it names one, a destination's
+  `Capabilities`, `OpenContext`, `WriteStats` and `Fence`, the failure codes, such as
   `COMMIT_STALE`, and `serve`'s `args`. Where Python differs, the language makes it: decorators for
   attributes, exceptions for `Result`, named as exceptions are, so `InvalidConfig`, `Unauthorized`
   and `InvalidData` are the kinds Rust calls `Config`, `Auth` and `Data`, generators for an emitter,

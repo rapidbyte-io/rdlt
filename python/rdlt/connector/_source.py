@@ -22,6 +22,9 @@ T = TypeVar("T")
 FUNCTIONS = "io.rapidbyte.functions"
 """The connector id of the in-process source a pipeline reads its stream functions as."""
 
+_CURSOR_VERSIONS = range(2**16)
+"""The formats a cursor may be in, as the Rust SDK's `u16` holds them."""
+
 _Answered = Sequence[str | Partition]
 """A stream's partitions, each an id or a `Partition`."""
 
@@ -49,6 +52,7 @@ class ReadStream:
     name: str
     primary_key: tuple[str, ...] | None
     cursor: type[Cursor] | None
+    cursor_version: int
     partitions: _PartitionsOf | None
     committed: _CommittedBy | None
     acknowledged: _AcknowledgedBy | None
@@ -71,6 +75,7 @@ def stream(
     *,
     primary_key: str | Sequence[str] | None = None,
     cursor: type[Cursor] | None = None,
+    cursor_version: int = 1,
     partitions: _PartitionsOf | None = None,
     committed: _CommittedBy | None = None,
     acknowledged: _AcknowledgedBy | None = None,
@@ -84,7 +89,10 @@ def stream(
     method that does; `ctx.partition` then says which one is read. A method stays a method:
     `self.tickets(since, ctx)` calls it. It makes a `ReadStream`, typed `Any` so it is called and
     overridden as the function or method it was. How its rows land is the pipeline's to say, as
-    `rdlt.stream(name, write=...)`, whatever its source.
+    `rdlt.stream(name, write=...)`, whatever its source. `cursor_version`, 1 unless given, is the
+    format of its cursors, as a Rust stream's `CURSOR_VERSION` is: bumped when `cursor`'s shape
+    changes incompatibly, so a cursor committed in another format fails the read, coded
+    `cursor_version`, rather than restart it.
 
     `committed`, a function called as `partitions` is or a method's name, takes the cursors each
     commit made durable, as `(partition id, cursor)` pairs, as a Rust stream's `committed` does: a
@@ -119,6 +127,12 @@ def stream(
         if partitions is not None and not takes_context:
             message = f"stream {function.__name__!r}: partitions= needs a ctx parameter"
             raise TypeError(message)
+        if type(cursor_version) is not int or cursor_version not in _CURSOR_VERSIONS:
+            message = (
+                f"stream {function.__name__!r}: cursor_version={cursor_version!r} is not a "
+                f"format from 0 to {_CURSOR_VERSIONS[-1]}"
+            )
+            raise ValueError(message)
         if acknowledged is not None and cursor is None:
             message = (
                 f"stream {function.__name__!r}: acknowledged= answers a cursor, and the stream "
@@ -131,6 +145,7 @@ def stream(
             name=name or function.__name__,
             primary_key=None if keys is None else tuple(keys),
             cursor=cursor,
+            cursor_version=cursor_version,
             partitions=partitions,
             committed=committed,
             acknowledged=acknowledged,
@@ -273,6 +288,7 @@ class _Connected:
             None if method.partitions is None else partitions,
             committed=None if method.committed is None else committed,
             acknowledged=None if method.acknowledged is None else acknowledged,
+            cursor_version=method.cursor_version,
             takes_context=method.takes_context,
             replayable=method.replayable,
         )
@@ -347,6 +363,7 @@ def _function_stream(made: ReadStream) -> Stream:
         None if made.partitions is None else partitions,
         committed=None if made.committed is None else committed,
         acknowledged=None if made.acknowledged is None else acknowledged,
+        cursor_version=made.cursor_version,
         takes_context=made.takes_context,
         replayable=made.replayable,
     )
