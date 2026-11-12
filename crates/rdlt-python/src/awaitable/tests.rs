@@ -130,6 +130,59 @@ answer = asyncio.run(main())
 }
 
 #[test]
+fn an_await_cancelled_while_its_answer_is_offered_again_lets_go_of_it() {
+    let doomed = Doomed::holding();
+    // The answer is queued on that spare, which does not start, then offered again until the
+    // await is cancelled: the held daemon thread is let go only once the answer was.
+    let refusing = std::thread::spawn(move || {
+        doomed.refused_once_queued();
+        embedded::with(|py| py.run(c"__import__('builtins').emptied.set()", None, None)).unwrap();
+        doomed
+    });
+    let dropped = Arc::new(AtomicBool::new(false));
+    let held = Arc::clone(&dropped);
+    let cancelled = embedded::with(|py| {
+        let cancelled = c"
+import asyncio, builtins, threading, time
+builtins.emptied = threading.Event()
+async def main():
+    awaited = make()
+    deadline = time.monotonic() + 10
+    while not builtins.emptied.is_set() and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.2)
+    awaited.cancel()
+    await asyncio.sleep(0)
+    return builtins.emptied.is_set() and awaited.cancelled()
+answer = asyncio.run(main())
+";
+        awaited(py, cancelled, move |py| {
+            let guard = Dropped(Arc::clone(&held));
+            awaitable(py, async { 7_i64 }, move |py, n| {
+                drop(guard);
+                n.into_bound_py_any(py)
+            })
+            .map(Bound::unbind)
+        })
+        .map(|answer| answer.extract::<bool>().unwrap())
+    });
+    assert!(
+        cancelled.unwrap(),
+        "the await was cancelled once its answer's first offer was let go"
+    );
+    let doomed = refusing.join().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !dropped.load(Ordering::Acquire) {
+        assert!(
+            Instant::now() < deadline,
+            "the cancelled await's answer was let go, no longer offered"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    doomed.released();
+}
+
+#[test]
 fn a_cancelled_await_lets_go_of_its_future() {
     let dropped = Arc::new(AtomicBool::new(false));
     let held = Arc::clone(&dropped);

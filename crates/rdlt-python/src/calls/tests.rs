@@ -605,7 +605,8 @@ impl Doomed {
         Self { held, spare }
     }
 
-    /// Refuses the spare's start once a call has taken it off the pool, within 10 s.
+    /// Refuses the spare's start once a call has taken it off the pool, and waits for the refusal
+    /// to empty the pool, within 10 s each.
     pub(crate) fn refused_once_queued(&self) {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while super::IDLE
@@ -621,6 +622,14 @@ impl Doomed {
             std::thread::sleep(Duration::from_millis(1));
         }
         embedded::with(|py| py.run(c"__import__('builtins').queued.set()", None, None)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !super::IDLE.lock().daemons.is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the spare's refused start emptied the pool"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Gives starts back, lets the held daemon thread go, and waits for its call's answer.

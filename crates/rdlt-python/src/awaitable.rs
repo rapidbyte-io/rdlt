@@ -32,6 +32,9 @@ struct Ended<T, A> {
 /// `answer` reads it on a daemon thread; cancelling it, or its loop's ending, drops `future`'s
 /// answer.
 ///
+/// Settling the future takes a daemon thread, so an await whose answer none can take waits until
+/// one can, or until it is cancelled, as `asyncio.wait_for` does at its timeout.
+///
 /// # Errors
 ///
 /// What `runtime::get` refuses, and a `RuntimeError` where no event loop runs on this thread.
@@ -51,12 +54,9 @@ where
         .call_method0(intern!(py, "get_running_loop"))?;
     let awaited = event_loop.call_method0(intern!(py, "create_future"))?;
     let task = runtime.spawn(future);
-    awaited.call_method1(
-        intern!(py, "add_done_callback"),
-        (Cancel(task.abort_handle()),),
-    )?;
+    let ending = task.abort_handle();
     let (event_loop, target) = (event_loop.unbind(), awaited.clone().unbind());
-    drop(runtime.spawn(async move {
+    let offering = runtime.spawn(async move {
         let ended = task.await;
         // A cancelled await is done and takes no answer, so none is made.
         if matches!(&ended, Err(joined) if joined.is_cancelled()) {
@@ -73,7 +73,9 @@ where
         while handed(&kept).await {
             tokio::time::sleep(AGAIN).await;
         }
-    }));
+    });
+    let cancel = Cancel([ending, offering.abort_handle()]);
+    awaited.call_method1(intern!(py, "add_done_callback"), (cancel,))?;
     Ok(awaited)
 }
 
@@ -118,13 +120,16 @@ where
     kept.lock().is_some()
 }
 
-/// Lets go of the future an awaitable waits on, once that awaitable is done or cancelled.
+/// Lets go of the future an awaitable waits on, and of its answer's offers, once that awaitable
+/// is done or cancelled.
 #[pyclass(module = "rdlt._native", name = "Cancel", frozen)]
-struct Cancel(AbortHandle);
+struct Cancel([AbortHandle; 2]);
 
 #[pymethods]
 impl Cancel {
     fn __call__(&self, _awaited: &Bound<'_, PyAny>) {
-        self.0.abort();
+        for task in &self.0 {
+            task.abort();
+        }
     }
 }
