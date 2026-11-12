@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextvars import Context
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
 import pytest
@@ -188,3 +189,91 @@ def test_an_await_of_a_run_is_answered_from_a_thread_python_owns(end: str) -> No
     asyncio.run(main())
     assert callers, "the await's answer was handed to the event loop"
     assert owned(callers), f"handed to asyncio by threads Python did not start: {callers}"
+
+
+def waits_for_a_call(ident: int) -> bool:
+    """Whether the daemon thread `ident` is back waiting for a call, within ten seconds."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        frame = sys._current_frames().get(ident)  # pyright: ignore[reportPrivateUsage]
+        if frame is not None and frame.f_code.co_name == "serve":
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def endless_run() -> rdlt.Run:
+    return (
+        rdlt.pipeline(
+            "awaited", source=endless, destination=rdlt.local(memory.Memory, config={"store": "a"})
+        )
+        .build(rdlt.Host())
+        .start()
+    )
+
+
+def test_an_await_whose_loop_closed_before_its_answer_leaves_its_daemon_thread_waiting() -> None:
+    run = endless_run()
+    loop = asyncio.new_event_loop()
+
+    async def begun() -> None:
+        run._native.wait_async()  # pyright: ignore[reportPrivateUsage]
+
+    loop.run_until_complete(begun())
+    handed = loop.call_soon_threadsafe
+    callers: list[int] = []
+
+    def recorded(
+        callback: Callable[..., object], *arguments: object, context: Context | None = None
+    ) -> asyncio.Handle:
+        callers.append(threading.get_ident())
+        return handed(callback, *arguments, context=context)
+
+    with mock.patch.object(loop, "call_soon_threadsafe", side_effect=recorded):
+        loop.close()
+        run.cancel()
+        deadline = time.monotonic() + 30
+        while not callers:
+            assert time.monotonic() < deadline, "the await's answer was handed over"
+            time.sleep(0.01)
+    assert waits_for_a_call(callers[0]), "its daemon thread went back to waiting for a call"
+
+
+@pytest.mark.parametrize("before", ["cancelled", "done"])
+def test_an_await_done_before_its_answer_lands_takes_none_and_its_thread_waits_on(
+    before: str,
+) -> None:
+    raised: list[dict[str, object]] = []
+    callers: list[int] = []
+
+    async def main() -> None:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda _, context: raised.append(context))
+        run = endless_run()
+        native = run._native  # pyright: ignore[reportPrivateUsage]
+        awaited = cast("asyncio.Future[object]", native.wait_async())
+        handed = loop.call_soon_threadsafe
+        landed = threading.Event()
+
+        def recorded(
+            callback: Callable[..., object], *arguments: object, context: Context | None = None
+        ) -> asyncio.Handle:
+            callers.append(threading.get_ident())
+            landed.set()
+            return handed(callback, *arguments, context=context)
+
+        with mock.patch.object(loop, "call_soon_threadsafe", side_effect=recorded):
+            run.cancel()
+            # The loop is held until the answer is on its way, so it lands on a future done.
+            assert landed.wait(30), "the await's answer was handed over"
+            if before == "cancelled":
+                awaited.cancel()
+            else:
+                awaited.set_result("first")
+            await asyncio.sleep(0.1)
+        if before == "done":
+            assert awaited.result() == "first"
+
+    asyncio.run(main())
+    assert not raised, f"the event loop met {raised}"
+    assert waits_for_a_call(callers[0]), "its daemon thread went back to waiting for a call"

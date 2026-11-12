@@ -55,9 +55,6 @@ pub(crate) fn get(py: Python<'_>) -> Result<&'static Runtime, PyErr> {
                     // Lives as long as the process: its threads end with it, and nothing waits
                     // for them.
                     let runtime: &'static Runtime = Box::leak(Box::new(runtime));
-                    // asyncio's awaitables run their futures here; nothing gave the bridge a
-                    // runtime before.
-                    pyo3_async_runtimes::tokio::init_with_runtime(runtime).ok();
                     *held = Some((runtime, pid));
                     Ok(runtime)
                 }

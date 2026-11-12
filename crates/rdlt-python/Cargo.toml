@@ -20,7 +20,6 @@ arrow-schema.workspace = true
 bytes.workspace = true
 parking_lot.workspace = true
 pyo3.workspace = true
-pyo3-async-runtimes.workspace = true
 rdlt = { workspace = true, features = ["remote"] }
 rdlt-certify.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "testing"] }

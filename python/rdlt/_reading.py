@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import _thread
 import asyncio
+import contextlib
 import threading
 import traceback
 from collections import deque
@@ -374,3 +375,27 @@ def committed(stream: _Stream, cursors: list[tuple[str, str | None]]) -> None:
 def acknowledged(stream: _Stream, partition: str) -> str | None:
     """Where `stream` stands for `partition` outside the engine, as JSON; `None` where nowhere."""
     return stream.acknowledged(partition)
+
+
+def awaited(
+    loop: asyncio.AbstractEventLoop,
+    future: asyncio.Future[object],
+    value: object,
+    error: BaseException | None,
+) -> None:
+    """Hands `value`, or `error` where there is one, to `future` on its event loop `loop`.
+
+    Nothing is handed to a future already done, as a cancelled one is, or through a loop that has
+    closed.
+    """
+
+    def settled() -> None:
+        if future.done():
+            return
+        if error is None:
+            future.set_result(value)
+        else:
+            future.set_exception(error)
+
+    with contextlib.suppress(RuntimeError):
+        loop.call_soon_threadsafe(settled)

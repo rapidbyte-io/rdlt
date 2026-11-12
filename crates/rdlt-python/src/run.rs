@@ -9,10 +9,11 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use pyo3::exceptions::{PyKeyboardInterrupt, PyValueError};
 use pyo3::types::PyAnyMethods as _;
-use pyo3::{Bound, Py, PyAny, PyErr, PyRef, Python, pyclass, pymethods};
+use pyo3::{Bound, IntoPyObjectExt as _, Py, PyAny, PyErr, PyRef, Python, pyclass, pymethods};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot, watch};
 
+use crate::awaitable::awaitable;
 use crate::runtime::Interrupted;
 use crate::{errors, runtime};
 
@@ -239,14 +240,9 @@ impl NativeRun {
     /// An awaitable of what `wait` answers, completed on the event loop's thread; dropping it,
     /// as cancelling its asyncio task does, leaves the run to its handles.
     pub(crate) fn wait_async<'py>(&self, py: Python<'py>) -> Result<Bound<'py, PyAny>, PyErr> {
-        runtime::get(py)?;
-        let receiver = self.ended();
-        // Made here, on Python's own thread: the runtime's worker that ends the await takes no
-        // GIL, and drops it unused once the run ended.
-        let stopped = errors::stopped(py);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let ended = ended(receiver).await.ok_or(stopped)?;
-            Ok((ended.outcome.clone(), ended.error.clone()))
+        awaitable(py, ended(self.ended()), |py, ended| {
+            let ended = ended.ok_or_else(|| errors::stopped(py))?;
+            (ended.outcome.clone(), ended.error.clone()).into_bound_py_any(py)
         })
     }
 }
@@ -341,9 +337,12 @@ impl NativeEvents {
     /// An awaitable of whether an item waits to be taken, false once the run ended and every
     /// event is read; cancelling it loses nothing.
     fn readable<'py>(&self, py: Python<'py>) -> Result<Bound<'py, PyAny>, PyErr> {
-        runtime::get(py)?;
         let reader = Arc::clone(&self.reader);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(reader.readable().await) })
+        awaitable(
+            py,
+            async move { reader.readable().await },
+            |py, readable| readable.into_bound_py_any(py),
+        )
     }
 
     /// The item that waits to be taken, if one does.
