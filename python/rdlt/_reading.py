@@ -4,6 +4,9 @@ Every call from Rust, a partition's read among them, is made on one of the proce
 threads, which `_thread` starts and which run `serve` for as long as the process lives: an
 interpreter that exits ends them in Python's frames, or leaves them waiting, and none ends on its
 own, since a thread that ends runs its libraries' teardown, which races the process's exit.
+
+Each call starts in a context of its own, as on a fresh thread. Thread-local state, by contrast, is
+the thread's, as in any pool.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import threading
 import traceback
 from collections import deque
 from collections.abc import AsyncIterable, Callable, Iterable
-from contextvars import ContextVar
+from contextvars import Context, ContextVar
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
@@ -322,7 +325,7 @@ def _parked() -> None:
 
 def _made(function: Callable[..., object], arguments: tuple[object, ...], answer: _Answer) -> None:
     try:
-        value = function(*arguments)
+        value = Context().run(function, *arguments)
     except BaseException as error:  # noqa: BLE001
         answer.raised(error)
     else:

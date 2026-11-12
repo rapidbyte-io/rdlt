@@ -156,6 +156,27 @@ fn one_thread_s_calls_share_one_daemon_thread() {
     });
 }
 
+#[test]
+fn each_call_starts_in_a_context_of_its_own() {
+    embedded::with(|py| {
+        py.run(
+            c"import builtins, contextvars, threading\nbuiltins.local = threading.local()\nbuiltins.held = contextvars.ContextVar('held', default=0)",
+            None,
+            None,
+        )
+        .unwrap();
+        // The first call marks its thread and sets a variable it does not reset; the second, on
+        // that thread, finds the mark and the variable's default.
+        let first = c"lambda: (setattr(__import__('builtins').local, 'mark', 1), __import__('builtins').held.set(1))";
+        let second = c"lambda: (getattr(__import__('builtins').local, 'mark', 0), __import__('builtins').held.get())";
+        let answered = py.detach(|| {
+            blocked(first).unwrap().unwrap();
+            blocked(second).unwrap().unwrap()
+        });
+        assert_eq!(answered.extract::<(i64, i64)>(py).unwrap(), (1, 0));
+    });
+}
+
 /// Marks the thread a call is made on, a mark seen only there, and answers its id: a thread's id
 /// is reused once the thread has ended, so a fresh id proves nothing.
 const MARKED: &std::ffi::CStr = c"lambda: (setattr(__import__('builtins').local, 'mark', 1), __import__('threading').get_ident())[1]";
