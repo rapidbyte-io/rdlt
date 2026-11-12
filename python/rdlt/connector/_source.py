@@ -32,6 +32,10 @@ _CommittedBy = Callable[[Any, Committed], None] | Callable[[Committed], None] | 
 """What a stream calls with its committed cursors: a function called as its stream is, or a
 method's name."""
 
+_AcknowledgedBy = Callable[[Any, str], Cursor | None] | Callable[[str], Cursor | None] | str
+"""What says where a stream stands for a partition outside the engine: a function called as its
+stream is, or a method's name."""
+
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
 class ReadStream:
@@ -47,6 +51,7 @@ class ReadStream:
     cursor: type[Cursor] | None
     partitions: _PartitionsOf | None
     committed: _CommittedBy | None
+    acknowledged: _AcknowledgedBy | None
     replayable: bool
     takes_context: bool
 
@@ -68,6 +73,7 @@ def stream(
     cursor: type[Cursor] | None = None,
     partitions: _PartitionsOf | None = None,
     committed: _CommittedBy | None = None,
+    acknowledged: _AcknowledgedBy | None = None,
     replayable: bool = True,
 ) -> Callable[[Callable[..., Any]], Any]:
     """Makes a function a stream a pipeline reads as its source, or a method a stream of its class.
@@ -84,7 +90,12 @@ def stream(
     commit made durable, as `(partition id, cursor)` pairs, as a Rust stream's `committed` does: a
     source that acknowledges upstream, as a queue settling its messages, does it there. A cursor
     may be told more than once, and one older than the last, so an acknowledgement never moves
-    back for it.
+    back for it. `acknowledged`, called as `committed` is or a method's name, takes a partition's
+    id and answers where the stream stands for it outside the engine, as a Rust stream's
+    `acknowledged` does: the cursor it was last told is committed, as a consumer group's committed
+    offset keeps it beyond a connection, or `None` where it keeps none or was never told. Only
+    certification asks, of a source `@source(acknowledged=True)` makes, from a connection of its
+    own, and it answers the cursor `committed` was told as soon as that call returns.
     `replayable=False` declares a stream that cannot be read again from any committed cursor, as
     the Rust SDK's `StreamSpec::with_replayable` does.
 
@@ -108,6 +119,12 @@ def stream(
         if partitions is not None and not takes_context:
             message = f"stream {function.__name__!r}: partitions= needs a ctx parameter"
             raise TypeError(message)
+        if acknowledged is not None and cursor is None:
+            message = (
+                f"stream {function.__name__!r}: acknowledged= answers a cursor, and the stream "
+                "declares none"
+            )
+            raise TypeError(message)
         keys = (primary_key,) if isinstance(primary_key, str) else primary_key
         return ReadStream(
             function=function,
@@ -116,6 +133,7 @@ def stream(
             cursor=cursor,
             partitions=partitions,
             committed=committed,
+            acknowledged=acknowledged,
             replayable=replayable,
             takes_context=takes_context,
         )
@@ -131,6 +149,7 @@ class _Declared:
     id: str
     version: str | None
     config: type[Config]
+    acknowledged: bool
     streams: tuple[ReadStream, ...]
 
 
@@ -154,11 +173,16 @@ def source(
     id: str,  # noqa: A002 - the connector's id, as documents name it
     config: type[Config],
     version: str | None = None,
+    acknowledged: bool = False,
 ) -> Callable[[type[T]], type[T]]:
     """Makes a class a source connector: built from its validated `config`, checked with `check()`.
 
     Its `__init__` takes the configuration, and a `ConnectContext` as `context` where it names
-    one, as a Rust source's `connect(config, &ConnectContext)` does.
+    one, as a Rust source's `connect(config, &ConnectContext)` does. `acknowledged=True` says its
+    streams tell where they stand outside the engine, with their `acknowledged`, as the Rust SDK's
+    `#[source(..., acknowledged)]` does: certification's `S-ACK` then checks that a stream's
+    position moves only in `committed`, and tells it a few checkpoints are committed, so it runs
+    against a slot or consumer group of its own.
 
     Each `@stream` method of the class and of its bases is one of its streams; a subclass's own
     attribute of a stream's name replaces that stream. A subclass is a source of its own only
@@ -170,9 +194,8 @@ def source(
         if not callable(getattr(connector, "check", None)):
             message = f"{connector.__name__} has no check(): a source checks it can read"
             raise TypeError(message)
-        declare(
-            connector, "source", _Declared(connector, id, version, config, _streams_of(connector))
-        )
+        declared = _Declared(connector, id, version, config, acknowledged, _streams_of(connector))
+        declare(connector, "source", declared)
         return connector
 
     return made
@@ -235,6 +258,13 @@ class _Connected:
             else:
                 cast("Any", by)(instance, cursors)
 
+        def acknowledged(partition: str) -> Cursor | None:
+            by = self._declared().streams[index].acknowledged
+            instance = self._instance()
+            if isinstance(by, str):
+                return getattr(instance, by)(partition)
+            return cast("Any", by)(instance, partition)
+
         return Stream(
             method.name,
             read,
@@ -242,6 +272,7 @@ class _Connected:
             method.cursor,
             None if method.partitions is None else partitions,
             committed=None if method.committed is None else committed,
+            acknowledged=None if method.acknowledged is None else acknowledged,
             takes_context=method.takes_context,
             replayable=method.replayable,
         )
@@ -272,6 +303,7 @@ def placed(connector: type) -> tuple[_native.SourceFactory, Placement[_Declared]
         declared.id,
         declared.version or package_version(connector.__module__.split(".")[0]),
         json.dumps(declared.config.model_json_schema()),
+        declared.acknowledged,
         connect,
     )
     return made, placement
@@ -289,7 +321,7 @@ class _Functions:
 
 def _function_stream(made: ReadStream) -> Stream:
     """`made`, a function's stream, as the native source reads it, reaching it weakly."""
-    for named in ("partitions", "committed"):
+    for named in ("partitions", "committed", "acknowledged"):
         if isinstance(getattr(made, named), str):
             message = f"stream {made.name!r}: {named}= names a method, and a function has no class"
             raise TypeError(message)
@@ -304,6 +336,9 @@ def _function_stream(made: ReadStream) -> Stream:
     def committed(cursors: Committed) -> None:
         cast("Callable[[Committed], None]", reached().committed)(cursors)
 
+    def acknowledged(partition: str) -> Cursor | None:
+        return cast("Callable[[str], Cursor | None]", reached().acknowledged)(partition)
+
     return Stream(
         made.name,
         read,
@@ -311,6 +346,7 @@ def _function_stream(made: ReadStream) -> Stream:
         made.cursor,
         None if made.partitions is None else partitions,
         committed=None if made.committed is None else committed,
+        acknowledged=None if made.acknowledged is None else acknowledged,
         takes_context=made.takes_context,
         replayable=made.replayable,
     )
@@ -327,5 +363,6 @@ def functions_placed(streams: Sequence[ReadStream]) -> _native.SourceFactory:
         FUNCTIONS,
         _native.__version__,
         json.dumps({"type": "object"}),
+        False,  # noqa: FBT003 - the native factory's flag: a source of functions tells nothing
         lambda _config, _host: connected,
     )

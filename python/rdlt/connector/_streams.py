@@ -17,6 +17,10 @@ Committed = Sequence[tuple[str, Any]]
 """Committed cursors: each partition's id, `whole` for a stream that is not split, and its cursor,
 of the stream's `Cursor` type, or `None` for a stream that declares none."""
 
+Acknowledged = Callable[[str], Cursor | None]
+"""Where a stream stands for a partition outside the engine: the cursor it was last told is
+committed, or `None` where it keeps none."""
+
 
 class Stream:
     """One stream, as the native source holds it: `read` and `partitions` reach the author's code.
@@ -34,6 +38,7 @@ class Stream:
         partitions: Callable[[], Sequence[str | Partition]] | None,
         *,
         committed: Callable[[Committed], None] | None,
+        acknowledged: Acknowledged | None,
         takes_context: bool,
         replayable: bool,
     ) -> None:
@@ -42,6 +47,7 @@ class Stream:
         self._cursor = cursor
         self._partitions = partitions
         self._committed = committed
+        self._acknowledged = acknowledged
         self._takes_context = takes_context
         self._spec = json.dumps(
             {
@@ -52,6 +58,7 @@ class Stream:
                 "partitioned": partitions is not None,
                 "replayable": replayable,
                 "committed": committed is not None,
+                "acknowledged": acknowledged is not None,
             }
         )
 
@@ -82,6 +89,26 @@ class Stream:
             (partition, None if of is None else _parsed(of, text)) for partition, text in cursors
         ]
         self._committed(parsed)
+
+    def acknowledged(self, partition: str) -> str | None:
+        """Where the author's code says the stream stands for `partition`, as JSON.
+
+        Raises:
+            TypeError: it answered neither the stream's cursor nor `None`.
+        """
+        if self._acknowledged is None:
+            return None
+        found = self._acknowledged(partition)
+        if found is None:
+            return None
+        if self._cursor is None or not isinstance(found, self._cursor):
+            expected = "no cursor" if self._cursor is None else self._cursor.__name__
+            message = (
+                f"stream {self._name!r}: acknowledged= answered {type(found).__name__}: it "
+                f"answers the stream's cursor, {expected}, or None"
+            )
+            raise TypeError(message)
+        return found.model_dump_json()
 
     def read(
         self, partition: str, cursor: str | None, context: _native.StreamContext

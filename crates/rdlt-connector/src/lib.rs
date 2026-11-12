@@ -169,7 +169,10 @@ pub use source::{
     source_factory_from,
 };
 #[cfg(feature = "certify")]
-pub use source::{AcknowledgedReader, Acknowledging, acknowledging_source_factory};
+pub use source::{
+    AcknowledgedReader, Acknowledging, acknowledging_source_factory,
+    acknowledging_source_factory_from,
+};
 pub use spec::{BoxFuture, ConnectContext, ConnectorSpec, Role};
 pub use state::{
     Identity, NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange,

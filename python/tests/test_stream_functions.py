@@ -290,6 +290,7 @@ def test_a_committed_start_is_told_as_the_cursor_a_read_starts_from() -> None:
         _Since,
         None,
         committed=told_of(told),
+        acknowledged=None,
         takes_context=False,
         replayable=True,
     )
@@ -325,6 +326,37 @@ def test_a_source_class_s_stream_is_told_which_cursors_are_committed_through_a_m
         host(tmp_path, connectors)
     ).run()
     assert told == [("eu", 2)]
+
+
+def test_a_stream_tells_where_it_stands_in_its_own_cursor_type_or_none() -> None:
+    def read(since: _Since) -> Iterator[object]:
+        del since
+        yield from ()
+
+    standing: dict[str, object] = {"eu": _Since(after=3), "us": None, "asia": {"after": 3}}
+    users = Stream(
+        "users",
+        read,
+        None,
+        _Since,
+        None,
+        committed=None,
+        acknowledged=lambda partition: cast("_Since | None", standing[partition]),
+        takes_context=False,
+        replayable=True,
+    )
+    assert json.loads(users.acknowledged("eu") or "") == {"after": 3}
+    assert users.acknowledged("us") is None
+    with pytest.raises(TypeError, match="_Since"):
+        users.acknowledged("asia")
+
+
+def test_a_stream_without_a_cursor_cannot_say_where_it_stands() -> None:
+    with pytest.raises(TypeError, match="acknowledged"):
+
+        @stream(acknowledged=lambda partition: None)
+        def rows() -> Iterator[object]:
+            yield {"id": 1}
 
 
 def test_a_stream_that_cannot_be_read_again_says_so_in_its_catalog(

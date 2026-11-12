@@ -15,7 +15,8 @@ use pyo3::{Bound, IntoPyObject as _, Py, PyAny, PyErr, Python, pyclass, pymethod
 use rdlt_connector::{
     BoxFuture, Checkpointing, ConnectContext, ConnectorError, ConnectorId, ConnectorSpec, Emitter,
     Partition, PartitionId, ReadMode, ReadStream, Result, ResultExt as _, SourceConnector,
-    SourceFactory, StreamName, StreamSpec, StreamState, Streams, source_factory_from,
+    SourceFactory, StreamName, StreamSpec, StreamState, Streams, acknowledging_source_factory_from,
+    source_factory_from,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -63,6 +64,10 @@ pub(crate) async fn called<T: Send + 'static>(
 /// What a Python stream says of itself, as its `spec` answers it.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the JSON a stream says itself in, each flag a property of its own"
+)]
 struct Declared {
     name: String,
     primary_key: Option<Vec<String>>,
@@ -72,6 +77,8 @@ struct Declared {
     replayable: bool,
     /// Whether the stream is told which of its cursors are committed.
     committed: bool,
+    /// Whether the stream tells where it stands outside the engine.
+    acknowledged: bool,
 }
 
 /// One stream of a Python source.
@@ -81,6 +88,7 @@ pub(crate) struct PythonStream {
     stream: Arc<Py<PyAny>>,
     partitioned: bool,
     committed: bool,
+    acknowledged: bool,
 }
 
 impl PythonStream {
@@ -104,6 +112,7 @@ impl PythonStream {
             stream: Arc::new(stream),
             partitioned: declared.partitioned,
             committed: declared.committed,
+            acknowledged: declared.acknowledged,
         })
     }
 }
@@ -203,6 +212,34 @@ impl ReadStream<PythonSource> for PythonStream {
         .await
     }
 
+    async fn acknowledged(
+        &self,
+        _source: &PythonSource,
+        partition: &PartitionId,
+    ) -> Result<Option<PyCursor>> {
+        if !self.acknowledged {
+            return Ok(None);
+        }
+        let stream = Arc::clone(&self.stream);
+        let partition = partition.to_string();
+        let told: Option<String> = called(
+            "acknowledged",
+            move |py| (stream.clone_ref(py), partition).into_pyobject(py),
+            |answered| answered.extract(),
+        )
+        .await?;
+        let Some(told) = told else {
+            return Ok(None);
+        };
+        let cursor = RawValue::from_string(told).map_err(|error| {
+            ConnectorError::internal(format!(
+                "stream {}: where it stands is not JSON: {error}",
+                self.spec.name()
+            ))
+        })?;
+        Ok(Some(PyCursor(Some(cursor))))
+    }
+
     async fn read(
         &self,
         _source: &PythonSource,
@@ -277,10 +314,12 @@ async fn connected(
     })
 }
 
-/// A source written in Python: its spec, and the callable that connects it.
+/// A source written in Python: its spec, whether it tells where it stands outside the engine, and
+/// the callable that connects it.
 #[pyclass(module = "rdlt._native", name = "SourceFactory", frozen)]
 pub(crate) struct NativeSourceFactory {
     spec: ConnectorSpec,
+    acknowledges: bool,
     connect: Arc<Py<PyAny>>,
 }
 
@@ -291,6 +330,7 @@ impl NativeSourceFactory {
         id: &str,
         version: String,
         config_schema: &str,
+        acknowledges: bool,
         connect: Py<PyAny>,
     ) -> std::result::Result<Self, PyErr> {
         let id = ConnectorId::parse(id).map_err(|error| {
@@ -305,6 +345,7 @@ impl NativeSourceFactory {
                 version,
                 config_schema,
             },
+            acknowledges,
             connect: Arc::new(connect),
         })
     }
@@ -317,16 +358,33 @@ impl NativeSourceFactory {
 }
 
 impl NativeSourceFactory {
-    /// The Rust SDK's factory for the source: every barrier, checkpoint, frame, limit and credit
-    /// the SDK's own.
-    pub(crate) fn factory(&self) -> Box<dyn SourceFactory> {
+    /// What connects the source: the callable, on a daemon thread, with the configuration's JSON
+    /// and the host its connect context names.
+    fn connecting(
+        &self,
+    ) -> impl Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<PythonSource>>
+    + Send
+    + Sync
+    + 'static {
         let connect = Arc::clone(&self.connect);
-        source_factory_from::<PythonSource, _>(
-            self.spec.clone(),
-            move |config, context| -> BoxFuture<'static, Result<PythonSource>> {
-                let host = context.host().map(str::to_owned);
-                Box::pin(connected(Arc::clone(&connect), config, host))
-            },
-        )
+        move |config, context| -> BoxFuture<'static, Result<PythonSource>> {
+            let host = context.host().map(str::to_owned);
+            Box::pin(connected(Arc::clone(&connect), config, host))
+        }
+    }
+
+    /// The Rust SDK's factory for the source, as a pipeline and served mode place it: every
+    /// barrier, checkpoint, frame, limit and credit the SDK's own.
+    pub(crate) fn factory(&self) -> Box<dyn SourceFactory> {
+        source_factory_from(self.spec.clone(), self.connecting())
+    }
+
+    /// The factory that also tells where the source stands outside the engine, where its class
+    /// says it does, for certification alone.
+    pub(crate) fn acknowledging(&self) -> Box<dyn SourceFactory> {
+        if !self.acknowledges {
+            return self.factory();
+        }
+        acknowledging_source_factory_from(self.spec.clone(), self.connecting())
     }
 }

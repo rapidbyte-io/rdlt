@@ -73,8 +73,9 @@ fn reported(report: &Report) -> String {
     serde_json::json!({ "connector": report.connector, "results": results }).to_string()
 }
 
-/// Certifies the source `factory` makes, served in this process over a socket pair; with
-/// `launcher`, the installed binary of the same connector, its kill clause spawns that.
+/// Certifies the source `factory` makes, served in this process over a socket pair, telling where
+/// it stands where its class says it does; with `launcher`, the installed binary of the same
+/// connector, its kill clause spawns that.
 #[pyfunction]
 #[pyo3(signature = (factory, config, launcher = None))]
 pub(crate) fn certify_source(
@@ -84,7 +85,7 @@ pub(crate) fn certify_source(
     launcher: Option<PathBuf>,
 ) -> Result<String, PyErr> {
     let config = configured(config)?;
-    let source = factory.factory();
+    let source = factory.acknowledging();
     let id: ConnectorId = source.spec().id.clone();
     let mut target = Target::served(Served::new().with_source(source));
     if let Some(launcher) = launcher {

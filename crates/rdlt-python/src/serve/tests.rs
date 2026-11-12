@@ -13,8 +13,15 @@ fn connect(py: Python<'_>) -> Py<PyAny> {
         .unbind()
 }
 
-fn source(py: Python<'_>) -> NativeSourceFactory {
-    NativeSourceFactory::new("io.example.served", "1.0.0".to_owned(), "{}", connect(py)).unwrap()
+fn source(py: Python<'_>, acknowledges: bool) -> NativeSourceFactory {
+    NativeSourceFactory::new(
+        "io.example.served",
+        "1.0.0".to_owned(),
+        "{}",
+        acknowledges,
+        connect(py),
+    )
+    .unwrap()
 }
 
 fn destination(py: Python<'_>) -> NativeDestinationFactory {
@@ -38,11 +45,14 @@ fn runtime() -> tokio::runtime::Runtime {
 
 #[test]
 fn a_served_python_connector_serves_no_probe() {
-    let factory = embedded::with(|py| source(py).factory());
-    assert!(!factory.acknowledges());
-    let asked = runtime()
-        .block_on(factory.connect_acknowledging(serde_json::json!({}), ConnectContext::new()));
-    assert_eq!(asked.err().expect("refused").code(), Some("acknowledged"));
+    // Even a source whose class says it tells where it stands.
+    for acknowledges in [false, true] {
+        let factory = embedded::with(|py| source(py, acknowledges).factory());
+        assert!(!factory.acknowledges());
+        let asked = runtime()
+            .block_on(factory.connect_acknowledging(serde_json::json!({}), ConnectContext::new()));
+        assert_eq!(asked.err().expect("refused").code(), Some("acknowledged"));
+    }
 }
 
 #[test]
@@ -58,7 +68,7 @@ fn a_served_python_destination_reads_nothing_back() {
 fn bad_arguments_are_answered_before_serving_for_either_factory() {
     embedded::with(|py| {
         let factories = [
-            Factory::Source(Bound::new(py, source(py)).unwrap()),
+            Factory::Source(Bound::new(py, source(py, false)).unwrap()),
             Factory::Destination(Bound::new(py, destination(py)).unwrap()),
         ];
         for factory in factories {

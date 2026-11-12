@@ -13,11 +13,12 @@ import pyarrow.compute as pc
 import pytest
 
 import rdlt
-from rdlt.connector import Config, source, stream
+from rdlt.connector import Config, Cursor, checkpoint, source, stream
 from rdlt.testing import certify_source, certify_transform
 from tests.clauses import outcomes
+from tests.connectors.inbox import Inbox
 from tests.connectors.tickets import Tickets
-from tests.launchers import tickets_launcher
+from tests.launchers import inbox_launcher, tickets_launcher
 
 TESTS = Path(__file__).resolve().parents[1]
 
@@ -117,8 +118,8 @@ def test_an_unobserved_clause_fails_saying_it_went_unobserved(pytester: pytest.P
     assert result.ret == pytest.ExitCode.TESTS_FAILED
 
 
-SOURCE_UNMET = ["S-ACK"]
-"""The clauses a Python source cannot meet yet: it cannot say where it stands outside the engine."""
+SOURCE_UNTOLD = ["S-ACK"]
+"""The clauses a source that does not tell where it stands outside the engine is not held to."""
 
 SOURCE_PASSED = [
     "P-HANDSHAKE",
@@ -149,7 +150,50 @@ def test_a_launcher_s_kill_clause_kills_the_installed_connector(tmp_path: Path) 
     assert killed.outcome == "passed", killed
     assert killed.note is not None
     assert killed.note.startswith("killed: "), killed
-    assert outcomes(certification) == {"passed": SOURCE_PASSED, "inapplicable": SOURCE_UNMET}
+    assert outcomes(certification) == {"passed": SOURCE_PASSED, "inapplicable": SOURCE_UNTOLD}
+
+
+def test_a_source_that_tells_where_it_stands_passes_every_source_clause(tmp_path: Path) -> None:
+    certification = certify_source(
+        Inbox,
+        config={"messages": KILLED_PAGES * 10, "offsets": str(tmp_path / "offsets.db")},
+        launcher=inbox_launcher(tmp_path / "launchers"),
+    )
+    assert outcomes(certification) == {"passed": [*SOURCE_PASSED[:-1], "S-ACK", "K-SOURCE"]}
+
+
+class _Offset(Cursor):
+    next: int = 0
+
+
+class _Pages(Config):
+    pages: int
+
+
+@source(id="io.example.stuck", config=_Pages, version="1.0.0", acknowledged=True)
+class _Stuck:
+    """A source that says it stands at its start whatever it is told is committed."""
+
+    def __init__(self, config: _Pages) -> None:
+        self.pages = config.pages
+
+    def check(self) -> None:
+        """Nothing to check."""
+
+    @stream(primary_key=["id"], cursor=_Offset, acknowledged="standing")
+    def rows(self, start: _Offset) -> Iterator[object]:
+        for page in range(start.next, self.pages):
+            yield [{"id": page}]
+            yield checkpoint(_Offset(next=page + 1))
+
+    def standing(self, partition: str) -> _Offset:
+        del partition
+        return _Offset()
+
+
+def test_a_source_whose_position_does_not_move_where_it_is_told_fails_s_ack() -> None:
+    certification = certify_source(_Stuck, config={"pages": 6})
+    assert certification.result("S-ACK").outcome == "failed"
 
 
 def test_a_certification_keeps_the_connector_it_certifies() -> None:

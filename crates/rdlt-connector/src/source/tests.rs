@@ -509,6 +509,11 @@ mod described {
         async fn read(&self, _: &Named, _: &Partition, _: u64, _: &mut Emitter<u64>) -> Result<()> {
             Ok(())
         }
+
+        /// Where the stream stands: as many messages as its name has letters.
+        async fn acknowledged(&self, _: &Named, _: &PartitionId) -> Result<Option<u64>> {
+            Ok(Some(self.0.len().try_into().expect("a short name")))
+        }
     }
 
     fn spec() -> ConnectorSpec {
@@ -557,5 +562,48 @@ mod described {
             .await;
         let error = connected.err().expect("refused");
         assert_eq!(error.kind(), ConnectorErrorKind::Internal);
+    }
+
+    #[cfg(feature = "certify")]
+    #[tokio::test]
+    async fn a_described_source_tells_where_it_stands_only_through_its_acknowledging_factory() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let refused = factory(vec!["inbox"])
+            .connect_acknowledging(serde_json::json!({ "given": true }), ConnectContext::new())
+            .await;
+        assert!(!factory(vec!["inbox"]).acknowledges());
+        assert_eq!(
+            refused.err().expect("refused").code(),
+            Some(crate::ACKNOWLEDGED_CODE)
+        );
+        let connects = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&connects);
+        let telling = crate::acknowledging_source_factory_from(spec(), move |_config, _context| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(Named {
+                    streams: vec!["inbox"],
+                })
+            })
+        });
+        assert!(telling.acknowledges());
+        assert_eq!(telling.spec(), &spec());
+        let (_, reader) = telling
+            .connect_acknowledging(serde_json::json!({}), ConnectContext::new())
+            .await
+            .expect("it connects with its reader");
+        assert_eq!(
+            connects.load(Ordering::SeqCst),
+            2,
+            "the reader is connected apart from the source"
+        );
+        let name = StreamName::new("inbox").expect("a valid name");
+        let standing = reader
+            .acknowledged(&name, &PartitionId::whole())
+            .await
+            .expect("it tells");
+        assert_eq!(standing, Some(Cursor::encode(1, &5_u64).expect("a cursor")));
     }
 }
