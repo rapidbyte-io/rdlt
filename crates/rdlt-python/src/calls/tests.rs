@@ -1,8 +1,3 @@
-#![expect(
-    clippy::disallowed_methods,
-    reason = "a test's own threads wait for answers attached, as an embedder's do"
-)]
-
 use std::time::Duration;
 
 use pyo3::types::{
@@ -60,7 +55,7 @@ fn a_blocking_call_waits_for_its_answer_without_holding_the_gil() {
             });
             // The answer needs this interpreter, so reaching it proves the wait released it.
             py.detach(|| {
-                Python::attach(|py| {
+                embedded::with(|py| {
                     let entered: bool = py
                         .eval(c"__import__('builtins').entered.wait(10)", None, None)
                         .unwrap()
@@ -71,7 +66,7 @@ fn a_blocking_call_waits_for_its_answer_without_holding_the_gil() {
                         .unwrap();
                 });
                 let answered = waiting.join().unwrap().expect("an answer");
-                Python::attach(|py| {
+                embedded::with(|py| {
                     assert_eq!(answered.unwrap().extract::<i64>(py).unwrap(), 7);
                 });
             });
@@ -84,7 +79,7 @@ fn a_blocking_call_answers_what_was_raised() {
     embedded::with(|py| {
         py.detach(|| {
             let answered = blocked(c"lambda: 1 / 0").unwrap();
-            Python::attach(|py| {
+            embedded::with(|py| {
                 assert!(
                     answered
                         .unwrap_err()
@@ -243,7 +238,7 @@ fn a_forked_child_s_first_call_is_answered() {
                         && first.join().is_ok_and(|first| {
                             first.is_ok_and(|waited| {
                                 waited.is_ok_and(|waited| {
-                                    Python::attach(|py| waited.extract::<bool>(py).unwrap_or(false))
+                                    embedded::with(|py| waited.extract::<bool>(py).unwrap_or(false))
                                 })
                             })
                         })
@@ -282,7 +277,7 @@ fn a_call_whose_arguments_cannot_be_built_is_answered_with_why() {
                 |_, answered| answered.map(pyo3::Bound::unbind),
             )
             .unwrap();
-            Python::attach(|py| {
+            embedded::with(|py| {
                 assert!(
                     answered
                         .unwrap_err()
@@ -315,7 +310,7 @@ fn a_daemon_thread_whose_answer_panicked_waits_for_good_and_another_makes_the_ne
             );
             assert!(matches!(lost, Err(Unanswered::Thread)));
             let answered = blocked(c"lambda: 7").expect("another daemon thread answers");
-            Python::attach(|py| {
+            embedded::with(|py| {
                 assert_eq!(answered.unwrap().extract::<i64>(py).unwrap(), 7);
             });
             read.recv().unwrap()
@@ -407,7 +402,7 @@ fn a_call_goes_on_to_its_end_though_nothing_waits_for_it() {
         });
         assert!(dropped.is_err(), "the wait was let go before the answer");
         let finished = py.detach(|| {
-            Python::attach(|py| {
+            embedded::with(|py| {
                 py.eval(c"__import__('builtins').finished.wait(10)", None, None)
                     .unwrap()
                     .extract::<bool>()
@@ -445,7 +440,7 @@ fn a_blocked_call_does_not_delay_another_on_the_same_worker() {
             let first = runtime.spawn(called(
                 c"lambda: (__import__('builtins').entered.set(), __import__('builtins').leave.wait(30))[1]",
             ));
-            let entered = Python::attach(|py| {
+            let entered = embedded::with(|py| {
                 py.eval(c"__import__('builtins').entered.wait(30)", None, None)
                     .unwrap()
                     .extract::<bool>()
@@ -459,7 +454,7 @@ fn a_blocked_call_does_not_delay_another_on_the_same_worker() {
                 .unwrap()
                 .unwrap()
                 .unwrap();
-            Python::attach(|py| {
+            embedded::with(|py| {
                 assert_eq!(answered.extract::<i64>(py).unwrap(), 7);
                 py.eval(c"__import__('builtins').leave.set()", None, None)
                     .unwrap();
