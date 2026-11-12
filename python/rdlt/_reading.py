@@ -408,7 +408,11 @@ def awaited(
             _from_report,  # pyright: ignore[reportPrivateUsage]
         )
 
-        error = _from_report(error)
+        # A report that cannot be raised answers with why, rather than leave the future waiting.
+        try:
+            error = _from_report(error)
+        except BaseException as unraised:  # noqa: BLE001
+            error = unraised
 
     def settled() -> None:
         if future.done():

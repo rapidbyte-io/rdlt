@@ -73,6 +73,28 @@ fn an_await_whose_future_panicked_raises_an_internal_error() {
     });
 }
 
+#[test]
+fn an_await_whose_panic_cannot_be_raised_as_its_error_raises_why() {
+    embedded::with(|py| {
+        py.run(
+            c"import rdlt.errors\ndef unreported(*_):\n    raise ValueError('unreported')\nrdlt.errors._from_report = unreported",
+            None,
+            None,
+        )
+        .unwrap();
+        let raised = awaited(py, AWAITED, |py| {
+            awaitable(
+                py,
+                async { panic!("a bug in an awaited future") },
+                |py, ()| py.None().into_bound_py_any(py),
+            )
+            .map(Bound::unbind)
+        })
+        .expect_err("the await raised");
+        assert!(raised.is_instance_of::<PyValueError>(py), "{raised}");
+    });
+}
+
 /// Says it was dropped.
 struct Dropped(Arc<AtomicBool>);
 
