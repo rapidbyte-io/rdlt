@@ -207,6 +207,7 @@ impl Simulation {
             self.world.reach_combination(stream);
             return Answer::Stopped;
         }
+        self.world.reach(Reach::Remedied);
         Box::pin(self.remedy(index)).await;
         self.relaxed[index].reset = Some(phase);
         Answer::Relaxed

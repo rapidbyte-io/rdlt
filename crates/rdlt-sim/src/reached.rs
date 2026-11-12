@@ -27,6 +27,9 @@ pub enum Reach {
     EmptyChild,
     /// A reset was refused as a stream the pipeline recorded nothing of.
     ResetRefused,
+    /// A stream refused `cursor_missing` was reset with its tables, as the refusal says, and read
+    /// again from its beginning.
+    Remedied,
     /// A hostile host configured one connection twice at once.
     ConfiguredTwice,
     /// A hostile host opened sessions beyond a connection's share.
@@ -55,7 +58,7 @@ pub enum Reach {
 
 impl Reach {
     /// Every path, in the order a timing line names them.
-    const ALL: [Self; 20] = [
+    const ALL: [Self; 21] = [
         Self::ConnectorStopped,
         Self::LinkCut,
         Self::Crashed,
@@ -65,6 +68,7 @@ impl Reach {
         Self::Widened,
         Self::EmptyChild,
         Self::ResetRefused,
+        Self::Remedied,
         Self::ConfiguredTwice,
         Self::SessionsBeyond,
         Self::Renamed,
