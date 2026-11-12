@@ -39,12 +39,19 @@ class Out(Protocol):
         """
         ...
 
-    def send(self, said: object) -> bool | None:
-        """Sends what an async read yielded, or a notice it said, without waiting for the engine.
+    def send(self, item: object) -> bool | None:
+        """Sends what an async read yielded without waiting for the engine.
 
         False once the read has ended or the item failed it, and none where it waits for room,
-        which `watched` then says came: the rest of an item is sent by `resume`, and a notice
-        that found no room was not taken, to be sent again.
+        which `watched` then says came; the rest of the item is then sent by `resume`.
+        """
+        ...
+
+    def notify(self, notice: object) -> bool | None:
+        """Gives the engine a notice an async read said, without waiting for it.
+
+        False once the read has ended, and none where there is no room, which `watched` then
+        says came; the notice is not taken, to be given again then.
         """
         ...
 
@@ -280,7 +287,7 @@ class Router:
     def notify(self, notice: object, kind: str) -> None:
         """Gives the engine `notice`, of `kind`, after what was said before it."""
         if not self._waiting and self._sending is None:
-            if self._out.send(notice) is not None:
+            if self._out.notify(notice) is not None:
                 return
         else:
             # One of its kind said since the last yield waiting is said again by this one.
@@ -319,7 +326,12 @@ class Router:
                     # dropped sends no more.
                     self._waiting.popleft()
                     continue
-                sent = self._out.resume() if said is _REST else self._out.send(said)
+                if said is _REST:
+                    sent = self._out.resume()
+                elif kind is None:
+                    sent = self._out.send(said)
+                else:
+                    sent = self._out.notify(said)
                 if sent is None:
                     if kind is None:
                         self._waiting[0] = (_REST, None, done)

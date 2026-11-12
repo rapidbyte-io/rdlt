@@ -1165,13 +1165,17 @@ class _Engine:
         if room:
             self._rung.send(b"\0")
 
-    def send(self, said: object) -> bool | None:
+    def send(self, item: object) -> bool | None:
         if self._room:
-            self.sent.append(said)
+            self.sent.append(item)
             return True
-        # The tests' notices are what `_Notice` makes, tuples; anything else is an item.
-        if not isinstance(said, tuple):
-            self._kept.append(said)
+        self._kept.append(item)
+        return None
+
+    def notify(self, notice: object) -> bool | None:
+        if self._room:
+            self.sent.append(notice)
+            return True
         return None
 
     def resume(self) -> bool | None:
@@ -1220,7 +1224,7 @@ def test_an_async_read_leaves_its_event_loop_running_while_the_engine_is_full() 
 class _Gone(_Engine):
     """An engine that has stopped: nothing it is sent is taken."""
 
-    def send(self, said: object) -> bool | None:
+    def send(self, item: object) -> bool | None:
         return False
 
 

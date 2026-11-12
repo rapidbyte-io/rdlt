@@ -188,26 +188,32 @@ impl PartitionOut {
         pushed(py, item, self.limits, &sent)
     }
 
-    /// Sends what an async read said, an item or a notice, without waiting for the engine: true
-    /// once all of it is in the channel, false once the read has gone or the item failed it, and
-    /// none where it waits for room, which `watched` then says has come.
+    /// Sends what an async read yielded without waiting for the engine: true once all of it is
+    /// in the channel, false once the read has gone or the item failed it, and none where it
+    /// waits for room, which `watched` then says has come.
     ///
-    /// The runtime sends an item's push that found no room, and `resume` then sends its rest. A
-    /// notice that found none is not taken: it is said again once room came.
-    fn send(&self, py: Python<'_>, said: &Bound<'_, PyAny>) -> Option<bool> {
+    /// The runtime sends an item's push that found no room, and `resume` then sends its rest.
+    fn send(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> Option<bool> {
         let Some(sender) = self.sent.sender() else {
             return Some(false);
         };
-        if let Ok(notice) = said.cast::<NativeNotice>() {
-            return match sender.try_send(notice.get().pushed()) {
-                Ok(()) => Some(true),
-                Err(TrySendError::Closed(_)) => Some(false),
-                Err(TrySendError::Full(_)) => self.waits(py, &sender, None, None),
-            };
-        }
-        match Pushes::of(py, said, self.limits) {
+        match Pushes::of(py, item, self.limits) {
             Ok(pushes) => self.sending(py, &sender, pushes),
             Err(error) => Some(self.fail(py, &sender, error)),
+        }
+    }
+
+    /// Gives the engine a notice an async read said, without waiting for it: true once it is in
+    /// the channel, false once the read has gone, and none where there is no room, which
+    /// `watched` then says has come; the notice is not taken, to be said again then.
+    fn notify(&self, py: Python<'_>, notice: &Bound<'_, NativeNotice>) -> Option<bool> {
+        let Some(sender) = self.sent.sender() else {
+            return Some(false);
+        };
+        match sender.try_send(notice.get().pushed()) {
+            Ok(()) => Some(true),
+            Err(TrySendError::Closed(_)) => Some(false),
+            Err(TrySendError::Full(_)) => self.waits(py, &sender, None, None),
         }
     }
 

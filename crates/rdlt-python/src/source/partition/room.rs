@@ -124,6 +124,9 @@ impl Room {
 
     /// What the flight came to, with the rest of its item; none while it still waits, as it may
     /// after a stray wake.
+    ///
+    /// With no flight, nothing of an item waits, so it was sent: an item whose rest was sent
+    /// leaves none, and a notice is offered again rather than resumed.
     pub(super) fn landed(&mut self) -> Option<(bool, Option<Pushes>)> {
         let came = match self.flight.as_mut().map(|flight| flight.came.try_recv()) {
             None | Some(Ok(true)) => true,
