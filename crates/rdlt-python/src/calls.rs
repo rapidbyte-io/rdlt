@@ -91,7 +91,8 @@ struct Idle {
     /// The process whose daemon threads these are: a forked child's copy names its parent.
     pid: u32,
     daemons: Vec<Daemon>,
-    /// Why the last daemon thread asked for did not start.
+    /// Why the pool last lost a daemon thread it held: the thread's start failed, or a bug of
+    /// rdlt's own parked it.
     unstarted: Option<String>,
 }
 
@@ -155,8 +156,8 @@ fn put_back(daemon: Daemon) {
 
 /// Closes `waiting`, the calls of a daemon thread that will make none, with the calls of each
 /// spare a call queued there carried, takes their senders off the pool, and keeps `why` for a call
-/// that finds the pool empty; the calls queued are given back, to be dropped once the lock is let
-/// go, unanswered.
+/// that finds the pool empty where that took one; the calls queued are given back, to be dropped
+/// once the lock is let go, unanswered.
 fn closed(waiting: &mut Waiting, why: String) -> Vec<Call> {
     let mut idle = IDLE.lock();
     waiting.close();
@@ -170,8 +171,11 @@ fn closed(waiting: &mut Waiting, why: String) -> Vec<Call> {
         }
         index += 1;
     }
+    let held = idle.daemons.len();
     idle.daemons.retain(|daemon| !daemon.is_closed());
-    idle.unstarted = Some(why);
+    if idle.daemons.len() < held {
+        idle.unstarted = Some(why);
+    }
     queued
 }
 
@@ -383,8 +387,9 @@ pub(crate) enum Unanswered {
     /// start, or met a bug of rdlt's own.
     #[error("the call was let go without its answer")]
     Dropped,
-    /// No daemon thread was idle and the last asked for did not start, or none was started in
-    /// this process: why, as text, since the exception would need the GIL wherever it was read.
+    /// No daemon thread was idle, the pool having lost the last it held to a start that failed
+    /// or to a bug of rdlt's own that parked it, or none was started in this process: why, as
+    /// text, since the exception would need the GIL wherever it was read.
     #[error("the call's thread did not start: {0}")]
     Started(String),
 }
