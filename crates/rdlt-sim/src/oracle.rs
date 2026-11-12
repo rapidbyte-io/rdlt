@@ -34,7 +34,7 @@ use rdlt_engine::{Env as _, Report};
 use rdlt_wire::Limits;
 
 use crate::canary::Canary;
-use crate::destination::{Digest, committed_next, completions, reads_in_progress};
+use crate::destination::{Digest, committed_next, reads_in_progress};
 use crate::env::SimEnv;
 use crate::network::{Net, Peers, Serving, run_networked};
 use crate::placing::Placing;
@@ -56,6 +56,7 @@ pub(crate) use memory::beyond_charge;
 pub use memory::{Held, TRACE_VAR};
 pub(crate) use memory::{Kept, Window, account, aside, charged, freed};
 pub use pressure::Checked;
+use rows::Landed;
 use scenario::{Scenario, pick};
 use settle::settled;
 
@@ -264,7 +265,15 @@ impl Simulation {
             settled(seed, &self.world, self.placing.as_ref()).await;
             check_contents(&self.world, &self.relaxed, phase, stopped, seed);
             check_acknowledged(&self.world, stopped, seed);
-            check_discards(&self.world, &self.relaxed, phase, &reports, stopped, seed);
+            check_discards(
+                &self.world,
+                &self.relaxed,
+                phase,
+                &reports,
+                stopped,
+                seed,
+                None,
+            );
             if stopped {
                 break;
             }
@@ -272,8 +281,9 @@ impl Simulation {
             settled(seed, &self.world, self.placing.as_ref()).await;
         }
         let last = PHASES - 1;
+        let landed = Landed::now(&self.world, &self.relaxed, last);
         if !stopped && self.mend_tails(last) {
-            stopped = self.again(last, rng).await;
+            stopped = self.again(last, rng, Some(&landed)).await;
         }
         if !stopped {
             for stream in &self.world.workload.streams {
@@ -281,19 +291,27 @@ impl Simulation {
             }
         }
         if !stopped && Box::pin(self.reset(seed, last)).await {
-            stopped = self.again(last, rng).await;
+            stopped = self.again(last, rng, None).await;
         }
         stopped
     }
 
-    /// Runs `phase` again until it converges, and checks the destination; whether a refusal no
-    /// operator can relax stopped it short.
-    async fn again(&mut self, phase: usize, rng: &mut SplitMix64) -> bool {
+    /// Runs `phase` again until it converges, and checks the destination, and where it says what
+    /// had `landed` before, what the runs discarded since; whether a refusal no operator can relax
+    /// stopped it short.
+    ///
+    /// After a reset it says nothing: the reset stream is read again from its beginning, which
+    /// the runs' reports count beside what landed before.
+    async fn again(&mut self, phase: usize, rng: &mut SplitMix64, landed: Option<&Landed>) -> bool {
         let seed = self.seed;
-        let (_, stopped) = self.converge(phase, rng).await;
+        let (reports, stopped) = self.converge(phase, rng).await;
         settled(seed, &self.world, self.placing.as_ref()).await;
         check_contents(&self.world, &self.relaxed, phase, stopped, seed);
         check_acknowledged(&self.world, stopped, seed);
+        if landed.is_some() {
+            let relaxed = &self.relaxed;
+            check_discards(&self.world, relaxed, phase, &reports, stopped, seed, landed);
+        }
         stopped
     }
 
@@ -419,11 +437,12 @@ fn check_contents(world: &World, relaxed: &[Relaxed], phase: usize, stopped: boo
     }
 }
 
-/// Checks the rows and values each stream's policy discarded in `phase`, as its runs' `reports`
-/// count them, against those the model's policy discards of the rows that landed, each stream as
-/// an operator left it (`relaxed`): within the least and most it may discard where the reports
-/// are complete, and otherwise never more, as a dropped run's report or a commit whose response
-/// was lost goes uncounted, and a phase that `stopped` short may leave a full read in progress.
+/// Checks the rows and values each stream's policy discarded in `phase`, or since what had
+/// `landed` where it says, as its runs' `reports` count them, against those the model's policy
+/// discards of the rows that landed, each stream as an operator left it (`relaxed`): within the
+/// least and most it may discard where the reports are complete, and otherwise never more, as a
+/// dropped run's report or a commit whose response was lost goes uncounted, and a phase that
+/// `stopped` short may leave a full read in progress.
 fn check_discards(
     world: &World,
     relaxed: &[Relaxed],
@@ -431,9 +450,11 @@ fn check_discards(
     reports: &[Report],
     stopped: bool,
     seed: Seed,
+    landed: Option<&Landed>,
 ) {
     let complete = world.workload.features.reports_complete() && !stopped;
-    for (stream, relaxed) in world.workload.streams.iter().zip(relaxed) {
+    let streams = world.workload.streams.iter().zip(relaxed).enumerate();
+    for (index, (stream, relaxed)) in streams {
         let counted = reports
             .iter()
             .filter_map(|report| report.streams.get(&stream.name))
@@ -443,15 +464,7 @@ fn check_discards(
                     values + counts.discarded_values,
                 )
             });
-        let read: Vec<Row> = match stream.reads[phase] {
-            ReadMode::Full => {
-                let copies = completions(world, &stream.name, phase) + usize::from(stopped);
-                std::iter::repeat_n(stream.all_rows(phase), copies)
-                    .flatten()
-                    .collect()
-            }
-            _ => rows::landing(stream, *relaxed, phase),
-        };
+        let read = rows::landed(world, (index, *relaxed), phase, stopped, landed);
         filtered::check_rows(stream, &read, reports, complete, (phase, seed));
         let expected = read.iter().fold(Discards::default(), |sum, row| {
             let discards = expected::discards(stream, row);

@@ -104,6 +104,65 @@ struct Latest {
     rows: BTreeMap<i64, Row>,
 }
 
+/// What had landed of a workload's streams in a phase: each as an operator had left it, and how
+/// many of its full reads had completed.
+#[derive(Clone, Debug)]
+pub(super) struct Landed {
+    relaxed: Vec<Relaxed>,
+    completed: Vec<usize>,
+}
+
+impl Landed {
+    /// What had landed of `world`'s streams in `phase` by now, as `relaxed` leaves them.
+    pub(super) fn now(world: &World, relaxed: &[Relaxed], phase: usize) -> Self {
+        let streams = world.workload.streams.iter();
+        Self {
+            relaxed: relaxed.to_vec(),
+            completed: streams
+                .map(|stream| completions(world, &stream.name, phase))
+                .collect(),
+        }
+    }
+}
+
+/// The rows of `world`'s stream `index` that landed in `phase` since `before`, or in all of it
+/// where there is none, as an operator left it (`relaxed`), each as often: every row of each full
+/// read completed since, and those its incremental reads sealed since.
+///
+/// Where the phase `stopped` short, a full read may be in progress too.
+pub(super) fn landed(
+    world: &World,
+    (index, relaxed): (usize, Relaxed),
+    phase: usize,
+    stopped: bool,
+    before: Option<&Landed>,
+) -> Vec<Row> {
+    let stream = &world.workload.streams[index];
+    if stream.reads[phase] == ReadMode::Full {
+        let completed = before.map_or(0, |landed| landed.completed[index]);
+        let copies = completions(world, &stream.name, phase).saturating_sub(completed);
+        let copies = copies + usize::from(stopped);
+        return std::iter::repeat_n(stream.all_rows(phase), copies)
+            .flatten()
+            .collect();
+    }
+    let Some(before) = before else {
+        return landing(stream, relaxed, phase);
+    };
+    let partitions = 0..stream.partitions.len();
+    partitions
+        .flat_map(|partition| {
+            let from = stream.sealed(partition, phase, before.relaxed[index]);
+            let to = stream.sealed(partition, phase, relaxed);
+            let rows = stream
+                .rows(partition, phase)
+                .get(from..to)
+                .unwrap_or_default();
+            rows.iter().cloned()
+        })
+        .collect()
+}
+
 /// The rows of `stream` that land in `phase`, as an operator left it (`relaxed`), each once:
 /// every row of a phase read in full, and those its incremental reads seal.
 pub(super) fn landing(stream: &SimStream, relaxed: Relaxed, phase: usize) -> Vec<Row> {
