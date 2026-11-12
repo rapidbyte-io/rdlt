@@ -630,9 +630,10 @@ admitted, and what a remote connector's calls hold in transport.
 - No engine runs on less than about thirty-seven mebibytes, the price of a row as long as a
   frame lowering within half a request. The simulator draws budgets between the least for one
   partition and twice that, and gives a run one slot more than the unbounded partitions it
-  follows. Its in-process sources press on them, in three worlds of four: pushes keeping alive
-  a fifth to nine tenths of a frame, and cursors of half to all a cursor may be, so over two
-  thousand seeds pushes wait for lowering's room in 783 and cursors wait for a commit in 474.
+  follows. Its in-process sources press on them: in three worlds of four, pushes keeping alive a
+  fifth to nine tenths of a frame, and in every world cursors of half to all a cursor may be, as
+  half of its reads end on rows, which seal no cursor at their end. Over the 2,500 seeds 60,000
+  to 62,499, pushes wait for lowering's room in 814 and cursors wait for a commit in 290.
   The exactly-once sweep holds the shares that keep the budget pressed, pushes waiting in a fifth
   of its seeds at least and cursors in a tenth, as a one-sided binomial test: a count fails only
   where a true share of that least would give that count or fewer under once in a thousand. At 200

@@ -23,8 +23,12 @@ pub(crate) struct Pressure {
 impl Pressure {
     /// The pressure drawn from `rng` for an engine admitting within `limits`, of a budget whose
     /// cursors may take `cursors` bytes, reading `partitions` in all: in three worlds of four a
-    /// push of a fifth to nine tenths of a frame, and cursors of half to all a cursor may be, the
-    /// cursors of every partition together within a quarter of the state an open may answer.
+    /// push of a fifth to nine tenths of a frame, and in every world cursors of half to all a
+    /// cursor may be, the cursors of every partition together within a quarter of the state an
+    /// open may answer.
+    ///
+    /// Cursors press in every world, as half of the simulation's reads end on rows, which seal no
+    /// cursor at their end, so fewer of a world's cursors wait for a commit at once.
     pub(crate) fn draw(
         rng: &mut SplitMix64,
         limits: &rdlt_wire::Limits,
@@ -50,7 +54,7 @@ impl Pressure {
                     .saturating_sub(64),
                 2,
                 1,
-                750,
+                1000,
                 rng,
             ),
             spaces: 0,
