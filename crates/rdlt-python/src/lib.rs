@@ -64,6 +64,7 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     module.add_class::<run::NativeEvents>()?;
     module.add_class::<source::context::NativeStreamContext>()?;
     module.add_class::<source::context::NativeCheckpoint>()?;
+    module.add_class::<source::context::NativeNotice>()?;
     module.add_class::<source::NativeSourceFactory>()?;
     module.add_class::<destination::NativeDestinationFactory>()?;
     module.add_class::<transform::NativeTransform>()?;

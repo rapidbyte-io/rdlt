@@ -16,7 +16,7 @@ use bytes::Bytes;
 use parking_lot::Mutex;
 use pyo3::types::PyAnyMethods as _;
 use pyo3::{Bound, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
-use rdlt_connector::ConnectorError;
+use rdlt_connector::{ConnectorError, Headroom};
 use serde_json::value::RawValue;
 use tokio::sync::mpsc;
 
@@ -35,6 +35,15 @@ pub(crate) enum Pushed {
     Batch(RecordBatch),
     /// A checkpoint's cursor, as its JSON text.
     Checkpoint(Box<RawValue>),
+    /// The stream's partitions changed: the engine plans it again.
+    Replan,
+    /// How far behind its source's newest the read is, and how much more its source keeps.
+    Behind {
+        /// The records.
+        records: u64,
+        /// How much more the source keeps before it drops where the read stands.
+        headroom: Headroom,
+    },
     /// The read failed: its generator raised, or yielded what cannot be pushed.
     Failed(ConnectorError),
 }

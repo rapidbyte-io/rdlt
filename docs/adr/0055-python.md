@@ -66,11 +66,11 @@ script that started a run and returned.
   differs, the language makes it: decorators for attributes, exceptions for `Result`, named as
   exceptions are, so `InvalidConfig`, `Unauthorized` and `InvalidData` are the kinds Rust calls
   `Config`, `Auth` and `Data`, generators for an emitter, and a `StreamContext`, with its
-  `Exclusion` and `Limits`, for what a Rust read is told by its partition and asks its emitter,
-  given where a read names `ctx`, as a `partitions` is given the `StreamState` where it names
-  `state`. How a stream's rows land is the pipeline's to say, as for a Rust source. `@stream` makes
-  a function a stream as it makes a method one, under the same rules, so a function moves into a
-  `@source` class taking `self`, as its `partitions=` and `committed=` callables then do too. A
+  `Exclusion`, `Limits` and `Headroom`, for what a Rust read is told by its partition and asks its
+  emitter, given where a read names `ctx`, as a `partitions` is given the `StreamState` where it
+  names `state`. How a stream's rows land is the pipeline's to say, as for a Rust source. `@stream`
+  makes a function a stream as it makes a method one, under the same rules, so a function moves into
+  a `@source` class taking `self`, as its `partitions=` and `committed=` callables then do too. A
   pipeline reads its stream functions in process, as the streams of one source,
   `io.rapidbyte.functions`, which has no configuration, and is not served, installed or certified: a
   stream that needs those is a class's.

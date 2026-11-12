@@ -347,6 +347,10 @@ impl ReadStream<PythonSource> for PythonStream {
                 Some(Pushed::Checkpoint(cursor)) => {
                     out.checkpoint(&PyCursor(Some(cursor))).await?;
                 }
+                Some(Pushed::Replan) => out.replan().await?,
+                Some(Pushed::Behind { records, headroom }) => {
+                    out.behind(records, headroom).await?;
+                }
                 Some(Pushed::Failed(error)) => return Err(error),
             }
             due.set(out.checkpoint_due());

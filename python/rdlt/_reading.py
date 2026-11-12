@@ -11,7 +11,9 @@ import _thread
 import asyncio
 import sys
 import threading
+from collections import deque
 from collections.abc import AsyncIterable, Callable, Iterable
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
@@ -63,6 +65,14 @@ class Out(Protocol):
 
     def failed(self, error: BaseException) -> None:
         """Says the read ended with `error`."""
+        ...
+
+
+class _Context(Protocol):
+    """A read's native context, as its router sends through it."""
+
+    def notify(self, notice: object) -> None:
+        """Gives the engine `notice`, waiting until the engine takes it."""
         ...
 
 
@@ -151,7 +161,7 @@ def _read(  # noqa: PLR0917
     try:
         opened = stream.read(partition, cursor, context)
         if hasattr(opened, "__aiter__"):
-            _read_async(cast("AsyncIterable[object]", opened), out)
+            _read_async(cast("AsyncIterable[object]", opened), out, context)
         else:
             _read_sync(cast("Iterable[object]", opened), out)
     except BaseException as error:  # noqa: BLE001
@@ -172,22 +182,116 @@ def _read_sync(opened: Iterable[object], out: Out) -> None:
             close()
 
 
-def _read_async(opened: AsyncIterable[object], out: Out) -> None:
-    asyncio.run(pushed(opened, out))
+def _read_async(opened: AsyncIterable[object], out: Out, context: object) -> None:
+    asyncio.run(pushed(opened, out, context))
 
 
-async def pushed(opened: AsyncIterable[object], out: Out) -> None:
-    """Reads `opened` in one task: a timeout or a context variable may span its yields."""
+async def pushed(opened: AsyncIterable[object], out: Out, context: object) -> None:
+    """Reads `opened` in one task: a timeout or a context variable may span its yields.
+
+    What it yields and what its context `context` tells the engine are sent in the order they
+    were said, none of them waiting for the engine with the event loop held.
+    """
+    router = Router(out, context)
+    token = _ROUTER.set(router)
     iterator = aiter(opened)
     try:
         async for item in iterator:
-            await _room(out)
-            if not out.push(item):
+            if not await router.yielded(item):
                 return
+        await router.sent()
     finally:
         aclose = getattr(iterator, "aclose", None)
         if aclose is not None:
             await aclose()
+        router.stop()
+        _ROUTER.reset(token)
+
+
+_ROUTER: ContextVar[Router | None] = ContextVar("rdlt_router", default=None)
+
+
+def router(context: object) -> Router | None:
+    """The router of the async read whose context is `context`, asked from its event loop's thread.
+
+    None otherwise, as for a sync read, whose context gives the engine what it says itself.
+    """
+    found = _ROUTER.get()
+    if found is None or found.context is not context or found.thread != threading.get_ident():
+        return None
+    return found
+
+
+class Router:
+    """Sends what an async read yields and what its context tells the engine, in the order said.
+
+    Each is sent at once where the engine has room and nothing said before it waits. Otherwise it
+    waits its turn, and a task sends it once the engine has room, so the loop keeps running. A
+    yield returns once its item is sent, as a sync read's waits for the engine; a notice returns
+    at once. A Rust read awaits each notice, so it holds one at a time; the router holds, after the
+    last yield waiting, at most one of each kind, a replan being said once and a lag being its
+    newest, which is what the engine makes of a Rust read's.
+    """
+
+    def __init__(self, out: Out, context: object) -> None:
+        self.context = context
+        self.thread = threading.get_ident()
+        self._out = out
+        # What waits its turn: an item, the kind of notice it is, none for a yield, and the future
+        # its yield waits on.
+        self._waiting: deque[tuple[object, str | None, asyncio.Future[bool] | None]] = deque()
+        self._sending: asyncio.Task[None] | None = None
+
+    async def yielded(self, item: object) -> bool:
+        """Sends `item` after what was said before it; false once the read has gone."""
+        if not self._waiting and self._out.has_room():
+            return self._out.push(item)
+        done: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        self._wait(item, None, done)
+        return await done
+
+    def notify(self, notice: object, kind: str) -> None:
+        """Gives the engine `notice`, of `kind`, after what was said before it."""
+        if not self._waiting and self._out.has_room():
+            cast("_Context", self.context).notify(notice)
+            return
+        # One of its kind said since the last yield waiting is said again by this one.
+        for index in range(len(self._waiting) - 1, -1, -1):
+            said = self._waiting[index][1]
+            if said is None:
+                break
+            if said == kind:
+                del self._waiting[index]
+                break
+        self._wait(notice, kind, None)
+
+    async def sent(self) -> None:
+        """Waits until what was said has been sent."""
+        if self._sending is not None:
+            await self._sending
+
+    def stop(self) -> None:
+        """Stops sending, dropping what waits."""
+        self._waiting.clear()
+        if self._sending is not None:
+            self._sending.cancel()
+
+    def _wait(self, item: object, kind: str | None, done: asyncio.Future[bool] | None) -> None:
+        self._waiting.append((item, kind, done))
+        if self._sending is None:
+            self._sending = asyncio.get_running_loop().create_task(self._send())
+
+    async def _send(self) -> None:
+        try:
+            while self._waiting:
+                await _room(self._out)
+                item, kind, done = self._waiting.popleft()
+                if kind is not None:
+                    cast("_Context", self.context).notify(item)
+                elif done is not None and not done.done():
+                    done.set_result(self._out.push(item))
+        finally:
+            self._sending = None
 
 
 async def _room(out: Out) -> None:
