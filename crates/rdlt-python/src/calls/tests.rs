@@ -485,46 +485,90 @@ fn a_spare_that_did_not_start_leaves_the_pool_and_the_rest_stay() {
     );
 }
 
-/// Refuses each daemon thread's start half a second after saying it began, as a process out of
-/// threads does, so a call can be queued on a spare that then does not start.
-const SLOW_REFUSAL: &std::ffi::CStr = c"
-import _thread, builtins, threading, time
+/// Refuses every daemon thread's start once `builtins.queued` is set, as a process out of
+/// threads does, and gives the start back once `builtins.leave` is.
+const REFUSAL: &std::ffi::CStr = c"
+import _thread, builtins, threading
 builtins.starting = threading.Event()
+builtins.queued = threading.Event()
 builtins.leave = threading.Event()
+builtins.started_by = _thread.start_new_thread
 def refused(*_):
     builtins.starting.set()
-    time.sleep(0.5)
+    builtins.queued.wait(10)
     raise RuntimeError('no threads left')
 _thread.start_new_thread = refused
 ";
 
-/// Holds the only daemon thread until `builtins.leave` is set, once it has begun to start its
-/// spare.
-fn holding() -> std::thread::JoinHandle<Result<Result<Py<PyAny>, PyErr>, Unanswered>> {
-    embedded::with(|py| py.run(SLOW_REFUSAL, None, None)).unwrap();
-    let held = std::thread::spawn(|| blocked(c"lambda: __import__('builtins').leave.wait(30)"));
-    let starting: bool = embedded::with(|py| {
-        py.eval(c"__import__('builtins').starting.wait(10)", None, None)
-            .unwrap()
-            .extract()
-            .unwrap()
-    });
-    assert!(starting, "the only daemon thread starts its spare");
-    held
+/// The only daemon thread, held by a call, starting the spare it was asked for, whose start is
+/// refused once a call is queued on it.
+pub(crate) struct Doomed {
+    held: std::thread::JoinHandle<Result<Result<Py<PyAny>, PyErr>, Unanswered>>,
+    spare: super::Daemon,
+}
+
+impl Doomed {
+    /// Holds the only daemon thread once it has begun to start its spare.
+    pub(crate) fn holding() -> Self {
+        embedded::with(|py| py.run(REFUSAL, None, None)).unwrap();
+        let held = std::thread::spawn(|| blocked(c"lambda: __import__('builtins').leave.wait(30)"));
+        let starting: bool = embedded::with(|py| {
+            py.eval(c"__import__('builtins').starting.wait(10)", None, None)
+                .unwrap()
+                .extract()
+                .unwrap()
+        });
+        assert!(starting, "the only daemon thread starts its spare");
+        let spare = super::IDLE.lock().daemons.last().cloned();
+        let spare = spare.expect("the spare waits on the pool");
+        Self { held, spare }
+    }
+
+    /// Refuses the spare's start once a call has taken it off the pool, within 10 s.
+    pub(crate) fn refused_once_queued(&self) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while super::IDLE
+            .lock()
+            .daemons
+            .last()
+            .is_some_and(|top| top.same_channel(&self.spare))
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a call took the spare"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        embedded::with(|py| py.run(c"__import__('builtins').queued.set()", None, None)).unwrap();
+    }
+
+    /// Gives starts back, lets the held daemon thread go, and waits for its call's answer.
+    pub(crate) fn released(self) {
+        embedded::with(|py| {
+            py.run(
+                c"import _thread, builtins\n_thread.start_new_thread = builtins.started_by\nbuiltins.leave.set()",
+                None,
+                None,
+            )
+        })
+        .unwrap();
+        self.held.join().unwrap().unwrap().unwrap();
+    }
 }
 
 #[test]
 fn a_call_that_finds_a_spare_that_did_not_start_says_why_and_a_later_one_is_answered() {
-    let held = holding();
+    let doomed = Doomed::holding();
     // Queued on the spare as it starts, a call goes with it, and the spare it asked for stays.
-    assert!(matches!(blocked(c"lambda: 7"), Err(Unanswered::Thread)));
+    let queued = std::thread::spawn(|| blocked(c"lambda: 7"));
+    doomed.refused_once_queued();
+    assert!(matches!(queued.join().unwrap(), Err(Unanswered::Thread)));
     let met = blocked(c"lambda: 7");
     assert!(
         matches!(&met, Err(Unanswered::Started(why)) if why.contains("no threads left")),
         "a call that meets a spare that is gone says why none started"
     );
-    embedded::with(|py| py.run(c"__import__('builtins').leave.set()", None, None)).unwrap();
-    held.join().unwrap().unwrap().unwrap();
+    doomed.released();
     let later = blocked(c"lambda: 7").expect("the daemon thread back on the pool answers");
     embedded::with(|py| assert_eq!(later.unwrap().extract::<i64>(py).unwrap(), 7));
 }

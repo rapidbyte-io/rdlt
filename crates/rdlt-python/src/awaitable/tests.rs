@@ -4,10 +4,11 @@ use std::time::{Duration, Instant};
 
 use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyAnyMethods as _, PyCFunction, PyDict, PyDictMethods as _, PyTypeMethods as _};
-use pyo3::{Bound, IntoPyObject as _, IntoPyObjectExt as _, Py, PyAny, PyErr, Python};
+use pyo3::{Bound, IntoPyObjectExt as _, Py, PyAny, PyErr, Python};
 
 use super::awaitable;
-use crate::{calls, embedded};
+use crate::calls::tests::Doomed;
+use crate::embedded;
 
 /// What `asyncio.run` makes of `code`, a coroutine function's body, run with `make` named: a
 /// function giving the awaitable under test, called on the event loop's thread.
@@ -81,58 +82,29 @@ impl Drop for Dropped {
     }
 }
 
-/// Refuses each daemon thread's start half a second after saying it began, as a process out of
-/// threads does, so a call can be queued on a spare that then does not start.
-const SLOW_REFUSAL: &std::ffi::CStr = c"
-import _thread, builtins, threading, time
-builtins.starting = threading.Event()
-builtins.leave = threading.Event()
-def refused(*_):
-    builtins.starting.set()
-    time.sleep(0.5)
-    raise RuntimeError('no threads left')
-_thread.start_new_thread = refused
-";
-
 #[test]
 fn an_await_whose_answer_was_queued_on_a_spare_that_did_not_start_is_answered() {
-    embedded::with(|py| py.run(SLOW_REFUSAL, None, None)).unwrap();
-    // Holds the only daemon thread, which starts its spare first.
-    let held = std::thread::spawn(|| {
-        calls::blocking(
-            |py| {
-                let leave = py.eval(c"__import__('builtins').leave.wait", None, None)?;
-                Ok((leave, (30,).into_pyobject(py)?))
-            },
-            |_, answered| answered.is_ok(),
-        )
-    });
-    let starting: bool = embedded::with(|py| {
-        py.eval(c"__import__('builtins').starting.wait(10)", None, None)
-            .unwrap()
-            .extract()
-            .unwrap()
-    });
-    assert!(starting, "the only daemon thread starts its spare");
+    let doomed = Doomed::holding();
     // The answer is queued on that spare, which does not start, then offered again until the
     // held daemon thread is let go and takes it.
-    let held_on = c"
-import asyncio, builtins
+    let releasing = std::thread::spawn(move || {
+        doomed.refused_once_queued();
+        doomed.released();
+    });
+    let answer = embedded::with(|py| {
+        let held_on = c"
+import asyncio
 async def main():
-    awaited = make()
-    await asyncio.sleep(1)
-    builtins.leave.set()
-    return await asyncio.wait_for(awaited, 30)
+    return await asyncio.wait_for(make(), 30)
 answer = asyncio.run(main())
 ";
-    let answer = embedded::with(|py| {
         awaited(py, held_on, |py| {
             awaitable(py, async { 7_i64 }, |py, n| n.into_bound_py_any(py)).map(Bound::unbind)
         })
         .map(|answer| answer.extract::<i64>().unwrap())
     });
     assert_eq!(answer.unwrap(), 7);
-    assert!(held.join().unwrap().unwrap(), "the held call is answered");
+    releasing.join().unwrap();
 }
 
 #[test]
