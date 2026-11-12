@@ -1,6 +1,9 @@
 //! An asyncio awaitable of a future the runtime runs, whose answer a daemon thread hands to the
 //! event loop awaiting it, so no thread of Rust's takes the GIL for it.
 
+#[cfg(test)]
+mod tests;
+
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,10 +57,8 @@ where
     )?;
     let (event_loop, target) = (event_loop.unbind(), awaited.clone().unbind());
     drop(runtime.spawn(async move {
+        // A cancelled await's answer goes too: its future is done, so it takes none.
         let ended = task.await;
-        if matches!(&ended, Err(joined) if joined.is_cancelled()) {
-            return;
-        }
         let kept = Arc::new(Mutex::new(Some(Ended {
             outcome: ended,
             answer,
