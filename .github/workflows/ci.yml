@@ -98,6 +98,17 @@ jobs:
         env:
           RDLT_REQUIRE_SANDBOX: ${{ runner.os == 'Linux' && '1' || '0' }}
           RDLT_REQUIRE_SYSTEM_PYTHON: ${{ runner.os == 'Linux' && '1' || '0' }}
+      # A process that crashed on macOS leaves a crash report, its faulting thread's backtrace
+      # symbolized, which the job's log lacks: each written since the checkout is printed.
+      - name: Print the crash reports
+        if: failure() && runner.os == 'macOS'
+        run: |
+          find ~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports -name '*.ips' \
+            -newer Cargo.toml -print 2>/dev/null | while read -r report; do
+            echo "::group::$report"
+            cat "$report" || true
+            echo "::endgroup::"
+          done
 
   # The wheel as it ships, built in release and tested installed, on the abi3 range's two ends:
   # the newest CPython on Linux and the oldest on macOS. The nightly runs the whole matrix.
