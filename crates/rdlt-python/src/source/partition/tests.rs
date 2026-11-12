@@ -524,11 +524,15 @@ fn replan(py: Python<'_>) -> pyo3::Bound<'_, crate::source::context::NativeNotic
     notice.call_method0("replan").unwrap().cast_into().unwrap()
 }
 
-/// The kind of the next push `received` holds, none once its senders are gone.
+/// The kind of the next push `received` holds, none once its senders are gone, within 30 s.
 fn taken(py: Python<'_>, received: &mut mpsc::Receiver<Pushed>) -> Option<&'static str> {
     let runtime = runtime::get(py).unwrap();
-    py.detach(|| runtime.block_on(received.recv()))
-        .map(|pushed| kind(&pushed))
+    let next = py.detach(|| {
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(30), received.recv()).await
+        })
+    });
+    next.expect("within 30 s").map(|pushed| kind(&pushed))
 }
 
 #[test]
@@ -706,18 +710,18 @@ item = pa.RecordBatchReader.from_batches(batches[0].schema, batches)",
 #[test]
 fn an_async_read_reads_an_arrow_stream_no_further_ahead_than_its_channel_holds_and_one_push() {
     embedded::with(|py| {
-        let reading = started(
-            py,
-            "import builtins
-import pyarrow as pa
+        let body = format!(
+            "{TICKING}import pyarrow as pa
 builtins.made = 0
 def batches():
     for n in range(40):
         builtins.made += 1
-        yield pa.record_batch({'n': [n]})
+        yield pa.record_batch({{'n': [n]}})
 async def read(p, c, x):
-    yield pa.RecordBatchReader.from_batches(pa.schema([('n', pa.int64())]), batches())",
+    builtins.ticker = asyncio.create_task(ticking())
+    yield pa.RecordBatchReader.from_batches(pa.schema([('n', pa.int64())]), batches())"
         );
+        let reading = started(py, &body);
         let runtime = runtime::get(py).unwrap();
         let ahead = py.detach(|| {
             runtime.block_on(async move {
@@ -732,8 +736,11 @@ async def read(p, c, x):
                 {
                     assert_eq!(kind(&pushed), "batch");
                     taken += 1;
-                    // Time for a read that runs ahead to do so.
-                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    // Once its loop has turned, the read waits for room, having made all it
+                    // makes before it does; or it has made every batch.
+                    let seen: u64 = builtin("ticks");
+                    let turned = format!("ticks > {seen} or made == 40");
+                    assert!(came_true(&turned).await, "the read's loop was held");
                     let made: usize = builtin("made");
                     furthest = furthest.max(made - taken);
                 }
