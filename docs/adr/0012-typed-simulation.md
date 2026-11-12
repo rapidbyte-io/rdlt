@@ -31,7 +31,8 @@ every stored cell by type.
 - **Each way a stream is read is drawn on its own.** How each phase reads a stream, whether its
   partitions end, whether its reads end on a checkpoint and how it is written are drawn apart from
   one another; what a read ends on otherwise, rows after a checkpoint or no checkpoint at all, the
-  source notes as the read ends. A sweep of 2 500 seeds or more, each pull-request and nightly
+  source notes as the read ends, and a read that ends on rows after a checkpoint counts only where
+  the engine did not refuse it. A sweep of 2 500 seeds or more, each pull-request and nightly
   shard and `just ci`'s, fails, naming each, where its checks held none of a listed combination;
   a sweep of 1 000 seeds, where the rarest is reached about six times, is not held to them. The
   draws are tied only where the engine refuses a combination or the model cannot hold it, each tie

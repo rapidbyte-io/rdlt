@@ -4,8 +4,9 @@
 //!
 //! Each is drawn on its own (`SimStream::generate`), but what a read that does not end on a
 //! checkpoint ends on, which the source notes as each read ends: rows after its last checkpoint,
-//! or no checkpoint at all, as its batches fall. The draws are tied only where the engine refuses
-//! a combination or the model cannot hold it:
+//! or no checkpoint at all, as its batches fall, the first counted only where the engine did not
+//! refuse the read (`world::ends`). The draws are tied only where the engine refuses a
+//! combination or the model cannot hold it:
 //! - a stream that replaces its table is read in full in every phase: replace needs a full read,
 //!   and the engine refuses the plan as `plan_mode_invalid`;
 //! - a stream whose rows arrive as runs follow it is read incrementally in every phase, and where
