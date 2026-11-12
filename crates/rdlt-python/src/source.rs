@@ -1,5 +1,5 @@
 //! Sources written in Python, read in process: a Python object's streams as the Rust SDK's,
-//! each partition on a thread of its own.
+//! each partition on a daemon thread it holds while it reads.
 
 pub(crate) mod context;
 pub(crate) mod partition;
@@ -331,7 +331,8 @@ impl ReadStream<PythonSource> for PythonStream {
         let mut refresh = tokio::time::interval(DUE_REFRESH);
         loop {
             let pushed = tokio::select! {
-                // A stop wins: the read ends, and its thread at its next push.
+                // A stop wins: the read ends, and its daemon thread goes back to waiting at
+                // its next push.
                 biased;
                 () = out.stopped() => return Ok(()),
                 pushed = reading.next() => pushed,
