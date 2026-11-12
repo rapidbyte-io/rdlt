@@ -292,8 +292,10 @@ def serve(calls: _Calls) -> None:
         while True:
             _made(*calls.next())
     except BaseException:  # noqa: BLE001
-        traceback.print_exc()
-        _parked()
+        try:
+            traceback.print_exc()
+        finally:
+            _parked()
 
 
 def _parked() -> None:
