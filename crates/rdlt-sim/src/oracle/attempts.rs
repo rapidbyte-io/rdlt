@@ -124,7 +124,10 @@ impl Simulation {
         self.world.reports.restart();
         // Each run is held to its own connections' plans: those made before it are forgotten.
         drop(self.world.connections());
-        let mut prediction = refusals::predict(&self.world, &self.relaxed, phase);
+        // Plain runs without faults that read to their ends read each partition once, from where
+        // its last commit left it, so what their reads meet is known exactly.
+        let exact = clean && matches!(scenario, Scenario::Plain) && !until.follows();
+        let mut prediction = refusals::predict(&self.world, &self.relaxed, phase, exact);
         if until.follows() {
             // A run that follows the source may end before the rows a refusal needs arrive.
             if !prediction.must.is_empty() {

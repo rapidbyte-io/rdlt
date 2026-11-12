@@ -27,7 +27,16 @@ pub(super) struct Refusal {
 /// such read of a source that checkpoints on demand there, as it then checkpoints nowhere, and of
 /// one that checkpoints naturally a read from where its partition stands of one checkpoint group
 /// or less, as the next read of the rows a read leaves after its last checkpoint is.
-pub(super) fn refusal(stream: &SimStream, relaxed: Relaxed, phase: usize) -> Option<Refusal> {
+///
+/// Where each partition's read starts at the offset `starts` gives it, as in an attempt whose runs
+/// each read every partition once from where its last commit left it, the refusal is exact: every
+/// read of one group or less meets it, and none of more.
+pub(super) fn refusal(
+    stream: &SimStream,
+    relaxed: Relaxed,
+    phase: usize,
+    starts: Option<&[usize]>,
+) -> Option<Refusal> {
     let ends_on_rows = !stream.final_checkpoint && relaxed.mended.is_none();
     if !stream.unbounded || !ends_on_rows || stream.reads[phase] != ReadMode::Incremental {
         return None;
@@ -48,7 +57,10 @@ pub(super) fn refusal(stream: &SimStream, relaxed: Relaxed, phase: usize) -> Opt
     let batches: Vec<usize> = partitions
         .map(|partition| {
             let rows = stream.rows(partition, phase).len();
-            let begins = stream.begins(partition, phase, relaxed);
+            let begins = starts.map_or_else(
+                || stream.begins(partition, phase, relaxed),
+                |starts| starts[partition],
+            );
             rows.saturating_sub(begins).div_ceil(size)
         })
         .collect();
@@ -57,7 +69,7 @@ pub(super) fn refusal(stream: &SimStream, relaxed: Relaxed, phase: usize) -> Opt
     let code = codes::CHECKPOINT_MISSING;
     if batches.iter().any(unsealed) {
         Some(Refusal { code, must: true })
-    } else if batches.iter().any(|count| *count > 0) {
+    } else if starts.is_none() && batches.iter().any(|count| *count > 0) {
         Some(Refusal { code, must: false })
     } else {
         None

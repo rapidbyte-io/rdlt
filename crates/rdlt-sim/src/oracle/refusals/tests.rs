@@ -343,7 +343,7 @@ fn a_key_refusal_is_never_required_of_a_stream_whose_rows_go_before_their_batch_
     let (registered, stream, phase, code) = pruned_key();
     let world = registered.world();
     let relaxed = vec![Relaxed::default(); world.workload.streams.len()];
-    let prediction = predict(world, &relaxed, phase);
+    let prediction = predict(world, &relaxed, phase, false);
     assert!(
         prediction.may.contains(&(stream.clone(), code)),
         "{prediction:?}"

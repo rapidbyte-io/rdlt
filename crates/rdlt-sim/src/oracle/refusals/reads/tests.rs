@@ -59,7 +59,7 @@ fn only_an_incremental_phase_of_endless_partitions_whose_reads_end_on_rows_is_re
             (reads, unbounded, final_checkpoint);
         for (phase, expected) in expected.into_iter().enumerate() {
             assert_eq!(
-                refusal(&stream, relaxed, phase),
+                refusal(&stream, relaxed, phase, None),
                 expected,
                 "{reads:?} unbounded {unbounded} final {final_checkpoint} {relaxed:?} phase {phase}"
             );
@@ -79,8 +79,14 @@ fn a_natural_read_is_refused_only_where_it_pushes_one_checkpoint_group_or_less()
     // refused; one pushing a group or less seals none of them.
     stream.checkpoint_every = rows - 1;
     let may = Some(refused(codes::CHECKPOINT_MISSING, false));
-    assert_eq!(refusal(&stream, Relaxed::default(), 0), may);
+    assert_eq!(refusal(&stream, Relaxed::default(), 0, None), may);
     stream.checkpoint_every = rows;
     let must = Some(refused(codes::CHECKPOINT_MISSING, true));
-    assert_eq!(refusal(&stream, Relaxed::default(), 0), must);
+    assert_eq!(refusal(&stream, Relaxed::default(), 0, None), must);
+    // Read from where its last commit left it, a read of more than a group meets none, and one of
+    // a group or less meets it every time.
+    stream.checkpoint_every = rows - 1;
+    let left = Relaxed::default();
+    assert_eq!(refusal(&stream, left, 0, Some(&[0])), None);
+    assert_eq!(refusal(&stream, left, 0, Some(&[1])), must);
 }
