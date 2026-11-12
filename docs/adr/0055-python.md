@@ -207,9 +207,11 @@ An interpreter upgraded in place, or a package the operator changes in the tree,
 runs under the same digest, as a native binary's shared libraries do.
 
 A process forked after the runtime started is refused in the child with `rdlt.InternalError`, which
-names multiprocessing's spawn and forkserver methods. The wheel carries rdlt-certify's code, and a
-served connector serves a probe only where its launcher's own code asks for it. The nightly workflow
-tests the wheel on CPython 3.11 to 3.15 and on free-threaded 3.14, on Linux and macOS.
+names multiprocessing's spawn and forkserver methods. A caller waits for a call's answer through
+`parking_lot`, since std's waits park on a dispatch semaphore on macOS, which a forked child cannot
+use where its thread made one before the fork. The wheel carries rdlt-certify's code, and a served
+connector serves a probe only where its launcher's own code asks for it. The nightly workflow tests
+the wheel on CPython 3.11 to 3.15 and on free-threaded 3.14, on Linux and macOS.
 
 A commit's barrier waits, up to its limit, for every partition still reading that checkpoints
 when asked to, as the generator does, so within one pipeline a transform that runs long on such a

@@ -9,6 +9,7 @@
 //! daemon thread ends: one that ended would run its libraries' teardown, which races the
 //! process's exit.
 
+mod landing;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -433,15 +434,13 @@ where
         + 'static,
     F: for<'py> FnOnce(Python<'py>, Answered<'py>) -> T + Send + 'static,
 {
-    let (sender, received) = std::sync::mpsc::channel();
+    let (giving, expecting) = landing::landing();
     away_from_the_runtime(move || {
         start(prepare, move |py, answered| {
             let finished = finish(py, answered);
-            Box::new(move || {
-                sender.send(finished).ok();
-            })
+            Box::new(move || giving.give(finished))
         })?;
-        received.recv().map_err(|_| Unanswered::Dropped)
+        expecting.wait()
     })
 }
 
