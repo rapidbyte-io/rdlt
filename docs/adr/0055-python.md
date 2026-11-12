@@ -47,7 +47,9 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   alone. No runtime worker waits for the GIL while a run goes on, and none takes it: a daemon
   thread hands an awaited answer to asyncio through the event loop's `call_soon_threadsafe`, a
   `StoppedError` made beforehand on the awaiting thread, and none to an await cancelled first. So
-  a pipeline with no Python in it keeps committing while Python holds the GIL.
+  a pipeline with no Python in it keeps committing while Python holds the GIL. An await whose
+  answer no daemon thread can take waits until one can, or until it is cancelled, as
+  `asyncio.wait_for` does at its timeout.
 - **Exceptions cross whole.** A Python exception becomes the connector's or the transform's
   error: its type and message, shown and bounded as connector text, with its traceback as its
   cause. A connector says what kind of failure it met by raising `rdlt.connector.ConnectorError`
