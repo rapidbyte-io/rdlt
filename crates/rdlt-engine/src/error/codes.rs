@@ -89,7 +89,7 @@ pub const COMMIT_POLICY_INVALID: Code = Code("commit_policy_invalid");
 pub const CONFIG_INVALID: Code = Code("config_invalid");
 
 /// The code of the error for a read that is not full of a partition that never ends, whose last
-/// read finished it with rows after its last checkpoint: no cursor resumes it past them.
+/// read finished it on rows with no checkpoint after them: no cursor resumes it past them.
 pub const CURSOR_MISSING: Code = Code("cursor_missing");
 
 /// The code of the error for a call into a connector that took longer than the engine's wait for
