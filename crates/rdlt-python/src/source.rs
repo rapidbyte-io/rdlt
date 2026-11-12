@@ -79,6 +79,8 @@ struct Declared {
     committed: bool,
     /// Whether the stream tells where it stands outside the engine.
     acknowledged: bool,
+    /// The format of the stream's cursors.
+    cursor_version: u16,
 }
 
 /// One stream of a Python source.
@@ -89,6 +91,7 @@ pub(crate) struct PythonStream {
     partitioned: bool,
     committed: bool,
     acknowledged: bool,
+    cursor_version: u16,
 }
 
 impl PythonStream {
@@ -113,6 +116,7 @@ impl PythonStream {
             partitioned: declared.partitioned,
             committed: declared.committed,
             acknowledged: declared.acknowledged,
+            cursor_version: declared.cursor_version,
         })
     }
 }
@@ -150,6 +154,16 @@ impl SourceConnector for PythonSource {
             .iter()
             .cloned()
             .fold(Streams::new(), Streams::with)
+    }
+}
+
+impl PythonSource {
+    /// The format of `stream`'s cursors, as the stream says it.
+    fn cursor_version(&self, stream: &StreamName) -> Option<u16> {
+        self.streams
+            .iter()
+            .find(|held| held.spec.name() == stream)
+            .map(|held| held.cursor_version)
     }
 }
 
@@ -376,7 +390,11 @@ impl NativeSourceFactory {
     /// The Rust SDK's factory for the source, as a pipeline and served mode place it: every
     /// barrier, checkpoint, frame, limit and credit the SDK's own.
     pub(crate) fn factory(&self) -> Box<dyn SourceFactory> {
-        source_factory_from(self.spec.clone(), self.connecting())
+        source_factory_from(
+            self.spec.clone(),
+            self.connecting(),
+            PythonSource::cursor_version,
+        )
     }
 
     /// The factory that also tells where the source stands outside the engine, where its class
@@ -385,6 +403,10 @@ impl NativeSourceFactory {
         if !self.acknowledges {
             return self.factory();
         }
-        acknowledging_source_factory_from(self.spec.clone(), self.connecting())
+        acknowledging_source_factory_from(
+            self.spec.clone(),
+            self.connecting(),
+            PythonSource::cursor_version,
+        )
     }
 }

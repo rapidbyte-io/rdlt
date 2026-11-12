@@ -18,7 +18,9 @@ impl<C: SourceConnector> AcknowledgedReader for SourceAdapter<C> {
         partition: &'a PartitionId,
     ) -> BoxFuture<'a, Result<Option<Cursor>>> {
         match self.stream(stream) {
-            Ok(erased) => erased.acknowledged(&self.connector, partition),
+            Ok(found) => found
+                .stream
+                .acknowledged(&self.connector, partition, found.version),
             Err(error) => Box::pin(async move { Err(error) }),
         }
     }
@@ -85,15 +87,16 @@ pub fn acknowledging_source_factory<C: SourceConnector>() -> Box<dyn SourceFacto
 }
 
 /// [`Described`], which also tells where its connector stands.
-struct AcknowledgingDescribed<C, F>(Described<C, F>);
+struct AcknowledgingDescribed<C, F, V>(Described<C, F, V>);
 
-impl<C, F> SourceFactory for AcknowledgingDescribed<C, F>
+impl<C, F, V> SourceFactory for AcknowledgingDescribed<C, F, V>
 where
     C: SourceConnector,
     F: Fn(serde_json::Value, ConnectContext) -> BoxFuture<'static, Result<C>>
         + Send
         + Sync
         + 'static,
+    V: Fn(&C, &StreamName) -> Option<u16> + Send + Sync + 'static,
 {
     fn spec(&self) -> &ConnectorSpec {
         self.0.spec()
@@ -136,9 +139,10 @@ where
 /// It stands for [`SourceConnector::ACKNOWLEDGES`], which is not read, as `spec` and `connect`
 /// stand for the rest of what `C` would say of itself: a source described as one that tells is
 /// served by this factory, and one that does not by `source_factory_from`.
-pub fn acknowledging_source_factory_from<C, F>(
+pub fn acknowledging_source_factory_from<C, F, V>(
     spec: ConnectorSpec,
     connect: F,
+    cursor_version: V,
 ) -> Box<dyn SourceFactory>
 where
     C: SourceConnector,
@@ -146,6 +150,11 @@ where
         + Send
         + Sync
         + 'static,
+    V: Fn(&C, &StreamName) -> Option<u16> + Send + Sync + 'static,
 {
-    Box::new(AcknowledgingDescribed(Described::new(spec, connect)))
+    Box::new(AcknowledgingDescribed(Described::new(
+        spec,
+        connect,
+        cursor_version,
+    )))
 }

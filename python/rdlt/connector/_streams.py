@@ -39,6 +39,7 @@ class Stream:
         *,
         committed: Callable[[Committed], None] | None,
         acknowledged: Acknowledged | None,
+        cursor_version: int,
         takes_context: bool,
         replayable: bool,
     ) -> None:
@@ -59,6 +60,7 @@ class Stream:
                 "replayable": replayable,
                 "committed": committed is not None,
                 "acknowledged": acknowledged is not None,
+                "cursor_version": cursor_version,
             }
         )
 

@@ -465,8 +465,13 @@ fn a_plan_beyond_its_partition_limit_is_refused() {
 }
 
 mod described {
+    use std::num::NonZeroUsize;
+
     use crate::prelude::*;
-    use crate::{ConnectorId, ConnectorSpec, source_factory_from};
+    use crate::{
+        BoxFuture, ConnectorId, ConnectorSpec, ReadRequest, SourceEvent, partition_channel,
+        source_factory_from,
+    };
 
     #[derive(serde::Deserialize, schemars::JsonSchema)]
     struct Unread {}
@@ -501,13 +506,21 @@ mod described {
 
     impl ReadStream<Named> for One {
         type Cursor = u64;
+        const CURSOR_VERSION: u16 = 3;
 
         fn spec(&self) -> StreamSpec {
             StreamSpec::new(StreamName::new(self.0).expect("a valid name"))
         }
 
-        async fn read(&self, _: &Named, _: &Partition, _: u64, _: &mut Emitter<u64>) -> Result<()> {
-            Ok(())
+        /// Checkpoints once, after its cursor.
+        async fn read(
+            &self,
+            _: &Named,
+            _: &Partition,
+            at: u64,
+            out: &mut Emitter<u64>,
+        ) -> Result<()> {
+            out.checkpoint(&(at + 1)).await
         }
 
         /// Where the stream stands: as many messages as its name has letters.
@@ -525,7 +538,16 @@ mod described {
     }
 
     fn factory(streams: Vec<&'static str>) -> Box<dyn crate::SourceFactory> {
-        source_factory_from(spec(), move |config: serde_json::Value, _context| {
+        versioned(streams, None)
+    }
+
+    /// The factory of a source of `streams`, whose cursors are in format `version`, where its
+    /// description says one.
+    fn versioned(
+        streams: Vec<&'static str>,
+        version: Option<u16>,
+    ) -> Box<dyn crate::SourceFactory> {
+        let connect = move |config: serde_json::Value, _context| {
             let streams = streams.clone();
             Box::pin(async move {
                 assert_eq!(
@@ -534,8 +556,9 @@ mod described {
                     "the whole configuration"
                 );
                 Ok(Named { streams })
-            })
-        })
+            }) as BoxFuture<'static, Result<Named>>
+        };
+        source_factory_from(spec(), connect, move |_: &Named, _: &StreamName| version)
     }
 
     #[tokio::test]
@@ -580,14 +603,19 @@ mod described {
         );
         let connects = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&connects);
-        let telling = crate::acknowledging_source_factory_from(spec(), move |_config, _context| {
+        let connect = move |_config, _context| {
             counted.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 Ok(Named {
                     streams: vec!["inbox"],
                 })
-            })
-        });
+            }) as BoxFuture<'static, Result<Named>>
+        };
+        let telling = crate::acknowledging_source_factory_from(
+            spec(),
+            connect,
+            |_: &Named, _: &StreamName| Some(4),
+        );
         assert!(telling.acknowledges());
         assert_eq!(telling.spec(), &spec());
         let (_, reader) = telling
@@ -604,6 +632,60 @@ mod described {
             .acknowledged(&name, &PartitionId::whole())
             .await
             .expect("it tells");
-        assert_eq!(standing, Some(Cursor::encode(1, &5_u64).expect("a cursor")));
+        assert_eq!(standing, Some(Cursor::encode(4, &5_u64).expect("a cursor")));
+    }
+
+    /// What a read of stream `a` of a source whose cursors are in format `version`, where it says
+    /// one, checkpoints, from a cursor in the format it reads.
+    async fn checkpointed(version: Option<u16>) -> Cursor {
+        let source = versioned(vec!["a"], version)
+            .connect(serde_json::json!({ "given": true }), ConnectContext::new())
+            .await
+            .expect("it connects");
+        let format = version.unwrap_or(3);
+        let (sink, mut feed) = partition_channel(NonZeroUsize::MIN);
+        let from = Cursor::encode(format, &4_u64).expect("a cursor");
+        let name = StreamName::new("a").expect("a valid name");
+        let reading = source.read(
+            ReadRequest::new(name, Partition::single(), Some(from)),
+            sink,
+        );
+        let (read, sent) = tokio::join!(reading, feed.recv());
+        read.expect("it reads");
+        let Some(SourceEvent::Checkpoint { cursor, .. }) = sent else {
+            panic!("a checkpoint, not {sent:?}");
+        };
+        cursor
+    }
+
+    #[tokio::test]
+    async fn a_described_source_that_says_nothing_reads_its_streams_formats_from_their_types() {
+        assert_eq!(
+            checkpointed(None).await,
+            Cursor::encode(3, &5_u64).expect("a cursor")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_described_source_s_cursors_are_in_the_format_it_says_and_no_other() {
+        let source = versioned(vec!["a"], Some(2))
+            .connect(serde_json::json!({ "given": true }), ConnectContext::new())
+            .await
+            .expect("it connects");
+        let name = StreamName::new("a").expect("a valid name");
+        let older = Cursor::encode(3, &4_u64).expect("a cursor");
+        let (sink, _feed) = partition_channel(NonZeroUsize::MIN);
+        let request = ReadRequest::new(name.clone(), Partition::single(), Some(older.clone()));
+        let refused = source.read(request, sink).await.expect_err("refused");
+        assert_eq!(refused.code(), Some("cursor_version"));
+        assert_eq!(refused.kind(), ConnectorErrorKind::Config);
+        let told = source
+            .committed(&name, &[(PartitionId::whole(), older)])
+            .await;
+        assert_eq!(told.expect_err("refused").code(), Some("cursor_version"));
+        assert_eq!(
+            checkpointed(Some(2)).await,
+            Cursor::encode(2, &5_u64).expect("a cursor")
+        );
     }
 }

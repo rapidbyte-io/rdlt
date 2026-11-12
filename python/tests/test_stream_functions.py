@@ -291,6 +291,7 @@ def test_a_committed_start_is_told_as_the_cursor_a_read_starts_from() -> None:
         None,
         committed=told_of(told),
         acknowledged=None,
+        cursor_version=1,
         takes_context=False,
         replayable=True,
     )
@@ -342,6 +343,7 @@ def test_a_stream_tells_where_it_stands_in_its_own_cursor_type_or_none() -> None
         None,
         committed=None,
         acknowledged=lambda partition: cast("_Since | None", standing[partition]),
+        cursor_version=1,
         takes_context=False,
         replayable=True,
     )
@@ -357,6 +359,41 @@ def test_a_stream_without_a_cursor_cannot_say_where_it_stands() -> None:
         @stream(acknowledged=lambda partition: None)
         def rows() -> Iterator[object]:
             yield {"id": 1}
+
+
+def _users_in_format(version: int) -> ReadStream:
+    @stream(name="users", cursor=_Since, cursor_version=version)
+    def users(since: _Since) -> Iterator[object]:
+        for n in range(since.after + 1, 3):
+            yield {"id": n}
+        yield checkpoint(_Since(after=2))
+
+    return cast("ReadStream", users)
+
+
+def test_a_cursor_committed_in_another_format_fails_the_read_coded_cursor_version(
+    tmp_path: Path, connectors: Path
+) -> None:
+    placed = host(tmp_path, connectors)
+    first = rdlt.pipeline("formats", source=_users_in_format(1), destination=into_sqlite(tmp_path))
+    first.build(placed).run()
+    again = rdlt.pipeline("formats", source=_users_in_format(1), destination=into_sqlite(tmp_path))
+    assert again.build(placed).run().report.rows == 0
+    bumped = rdlt.pipeline("formats", source=_users_in_format(2), destination=into_sqlite(tmp_path))
+    # A cursor in another format is the Rust SDK's `Config` failure.
+    with pytest.raises(rdlt.ConfigError) as raised:
+        bumped.build(placed).run()
+    assert raised.value.report().connector_code == "cursor_version"
+    assert rows_of(tmp_path, "users") == [(0,), (1,), (2,)]
+
+
+@pytest.mark.parametrize("version", [-1, 2**16, True, 2.0, "2"])
+def test_a_cursor_format_is_a_number_a_u16_holds(version: object) -> None:
+    with pytest.raises(ValueError, match="cursor_version"):
+
+        @stream(cursor=_Since, cursor_version=cast("int", version))
+        def users(since: _Since) -> Iterator[object]:
+            yield {"id": since.after}
 
 
 def test_a_stream_that_cannot_be_read_again_says_so_in_its_catalog(
