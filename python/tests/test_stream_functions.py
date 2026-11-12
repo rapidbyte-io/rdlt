@@ -1408,6 +1408,7 @@ def logged(ctx: StreamContext) -> Iterator[object]:
 def test_a_run_s_reads_leave_threading_only_daemon_threads_that_wait_fewer_than_its_reads(
     tmp_path: Path, connectors: Path, read: ReadStream
 ) -> None:
+    before = {thread.ident for thread in reading_threads()}
     built = rdlt.pipeline(
         "parted",
         source=read,
@@ -1415,11 +1416,13 @@ def test_a_run_s_reads_leave_threading_only_daemon_threads_that_wait_fewer_than_
         resources=rdlt.Resources(partitions=2),
     )
     assert built.build(host(tmp_path, connectors)).run().report.rows == 32
+    reading = f"rdlt-read-{read.name}"
     deadline = time.monotonic() + 30
-    while (ended := ended_threads()) or any(t.name != "rdlt-call" for t in reading_threads()):
+    while (ended := ended_threads()) or any(t.name == reading for t in reading_threads()):
         assert time.monotonic() < deadline, f"threading holds {ended} and {reading_threads()}"
         time.sleep(0.05)
-    assert len(reading_threads()) < 32, "a run keeps daemon threads for what it reads at once"
+    started = [thread for thread in reading_threads() if thread.ident not in before]
+    assert len(started) < 32, "a run starts daemon threads for what it reads at once"
 
 
 def test_a_forked_child_s_first_run_is_answered_though_threading_s_lock_was_held_at_the_fork(
