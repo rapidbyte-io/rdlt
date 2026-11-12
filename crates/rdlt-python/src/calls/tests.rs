@@ -1,3 +1,8 @@
+#![expect(
+    clippy::disallowed_methods,
+    reason = "a test's own threads wait for answers attached, as an embedder's do"
+)]
+
 use std::time::Duration;
 
 use pyo3::types::{

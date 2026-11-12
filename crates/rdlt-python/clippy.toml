@@ -1,0 +1,17 @@
+# The workspace clippy.toml settings, repeated because clippy reads only the nearest file, plus the
+# rule that keeps every thread of Rust's off the interpreter: a call is handed to a daemon thread
+# Python owns instead (ADR 0055).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-print-in-tests = true
+too-many-lines-threshold = 60
+
+disallowed-methods = [
+  { path = "pyo3::marker::Python::attach", reason = "a thread of Rust's never takes the GIL: hand the call to a daemon thread through crate::calls" },
+  { path = "pyo3::marker::Python::try_attach", reason = "a thread of Rust's never takes the GIL: hand the call to a daemon thread through crate::calls" },
+]
+disallowed-types = [
+  { path = "std::sync::Mutex", reason = "STYLE.md: blocking locks are parking_lot's, which do not poison" },
+  { path = "std::sync::RwLock", reason = "STYLE.md: blocking locks are parking_lot's, which do not poison" },
+  { path = "std::sync::Condvar", reason = "STYLE.md: blocking locks are parking_lot's, which do not poison" },
+]
