@@ -32,11 +32,13 @@ every stored cell by type.
   partitions end, whether its reads end on a checkpoint and how it is written are drawn apart from
   one another; what a read ends on otherwise, rows after a checkpoint or no checkpoint at all, the
   source notes as the read ends, and a read that ends on rows after a checkpoint counts only where
-  the engine did not refuse it. A sweep of 2 500 seeds or more, each pull-request and nightly
-  shard and `just ci`'s, fails, naming each, where its checks held none of a listed combination;
-  a sweep of 1 000 seeds, where the rarest is reached about six times, is not held to them. The
-  draws are tied only where the engine refuses a combination or the model cannot hold it, each tie
-  named with its reason beside the list:
+  the engine refused no read of the stream in its attempt. A sweep of 2 500 seeds or more, each
+  pull-request and nightly shard and `just ci`'s, fails, naming each, where its checks held none of
+  a listed combination, and misses one after a change to the draws about once in two hundred
+  thousand. A sweep of 1 000 seeds, where the rarest is reached about five times and a change to
+  the draws would miss one about once in 95, is not held to them. The draws are tied only where the
+  engine refuses a combination or the model cannot hold it, each tie named with its reason beside
+  the list:
   - a stream that replaces its table is read in full in every phase, as the engine refuses replace
     with an incremental read;
   - a stream whose rows arrive as runs follow it is read incrementally in every phase, and where
