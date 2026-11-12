@@ -54,13 +54,16 @@ type Offered<'py> = (Bound<'py, PyAny>, Bound<'py, PyTuple>, Py<CallAnswer>);
 type Unhanded = (Prepare, Give, Unanswered);
 
 /// A call for a daemon thread to make.
+///
+/// Its fields drop in order, `give` last: a call dropped unanswered has let go of the spare it
+/// carried before its caller is told.
 struct Call {
     prepare: Prepare,
-    give: Give,
     /// The daemon thread it was handed to, put back once its answer is read.
     daemon: Daemon,
     /// The daemon thread to start before the call is made, where it took the last idle one.
     spare: Option<(Daemon, Waiting)>,
+    give: Give,
 }
 
 /// What a daemon thread does once a call has let go of what it held: it goes back on the pool,
@@ -100,36 +103,41 @@ static IDLE: Mutex<Idle> = Mutex::new(Idle {
 /// lock, which a forked child may find held by a thread its parent had.
 static STARTED: AtomicU32 = AtomicU32::new(0);
 
-/// How long a process that has started no daemon thread waits for the pool's lock: a lock held
-/// as its parent forked is never released.
+/// How long a process that has started no daemon thread waits for the pool's lock, which a
+/// concurrent first start holds a moment: one held as its parent forked is never released.
 const CLAIM: Duration = Duration::from_secs(1);
 
 /// What a caller is told where this process has started no daemon thread.
 const NONE_STARTED: &str = "no daemon thread was started in this process";
 
 /// Hands a call to the daemon thread that went idle last, giving it a spare to start where it was
-/// the last.
+/// the last; one that is gone, a spare whose start failed after another was queued on it, is let
+/// go and the next taken.
 fn handed(prepare: Prepare, give: Give) -> Result<(), Unhanded> {
     let mut idle = IDLE.lock();
-    let Some(daemon) = idle.daemons.pop() else {
-        let why = idle.unstarted.clone();
-        let why = why.unwrap_or_else(|| NONE_STARTED.to_owned());
-        return Err((prepare, give, Unanswered::Started(why)));
-    };
-    let spare = idle.daemons.is_empty().then(mpsc::unbounded_channel);
-    let kept = spare.as_ref().map(|(sender, _)| sender.clone());
-    let call = Call {
-        prepare,
-        give,
-        daemon: daemon.clone(),
-        spare,
-    };
-    if let Err(unsent) = daemon.send(call) {
-        let Call { prepare, give, .. } = unsent.0;
-        return Err((prepare, give, Unanswered::Thread));
+    let (mut prepare, mut give) = (prepare, give);
+    loop {
+        let Some(daemon) = idle.daemons.pop() else {
+            let why = idle.unstarted.clone();
+            let why = why.unwrap_or_else(|| NONE_STARTED.to_owned());
+            return Err((prepare, give, Unanswered::Started(why)));
+        };
+        let spare = idle.daemons.is_empty().then(mpsc::unbounded_channel);
+        let kept = spare.as_ref().map(|(sender, _)| sender.clone());
+        let call = Call {
+            prepare,
+            give,
+            daemon: daemon.clone(),
+            spare,
+        };
+        match daemon.send(call) {
+            Ok(()) => {
+                idle.daemons.extend(kept);
+                return Ok(());
+            }
+            Err(unsent) => (prepare, give) = (unsent.0.prepare, unsent.0.give),
+        }
     }
-    idle.daemons.extend(kept);
-    Ok(())
 }
 
 /// Puts `daemon` back on top of the pool, idle.
@@ -146,17 +154,21 @@ fn unstarted(spare: &Daemon, why: String) {
 
 /// Makes the pool process `pid`'s, forgetting a parent's copy unread; false where its lock stays
 /// held, as by a thread a fork left behind.
-fn claimed(pid: u32) -> bool {
-    let Some(mut idle) = IDLE.try_lock_for(CLAIM) else {
-        return false;
-    };
-    if idle.pid != pid {
-        // Their channels may be mid-change on a thread the fork left behind: never touched.
-        mem::forget(mem::take(&mut idle.daemons));
-        idle.pid = pid;
-        idle.unstarted = None;
-    }
-    true
+///
+/// It waits for the lock with the GIL released, since a daemon thread takes it holding the GIL.
+fn claimed(py: Python<'_>, pid: u32) -> bool {
+    py.detach(|| {
+        let Some(mut idle) = IDLE.try_lock_for(CLAIM) else {
+            return false;
+        };
+        if idle.pid != pid {
+            // Their channels may be mid-change on a thread the fork left behind: never touched.
+            mem::forget(mem::take(&mut idle.daemons));
+            idle.pid = pid;
+            idle.unstarted = None;
+        }
+        true
+    })
 }
 
 /// Puts `daemon`, started in process `pid`, on the pool, which callers there use from now on.
@@ -306,7 +318,7 @@ pub(crate) fn ready(py: Python<'_>) -> Result<(), Unanswered> {
     if STARTED.load(Ordering::Acquire) == pid {
         return Ok(());
     }
-    if !claimed(pid) {
+    if !claimed(py, pid) {
         return Err(Unanswered::Started(
             "the process was forked while its parent handed a call over: start it with \
              multiprocessing's spawn or forkserver method"
