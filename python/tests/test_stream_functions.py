@@ -1325,6 +1325,41 @@ def test_an_async_read_s_notices_leave_its_event_loop_running_while_the_engine_i
     assert _routed(reading) == expected
 
 
+def test_a_notice_said_as_an_async_read_closes_reaches_the_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_native, "Notice", _Notice)
+    held: list[asyncio.Task[None]] = []
+
+    class Closing(AsyncIterator[object]):
+        """Yields one row, and replans as it is closed, the engine full until a little after."""
+
+        def __init__(self, ctx: StreamContext, engine: _Engine) -> None:
+            self._ctx = ctx
+            self._engine = engine
+            self._read = False
+
+        async def __anext__(self) -> object:
+            if self._read:
+                raise StopAsyncIteration
+            self._read = True
+            self._engine.room = True
+            return {"n": 1}
+
+        async def aclose(self) -> None:
+            self._engine.room = False
+            self._ctx.replan()
+
+            async def giving() -> None:
+                for _ in range(3):
+                    await asyncio.sleep(0)
+                self._engine.room = True
+
+            held.append(asyncio.create_task(giving()))
+
+    assert _routed(Closing) == [{"n": 1}, ("replan",)]
+
+
 def test_an_async_read_s_notices_said_after_its_last_yield_are_sent_before_it_ends(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

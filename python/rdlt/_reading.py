@@ -209,11 +209,12 @@ async def pushed(opened: AsyncIterable[object], out: Out, context: object) -> No
             async for item in iterator:
                 if not await router.yielded(item):
                     return
-            await router.sent()
         finally:
             aclose = getattr(iterator, "aclose", None)
             if aclose is not None:
                 await aclose()
+        # A read that ended well sends all it said, what its cleanup said among it.
+        await router.sent()
     finally:
         router.stop()
         _ROUTER.reset(token)
