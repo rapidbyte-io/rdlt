@@ -119,9 +119,10 @@ given. A host enforces that only where it closes each of these:
     error kept as its cause).
   - The network grant shares the host's network namespace: every interface and route, the
     host's loopback services and the abstract Unix sockets of that namespace. It gives the
-    connector, read only and as they were when it started, the host's files that resolve names
-    and its stores of trusted certificate authorities, without which a granted connector could
-    reach an address but not resolve a name or verify a TLS server. Bubblewrap can
+    connector, read only, the host's files that resolve names and its stores of trusted
+    certificate authorities, without which a granted connector could reach an address but not
+    resolve a name or verify a TLS server. A change the host makes in one shows; a file the host
+    replaces with another keeps the copy the connector started with. Bubblewrap can
     give a connector its own namespace with no route at all, or the host's; a namespace with
     only external routes needs a user-mode network stack and is not offered.
   - Outside Linux there is no sandbox (`sandbox_unsupported`): untrusted connectors run
