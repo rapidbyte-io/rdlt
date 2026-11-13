@@ -48,10 +48,11 @@ fn a_draw_does_not_depend_on_proptests_environment() {
             command.env("PROPTEST_MAX_LOCAL_REJECTS", rejects);
         }
         let output = String::from_utf8(command.output().unwrap().stdout).unwrap();
+        // Running one test at a time, libtest names the test on the line the draw is printed on.
         output
             .lines()
-            .find(|line| line.starts_with("DRAW "))
-            .map(ToOwned::to_owned)
+            .find_map(|line| line.split_once("DRAW "))
+            .map(|(_, drawn)| drawn.to_owned())
     };
     let drawn_alone = drawn(None);
     assert!(drawn_alone.is_some());
