@@ -10,6 +10,13 @@ from rdlt.connector._capabilities import (
     SchemaChanges,
     WriteModes,
 )
+from rdlt.connector._changes import (
+    OP_COLUMN,
+    SEQ_COLUMN,
+    UNCHANGED_COLUMN,
+    ChangeOp,
+    changes,
+)
 from rdlt.connector._config import Config
 from rdlt.connector._context import (
     Exclusion,
@@ -51,11 +58,15 @@ __all__ = [
     "COLUMN_MISSING",
     "COMMIT_STALE",
     "CURSOR_UNISSUED",
+    "OP_COLUMN",
     "RETENTION_LOST",
     "SCHEMA_CONFLICT",
+    "SEQ_COLUMN",
     "TABLE_OWNED",
+    "UNCHANGED_COLUMN",
     "Answer",
     "Capabilities",
+    "ChangeOp",
     "Checkpointing",
     "Config",
     "ConnectContext",
@@ -90,6 +101,7 @@ __all__ = [
     "WriteStats",
     "acknowledging_source_factory",
     "answer",
+    "changes",
     "checkpoint",
     "destination",
     "readable_destination_factory",

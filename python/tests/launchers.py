@@ -51,6 +51,11 @@ def numbers_launcher(directory: Path) -> Path:
     return launcher(directory, "numbers", "Numbers")
 
 
+def changelog_launcher(directory: Path) -> Path:
+    """A launcher serving the change log source, in `directory`, a directory of its own."""
+    return launcher(directory, "changelog", "Changelog")
+
+
 def tables_launcher(directory: Path) -> Path:
     """A launcher serving the tables source, in `directory`, a directory of its own."""
     return launcher(directory, "tables", "Tables")

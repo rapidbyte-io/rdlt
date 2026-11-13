@@ -10,9 +10,13 @@ __all__ = [
     "COMMIT_STALE",
     "CURSOR_UNISSUED",
     "HOST_CODES",
+    "OP_COLUMN",
     "RETENTION_LOST",
     "SCHEMA_CONFLICT",
+    "SEQ_COLUMN",
     "TABLE_OWNED",
+    "UNCHANGED_COLUMN",
+    "Changes",
     "Checkpoint",
     "DestinationFactory",
     "Events",
@@ -42,6 +46,9 @@ SCHEMA_CONFLICT: str
 COLUMN_MISSING: str
 RETENTION_LOST: str
 CURSOR_UNISSUED: str
+OP_COLUMN: str
+SEQ_COLUMN: str
+UNCHANGED_COLUMN: str
 
 class _StreamName(Protocol):
     @property
@@ -107,6 +114,10 @@ class Pipeline:
 @final
 class Checkpoint:
     def __new__(cls, cursor: str) -> Checkpoint: ...
+
+@final
+class Changes:
+    def __new__(cls, batch: object) -> Changes: ...
 
 @final
 class StreamContext:

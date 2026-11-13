@@ -64,6 +64,7 @@ fn rows_batches_and_checkpoints_arrive_in_the_order_they_were_yielded() {
             .map(|pushed| match pushed {
                 Pushed::Json(_) => "json",
                 Pushed::Batch(_) => "batch",
+                Pushed::Changes(_) => "changes",
                 Pushed::Checkpoint(_) => "checkpoint",
                 Pushed::Replan => "replan",
                 Pushed::Behind { .. } => "behind",
@@ -613,6 +614,34 @@ fn an_async_send_answers_at_once_and_the_runtime_sends_what_found_no_room() {
     });
 }
 
+#[test]
+fn an_async_send_of_a_change_stream_sends_each_batch_as_changes_as_room_comes() {
+    embedded::with(|py| {
+        let (out, mut received) = out_of_one();
+        let watched = out.watched().unwrap();
+        let globals = pyo3::types::PyDict::new(py);
+        let code = c"import pyarrow as pa, rdlt._native as n
+def changed(key):
+    return pa.record_batch({'id': [key], '_rdlt_op': pa.array([0], pa.int8()),
+                            '_rdlt_seq': pa.array([bytes(16)], pa.binary(16))})
+item = n.Changes(pa.Table.from_batches([changed(key) for key in range(3)]))
+";
+        py.run(code, Some(&globals), None).unwrap();
+        let item = globals.get_item("item").unwrap();
+
+        assert_eq!(out.send(py, &item), None, "the second batch waits for room");
+        assert_eq!(taken(py, &mut received), Some("changes"));
+        assert!(readable(py, watched, 5), "the second batch was sent");
+        out.woken();
+        assert_eq!(out.resume(py), None, "the third batch waits for room");
+        assert_eq!(taken(py, &mut received), Some("changes"));
+        assert!(readable(py, watched, 5), "the third batch was sent");
+        out.woken();
+        assert_eq!(out.resume(py), Some(true), "the whole item was sent");
+        assert_eq!(taken(py, &mut received), Some("changes"));
+    });
+}
+
 /// What a push holds in the tests whose rows span several pushes: one row of theirs, not two.
 const ROW_A_PUSH: JsonLimits = JsonLimits {
     push_bytes: 64,
@@ -699,6 +728,7 @@ fn kind(pushed: &Pushed) -> &'static str {
     match pushed {
         Pushed::Json(_) => "json",
         Pushed::Batch(_) => "batch",
+        Pushed::Changes(_) => "changes",
         Pushed::Checkpoint(_) => "checkpoint",
         Pushed::Replan => "replan",
         Pushed::Behind { .. } => "behind",

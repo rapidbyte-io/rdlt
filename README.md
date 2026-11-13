@@ -325,6 +325,10 @@ Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, ben
   phases, as a CDC snapshot and then its changes, answers a whole `PartitionPlan(partitions,
   phase=, starts=)` from `plan=` instead, each start a cursor of its type, which Rust checks as it
   checks a Rust stream's plan.
+- **Change batches.** A stream read as changes, `read_modes=[rdlt.ReadMode.CDC]`, yields
+  `changes(batch)`, Arrow data with Rust's `OP_COLUMN` of `ChangeOp`s, `SEQ_COLUMN` of positions
+  and, where an update leaves columns unchanged, `UNCHANGED_COLUMN`, as a Rust read's
+  `Emitter::changes` pushes one; the engine checks it where it reads it, as a Rust source's.
 - **The context.** A read that names `ctx` is told what a Rust read's `Emitter` says: its
   `partition`, whether it `follows` and `resumes`, the columns its stream `excluded`, an
   `Exclusion`, the `Limits` it keeps within, whether a checkpoint is due and whether it was
