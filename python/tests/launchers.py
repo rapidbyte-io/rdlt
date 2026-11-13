@@ -51,6 +51,11 @@ def numbers_launcher(directory: Path) -> Path:
     return launcher(directory, "numbers", "Numbers")
 
 
+def tables_launcher(directory: Path) -> Path:
+    """A launcher serving the tables source, in `directory`, a directory of its own."""
+    return launcher(directory, "tables", "Tables")
+
+
 def pysqlite_launcher(directory: Path) -> Path:
     """A launcher serving the sqlite3 destination, in `directory`, a directory of its own."""
     return launcher(directory, "pysqlite", "PySqlite")

@@ -68,23 +68,37 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   needs no lock of its own. Its configuration is a pydantic model, whose refusals name the field,
   the fault and the kind of value, never the value.
 - **One way to write a source, in the Rust SDK's words.** `rdlt.connector` names what the Rust SDK
-  names, in Python's case: `ConnectorError` and its kinds, `RateLimited`'s `retry_after`, a
-  `ReadStream` that `@stream` makes, its `Partition`s, planned from its `StreamState` and
-  `PartitionState`s, `committed`, `acknowledged` and `replayable`, a source's `acknowledged`,
-  `Cursor` and a stream's `cursor_version`, `checkpoint`, the `ConnectContext` a connector's
-  `__init__` takes where it names one, a destination's `capabilities()` answering its
-  `Capabilities`, `OpenContext`, `WriteStats` and `Fence`, the failure codes, such as
-  `COMMIT_STALE`, and `serve`'s `args`. Where Python differs, the language makes it: decorators for
-  attributes, exceptions for `Result`, named as exceptions are, so `InvalidConfig`, `Unauthorized`
-  and `InvalidData` are the kinds Rust calls `Config`, `Auth` and `Data`, generators for an emitter,
-  and a `StreamContext`, with its `Exclusion`, `Limits` and `Headroom`, for what a Rust read is told
-  by its partition and asks its emitter, given where a read names `ctx`, as a `partitions` is given
-  the `StreamState` where it names `state`. How a stream's rows land is the pipeline's to say, as
-  for a Rust source. `@stream` makes a function a stream as it makes a method one, under the same
-  rules, so a function moves into a `@source` class taking `self`, as its `partitions=` and
-  `committed=` callables then do too. A pipeline reads its stream functions in process, as the
-  streams of one source, `io.rapidbyte.functions`, which has no configuration, and is not served,
-  installed or certified: a stream that needs those is a class's.
+  names, in Python's case: `ConnectorError` and its kinds, `RateLimited`'s `retry_after`, a source's
+  `streams()`, answering the `ReadStream`s its connection offers, and `discover()`, answering its
+  catalog's `StreamSpec`s, each stream's spec with its `Checkpointing`, a `schema`, `read_modes`, a
+  `change_time` and a name within a namespace, a `StreamName`, its `Partition`s, planned from its
+  `StreamState` and `PartitionState`s, or a `PartitionPlan` of phases, `committed`, `acknowledged`
+  and `replayable`, a source's `acknowledged`, `Cursor` and a stream's `cursor_version`,
+  `checkpoint`, the `ConnectContext` a connector's `__init__` takes where it names one, a
+  destination's `capabilities()` answering its `Capabilities`, `OpenContext`, `WriteStats` and
+  `Fence`, the failure codes, such as `COMMIT_STALE`, and `serve`'s `args`. Where Python differs,
+  the language makes it: decorators for attributes, so `stream(...)` is called at run time to make a
+  stream `streams()` answers, keywords for a builder's methods, exceptions for `Result`, named as
+  exceptions are, so `InvalidConfig`, `Unauthorized` and `InvalidData` are the kinds Rust calls
+  `Config`, `Auth` and `Data`, generators for an emitter, and a `StreamContext`, with its
+  `Exclusion`, `Limits` and `Headroom`, for what a Rust read is told by its partition and asks its
+  emitter, given where a read names `ctx`, as a `partitions` or `plan` is given the `StreamState`
+  where it names `state`. A stream without a cursor is read in full alone, since Python's cursor is
+  optional and Rust's is not. A stream's schema is any Arrow schema, read through the C Data
+  Interface, so no one Arrow library is required, and refused where it is declared where Rust has no
+  table schema for it. Rust checks what a source answers as it checks a Rust source's, so a catalog
+  or a plan is refused with Rust's own error and code. How a stream's rows land is the pipeline's to
+  say, as for a Rust source. `@stream` makes a function a stream as it makes a method one, under the
+  same rules, so a function moves into a `@source` class taking `self`, as its `partitions=`,
+  `plan=` and `committed=` callables then do too. A pipeline reads its stream functions in process,
+  as the streams of one source, `io.rapidbyte.functions`, which has no configuration, and is not
+  served, installed or certified: a stream that needs those is a class's.
+- **A class's streams are one answer.** Its `@stream` methods are its `streams()` written as
+  declarations, so a class has one or the other, and one with both is refused where it is
+  declared. `streams()` is asked once a connection, as the Rust SDK assembles a connection's
+  streams, and a stream it answers is called as it is, its bound methods and closures holding what
+  they call; the placement keeps those streams beside the instance, and the native side reaches
+  them weakly, as it reaches the instance.
 - **The engine ends a Python stream's read** as it ends any source's, since only the engine knows
   the read mode (ADR 0004, ADR 0024). A stream that declares no partitions reads
   `Partition.single()`, which never ends, as a `Partition(id, unbounded=True)` it declares does: a
@@ -118,25 +132,25 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   unobserved fails its test. Given a connector's id and endpoint and the host's TLS, they certify
   the connector listening there over mutual TLS, as rdlt-certify's listening target does.
 - **User Python has only Python beneath it.** Every function of a user's that Rust calls, a
-  generator's `next`, a source's `check`, a stream's `partitions`, `committed` and `acknowledged`, a
-  destination's methods and its sessions' and table writers', a secret store, a transform, runs on a
-  daemon thread Python started, running `rdlt/_reading.py`, never on a thread with Rust frames
-  beneath the call. Each call, a partition's read among them, is made on one of the process's daemon
-  threads: the one that went idle last, which has the call to itself, since a worker runs many tasks
-  and one that never returns must not hold up the rest. Each call starts in a context of its own, as
-  on a fresh thread. Thread-local state, by contrast, is the thread's, as in any pool. A call that
-  takes the last idle one has it start another before it calls, so no caller waits for a thread to
-  start. A daemon thread lets go of what a call held, goes back on the pool and then hands the
-  answer over, and none ever ends, so none is tearing down when the process exits: a user's
-  `SystemExit` or `KeyboardInterrupt` is its call's answer, and a thread a bug of rdlt's own escapes
-  answers the call it held and waits for good. Only threads Python owns start them: the thread that
-  first asks for the runtime or serves, and the daemon threads themselves, each saying as text where
-  one did not start. A child forked from a process that had started its own starts afresh. The
-  caller holds no GIL and touches nothing of Python's: it hands the call over as closures, the
-  daemon thread builds its arguments and reads its answer, and the batches a transform or a table
-  writer takes, a transform answers and a destination reads back are imported and exported in
-  Python, since pyarrow releases the GIL in both. `rdlt._reading` is imported when the package
-  loads, so no thread imports under Rust.
+  generator's `next`, a source's `check`, `streams` and `discover`, a stream's `partitions`, `plan`,
+  `committed` and `acknowledged`, a destination's methods and its sessions' and table writers', a
+  secret store, a transform, runs on a daemon thread Python started, running `rdlt/_reading.py`,
+  never on a thread with Rust frames beneath the call. Each call, a partition's read among them, is
+  made on one of the process's daemon threads: the one that went idle last, which has the call to
+  itself, since a worker runs many tasks and one that never returns must not hold up the rest. Each
+  call starts in a context of its own, as on a fresh thread. Thread-local state, by contrast, is the
+  thread's, as in any pool. A call that takes the last idle one has it start another before it
+  calls, so no caller waits for a thread to start. A daemon thread lets go of what a call held, goes
+  back on the pool and then hands the answer over, and none ever ends, so none is tearing down when
+  the process exits: a user's `SystemExit` or `KeyboardInterrupt` is its call's answer, and a thread
+  a bug of rdlt's own escapes answers the call it held and waits for good. Only threads Python owns
+  start them: the thread that first asks for the runtime or serves, and the daemon threads
+  themselves, each saying as text where one did not start. A child forked from a process that had
+  started its own starts afresh. The caller holds no GIL and touches nothing of Python's: it hands
+  the call over as closures, the daemon thread builds its arguments and reads its answer, and the
+  batches a transform or a table writer takes, a transform answers and a destination reads back are
+  imported and exported in Python, since pyarrow releases the GIL in both. `rdlt._reading` is
+  imported when the package loads, so no thread imports under Rust.
 - **Four cases run under Rust, and are accepted.** Methods of what a generator yields run inside
   `push` with its Rust frames beneath them: a value's `isoformat` and a UUID's `__str__`, a `list`
   subclass's `__iter__`, `__getattr__` through `hasattr`, a producer's `__arrow_c_array__` and

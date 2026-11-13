@@ -10,7 +10,7 @@ fn a_python_source_s_certification_reports_every_clause_in_its_listed_order() {
     embedded::with(|py| {
         let made = py
             .eval(
-                c"__import__('rdlt.connector._source', fromlist=['placed']).placed(__import__('tests.connectors.tickets', fromlist=['Tickets']).Tickets)",
+                c"__import__('rdlt.connector._placed', fromlist=['placed']).placed(__import__('tests.connectors.tickets', fromlist=['Tickets']).Tickets)",
                 None,
                 None,
             )

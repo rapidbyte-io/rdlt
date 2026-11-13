@@ -120,6 +120,24 @@ class ErrorReport:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class StreamName:
+    """A stream by its identity, its name within its namespace, as the Rust SDK's `StreamName`.
+
+    A source names a stream of a database schema so, and a reset names one neither the pipeline
+    nor the catalog holds now. It shows as `namespace.name`, or its name where it has none.
+    """
+
+    name: str
+    """The stream's name, within its namespace."""
+    namespace: str | None = None
+    """Its namespace, such as a database schema; `None` for a stream without one."""
+
+    def __str__(self) -> str:
+        """The stream as a catalog shows it, `namespace.name`."""
+        return self.name if self.namespace is None else f"{self.namespace}.{self.name}"
+
+
 class ReadMode(enum.StrEnum):
     """How a stream is read."""
 

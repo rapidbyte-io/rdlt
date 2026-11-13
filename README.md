@@ -208,14 +208,14 @@ compiler the [quick start](#quick-start) names:
 pip install "rdlt @ git+https://github.com/rapidbyte-io/rdlt"
 ```
 
-[`python/examples/quickstart.py`](python/examples/quickstart.py), which a test runs, loads a
-Python function's rows into SQLite through the reference SQLite connector, installed as
-[From the command line](#from-the-command-line) shows. `@rdlt.connector.stream` makes a function
-a stream, as it makes a connector class's method one: it yields rows, as dicts or lists of them,
-Arrow batches or anything that exports Arrow, and checkpoints, each the cursor a run resumes from
-once the rows before it are committed. A pipeline reads its stream functions in process, as the
-streams of one source, `io.rapidbyte.functions`; moved into a `@source` class, a function takes
-`self`, as its `partitions=` and `committed=` callables then do too. How a stream's rows land is the
+[`python/examples/quickstart.py`](python/examples/quickstart.py), which a test runs, loads a Python
+function's rows into SQLite through the reference SQLite connector, installed as [From the command
+line](#from-the-command-line) shows. `@rdlt.connector.stream` makes a function a stream, as it makes
+a connector class's method one: it yields rows, as dicts or lists of them, Arrow batches or anything
+that exports Arrow, and checkpoints, each the cursor a run resumes from once the rows before it are
+committed. A pipeline reads its stream functions in process, as the streams of one source,
+`io.rapidbyte.functions`; moved into a `@source` class, a function takes `self`, as its
+`partitions=`, `plan=` and `committed=` callables then do too. How a stream's rows land is the
 pipeline's to say, as for any source: `rdlt.stream("users", write=rdlt.merge("id"))`. A stream that
 declares no partitions reads one that never ends, as a Rust source's does, and so does a
 `Partition(id, unbounded=True)` a stream declares: read `full`, everything it yields lands; read
@@ -306,10 +306,25 @@ Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, ben
   says its streams tell where they stand outside the engine, as a consumer group's committed
   offset does, each with its `acknowledged=`, which certification's `S-ACK` checks moves only in
   `committed=`.
+- **Streams found at run time.** A source class's `streams()` answers the streams its connection
+  offers, as a Rust source's does, each made by calling `stream(...)` at run time on a bound method
+  or a closure: a database source offers one a table it finds, each with its own name, key, cursor,
+  schema and read. It is asked once a connection. Its `discover()`, where it has one, answers the
+  catalog, a `StreamSpec` a stream; by default the catalog is its streams' specs. A class answers
+  its streams one way: `streams()`, or its `@stream` methods. A pipeline selects streams found at
+  run time by name or pattern, as `rdlt.stream("*")`.
+- **What a stream says of itself.** `ReadStream.spec` is its `StreamSpec`, as a Rust stream's
+  `spec()` is: its name, or a `rdlt.StreamName` within a namespace, such as a database schema; its
+  `schema=`, any Arrow schema, anything with `__arrow_c_schema__`, refused where it is declared
+  where Rust has no table schema for it, as an interval or a union; its `read_modes=`, full and
+  incremental where it has a cursor unless given; and its `change_time=` column.
 - **Partitions.** A stream's `partitions` may answer a `Partition(id, unbounded=True)` that never
   ends, which `ctx.partition` then names. Where it names `state`, it is told the stream's
   committed `StreamState`: its phase, each partition's cursor or `PartitionState.DONE`, the
-  `generation` of the full read in progress and the full reads `completed`.
+  `generation` of the full read in progress and the full reads `completed`. A stream read in
+  phases, as a CDC snapshot and then its changes, answers a whole `PartitionPlan(partitions,
+  phase=, starts=)` from `plan=` instead, each start a cursor of its type, which Rust checks as it
+  checks a Rust stream's plan.
 - **The context.** A read that names `ctx` is told what a Rust read's `Emitter` says: its
   `partition`, whether it `follows` and `resumes`, the columns its stream `excluded`, an
   `Exclusion`, the `Limits` it keeps within, whether a checkpoint is due and whether it was

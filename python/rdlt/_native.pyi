@@ -30,6 +30,7 @@ __all__ = [
     "clauses",
     "minimal_capabilities",
     "serve",
+    "table_schema",
     "unreadable_capabilities",
 ]
 
@@ -135,13 +136,13 @@ class Notice:
 class _Stream(Protocol):
     @property
     def spec(self) -> str: ...
-    def partitions(
+    def plan(
         self,
         phase: int,
         positions: Sequence[tuple[str, bool, str | None]],
         generation: int | None,
         completed: Sequence[int],
-    ) -> Sequence[tuple[str, bool]]: ...
+    ) -> tuple[int | None, Sequence[tuple[str, bool]], Sequence[tuple[str, str]]]: ...
     def committed(self, cursors: Sequence[tuple[str, str | None]]) -> None: ...
     def acknowledged(self, partition: str) -> str | None: ...
     def read(self, partition: str, cursor: str | None, context: StreamContext) -> object: ...
@@ -149,6 +150,8 @@ class _Stream(Protocol):
 class _Connected(Protocol):
     @property
     def streams(self) -> Sequence[_Stream]: ...
+    @property
+    def discovers(self) -> bool: ...
     def check(self) -> None: ...
 
 @final
@@ -228,6 +231,7 @@ def serve(
     source: tuple[SourceFactory, bool] | None,
     destination: tuple[DestinationFactory, bool] | None,
 ) -> str | None: ...
+def table_schema(capsule: object) -> str: ...
 def clauses(role: str) -> list[tuple[str, str]]: ...
 def certify_source(
     source: SourceFactory | tuple[str, str, _Tls],

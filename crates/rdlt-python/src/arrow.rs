@@ -11,7 +11,8 @@ use arrow_pyarrow::FromPyArrow as _;
 use arrow_schema::{ArrowError, Schema};
 use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyAnyMethods as _, PyCapsule, PyTuple};
-use pyo3::{Bound, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
+use pyo3::{Bound, Py, PyAny, PyErr, Python, intern, pyclass, pyfunction, pymethods};
+use rdlt_connector::TableSchema;
 
 /// What a Python object holds of Arrow.
 pub(crate) enum Produced {
@@ -112,6 +113,34 @@ pub(crate) fn imported<'py, T>(
     let capsules = PyTuple::new(py, [schema, array])?;
     let producer = Bound::new(py, Exported(capsules.into_any().unbind()))?;
     read(producer.as_any())
+}
+
+/// A schema's capsule, as a C Data Interface producer that answers it: arrow-pyarrow reads it with
+/// no method of the schema's, and none of pyarrow's, run beneath Rust.
+#[pyclass(module = "rdlt._native", name = "ExportedSchema", frozen)]
+struct ExportedSchema(Py<PyAny>);
+
+#[pymethods]
+impl ExportedSchema {
+    fn __arrow_c_schema__<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+        self.0.bind(py).clone()
+    }
+}
+
+/// The engine's table schema, as JSON, of the Arrow schema in `capsule`, which a schema's
+/// `__arrow_c_schema__` answered in Python.
+///
+/// # Errors
+///
+/// `ValueError` where the schema has no table schema equivalent, as Rust's `from_arrow` says, or
+/// what arrow-pyarrow raises of a capsule that holds no schema.
+#[pyfunction]
+pub(crate) fn table_schema(capsule: &Bound<'_, PyAny>) -> Result<String, PyErr> {
+    let producer = Bound::new(capsule.py(), ExportedSchema(capsule.clone().unbind()))?;
+    let schema = Schema::from_pyarrow_bound(producer.as_any())?;
+    let table = TableSchema::from_arrow(&schema)
+        .map_err(|refused| PyValueError::new_err(refused.to_string()))?;
+    Ok(serde_json::to_string(&table).expect("a table schema serializes"))
 }
 
 /// The schema a `pyarrow.Schema` describes.

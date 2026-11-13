@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from rdlt import _native
 from rdlt._pipeline import Connector
 from rdlt._transform import Transform
-from rdlt.connector import _destination, _source
+from rdlt.connector import _destination, _placed
 from rdlt.host import Tls
 from rdlt.model import Json
 
@@ -116,7 +116,7 @@ def certify_source(
             "source", lambda: _native.certify_source(listening, json.dumps(config), launcher)
         )
     _served(connector, remote)
-    made, placement = _source.placed(connector)
+    made, placement = _placed.placed(connector)
     return Certification(
         "source", lambda: _native.certify_source(made, json.dumps(config), launcher), placement
     )

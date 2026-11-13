@@ -11,8 +11,8 @@ from typing import cast
 from rdlt import _native
 from rdlt.connector._destination import declares as declares_destination
 from rdlt.connector._destination import placed as placed_destination
+from rdlt.connector._placed import placed as placed_source
 from rdlt.connector._source import declares as declares_source
-from rdlt.connector._source import placed as placed_source
 
 
 @dataclass(frozen=True, slots=True)

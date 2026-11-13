@@ -2,10 +2,12 @@
 //! each partition on a daemon thread it holds while it reads.
 
 pub(crate) mod context;
+mod described;
 pub(crate) mod partition;
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,10 +15,10 @@ use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyAnyMethods as _, PyTuple};
 use pyo3::{Bound, IntoPyObject as _, Py, PyAny, PyErr, Python, pyclass, pymethods};
 use rdlt_connector::{
-    BoxFuture, Checkpointing, ConnectContext, ConnectorError, ConnectorId, ConnectorSpec, Emitter,
-    Partition, PartitionId, PartitionState, ReadMode, ReadStream, Result, ResultExt as _,
-    SourceConnector, SourceFactory, StreamName, StreamSpec, StreamState, Streams,
-    acknowledging_source_factory_from, source_factory_from,
+    BoxFuture, Catalog, ConnectContext, ConnectorError, ConnectorId, ConnectorSpec, Emitter,
+    Partition, PartitionId, PartitionPlan, PartitionState, ReadStream, Result, SourceConnector,
+    SourceFactory, StreamName, StreamSpec, StreamState, Streams, acknowledging_source_factory_from,
+    source_factory_from,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -25,6 +27,7 @@ use crate::calls;
 use crate::errors::Failure;
 use crate::json::JsonLimits;
 use context::{NativeStreamContext, Told};
+use described::{Declared, DeclaredSpec, Planned, plan_of, read_as};
 use partition::{Pushed, Reading};
 
 /// How often a read that is waiting on its generator looks whether a checkpoint came due.
@@ -61,38 +64,14 @@ pub(crate) async fn called<T: Send + 'static>(
     })?
 }
 
-/// What a Python stream says of itself, as its `spec` answers it.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "the JSON a stream says itself in, each flag a property of its own"
-)]
-struct Declared {
-    name: String,
-    primary_key: Option<Vec<String>>,
-    read_modes: Vec<ReadMode>,
-    checkpointing: Checkpointing,
-    partitioned: bool,
-    /// Whether its partitions are told where each partition stands.
-    stated: bool,
-    replayable: bool,
-    /// Whether the stream is told which of its cursors are committed.
-    committed: bool,
-    /// Whether the stream tells where it stands outside the engine.
-    acknowledged: bool,
-    /// The format of the stream's cursors.
-    cursor_version: u16,
-}
-
 /// One stream of a Python source.
 #[derive(Clone)]
 #[expect(clippy::struct_excessive_bools, reason = "the flags its spec says")]
 pub(crate) struct PythonStream {
     spec: StreamSpec,
     stream: Arc<Py<PyAny>>,
-    partitioned: bool,
-    /// Whether its `partitions` is told where each partition stands.
+    planned: bool,
+    /// Whether its plan is told where each partition stands.
     stated: bool,
     committed: bool,
     acknowledged: bool,
@@ -101,24 +80,11 @@ pub(crate) struct PythonStream {
 
 impl PythonStream {
     fn declared(declared: &str, stream: Py<PyAny>) -> Result<Self> {
-        let declared: Declared = serde_json::from_str(declared).map_err(|error| {
-            ConnectorError::internal(format!(
-                "a Python stream described itself in JSON rdlt cannot read: {error}"
-            ))
-        })?;
-        let name =
-            StreamName::new(&declared.name).config(format!("stream name {:?}", declared.name))?;
-        let mut spec = StreamSpec::new(name)
-            .with_read_modes(declared.read_modes)
-            .with_checkpointing(declared.checkpointing)
-            .with_replayable(declared.replayable);
-        if let Some(key) = &declared.primary_key {
-            spec = spec.with_primary_key(key.iter().map(String::as_str));
-        }
+        let declared: Declared = read_as(declared, "a Python stream described itself")?;
         Ok(Self {
-            spec,
+            spec: declared.spec.spec()?,
             stream: Arc::new(stream),
-            partitioned: declared.partitioned,
+            planned: declared.planned,
             stated: declared.stated,
             committed: declared.committed,
             acknowledged: declared.acknowledged,
@@ -154,6 +120,11 @@ type Position = (String, bool, Option<String>);
 pub(crate) struct PythonSource {
     connected: Arc<Py<PyAny>>,
     streams: Vec<PythonStream>,
+    /// The format of each stream's cursors, by its name, which the SDK asks of each stream as it
+    /// assembles them.
+    versions: BTreeMap<StreamName, u16>,
+    /// Whether its class answers its catalog itself.
+    discovers: bool,
 }
 
 impl SourceConnector for PythonSource {
@@ -184,15 +155,35 @@ impl SourceConnector for PythonSource {
             .cloned()
             .fold(Streams::new(), Streams::with)
     }
+
+    /// The catalog its class answers, or, as the Rust SDK's own, its streams' specs; checked as
+    /// a Rust source's is.
+    async fn discover(&self) -> Result<Catalog> {
+        let specs = if self.discovers {
+            let connected = Arc::clone(&self.connected);
+            let answered: String = called(
+                "discovered",
+                move |py| (connected.clone_ref(py),).into_pyobject(py),
+                |answered| answered.extract(),
+            )
+            .await?;
+            let declared: Vec<DeclaredSpec> =
+                read_as(&answered, "a Python source said its catalog")?;
+            declared
+                .into_iter()
+                .map(DeclaredSpec::spec)
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            self.streams.iter().map(|held| held.spec.clone()).collect()
+        };
+        Catalog::new(specs).map_err(|invalid| ConnectorError::internal(invalid.to_string()))
+    }
 }
 
 impl PythonSource {
     /// The format of `stream`'s cursors, as the stream says it.
     fn cursor_version(&self, stream: &StreamName) -> Option<u16> {
-        self.streams
-            .iter()
-            .find(|held| held.spec.name() == stream)
-            .map(|held| held.cursor_version)
+        self.versions.get(stream).copied()
     }
 }
 
@@ -203,16 +194,12 @@ impl ReadStream<PythonSource> for PythonStream {
         self.spec.clone()
     }
 
-    async fn partitions(
-        &self,
-        _source: &PythonSource,
-        state: &StreamState,
-    ) -> Result<Vec<Partition>> {
-        if !self.partitioned {
-            return Ok(vec![Partition::single()]);
+    async fn plan(&self, _source: &PythonSource, state: &StreamState) -> Result<PartitionPlan> {
+        if !self.planned {
+            return Ok(PartitionPlan::from(vec![Partition::single()]));
         }
-        // A cursor is read only where the stream's `partitions` is told the state, as a Rust
-        // stream that ignores its state reads none.
+        // A cursor is read only where the stream's plan is told the state, as a Rust stream that
+        // ignores its state reads none.
         let positions = if self.stated {
             self.positions(state)?
         } else {
@@ -222,8 +209,8 @@ impl ReadStream<PythonSource> for PythonStream {
         let generation = state.generation.map(|generation| generation.0);
         let completed: Vec<u64> = state.completed.iter().map(|done| done.0).collect();
         let stream = Arc::clone(&self.stream);
-        let keys: Vec<(String, bool)> = called(
-            "partitions",
+        let planned: Planned = called(
+            "planned",
             move |py| {
                 let arguments = (
                     stream.clone_ref(py),
@@ -237,17 +224,7 @@ impl ReadStream<PythonSource> for PythonStream {
             |answered| answered.extract(),
         )
         .await?;
-        keys.iter()
-            .map(|(key, unbounded)| {
-                let id = PartitionId::parse(key).config(format!("partition {key:?}"))?;
-                let partition = Partition::new(id);
-                Ok(if *unbounded {
-                    partition.unbounded()
-                } else {
-                    partition
-                })
-            })
-            .collect()
+        plan_of(planned, self.spec.name(), self.cursor_version)
     }
 
     async fn committed(
@@ -365,19 +342,25 @@ async fn connected(
     config: serde_json::Value,
     host: Option<String>,
 ) -> Result<PythonSource> {
-    let (connected, declared) = called(
+    let (connected, declared, discovers) = called(
         "connected",
         move |py| (connect.clone_ref(py), config.to_string(), host).into_pyobject(py),
-        |answered| answered.extract::<(Py<PyAny>, Vec<(String, Py<PyAny>)>)>(),
+        |answered| answered.extract::<(Py<PyAny>, Vec<(String, Py<PyAny>)>, bool)>(),
     )
     .await?;
     let streams = declared
         .into_iter()
         .map(|(spec, stream)| PythonStream::declared(&spec, stream))
         .collect::<Result<Vec<_>>>()?;
+    let versions = streams
+        .iter()
+        .map(|held| (held.spec.name().clone(), held.cursor_version))
+        .collect();
     Ok(PythonSource {
         connected: Arc::new(connected),
         streams,
+        versions,
+        discovers,
     })
 }
 

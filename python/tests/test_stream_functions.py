@@ -38,6 +38,7 @@ from rdlt.connector import (
     PartitionState,
     ReadStream,
     StreamContext,
+    StreamSpec,
     StreamState,
     checkpoint,
     source,
@@ -535,9 +536,8 @@ def test_a_committed_start_is_told_as_the_cursor_a_read_starts_from() -> None:
 
     told: Told = []
     users = Stream(
-        "users",
+        StreamSpec("users"),
         read,
-        None,
         _Since,
         None,
         stated=False,
@@ -545,7 +545,6 @@ def test_a_committed_start_is_told_as_the_cursor_a_read_starts_from() -> None:
         acknowledged=None,
         cursor_version=1,
         takes_context=False,
-        replayable=True,
     )
     users.committed([("whole", None), ("whole", _Since(after=4).model_dump_json())])
     assert told == [("whole", -1), ("whole", 4)]
@@ -588,9 +587,8 @@ def test_a_stream_tells_where_it_stands_in_its_own_cursor_type_or_none() -> None
 
     standing: dict[str, object] = {"eu": _Since(after=3), "us": None, "asia": {"after": 3}}
     users = Stream(
-        "users",
+        StreamSpec("users"),
         read,
-        None,
         _Since,
         None,
         stated=False,
@@ -598,7 +596,6 @@ def test_a_stream_tells_where_it_stands_in_its_own_cursor_type_or_none() -> None
         acknowledged=lambda partition: cast("_Since | None", standing[partition]),
         cursor_version=1,
         takes_context=False,
-        replayable=True,
     )
     assert json.loads(users.acknowledged("eu") or "") == {"after": 3}
     assert users.acknowledged("us") is None
@@ -1549,7 +1546,7 @@ def test_a_run_s_reads_leave_threading_only_daemon_threads_that_wait_fewer_than_
         resources=rdlt.Resources(partitions=2),
     )
     assert built.build(host(tmp_path, connectors)).run().report.rows == 32
-    reading = f"rdlt-read-{read.name}"
+    reading = f"rdlt-read-{read.spec.name}"
     deadline = time.monotonic() + 30
     while (ended := ended_threads()) or any(t.name == reading for t in reading_threads()):
         assert time.monotonic() < deadline, f"threading holds {ended} and {reading_threads()}"

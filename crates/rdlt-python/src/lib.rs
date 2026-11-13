@@ -70,6 +70,7 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     module.add_class::<destination::NativeDestinationFactory>()?;
     module.add_class::<transform::NativeTransform>()?;
     module.add_function(pyo3::wrap_pyfunction!(serve::serve, module)?)?;
+    module.add_function(pyo3::wrap_pyfunction!(arrow::table_schema, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(
         destination::minimal_capabilities,
         module

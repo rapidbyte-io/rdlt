@@ -65,12 +65,15 @@ class Placement(Generic[_D]):
     class lives as long as its module and holds nothing of a connection.
     """
 
-    __slots__ = ("__weakref__", "connections", "declared")
+    __slots__ = ("__weakref__", "connections", "declared", "found")
 
     def __init__(self, declared: _D) -> None:
         self.declared = declared
         self.connections: weakref.WeakKeyDictionary[object, Any] = weakref.WeakKeyDictionary()
         """Each connection's instance, for as long as the native side holds that connection."""
+        self.found: weakref.WeakKeyDictionary[object, tuple[Any, ...]] = weakref.WeakKeyDictionary()
+        """The streams a source's connection found as it connected, which may hold its instance,
+        for as long as the native side holds that connection."""
 
 
 @functools.cache

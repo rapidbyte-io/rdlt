@@ -13,11 +13,11 @@ from typing import Literal, TypeAlias, cast
 
 from rdlt import _native
 from rdlt._transform import Transform, named_once
-from rdlt.connector import _destination, _source
+from rdlt.connector import _destination, _placed, _source
 from rdlt.connector._declared import Registered, registered_once
 from rdlt.connector._source import ReadStream
 from rdlt.host import Host, StrPath, _names, _paths
-from rdlt.model import Catalog, Json, Outcome, ReadMode, _parse
+from rdlt.model import Catalog, Json, Outcome, ReadMode, StreamName, _parse
 from rdlt.run import Run, _ended
 
 _ReadWord: TypeAlias = Literal["full", "incremental", "cdc"]
@@ -288,16 +288,6 @@ def stream(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class StreamName:
-    """A stream by its identity: for one neither the pipeline nor the catalog holds now."""
-
-    name: str
-    """The stream's name, within its namespace."""
-    namespace: str | None = None
-    """Its namespace, such as a database schema; `None` for a stream without one."""
-
-
 def _duration(span: timedelta) -> str:
     microseconds = span // timedelta(microseconds=1)
     if microseconds % 1_000_000 == 0:
@@ -414,10 +404,12 @@ def _functions(source: object) -> list[ReadStream]:
 
 
 def _entry(declared: ReadStream) -> dict[str, Json]:
-    """A stream's entry as its declaration says: incremental where it has a cursor."""
-    entry: dict[str, Json] = {"name": declared.name}
-    if declared.cursor is not None:
-        entry["read"] = "incremental"
+    """A stream's entry as its declaration says: incremental, else as changes, where it reads so."""
+    entry: dict[str, Json] = {"name": str(declared.spec.name)}
+    for mode in (ReadMode.INCREMENTAL, ReadMode.CDC):
+        if mode in declared.spec.read_modes:
+            entry["read"] = mode.value
+            break
     return entry
 
 
@@ -433,7 +425,7 @@ def _local_document(local: Local) -> tuple[dict[str, Json], dict[str, dict[str, 
     """A local connector's source document, and an entry for each of its streams."""
     declared = _source.declaration(local.connector)
     document = _local_reference(declared.id, local)
-    return document, {method.name: _entry(method) for method in declared.streams}
+    return document, {str(method.spec.name): _entry(method) for method in declared.streams}
 
 
 def pipeline(
@@ -454,10 +446,13 @@ def pipeline(
     `source` is a connector, `rdlt.local(SomeSource, config=...)` for a class `@source` made, or
     one or more functions `@rdlt.connector.stream` made streams, read in process as the streams
     of one source, `io.rapidbyte.functions`. A function's stream is always selected; a local
-    connector's streams are each selected where `streams` names none of them, and otherwise only
-    those it names. A stream named exactly keeps what its declaration says, `read: incremental`
-    for one with a cursor, under what its entry says, `write` among it; one a pattern selects
-    reads as the defaults say. `destination` is a connector, or
+    connector's `@stream` methods are each selected where `streams` names none of them, and
+    otherwise only those it names. A function's or a `@stream` method's stream named exactly keeps
+    what its declaration says, `read: incremental` where it can be read so, else `read: cdc` where
+    it can be read as changes, under what its entry says, `write` among it; one a pattern selects
+    reads as the defaults say. The streams a class's `streams()` finds as it connects are known
+    only then, so `streams` selects them, by name or pattern, as for any connector, and each reads
+    as its entry and the defaults say. `destination` is a connector, or
     `rdlt.local(SomeDestination, config=...)` for a class `@destination` made.
 
     Raises:
@@ -476,16 +471,16 @@ def pipeline(
         if streams:
             named_streams = {given.name for given in streams}
             entries = {name: entry for name, entry in entries.items() if name in named_streams}
-        made, placement = _source.placed(source.connector)
+        made, placement = _placed.placed(source.connector)
         factories.append(made)
         held.append(placement)
         answers = _source.declaration(source.connector).id
         connectors = registered_once(connectors, "source", answers, source.connector)
     else:
         functions = _functions(source)
-        source_document = {"connector": _source.FUNCTIONS}
-        entries = {made.name: _entry(made) for made in functions}
-        factories.append(_source.functions_placed(functions))
+        source_document = {"connector": _placed.FUNCTIONS}
+        entries = {str(made.spec.name): _entry(made) for made in functions}
+        factories.append(_placed.functions_placed(functions))
         held.extend(functions)
     named: set[str] = set()
     repeated: list[dict[str, Json]] = []
