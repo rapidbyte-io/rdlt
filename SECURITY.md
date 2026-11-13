@@ -65,8 +65,8 @@ anything runs; none is ignored.
     than land somewhere gone with the process. The scratch directory and `/dev/shm` are each a
     tmpfs of up to half the machine's memory, gone with the sandbox. A connector sees nothing of
     a home directory, no process of the host's, only the environment stated, no network unless
-    granted (and with a grant, read only and as they were when it started, the host's files that
-    resolve names and its stores of trusted certificate authorities), and no user namespace of
+    granted (and with a grant, read only, the host's files that resolve names and its stores of
+    trusted certificate authorities), and no user namespace of
     its own making; it ends with its host. Its arguments and environment reach the launcher
     through a descriptor, never a command line another user could read. The launcher is checked
     as a connector's binary is, and run from the file opened. Where bubblewrap is missing, older
@@ -99,7 +99,9 @@ anything runs; none is ignored.
     host's loopback services, and the abstract Unix sockets of that namespace, such as a
     session's buses. It also shows the connector, read only, the host's files that resolve names
     (its resolvers, search domains and `/etc/hosts`) and its stores of trusted certificate
-    authorities. Grant it only to a connector you would let reach and read those.
+    authorities. A change the host makes in one shows; a file the host replaces with another
+    keeps the copy the connector started with. Grant it only to a connector you would let reach
+    and read those.
   - On macOS there is no sandbox: a local connector runs only as a trusted binary, with the
     host's access. Run untrusted connectors remotely there.
   - A binary named without a path is found only in the directories configured, never on `PATH`

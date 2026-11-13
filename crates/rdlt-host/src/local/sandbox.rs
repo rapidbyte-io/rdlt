@@ -42,8 +42,10 @@ pub enum NetworkAccess {
     /// It shares the host's network: every interface and route of the host, the host's own
     /// loopback services, and the abstract Unix sockets of the host's network namespace.
     ///
-    /// It sees, read only and as they were when it started, the host's files that resolve names
-    /// and the certificate authorities TLS clients trust.
+    /// It sees, read only, the host's files that resolve names and the certificate authorities
+    /// TLS clients trust. A change the host makes in such a file or directory shows there; a file
+    /// the host replaces with another, as a resolver's configuration often is, keeps the copy the
+    /// connector started with.
     Granted,
 }
 

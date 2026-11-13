@@ -1036,10 +1036,11 @@ async fn load() -> Result<(), Box<dyn std::error::Error>> {
   asks for (`access`, `ConnectorRef::read`, `write`, `network`) within a root the host names
   (`Host::readable`, `writable`; `Local::readable`, `writable`). By default no root is named and no
   access is given. Network access shares the host's network namespace whole: every interface and
-  route, the host's loopback services and its abstract Unix sockets. It also gives, read only and as
-  they were when the connector started, the host's files that resolve names (`/etc/resolv.conf`,
-  `/etc/hosts`, `/etc/nsswitch.conf`) and its stores of the certificate authorities TLS clients
-  trust, so a connector can reach a service by name over TLS. None is meant to hold a secret, and
+  route, the host's loopback services and its abstract Unix sockets. It also gives, read only,
+  the host's files that resolve names (`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`)
+  and its stores of the certificate authorities TLS clients trust, so a connector can reach a
+  service by name over TLS. A change the host makes in one shows; a file the host replaces with
+  another keeps the copy the connector started with. None is meant to hold a secret, and
   each is read with the host user's own permissions.
 - A provider honours or refuses every requirement a reference states.
   `.isolation(Isolation::Sandbox)` or `.isolation(Isolation::Remote)` keeps a reference from being placed

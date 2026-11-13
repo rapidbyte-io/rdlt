@@ -81,12 +81,12 @@ const ARGS_FD: RawFd = 5;
 /// granted: nothing of any home directory. Its root, its working directory and `/tmp` are read
 /// only and its `/dev` holds only device nodes and `/dev/shm`, so a write to anywhere but the
 /// scratch directory, `/dev/shm` or a grant fails, rather than land in storage gone with the
-/// process. It has no network unless granted one, and with one it sees the host's files that
-/// resolve names and the certificate authorities TLS clients trust, as they were when it
-/// started. It has its own user, process, IPC, host-name and control-group namespaces and no
-/// further user namespace, only the environment the host states and the `PWD` the launcher
-/// sets, and a session of its own, and it ends with its host. Its arguments, the environment
-/// among them, reach the launcher through a descriptor, never its command line.
+/// process. It has no network unless granted one, and with one it sees, read only, the host's
+/// files that resolve names and the certificate authorities TLS clients trust. It has its own
+/// user, process, IPC, host-name and control-group namespaces and no further user namespace,
+/// only the environment the host states and the `PWD` the launcher sets, and a session of its
+/// own, and it ends with its host. Its arguments, the environment among them, reach the launcher
+/// through a descriptor, never its command line.
 ///
 /// The launcher is found at an absolute path, never through `PATH` or the working directory,
 /// and must be no other user's to change, as a connector's binary must; it is opened once,
