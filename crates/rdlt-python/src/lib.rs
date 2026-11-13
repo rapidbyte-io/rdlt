@@ -22,6 +22,7 @@ mod embedded;
 mod errors;
 mod host;
 mod json;
+mod merge;
 mod pipeline;
 mod run;
 mod runtime;
@@ -88,6 +89,7 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
         destination::unreadable_capabilities,
         module
     )?)?;
+    merge::register(module)?;
     module.add_function(pyo3::wrap_pyfunction!(certify::clauses, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(certify::certify_source, module)?)?;
     module.add_function(pyo3::wrap_pyfunction!(

@@ -74,7 +74,9 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   stopped waiting for included, and none begins until they return. What an older session's
   abandoned calls stage is the destination's to keep from a commit, by its fence and by
   publishing only its session's own epoch. A session opened before `capabilities()` answered is
-  called one at a time. Its configuration is a pydantic model, whose refusals name the
+  called one at a time. A destination merges as a Rust one does, with `rdlt.connector.merge`,
+  `rdlt_connector::merge` run in Rust over Arrow handed over through the C Data Interface, the
+  GIL released while it merges. Its configuration is a pydantic model, whose refusals name the
   field, the fault and the kind of value, never the value.
 - **One way to write a source, in the Rust SDK's words.** `rdlt.connector` names what the Rust SDK
   names, in Python's case: `ConnectorError` and its kinds, `RateLimited`'s `retry_after`, a source's
@@ -86,7 +88,9 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   `checkpoint`, `changes` and the `ChangeOp`, `OP_COLUMN`, `SEQ_COLUMN` and `UNCHANGED_COLUMN` of a
   change batch, the `ConnectContext` a connector's `__init__` takes where it names one, a
   destination's `capabilities()` answering its `Capabilities`, `OpenContext`, `WriteStats` and
-  `Fence`, the failure codes, such as `COMMIT_STALE`, and `serve`'s `args`. Where Python differs,
+  `Fence`, a merge table's `MergeKey`, `ChangeColumns`, `RootKey` and `HistoryColumns`, `to_arrow`
+  of a table schema, the merge kit `rdlt.connector.merge` with `Merged`, the failure codes, such as
+  `COMMIT_STALE`, and `serve`'s `args`. Where Python differs,
   the language makes it: decorators for attributes, so `stream(...)` is called at run time to make a
   stream `streams()` answers, keywords for a builder's methods, a `ChangeOp` that is its code,
   exceptions for `Result`, named as exceptions are, so `InvalidConfig`, `Unauthorized` and
@@ -160,20 +164,24 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   started its own starts afresh. The caller holds no GIL and touches nothing of Python's: it hands
   the call over as closures, the daemon thread builds its arguments and reads its answer, and the
   batches a transform or a table writer takes, a transform answers and a destination reads back are
-  imported and exported in Python, since pyarrow releases the GIL in both. `rdlt._reading` is
-  imported when the package loads, so no thread imports under Rust.
-- **Four cases run under Rust, and are accepted.** Methods of what a generator yields run inside
+  imported and exported in Python, since pyarrow releases the GIL in both. The merge kit's
+  arguments are exported in Python, each by its own `__arrow_c_array__`, `__arrow_c_stream__` or
+  `__arrow_c_schema__`, so no method of the argument itself runs beneath Rust there, though a
+  Python-backed stream's reader does. `rdlt._reading` is imported when the package loads, so no
+  thread imports under Rust.
+- **Five cases run under Rust, and are accepted.** Methods of what a generator yields run inside
   `push` with its Rust frames beneath them: a value's `isoformat` and a UUID's `__str__`, a `list`
   subclass's `__iter__`, `__getattr__` through `hasattr`, a producer's `__arrow_c_array__` and
-  `__arrow_c_stream__`, and a Python-backed Arrow reader's next batch. So do a raised exception's
-  `__str__`, traceback and declared kind, code and wait, read where a failure is turned into an
-  error, and the finalizers of a connector instance and of a destination's sessions and table
-  writers, which run where the native side lets go of what holds them. So does a user's audit hook,
-  which `_thread.start_new_thread`'s audit event calls as a daemon thread starts the next. A slow
-  one of these at the instant of exit can abort the process on CPython 3.11, 3.12 and 3.13.0 to
-  3.13.7, as above. Moving them means encoding every row, rendering every failure, releasing every
-  connection, or starting every thread, in Python; a process exiting commits nothing further, so no
-  committed data is at risk.
+  `__arrow_c_stream__`, and a Python-backed Arrow reader's next batch. So do a Python-backed
+  stream's next batch, its schema and its release, read in a merge kit's call. So do a raised
+  exception's `__str__`, traceback and declared kind, code and wait, read where a failure is
+  turned into an error, and the finalizers of a connector instance and of a destination's
+  sessions and table writers, which run where the native side lets go of what holds them. So does
+  a user's audit hook, which `_thread.start_new_thread`'s audit event calls as a daemon thread
+  starts the next. A slow one of these at the instant of exit can abort the process on CPython
+  3.11, 3.12 and 3.13.0 to 3.13.7, as above. Moving them means encoding every row, reading every
+  stream into batches, rendering every failure, releasing every connection, or starting every
+  thread, in Python; a process exiting commits nothing further, so no committed data is at risk.
 - **What the native side holds of Python, it reaches weakly.** What the native side holds is opaque
   to Python's collector, so a strong reference from it to a stream function, a transform, a secret
   store or a connector's instance that holds the pipeline it serves could never be collected, and

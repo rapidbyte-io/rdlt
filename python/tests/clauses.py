@@ -50,6 +50,42 @@ A destination grants credit and spends none; the rest are what its capabilities 
 """
 
 
+DESTINATION_PASSED = [
+    "P-HANDSHAKE",
+    "P-ORDER",
+    "P-ROLE",
+    "P-LIMITS",
+    "P-HEARTBEAT",
+    "P-MALFORMED",
+    "D-CHECK",
+    "D-EPOCH",
+    "D-STAGING",
+    "D-COMMIT",
+    "D-LANDED",
+    "D-RETRY",
+    "D-STATE",
+    "D-DISCARD",
+    "D-REPLACE",
+    "D-SCHEMA",
+    "D-MERGE",
+    "D-DELETE",
+    "D-PARTIAL",
+    "D-TRUNCATE",
+    "D-HIST",
+    "D-CHILDREN",
+    "D-ENCODING",
+    "D-TABLES",
+    "D-NAMES",
+    "D-WRITERS",
+    "D-OWNED",
+    "D-DROP",
+    "D-FENCE",
+    "K-DESTINATION",
+]
+"""The clauses a destination that writes every way the engine has passes: all but P-CREDIT, since
+a destination grants credit and spends none."""
+
+
 def outcomes(certification: Certification) -> dict[str, list[str]]:
     """Each outcome's clauses, in clause order, every reason a clause did not apply given."""
     found: dict[str, list[str]] = {}
