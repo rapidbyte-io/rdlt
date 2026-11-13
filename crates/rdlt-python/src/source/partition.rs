@@ -46,6 +46,8 @@ pub(crate) enum Pushed {
     Json(Bytes),
     /// An Arrow batch.
     Batch(RecordBatch),
+    /// A change batch, whose rows are changes, each a `ChangeOp`.
+    Changes(RecordBatch),
     /// A checkpoint's cursor, as its JSON text.
     Checkpoint(Box<RawValue>),
     /// The stream's partitions changed: the engine plans it again.

@@ -74,25 +74,27 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   `change_time` and a name within a namespace, a `StreamName`, its `Partition`s, planned from its
   `StreamState` and `PartitionState`s, or a `PartitionPlan` of phases, `committed`, `acknowledged`
   and `replayable`, a source's `acknowledged`, `Cursor` and a stream's `cursor_version`,
-  `checkpoint`, the `ConnectContext` a connector's `__init__` takes where it names one, a
+  `checkpoint`, `changes` and the `ChangeOp`, `OP_COLUMN`, `SEQ_COLUMN` and `UNCHANGED_COLUMN` of a
+  change batch, the `ConnectContext` a connector's `__init__` takes where it names one, a
   destination's `capabilities()` answering its `Capabilities`, `OpenContext`, `WriteStats` and
   `Fence`, the failure codes, such as `COMMIT_STALE`, and `serve`'s `args`. Where Python differs,
   the language makes it: decorators for attributes, so `stream(...)` is called at run time to make a
-  stream `streams()` answers, keywords for a builder's methods, exceptions for `Result`, named as
-  exceptions are, so `InvalidConfig`, `Unauthorized` and `InvalidData` are the kinds Rust calls
-  `Config`, `Auth` and `Data`, generators for an emitter, and a `StreamContext`, with its
-  `Exclusion`, `Limits` and `Headroom`, for what a Rust read is told by its partition and asks its
-  emitter, given where a read names `ctx`, as a `partitions` or `plan` is given the `StreamState`
-  where it names `state`. A stream without a cursor is read in full alone, since Python's cursor is
-  optional and Rust's is not. A stream's schema is any Arrow schema, read through the C Data
-  Interface, so no one Arrow library is required, and refused where it is declared where Rust has no
-  table schema for it. Rust checks what a source answers as it checks a Rust source's, so a catalog
-  or a plan is refused with Rust's own error and code. How a stream's rows land is the pipeline's to
-  say, as for a Rust source. `@stream` makes a function a stream as it makes a method one, under the
-  same rules, so a function moves into a `@source` class taking `self`, as its `partitions=`,
-  `plan=` and `committed=` callables then do too. A pipeline reads its stream functions in process,
-  as the streams of one source, `io.rapidbyte.functions`, which has no configuration, and is not
-  served, installed or certified: a stream that needs those is a class's.
+  stream `streams()` answers, keywords for a builder's methods, a `ChangeOp` that is its code,
+  exceptions for `Result`, named as exceptions are, so `InvalidConfig`, `Unauthorized` and
+  `InvalidData` are the kinds Rust calls `Config`, `Auth` and `Data`, generators for an emitter, and
+  a `StreamContext`, with its `Exclusion`, `Limits` and `Headroom`, for what a Rust read is told by
+  its partition and asks its emitter, given where a read names `ctx`, as a `partitions` or `plan` is
+  given the `StreamState` where it names `state`. A stream without a cursor is read in full alone,
+  since Python's cursor is optional and Rust's is not. A stream's schema is any Arrow schema, read
+  through the C Data Interface, so no one Arrow library is required, and refused where it is
+  declared where Rust has no table schema for it. Rust checks what a source answers as it checks a
+  Rust source's, so a catalog, a plan or a change batch is refused with Rust's own error and code.
+  How a stream's rows land is the pipeline's to say, as for a Rust source. `@stream` makes a
+  function a stream as it makes a method one, under the same rules, so a function moves into a
+  `@source` class taking `self`, as its `partitions=`, `plan=` and `committed=` callables then do
+  too. A pipeline reads its stream functions in process, as the streams of one source,
+  `io.rapidbyte.functions`, which has no configuration, and is not served, installed or certified: a
+  stream that needs those is a class's.
 - **A class's streams are one answer.** Its `@stream` methods are its `streams()` written as
   declarations, so a class has one or the other, and one with both is refused where it is
   declared. `streams()` is asked once a connection, as the Rust SDK assembles a connection's

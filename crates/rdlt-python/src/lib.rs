@@ -59,12 +59,21 @@ fn register(module: &Bound<'_, PyModule>) -> Result<(), PyErr> {
     ] {
         module.add(name, code)?;
     }
+    // The columns of a change batch the Rust SDK names, which a Python read's batch carries.
+    for (name, column) in [
+        ("OP_COLUMN", rdlt_connector::OP_COLUMN),
+        ("SEQ_COLUMN", rdlt_connector::SEQ_COLUMN),
+        ("UNCHANGED_COLUMN", rdlt_connector::UNCHANGED_COLUMN),
+    ] {
+        module.add(name, column)?;
+    }
     module.add_class::<host::NativeHost>()?;
     module.add_class::<pipeline::NativePipeline>()?;
     module.add_class::<run::NativeRun>()?;
     module.add_class::<run::NativeEvents>()?;
     module.add_class::<source::context::NativeStreamContext>()?;
     module.add_class::<source::context::NativeCheckpoint>()?;
+    module.add_class::<source::context::NativeChanges>()?;
     module.add_class::<source::context::NativeNotice>()?;
     module.add_class::<source::NativeSourceFactory>()?;
     module.add_class::<destination::NativeDestinationFactory>()?;

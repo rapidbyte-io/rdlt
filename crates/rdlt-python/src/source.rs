@@ -322,6 +322,7 @@ impl ReadStream<PythonSource> for PythonStream {
                 None => return Ok(()),
                 Some(Pushed::Json(json)) => out.json(json).await?,
                 Some(Pushed::Batch(batch)) => out.batch(batch).await?,
+                Some(Pushed::Changes(batch)) => out.changes(batch).await?,
                 Some(Pushed::Checkpoint(cursor)) => {
                     out.checkpoint(&PyCursor(Some(cursor))).await?;
                 }

@@ -1,11 +1,13 @@
-//! What a Python read is given and yields beside its data: its context, and its checkpoints.
+//! What a Python read is given and yields beside its rows: its context, its checkpoints and its
+//! change batches.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use pyo3::exceptions::PyValueError;
-use pyo3::{Bound, PyErr, Python, pyclass, pymethods};
+use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::types::{PyAnyMethods as _, PyTypeMethods as _};
+use pyo3::{Bound, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
 use rdlt_connector::{Emitter, Headroom, Partition};
 use serde_json::value::RawValue;
 
@@ -213,5 +215,39 @@ impl NativeCheckpoint {
     /// The cursor, as its JSON text.
     pub(crate) fn cursor(&self) -> &RawValue {
         &self.cursor
+    }
+}
+
+/// A change batch a read yields: Arrow data whose rows are changes, each a `ChangeOp`, as a Rust
+/// read's `Emitter::changes` pushes; the read imports it as it pushes it, as any batch.
+#[pyclass(module = "rdlt._native", name = "Changes", frozen)]
+pub(crate) struct NativeChanges {
+    batch: Py<PyAny>,
+}
+
+#[pymethods]
+impl NativeChanges {
+    #[new]
+    fn new(batch: &Bound<'_, PyAny>) -> Result<Self, PyErr> {
+        let py = batch.py();
+        if !batch.hasattr(intern!(py, "__arrow_c_array__"))?
+            && !batch.hasattr(intern!(py, "__arrow_c_stream__"))?
+        {
+            return Err(PyTypeError::new_err(format!(
+                "changes() takes Arrow data, anything with __arrow_c_array__ or \
+                 __arrow_c_stream__, and a {} has neither",
+                batch.get_type().name()?
+            )));
+        }
+        Ok(Self {
+            batch: batch.clone().unbind(),
+        })
+    }
+}
+
+impl NativeChanges {
+    /// The Arrow data, as the read yielded it.
+    pub(crate) fn batch<'py>(&self, py: Python<'py>) -> &Bound<'py, PyAny> {
+        self.batch.bind(py)
     }
 }

@@ -101,19 +101,20 @@ def stream(
     """Makes a function a stream a pipeline reads as its source, or a method a stream of its class.
 
     It takes the cursor where one is declared, then `ctx` where it names it, and yields rows, Arrow
-    data and `checkpoint(cursor)`. Called at run time, on a bound method, a closure or a `partial`,
-    it makes a stream a source's `streams()` answers. `name`, the function's name unless given, is
-    a name or a `rdlt.StreamName` within a namespace, such as a database schema. `partitions`
-    answers the partitions, each an id or a `Partition`, called as the stream is, with the instance
-    where it is a method, or names a method that does; `ctx.partition` then says which one is
-    read. Where it names a `state` parameter, it is given the stream's committed `StreamState`, as
-    a Rust stream's `partitions` is: its phase, and where each partition stands, a cursor or
-    `PartitionState.DONE`. A method stays a method: `self.tickets(since, ctx)` calls it. It makes a
-    `ReadStream`, typed `Any` so it is called and overridden as the function or method it was. How
-    its rows land is the pipeline's to say, as `rdlt.stream(name, write=...)`, whatever its source.
-    `cursor_version`, 1 unless given, is the format of its cursors, as a Rust stream's
-    `CURSOR_VERSION` is: bumped when `cursor`'s shape changes incompatibly, so a cursor committed in
-    another format fails the read, coded `cursor_version`, rather than restart it.
+    data and `checkpoint(cursor)`, or, read as changes, `changes(batch)`. Called at run time, on a
+    bound method, a closure or a `partial`, it makes a stream a source's `streams()` answers.
+    `name`, the function's name unless given, is a name or a `rdlt.StreamName` within a namespace,
+    such as a database schema. `partitions` answers the partitions, each an id or a `Partition`,
+    called as the stream is, with the instance where it is a method, or names a method that does;
+    `ctx.partition` then says which one is read. Where it names a `state` parameter, it is given the
+    stream's committed `StreamState`, as a Rust stream's `partitions` is: its phase, and where each
+    partition stands, a cursor or `PartitionState.DONE`. A method stays a method:
+    `self.tickets(since, ctx)` calls it. It makes a `ReadStream`, typed `Any` so it is called and
+    overridden as the function or method it was. How its rows land is the pipeline's to say, as
+    `rdlt.stream(name, write=...)`, whatever its source. `cursor_version`, 1 unless given, is the
+    format of its cursors, as a Rust stream's `CURSOR_VERSION` is: bumped when `cursor`'s shape
+    changes incompatibly, so a cursor committed in another format fails the read, coded
+    `cursor_version`, rather than restart it.
 
     Its spec is a Rust stream's `StreamSpec`. `schema`, any Arrow schema, anything with
     `__arrow_c_schema__`, is its declared schema, as `with_schema` declares it, refused here where
