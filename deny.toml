@@ -31,6 +31,9 @@ exceptions = [
   # Tooling only: xtask links it through public-api, to list the facade's public API. The
   # Unlicense dedicates it to the public domain.
   { crate = "snapshot-testing", allow = ["Unlicense"] },
+  # The examples only, and on WebAssembly alone, which they never build: the CA roots
+  # rustls-platform-verifier trusts there, Mozilla's, as data under a permissive data license.
+  { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [bans]

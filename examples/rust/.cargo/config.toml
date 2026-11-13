@@ -1,0 +1,3 @@
+# The examples build where the product does, so they reuse the dependencies it built.
+[build]
+target-dir = "../../target"

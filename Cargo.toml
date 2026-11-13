@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
-exclude = ["fuzz"]
+exclude = ["examples/rust", "fuzz"]
 
 [workspace.package]
 version = "0.0.0"

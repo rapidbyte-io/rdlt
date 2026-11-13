@@ -21,7 +21,7 @@ fn every_workspace_is_checked_as_locked_against_one_configuration() {
             root.join("deny.toml").into_os_string(),
             "check".into(),
         ];
-        if *manifest == "fuzz/Cargo.toml" {
+        if *manifest != "Cargo.toml" {
             expected.extend(["--allow".into(), "unused-wrapper".into()]);
         }
         assert_eq!(run, &expected, "{manifest}");
@@ -29,6 +29,8 @@ fn every_workspace_is_checked_as_locked_against_one_configuration() {
 }
 
 #[test]
-fn the_fuzzing_workspace_is_among_those_checked() {
-    assert!(MANIFESTS.contains(&"Cargo.toml") && MANIFESTS.contains(&"fuzz/Cargo.toml"));
+fn the_fuzzing_and_examples_workspaces_are_among_those_checked() {
+    for manifest in ["Cargo.toml", "fuzz/Cargo.toml", "examples/rust/Cargo.toml"] {
+        assert!(MANIFESTS.contains(&manifest), "{manifest}");
+    }
 }

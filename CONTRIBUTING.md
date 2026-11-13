@@ -16,9 +16,9 @@ this standard, and points here where a rule is already stated.
   `fix(engine): release reservations on writer errors`. Subjects are imperative, lowercase, at most
   72 characters. Details go in the body.
 - Keep commits small and focused. Every fixed defect gets a regression test in the same change.
-- Run `just ready` before pushing: lint, tests, Kani's proofs and the specs where your change
-  touches them, and mutation testing of your change, which CI does not repeat; CI runs the rest
-  of the pull-request gate.
+- Run `just ready` before pushing: lint, tests, the examples' checks and tests, Kani's proofs and
+  the specs where your change touches them, and mutation testing of your change, which CI does
+  not repeat; CI runs the rest of the pull-request gate.
 - A change that makes a case of `just instructions` take more than 2% more instructions or
   allocations than `main` names it in an `Instructions-Accepted: <case>` trailer, with the reason
   in the commit body; the `instructions` check fails otherwise.

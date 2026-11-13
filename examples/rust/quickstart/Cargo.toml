@@ -1,0 +1,19 @@
+[package]
+name = "quickstart"
+description = "The quick start: seeded offset logs loaded into SQLite, exactly once"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rdlt.workspace = true
+rdlt-connector-reference.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

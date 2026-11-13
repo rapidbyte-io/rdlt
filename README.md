@@ -22,6 +22,7 @@
 
 [Quick start](#quick-start) ·
 [Python](#python) ·
+[Examples](#examples) ·
 [Embedding](#embedding-rdlt) ·
 [Connectors](#writing-a-connector) ·
 [Certification](#certifying-a-connector) ·
@@ -144,9 +145,13 @@ way. A project held to one commit gives every later rdlt crate the same `--rev`:
 crate held to a commit and one that follows `main` as two crates, whose types do not match.
 
 Replace `src/main.rs` with a pipeline that loads `LogSource`, seeded offset logs like a message
-queue's, into SQLite:
+queue's, into SQLite. It is [`examples/rust/quickstart`](examples/rust/quickstart), which a test
+runs:
 
 ```rust
+#![forbid(unsafe_code)]
+//! rdlt's quick start: seeded offset logs loaded into SQLite, exactly once.
+
 use rdlt::{Connector, Host, Pipeline, ReadMode, Side, Stream};
 use rdlt_connector_reference::{LogSource, SqliteDestination};
 
@@ -164,8 +169,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "seed": 7,
         "streams": [{ "name": "events", "partitions": 2, "messages": 500, "bounded": true }]
     }));
-    let destination = Side::new(Connector::new("io.rapidbyte.sqlite"))
-        .config(rdlt::json!({ "path": database }));
+    let destination =
+        Side::new(Connector::new("io.rapidbyte.sqlite")).config(rdlt::json!({ "path": database }));
     // One stream, read incrementally: each run starts where the last committed one ended.
     let pipeline = Pipeline::builder("events-demo", source, destination)
         .stream(Stream::new("events").read(ReadMode::Incremental))
@@ -175,7 +180,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(error) = outcome.error {
         return Err(error.into());
     }
-    println!("{:?}: committed {} rows", outcome.report.status, outcome.report.rows);
+    println!(
+        "{:?}: committed {} rows",
+        outcome.report.status, outcome.report.rows
+    );
     Ok(())
 }
 ```
@@ -208,7 +216,7 @@ compiler the [quick start](#quick-start) names:
 pip install "rdlt @ git+https://github.com/rapidbyte-io/rdlt"
 ```
 
-[`python/examples/quickstart.py`](python/examples/quickstart.py), which a test runs, loads a Python
+[`examples/python/quickstart`](examples/python/quickstart), which a test runs, loads a Python
 function's rows into SQLite through the reference SQLite connector, installed as [From the command
 line](#from-the-command-line) shows. `@rdlt.connector.stream` makes a function a stream, as it makes
 a connector class's method one: it yields rows, as dicts or lists of them, Arrow batches or anything
@@ -275,9 +283,9 @@ Run it twice from the repository's root, with the connectors' directory and a di
 database:
 
 ```console
-$ python python/examples/quickstart.py ~/.local/share/rdlt/connectors .
+$ python examples/python/quickstart/main.py ~/.local/share/rdlt/connectors .
 succeeded: committed 30 rows
-$ python python/examples/quickstart.py ~/.local/share/rdlt/connectors .
+$ python examples/python/quickstart/main.py ~/.local/share/rdlt/connectors .
 succeeded: committed 0 rows
 ```
 
@@ -397,6 +405,12 @@ Under `asyncio.run` the first Ctrl-C cancels the main task, and an await of the 
 it asks the run to stop after its next commit and raises at once, so the process exits without
 waiting for that commit. Exactly-once still holds: what was committed stays, and the next run reads
 on from the last committed cursor.
+
+## Examples
+
+[`examples/`](examples) holds runnable programs in Rust and in Python, from a first pipeline to a
+connector of a real HTTP API, PokeAPI's, which is certified in its tests against a local server.
+Its [index](examples/README.md) says what each shows, how to run it and how it is tested.
 
 ## Embedding rdlt
 
@@ -803,6 +817,11 @@ destinations keeping their rows as Arrow share.
 and [`files/destination.rs`](crates/rdlt-connector-reference/src/files/destination.rs) one that
 keeps Arrow.
 
+[`examples/rust/pokeapi`](examples/rust/pokeapi) is a source of a real HTTP API, PokeAPI's: two
+streams with a key, a cursor checkpointed after each page, failures the engine retries, a binary
+a host spawns, and its certification against a local server.
+[`examples/python/pokeapi`](examples/python/pokeapi) is the same source in Python.
+
 ### Reference connectors
 
 `rdlt-connector-reference` holds the connectors the engine's tests run against. Every reference
@@ -1198,6 +1217,10 @@ flowchart LR
 | [`rdlt-sim`](crates/rdlt-sim) | The deterministic simulation harness (not for publishing) |
 | [`rdlt-testkit`](crates/rdlt-testkit) | Drawn Arrow data and an exact value model for tests and the simulation (not for publishing) |
 
+The Rust examples, [`examples/rust`](examples/rust), and the fuzz targets, [`fuzz`](fuzz), are
+Cargo workspaces of their own, each with its own lockfile, so what only they depend on is in no
+build of the crates above.
+
 ## Testing and verification
 
 Each layer runs in the pull-request workflow (`CI`), in the `Nightly` workflow, scheduled each day
@@ -1226,6 +1249,7 @@ the whole engine runs under deterministic simulation.
 | Resident memory | Peak resident memory of 3 workloads at 2, 4 and all cores against the limit their budget gives them | Nightly, Linux |
 | Miri | The test of `rdlt-adopt`'s `adopt`, the socket half of its `unsafe` code | Every pull request |
 | Property and differential tests | Every logical type in every Arrow encoding, lowered and normalized and read back by meaning | Every pull request |
+| Examples | Each example in [`examples/`](examples) prints what its README shows; the PokeAPI sources certified, and the Rust one spawned in the sandbox, against a local server of the API's shape | Every pull request: the Rust examples on Linux, the Python ones with the package's suite |
 | Python | The wheel as it ships, built in release and installed: the bindings, Python sources and transforms, the connector SDK, served mode and certification under pytest; ten thousand batches through a Python source and transform leave the heap's blocks, pyarrow's allocations and resident memory flat, and a pipeline with no Python in it commits while another's transform holds the GIL; and, in pull requests on Linux, a connector `rdlt connector new --lang python` writes, installed by `rdlt connector install` with PyPI's packages, run in the sandbox and certified | Every pull request on CPython 3.14 on Linux and 3.11 on macOS; 3.11 to 3.15 and free-threaded 3.14 on both nightly |
 | Supply chain | cargo-deny over every lockfile, actions referenced by commit SHA, and every other tool but the Rust toolchains, which rustup installs, locked to a checksum in `mise.lock`; valgrind and bubblewrap come from Ubuntu's archive; the release's wheels are built by maturin-action, held to its commit, which fetches maturin, rustup and build tools unchecked, in pypa's manylinux containers on Linux | Every pull request; advisories nightly |
 
@@ -1281,7 +1305,8 @@ mise install --locked  # install the tools as mise.lock holds them
 just --list            # see every recipe
 just test              # the tests, doc tests and each bench once, with all features
 just lint              # rustfmt, clippy, typos, cargo-deny, action SHAs (online), workspace lints
-just ready             # before a push: lint, tests, formal checks, mutation testing of the change
+just examples          # the Rust examples' rustfmt, clippy, docs and tests, in their own workspace
+just ready             # before a push: lint, tests, examples, formal checks, mutation testing
 just ci                # the pull-request gate's checks on Linux, with 10,000 simulation seeds
 just sim 42            # replay simulation seed 42
 just crashes           # crash a pipeline at every durability step; check every row lands once

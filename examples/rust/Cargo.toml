@@ -1,0 +1,73 @@
+# The Rust examples, each a project of its own that depends on rdlt's crates by path, as a user's
+# project depends on them from git. They are a workspace apart from the product's, with a lockfile
+# of their own, so what only an example needs, such as an HTTP client, is in no product build.
+[workspace]
+resolver = "3"
+members = ["pokeapi", "quickstart"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+rdlt = { path = "../../crates/rdlt" }
+rdlt-connector = { path = "../../crates/rdlt-connector" }
+rdlt-connector-reference = { path = "../../crates/rdlt-connector-reference" }
+# The reference SQLite destination's, to read what an example loaded.
+rusqlite = { version = "0.41.1", default-features = false, features = [
+  "bundled",
+  "cache",
+  "limits",
+] }
+reqwest = { version = "0.13.5", default-features = false, features = [
+  "rustls",
+] } # the PokeAPI source's HTTP client, over rustls
+schemars = "1.2.2" # JSON Schema for connector configuration
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tempfile = "3.27.0" # temporary directories in tests
+tokio = { version = "1.53.3", default-features = false }
+
+# The product's lints, but for printing: what an example prints is what it shows.
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_qualifications = "warn"
+let_underscore_drop = "warn"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+unwrap_used = "warn"
+large_futures = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unused_async_trait_impl = "allow"
+
+# The product's development profile: cargo reads profiles from a workspace's root alone.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# A spawned connector's digest hashes its binary, which this keeps to a fraction of a second.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3

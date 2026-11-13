@@ -102,6 +102,8 @@ fn the_members_of_every_listed_workspace_are_found() {
         "crates/rdlt-adopt/Cargo.toml",
         "xtask/Cargo.toml",
         "fuzz/Cargo.toml",
+        "examples/rust/Cargo.toml",
+        "examples/rust/pokeapi/Cargo.toml",
     ] {
         assert!(members.contains(&PathBuf::from(manifest)), "{manifest}");
     }

@@ -6,6 +6,7 @@
 /fuzz/coverage
 *.profraw
 /fuzz/target
+/examples/rust/target
 /.venv
 /python/rdlt/_native*.so
 __pycache__/

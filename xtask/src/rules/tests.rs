@@ -112,6 +112,9 @@ fn file_roles_come_from_the_path() {
     assert!(FileRole::of(Path::new("crates/a/src/x/tests.rs")).test);
     assert!(FileRole::of(Path::new("crates/a/tests/it/main.rs")).test);
     assert!(!FileRole::of(Path::new("crates/a/src/lib.rs")).test);
+    assert!(FileRole::of(Path::new("crates/a/examples/serve.rs")).test);
+    assert!(!FileRole::of(Path::new("examples/rust/a/src/lib.rs")).test);
+    assert!(FileRole::of(Path::new("examples/rust/a/tests/it/main.rs")).test);
 }
 
 #[test]

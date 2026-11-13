@@ -18,10 +18,10 @@ use crate::unsafe_code;
 use crate::unwinding::Unwinding;
 
 /// Build output, never scanned, relative to the repository root.
-const BUILD_OUTPUT: &str = "fuzz/target";
+const BUILD_OUTPUT: &[&str] = &["examples/rust/target", "fuzz/target"];
 
 /// Directories scanned for Rust sources, relative to the repository root.
-const SOURCE_ROOTS: &[&str] = &["crates", "fuzz", "xtask"];
+const SOURCE_ROOTS: &[&str] = &["crates", "examples", "fuzz", "xtask"];
 
 /// Every finding in the tree under `root`, with paths relative to `root`.
 ///
@@ -36,7 +36,8 @@ pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> 
         .filter(|dir| dir.exists())
     {
         let walk = WalkDir::new(&dir).sort_by_file_name().into_iter();
-        for entry in walk.filter_entry(|entry| entry.path() != root.join(BUILD_OUTPUT)) {
+        let built = |path: &Path| BUILD_OUTPUT.iter().any(|output| path == root.join(output));
+        for entry in walk.filter_entry(|entry| !built(entry.path())) {
             let entry = entry.with_context(|| format!("walking {}", dir.display()))?;
             let path = entry.path();
             if path.extension().is_none_or(|ext| ext != "rs") {
