@@ -99,9 +99,10 @@ anything runs; none is ignored.
     host's loopback services, and the abstract Unix sockets of that namespace, such as a
     session's buses. It also shows the connector, read only, the host's files that resolve names
     (its resolvers, search domains and `/etc/hosts`) and its stores of trusted certificate
-    authorities. A change the host makes in one shows; a file the host replaces with another
-    keeps the copy the connector started with. Grant it only to a connector you would let reach
-    and read those.
+    authorities. A change the host makes in place shows, and so does one within a bound
+    directory, such as a certificate added to `/etc/ssl/certs`; a file bound itself, such as
+    `/etc/resolv.conf`, that the host replaces with another keeps the copy the connector started
+    with. Grant it only to a connector you would let reach and read those.
   - On macOS there is no sandbox: a local connector runs only as a trusted binary, with the
     host's access. Run untrusted connectors remotely there.
   - A binary named without a path is found only in the directories configured, never on `PATH`

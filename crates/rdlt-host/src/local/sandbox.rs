@@ -43,9 +43,10 @@ pub enum NetworkAccess {
     /// loopback services, and the abstract Unix sockets of the host's network namespace.
     ///
     /// It sees, read only, the host's files that resolve names and the certificate authorities
-    /// TLS clients trust. A change the host makes in such a file or directory shows there; a file
-    /// the host replaces with another, as a resolver's configuration often is, keeps the copy the
-    /// connector started with.
+    /// TLS clients trust. A change the host makes in place shows there, and so does one within a
+    /// bound directory, such as a certificate added to `/etc/ssl/certs`; a file bound itself, such
+    /// as `/etc/resolv.conf`, that the host replaces with another keeps the copy the connector
+    /// started with.
     Granted,
 }
 

@@ -1039,8 +1039,10 @@ async fn load() -> Result<(), Box<dyn std::error::Error>> {
   route, the host's loopback services and its abstract Unix sockets. It also gives, read only,
   the host's files that resolve names (`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`)
   and its stores of the certificate authorities TLS clients trust, so a connector can reach a
-  service by name over TLS. A change the host makes in one shows; a file the host replaces with
-  another keeps the copy the connector started with. None is meant to hold a secret, and
+  service by name over TLS. A change the host makes in place shows, and so does one within a
+  bound directory, such as a certificate added to `/etc/ssl/certs`; a file bound itself, such as
+  `/etc/resolv.conf`, that the host replaces with another keeps the copy the connector started
+  with. None is meant to hold a secret, and
   each is read with the host user's own permissions.
 - A provider honours or refuses every requirement a reference states.
   `.isolation(Isolation::Sandbox)` or `.isolation(Isolation::Remote)` keeps a reference from being placed
