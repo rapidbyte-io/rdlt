@@ -267,6 +267,8 @@ impl PartitionOut {
 impl PartitionOut {
     /// Sends `pushes` while the channel has room; the first push that finds none waits for it,
     /// the rest kept for `resume`.
+    ///
+    /// No push is made once the engine has stopped listening, so a stream reads no batch for it.
     fn sending(
         &self,
         py: Python<'_>,
@@ -274,6 +276,9 @@ impl PartitionOut {
         mut pushes: Pushes,
     ) -> Option<bool> {
         loop {
+            if sender.is_closed() {
+                return Some(false);
+            }
             match pushes.next(py) {
                 Ok(None) => return Some(true),
                 Ok(Some(push)) => match sender.try_send(push) {
