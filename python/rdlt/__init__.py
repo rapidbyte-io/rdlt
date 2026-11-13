@@ -19,7 +19,6 @@ from rdlt._pipeline import (
     Retry,
     SchemaRules,
     Stream,
-    StreamName,
     WriteMode,
     append,
     history,
@@ -55,6 +54,7 @@ from rdlt.model import (
     Report,
     RunStatus,
     Status,
+    StreamName,
     StreamReport,
 )
 from rdlt.run import Events, Run, StopMode

@@ -14,7 +14,7 @@ from typing import cast
 import pytest
 
 import rdlt
-from rdlt.connector import Config, ConnectContext, Cursor, source, stream
+from rdlt.connector import Config, ConnectContext, Cursor, _placed, source, stream
 from rdlt.connector import _source as declared
 from rdlt.connector._declared import package_version
 from tests.connectors.tickets import Tickets
@@ -427,8 +427,8 @@ def test_a_connector_s_version_is_read_once_for_its_package(
         def check(self) -> None:
             """Reads need nothing checked first."""
 
-    declared.placed(Unversioned)
-    declared.placed(Unversioned)
+    _placed.placed(Unversioned)
+    _placed.placed(Unversioned)
     assert len(looked) == 1
 
 

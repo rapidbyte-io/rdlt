@@ -16,6 +16,7 @@ from rdlt.connector._context import (
     Headroom,
     Limits,
     Partition,
+    PartitionPlan,
     PartitionState,
     StreamContext,
     StreamState,
@@ -44,6 +45,7 @@ from rdlt.connector._landed import Answer, Fence, answer
 from rdlt.connector._secret import Secret
 from rdlt.connector._serve import acknowledging_source_factory, readable_destination_factory, serve
 from rdlt.connector._source import ReadStream, source, stream
+from rdlt.connector._spec import Checkpointing, StreamSpec
 
 __all__ = [
     "COLUMN_MISSING",
@@ -54,6 +56,7 @@ __all__ = [
     "TABLE_OWNED",
     "Answer",
     "Capabilities",
+    "Checkpointing",
     "Config",
     "ConnectContext",
     "ConnectorError",
@@ -71,12 +74,14 @@ __all__ = [
     "OpenContext",
     "Opened",
     "Partition",
+    "PartitionPlan",
     "PartitionState",
     "RateLimited",
     "ReadStream",
     "SchemaChanges",
     "Secret",
     "StreamContext",
+    "StreamSpec",
     "StreamState",
     "Transient",
     "Unauthorized",

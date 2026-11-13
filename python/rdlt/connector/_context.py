@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import enum
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import KW_ONLY, dataclass, field
 from datetime import timedelta
 from typing import Any
 
@@ -28,6 +28,41 @@ class Partition:
     def single(cls) -> Partition:
         """The partition of a stream that is not split, `whole`, which never ends."""
         return cls("whole", unbounded=True)
+
+
+_PHASES = range(2**16)
+"""The phases a stream may be in, as the Rust SDK's `u16` holds them."""
+
+
+@dataclass(frozen=True, slots=True)
+class PartitionPlan:
+    """The partitions a stream reads this run and their phase, as the Rust SDK's `PartitionPlan`.
+
+    `partitions` are ids or `Partition`s, as `partitions=` answers them. `phase`, `None` to keep
+    the phase the stream's state records, is a number from 0 to 65535: one other than the recorded
+    phase begins it, and the commit that first records it forgets the previous phase's partitions.
+    `starts` says where partitions of a new phase start, each a cursor of the stream's type, as a
+    CDC stream's changes start from where its snapshot captured them; one without a start starts
+    from the beginning, and a plan in the recorded phase resumes each from its committed cursor.
+
+    Raises:
+        TypeError: `partitions` is one string.
+        ValueError: `phase` is no number from 0 to 65535.
+    """
+
+    partitions: Sequence[str | Partition]
+    _: KW_ONLY
+    phase: int | None = None
+    starts: Mapping[str, Cursor] = field(default_factory=dict[str, Cursor], hash=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.partitions, str):
+            message = "a plan's partitions are a sequence of ids or Partitions, not one string"
+            raise TypeError(message)
+        object.__setattr__(self, "partitions", tuple(self.partitions))
+        if self.phase is not None and (type(self.phase) is not int or self.phase not in _PHASES):
+            message = f"phase={self.phase!r} is not a phase from 0 to {_PHASES[-1]}"
+            raise ValueError(message)
 
 
 class PartitionState(enum.Enum):

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 from rdlt import _native
 from rdlt._transform import Transform, named_once
 from rdlt._weak import weakly_reached
-from rdlt.connector import _destination, _source
+from rdlt.connector import _destination, _placed, _source
 from rdlt.connector._declared import Registered, registered_once
 
 if TYPE_CHECKING:
@@ -168,7 +168,7 @@ class Host:
         connectors = registered_once(self._connectors, "source", answers, connector)
         if connectors is self._connectors:
             return self
-        made, placement = _source.placed(connector)
+        made, placement = _placed.placed(connector)
         return self._replaced(
             _sources=(*self._sources, made), _held=(*self._held, placement), _connectors=connectors
         )

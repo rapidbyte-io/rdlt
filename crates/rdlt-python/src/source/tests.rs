@@ -1,3 +1,6 @@
+mod described;
+mod phased;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +22,7 @@ use crate::runtime;
 fn connect(py: Python<'_>, body: &str) -> Py<PyAny> {
     let code = format!(
         "import json, types, threading\n{body}\n\
-         connected = types.SimpleNamespace(check=lambda: None, streams=streams)\n\
+         connected = types.SimpleNamespace(check=lambda: None, streams=streams, discovers=False)\n\
          connect = lambda config, host: connected\n"
     );
     let globals = PyDict::new(py);
@@ -65,8 +68,9 @@ fn published_rows(store: &str, table: &str) -> usize {
 const ONE_STREAM: &str = "\
 def read(partition, cursor, context):
     yield [{'n': n} for n in range(40)]
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'partitioned': False, 'stated': False, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
 
 #[test]
@@ -90,8 +94,9 @@ def read(partition, cursor, context):
     builtins.idents.add(threading.get_ident())
     barrier.wait(30)
     yield {'partition': partition}
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [('a', False), ('b', False), ('c', False)], spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'partitioned': True, 'stated': True, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [('a', False), ('b', False), ('c', False)], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': True, 'stated': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
         let (_, error) = loaded(py, "python-partitioned", "full", body);
         assert_eq!(error, None);
@@ -120,8 +125,9 @@ def read(partition, cursor, context):
     for n in range(start, start + 10):
         yield {'n': n}
     yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({'after': start + 9}))
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'partitioned': False, 'stated': False, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
         loaded(py, "python-resumed", "incremental", body);
         loaded(py, "python-resumed", "incremental", body);
@@ -156,8 +162,9 @@ def read(partition, cursor, context):
         yield {{'n': n}}
         if n == start + 4:
             yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({{'after': n}}))
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [('p', {unbounded})], spec=json.dumps({{
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'partitioned': True, 'stated': True, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [('p', {unbounded})], []), spec=json.dumps({{
+    'spec': {{'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None}},
+    'planned': True, 'stated': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}}))
 streams = [stream]"
             );
             loaded(py, store, "incremental", &body);
@@ -210,8 +217,9 @@ def read(partition, cursor, context):
     yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({{'after': 4}}))
 def committed(cursors):
     builtins.told.setdefault('{store}', []).extend(cursors)
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: {partitions}, committed=committed, spec=json.dumps({{
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'partitioned': {partitioned}, 'stated': {partitioned}, 'replayable': True, 'committed': True, 'acknowledged': False, 'cursor_version': 1}}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, {partitions}, []), committed=committed, spec=json.dumps({{
+    'spec': {{'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None}},
+    'planned': {partitioned}, 'stated': {partitioned}, 'committed': True, 'acknowledged': False, 'cursor_version': 1}}))
 streams = [stream]"
             );
             let (_, error) = loaded(py, store, "incremental", &body);
@@ -242,8 +250,9 @@ def read(partition, cursor, context):
     yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({'after': 1}))
 def committed(cursors):
     raise AssertionError('told')
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], committed=committed, spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'partitioned': False, 'stated': False, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), committed=committed, spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
         let (_, error) = loaded(py, "python-untold", "incremental", body);
         assert_eq!(error, None);
@@ -288,8 +297,9 @@ def read(partition, cursor, context):
     yield {'n': 1}
 def acknowledged(partition):
     return json.dumps({'after': 3, 'partition': partition})
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], acknowledged=acknowledged, spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'partitioned': False, 'stated': False, 'replayable': True, 'committed': False, 'acknowledged': True, 'cursor_version': 1}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), acknowledged=acknowledged, spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': True, 'cursor_version': 1}))
 streams = [stream]";
         let told = standing(py, body, true).expect("it tells");
         let decoded: serde_json::Value = told.decode(1).unwrap();
@@ -326,10 +336,13 @@ fn a_stream_says_whether_it_can_be_read_again() {
     embedded::with(|py| {
         for replayable in [true, false] {
             let spec = serde_json::json!({
-                "name": "rows", "primary_key": null, "read_modes": ["full", "incremental"],
-                "checkpointing": "natural", "partitioned": false, "stated": false,
-                "replayable": replayable,
-                "committed": false, "acknowledged": false, "cursor_version": 1,
+                "spec": {
+                    "name": "rows", "schema": null, "primary_key": null,
+                    "read_modes": ["full", "incremental"], "checkpointing": "natural",
+                    "replayable": replayable, "change_time": null,
+                },
+                "planned": false, "stated": false, "committed": false, "acknowledged": false,
+                "cursor_version": 1,
             });
             let stream = super::PythonStream::declared(&spec.to_string(), py.None()).unwrap();
             assert_eq!(stream.spec().is_replayable(), replayable);
@@ -341,7 +354,7 @@ fn a_stream_says_whether_it_can_be_read_again() {
 fn a_source_is_connected_for_the_host_its_context_names() {
     embedded::with(|py| {
         let code = c"import builtins, types
-connected = types.SimpleNamespace(check=lambda: None, streams=[])
+connected = types.SimpleNamespace(check=lambda: None, streams=[], discovers=False)
 def connect(config, host):
     builtins.connected_for = host
     return connected
@@ -427,12 +440,13 @@ fn a_source_whose_check_raises_fails_the_build_with_its_type() {
         let body = "\
 def read(partition, cursor, context):
     yield {'n': 1}
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'partitioned': False, 'stated': False, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]
 def failing():
     raise PermissionError('no access')
-connected = types.SimpleNamespace(check=failing, streams=streams)
+connected = types.SimpleNamespace(check=failing, streams=streams, discovers=False)
 connect = lambda config, host: connected";
         let globals = PyDict::new(py);
         py.run(
@@ -468,7 +482,7 @@ fn a_stream_described_wrongly_fails_the_build() {
         let body = "\
 def read(partition, cursor, context):
     yield {'n': 1}
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], spec='not json')
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec='not json')
 streams = [stream]";
         let error = built_up(py, body).err().expect("the build fails");
         assert_eq!(class_of(py, &error), "SourceError");
@@ -484,8 +498,9 @@ def read(partition, cursor, context):
     while not context.checkpoint_due():
         __import__('time').sleep(0.005)
     yield n.Checkpoint('{\"at\": 1}')
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'on_demand', 'partitioned': False, 'stated': False, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'on_demand', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
         let source_factory = factory(py, body).factory();
         let runtime = runtime::get(py).unwrap();
@@ -525,11 +540,12 @@ fn a_plan_reads_committed_cursors_only_for_partitions_that_are_told_them() {
 import builtins
 def read(partition, cursor, context):
     yield {{'n': 1}}
-def partitions(phase, positions, generation, completed):
+def plan(phase, positions, generation, completed):
     builtins.told = (phase, positions, generation, completed)
-    return [('b', False)]
-stream = types.SimpleNamespace(read=read, partitions=partitions, spec=json.dumps({{
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'partitioned': True, 'stated': {}, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 2}}))
+    return (None, [('b', False)], [])
+stream = types.SimpleNamespace(read=read, plan=plan, spec=json.dumps({{
+    'spec': {{'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None}},
+    'planned': True, 'stated': {}, 'committed': False, 'acknowledged': False, 'cursor_version': 2}}))
 streams = [stream]",
                 if stated { "True" } else { "False" }
             );
@@ -553,7 +569,7 @@ streams = [stream]",
                         generation: Some(GenerationId(7)),
                         completed: vec![GenerationId(5), GenerationId(6)],
                     };
-                    source.streams[0].partitions(&source, &state).await
+                    source.streams[0].plan(&source, &state).await
                 })
             });
             if stated {
@@ -561,7 +577,7 @@ streams = [stream]",
                 assert_eq!(refused.code(), Some("cursor_version"));
                 continue;
             }
-            assert_eq!(planned.expect("planned").len(), 1);
+            assert_eq!(planned.expect("planned").partitions.len(), 1);
             let told: (u16, Vec<super::Position>, Option<u64>, Vec<u64>) = py
                 .eval(c"__import__('builtins').told", None, None)
                 .unwrap()
@@ -584,11 +600,12 @@ def read(partition, cursor, context):
         yield {'n': partition}
         if partition == 'b':
             yield n.Checkpoint(json.dumps({'after': 7}))
-def partitions(phase, positions, generation, completed):
+def plan(phase, positions, generation, completed):
     builtins.planned.append((phase, sorted(positions)))
-    return [('a', False), ('b', False)]
-stream = types.SimpleNamespace(read=read, partitions=partitions, spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'partitioned': True, 'stated': True, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+    return (None, [('a', False), ('b', False)], [])
+stream = types.SimpleNamespace(read=read, plan=plan, spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': True, 'stated': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
         for _ in 0..2 {
             let (_, error) = loaded(py, "python-planned", "incremental", body);
@@ -619,8 +636,9 @@ import builtins
 def read(partition, cursor, context):
     builtins.told = (context.follows, context.resumes, context.excluded, dict(context.limits))
     yield {'n': 1}
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'partitioned': False, 'stated': False, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
         let source_factory = factory(py, body).factory();
         let runtime = runtime::get(py).unwrap();
@@ -672,8 +690,9 @@ fn a_stream_s_cursors_are_in_its_format_and_one_of_another_is_refused() {
 import rdlt._native as n
 def read(partition, cursor, context):
     yield n.Checkpoint(json.dumps({'after': json.loads(cursor)['after'] + 1}))
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'partitioned': False, 'stated': False, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 2}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 2}))
 streams = [stream]";
         let source_factory = factory(py, body).factory();
         let runtime = runtime::get(py).unwrap();
@@ -712,8 +731,9 @@ fn an_exception_fails_the_run_with_its_type_and_traceback() {
 def read(partition, cursor, context):
     yield {'n': 1}
     raise ValueError('page 2 is malformed')
-stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'partitioned': False, 'stated': False, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
         let (_, error) = loaded(py, "python-raised", "full", body);
         let report: serde_json::Value =
@@ -731,9 +751,9 @@ streams = [stream]";
 }
 
 const UNSPLIT: &str =
-    "stream = types.SimpleNamespace(read=read, partitions=lambda *state: [], spec=json.dumps({
-    'name': 'rows', 'primary_key': None, 'read_modes': ['full', 'incremental'],
-    'checkpointing': 'natural', 'partitioned': False, 'stated': False, 'replayable': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+    "stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
 
 #[test]

@@ -86,14 +86,14 @@ class _Stream(Protocol):
         """The stream's description, as JSON."""
         ...
 
-    def partitions(
+    def plan(
         self,
         phase: int,
         positions: list[tuple[str, bool, str | None]],
         generation: int | None,
         completed: list[int],
-    ) -> Iterable[tuple[str, bool]]:
-        """Each partition to read, and whether it never ends, given the stream's state."""
+    ) -> tuple[int | None, list[tuple[str, bool]], list[tuple[str, str]]]:
+        """The phase, each partition and whether it never ends, and each start, given its state."""
         ...
 
     def committed(self, cursors: list[tuple[str, str | None]]) -> None:
@@ -115,8 +115,19 @@ class _Source(Protocol):
         """The streams it reads."""
         ...
 
+    @property
+    def discovers(self) -> bool:
+        """Whether it answers its catalog itself."""
+        ...
+
     def check(self) -> None:
         """Verifies it can read."""
+        ...
+
+
+class _Discovering(Protocol):
+    def discover(self) -> str:
+        """Its catalog, each stream's spec, as JSON."""
         ...
 
 
@@ -424,10 +435,15 @@ def transformed(function: Callable[[pa.RecordBatch], object], batch: object) -> 
 
 def connected(
     connect: Callable[[str, str | None], _Source], config: str, host: str | None
-) -> tuple[_Source, list[tuple[str, _Stream]]]:
-    """The source `connect` makes for `host`, with each stream and what it says of itself."""
+) -> tuple[_Source, list[tuple[str, _Stream]], bool]:
+    """The source `connect` makes for `host`, each stream with its spec, and if it discovers."""
     source = connect(config, host)
-    return source, [(stream.spec, stream) for stream in source.streams]
+    return source, [(stream.spec, stream) for stream in source.streams], source.discovers
+
+
+def discovered(source: _Discovering) -> str:
+    """The catalog `source` answers, as JSON."""
+    return source.discover()
 
 
 def method(target: object, name: str, arguments: tuple[object, ...]) -> object:
@@ -440,19 +456,21 @@ def checked(source: _Source) -> None:
     source.check()
 
 
-def partitions(
+def planned(
     stream: _Stream,
     phase: int,
     positions: list[tuple[str, bool, str | None]],
     generation: int | None,
     completed: list[int],
-) -> list[tuple[str, bool]]:
-    """The partitions of `stream`, each with whether it never ends, given its committed state.
+) -> tuple[int | None, list[tuple[str, bool]], list[tuple[str, str]]]:
+    """The plan of `stream`, given its committed state, as the native side reads it.
 
-    The state is its phase, each partition's position, its id, whether it is done and its cursor
-    as JSON, the full read in progress and the full reads recently completed.
+    The plan is its phase, each partition with whether it never ends, and where each partition of
+    a new phase starts, its cursor as JSON. The state is its phase, each partition's position, its
+    id, whether it is done and its cursor as JSON, the full read in progress and the full reads
+    recently completed.
     """
-    return list(stream.partitions(phase, positions, generation, completed))
+    return stream.plan(phase, positions, generation, completed)
 
 
 def committed(stream: _Stream, cursors: list[tuple[str, str | None]]) -> None:
