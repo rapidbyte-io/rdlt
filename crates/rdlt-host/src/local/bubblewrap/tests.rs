@@ -155,6 +155,96 @@ fn what_is_granted_is_bound_from_its_descriptor_and_nothing_else_of_the_hosts() 
 }
 
 #[test]
+fn a_network_grant_gives_what_names_and_tls_are_found_by_and_no_grant_gives_none() {
+    let granted = arguments(&[], NetworkAccess::Granted);
+    let denied = arguments(&[], NetworkAccess::Denied);
+    for file in super::NETWORK_FILES {
+        assert!(holds(&granted, &["--ro-bind-try", file, file]), "{file}");
+        assert!(!denied.iter().any(|argument| argument == file), "{file}");
+    }
+}
+
+/// What a connector granted the network reads to resolve a name.
+#[cfg(target_os = "linux")]
+const NAME_SERVICE: [&str; 3] = ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"];
+
+/// The bundles of trusted certificate authorities a TLS client reads, where each family of
+/// distributions keeps its own.
+#[cfg(target_os = "linux")]
+const BUNDLES: [&str; 5] = [
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    "/etc/ssl/cert.pem",
+];
+
+/// Runs `script` with `/bin/sh` in bubblewrap, which sees the host's system as a connector does,
+/// with what a network grant gives where `network` is granted.
+#[cfg(target_os = "linux")]
+fn run_confined(network: NetworkAccess, script: &str) -> std::process::Output {
+    let mut command = std::process::Command::new(super::WELL_KNOWN);
+    command.args(["--unshare-all", "--clearenv"]);
+    if network == NetworkAccess::Granted {
+        command.arg("--share-net");
+    }
+    for (bind, [from, to]) in Bubblewrap::system(network) {
+        command.arg(bind).arg(from).arg(to);
+    }
+    command
+        .args([
+            "--proc", "/proc", "--dev", "/dev", "--", "/bin/sh", "-c", script,
+        ])
+        .output()
+        .expect("bubblewrap runs")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_connector_granted_the_network_reads_the_hosts_name_service_and_authorities() {
+    if let Err(unusable) = Bubblewrap::new().usable() {
+        rdlt_testkit::process::without_sandbox(&unusable);
+        return;
+    }
+    let (mut names, mut bundles) = (0, 0);
+    for file in NAME_SERVICE.iter().chain(&BUNDLES) {
+        let Ok(host) = std::fs::read(file) else {
+            continue;
+        };
+        // Read through every link inside the sandbox, so a link to what is not bound fails.
+        let granted = run_confined(NetworkAccess::Granted, &format!("cat {file}"));
+        assert!(granted.status.success(), "{file} with a grant: {granted:?}");
+        assert!(
+            granted.stdout == host,
+            "{file} differs from the host's with a grant"
+        );
+        // Said from inside, so it shows the sandbox ran and the file is not there.
+        let denied = run_confined(
+            NetworkAccess::Denied,
+            &format!("test -e {file} || echo absent"),
+        );
+        assert_eq!(
+            denied.stdout, b"absent\n",
+            "{file} without a grant: {denied:?}"
+        );
+        if NAME_SERVICE.contains(file) {
+            names += 1;
+        } else {
+            bundles += 1;
+        }
+    }
+    assert!(
+        names > 0 && bundles > 0,
+        "the host keeps {names} of the name service's files and {bundles} bundles"
+    );
+    let resolves = run_confined(NetworkAccess::Granted, "getent hosts localhost");
+    assert!(
+        resolves.status.success(),
+        "localhost with a grant: {resolves:?}"
+    );
+}
+
+#[test]
 fn a_launcher_that_is_not_there_or_makes_no_sandbox_is_refused_with_its_reason() {
     let asked = confined(&[], NetworkAccess::Denied, &[], &[]);
     let launcher = |path: &str| Bubblewrap::at(path).launcher(&asked).map(|_| ());

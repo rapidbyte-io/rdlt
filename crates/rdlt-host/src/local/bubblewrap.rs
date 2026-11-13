@@ -40,6 +40,32 @@ const SHARED_MEMORY: &str = "/dev/shm";
 #[cfg(any(target_os = "linux", test))]
 const SYSTEM_FILES: [&str; 1] = ["/etc/ld.so.cache"];
 
+/// The files and directories of the host a connector granted the network needs to use it, each
+/// given read only where it exists when the sandbox is made.
+///
+/// Those that resolve names, services and protocols come first, then the certificate
+/// authorities TLS clients trust, where each family of distributions keeps them. None is meant
+/// to hold a secret, and each is read with the host user's own permissions.
+#[cfg(any(target_os = "linux", test))]
+const NETWORK_FILES: [&str; 16] = [
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/nsswitch.conf",
+    "/etc/host.conf",
+    "/etc/gai.conf",
+    "/etc/services",
+    "/etc/protocols",
+    "/etc/ssl/certs",
+    "/etc/ssl/cert.pem",
+    "/etc/ssl/ca-bundle.pem",
+    "/etc/ca-certificates",
+    "/etc/pki/tls/certs",
+    "/etc/pki/tls/cert.pem",
+    "/etc/pki/ca-trust",
+    "/etc/pki/java",
+    "/var/lib/ca-certificates",
+];
+
 /// Bytes: bounds what is kept of what the launcher said when it could not make a sandbox.
 const SAID_BYTES: usize = 512;
 
@@ -55,12 +81,12 @@ const ARGS_FD: RawFd = 5;
 /// granted: nothing of any home directory. Its root, its working directory and `/tmp` are read
 /// only and its `/dev` holds only device nodes and `/dev/shm`, so a write to anywhere but the
 /// scratch directory, `/dev/shm` or a grant fails, rather than land in storage gone with the
-/// process. It has
-/// no network unless granted one, its own user, process, IPC, host-name and control-group
-/// namespaces and no further user namespace, only the environment the host states and the
-/// `PWD` the launcher sets, and a session of its own, and it ends with its host. Its
-/// arguments, the environment among them, reach the launcher through a descriptor, never its
-/// command line.
+/// process. It has no network unless granted one, and with one it sees the host's files that
+/// resolve names and the certificate authorities TLS clients trust, as they were when it
+/// started. It has its own user, process, IPC, host-name and control-group namespaces and no
+/// further user namespace, only the environment the host states and the `PWD` the launcher
+/// sets, and a session of its own, and it ends with its host. Its arguments, the environment
+/// among them, reach the launcher through a descriptor, never its command line.
 ///
 /// The launcher is found at an absolute path, never through `PATH` or the working directory,
 /// and must be no other user's to change, as a connector's binary must; it is opened once,
@@ -97,6 +123,34 @@ impl Bubblewrap {
         }
     }
 
+    /// What a sandboxed connector sees of the host's system, read only, and with a network grant
+    /// what it needs to use the network: each a flag of bubblewrap's, with where it is bound from
+    /// and to.
+    #[cfg(any(target_os = "linux", test))]
+    fn system(network: NetworkAccess) -> Vec<(&'static str, [OsString; 2])> {
+        let mut binds = Vec::new();
+        for system in Self::SYSTEM.map(Path::new) {
+            match std::fs::symlink_metadata(system) {
+                Ok(found) if found.is_symlink() => {
+                    if let Ok(target) = std::fs::read_link(system) {
+                        binds.push(("--symlink", [target.into(), system.into()]));
+                    }
+                }
+                Ok(_) => binds.push(("--ro-bind", [system.into(), system.into()])),
+                Err(_) => {}
+            }
+        }
+        let files: &[&str] = match network {
+            NetworkAccess::Granted => &NETWORK_FILES,
+            NetworkAccess::Denied => &[],
+        };
+        // Bubblewrap skips one that is not there when it makes the sandbox.
+        for &file in SYSTEM_FILES.iter().chain(files) {
+            binds.push(("--ro-bind-try", [file.into(), file.into()]));
+        }
+        binds
+    }
+
     /// The arguments that confine `confined`'s program, with what it is granted.
     #[cfg(any(target_os = "linux", test))]
     fn confinement(confined: &Confined<'_>) -> Vec<OsString> {
@@ -116,23 +170,8 @@ impl Bubblewrap {
             flag(only, &[]);
         }
         flag("--hostname", &["rdlt-connector".as_ref()]);
-        for system in Self::SYSTEM.map(Path::new) {
-            match std::fs::symlink_metadata(system) {
-                Ok(found) if found.is_symlink() => {
-                    if let Ok(target) = std::fs::read_link(system) {
-                        flag("--symlink", &[target.as_ref(), system.as_ref()]);
-                    }
-                }
-                Ok(_) => flag("--ro-bind", &[system.as_ref(), system.as_ref()]),
-                Err(_) => {}
-            }
-        }
-        for file in SYSTEM_FILES
-            .map(Path::new)
-            .iter()
-            .filter(|file| file.exists())
-        {
-            flag("--ro-bind", &[file.as_ref(), file.as_ref()]);
+        for (bind, [from, to]) in Self::system(confined.network) {
+            flag(bind, &[from.as_os_str(), to.as_os_str()]);
         }
         flag("--proc", &["/proc".as_ref()]);
         flag("--dev", &["/dev".as_ref()]);
