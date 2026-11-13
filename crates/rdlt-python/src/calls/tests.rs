@@ -60,6 +60,19 @@ impl<T> Within<T> {
     }
 }
 
+/// Waits, within 10 s, until the pool holds at least `count` idle daemon threads: one goes back
+/// on it only once its answer has been read.
+fn pooled(count: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while super::IDLE.lock().daemons.len() < count {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{count} daemon threads went back on the pool"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// A call of `code`, a callable expression, with no arguments, its answer waited for here.
 fn blocked(code: &'static std::ffi::CStr) -> Result<Result<Py<PyAny>, PyErr>, Unanswered> {
     super::blocking(
@@ -294,6 +307,8 @@ fn a_forked_child_s_first_call_is_answered() {
         // The parent's daemon threads are not in the child, which starts its own.
         let first = py.detach(|| blocked(c"lambda: 1"));
         assert!(matches!(first, Ok(Ok(_))), "the parent's call is answered");
+        // On the pool as the parent forks, so the child holds a copy of it to forget.
+        pooled(1);
         py.run(
             c"import warnings; warnings.simplefilter('ignore', DeprecationWarning)",
             None,
@@ -877,14 +892,7 @@ fn an_await_whose_loop_closed_first_leaves_its_daemon_thread_to_the_next_call() 
     assert!(handed, "the answer was handed to the closed loop");
     // Back on the pool, the daemon thread that handed it over is the top: two wait, it and the
     // spare it started.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while super::IDLE.lock().daemons.len() < 2 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the daemon thread went back on the pool"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    pooled(2);
     let marked = blocked(MARK).unwrap().unwrap();
     embedded::with(|py| {
         assert_eq!(
@@ -899,5 +907,39 @@ fn an_await_whose_loop_closed_first_leaves_its_daemon_thread_to_the_next_call() 
             None,
         )
         .unwrap();
+    });
+}
+
+#[test]
+fn a_pool_claimed_for_another_process_forgets_the_daemon_threads_it_held() {
+    embedded::with(|py| {
+        let first = py.detach(|| blocked(c"lambda: 1"));
+        assert!(matches!(first, Ok(Ok(_))), "the call is answered");
+        pooled(1);
+        // As a forked child claims the copy of its parent's pool it holds.
+        let child = std::process::id().wrapping_add(1);
+        assert!(
+            super::claimed(py, child),
+            "a pool whose lock is free is claimed"
+        );
+        let idle = super::IDLE.lock();
+        assert!(
+            idle.daemons.is_empty(),
+            "the parent's daemon threads are forgotten"
+        );
+        assert_eq!(idle.pid, child, "the pool is the claiming process's");
+    });
+}
+
+#[test]
+fn a_pool_whose_lock_stays_held_is_not_claimed() {
+    embedded::with(|py| {
+        // Held as by a thread a fork left behind; no daemon thread is started to wait on it.
+        let held = super::IDLE.lock();
+        assert!(
+            !super::claimed(py, std::process::id()),
+            "a pool whose lock stays held is not claimed"
+        );
+        drop(held);
     });
 }
