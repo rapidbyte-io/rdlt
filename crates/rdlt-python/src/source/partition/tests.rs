@@ -537,6 +537,44 @@ fn taken(py: Python<'_>, received: &mut mpsc::Receiver<Pushed>) -> Option<&'stat
 }
 
 #[test]
+fn an_async_send_makes_no_more_of_an_item_once_its_engine_has_stopped() {
+    embedded::with(|py| {
+        let (out, mut received) = out_of_one();
+        let watched = out.watched().unwrap();
+        let globals = pyo3::types::PyDict::new(py);
+        let code = c"import pyarrow as pa
+made = [0]
+def batches():
+    for n in range(10):
+        made[0] += 1
+        yield pa.record_batch({'n': [n]})
+item = pa.RecordBatchReader.from_batches(pa.schema([('n', pa.int64())]), batches())
+";
+        py.run(code, Some(&globals), None).unwrap();
+        let item = globals.get_item("item").unwrap();
+        let made = || -> u64 {
+            py.eval(c"made[0]", Some(&globals), None)
+                .unwrap()
+                .extract()
+                .unwrap()
+        };
+
+        assert_eq!(out.send(py, &item), None, "the second batch waits for room");
+        assert_eq!(taken(py, &mut received), Some("batch"));
+        assert!(readable(py, watched, 5), "the second batch was sent");
+        let before = made();
+        // The engine stops before the read goes on.
+        drop(received);
+        assert_eq!(out.resume(py), Some(false), "the read has gone");
+        assert_eq!(
+            made(),
+            before,
+            "a batch was made once the engine had stopped"
+        );
+    });
+}
+
+#[test]
 fn an_async_send_answers_at_once_and_the_runtime_sends_what_found_no_room() {
     embedded::with(|py| {
         let (out, mut received) = out_of_one();
