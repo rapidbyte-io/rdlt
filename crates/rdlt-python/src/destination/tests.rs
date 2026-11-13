@@ -6,9 +6,11 @@ use bytes::Bytes;
 use pyo3::types::{PyAnyMethods as _, PyDict};
 use pyo3::{Py, PyAny, Python};
 use rdlt_connector::{
-    Capabilities, CommitKey, CommitMeta, ConnectContext, ConnectorErrorKind, DestinationFactory,
-    Epoch, Field, LogicalType, OpenContext, PipelineId, PublishedRows, Receipt, SchemaVersion,
-    SegmentId, SegmentSet, StateChange, StateRecord, TableChange, TablePath, TableRef, WriteStats,
+    Capabilities, ChangeColumns, ChildTable, CommitKey, CommitMeta, ConnectContext,
+    ConnectorErrorKind, Deletion, DestinationFactory, DroppedTable, Epoch, Field, GenerationId,
+    HistoryColumns, LogicalType, MergeKey, OpenContext, PipelineId, PublishedRows, Receipt,
+    RootKey, SchemaVersion, SegmentId, SegmentSet, StateChange, StateRecord, TableChange,
+    TablePath, TableRef, WriteStats,
 };
 use rdlt_connector_reference::MemorySource;
 use serde_json::json;
@@ -79,7 +81,7 @@ class Session:
     def apply_schema(self, change):
         calls.append(['apply_schema', json.loads(change)])
     def writer(self, table):
-        calls.append(['writer', json.loads(table)['name']])
+        calls.append(['writer', json.loads(table)])
         return Writer()
     def discard_staged(self):
         calls.append(['discard_staged'])
@@ -284,12 +286,129 @@ fn each_call_reaches_the_python_destination_as_the_sdk_s_json() {
             ["open", "p"],
             ["discard_staged"],
             ["apply_schema", { "add_column": { "table": table_json(), "field": field } }],
-            ["writer", "orders"],
+            ["writer", table_json()],
             ["write", 7, 3],
             ["flush"],
             ["commit", told],
             ["close"],
         ])
+    );
+}
+
+/// A merge key of every kind of column at once, as no table has, and how its JSON is told.
+fn every_key() -> (MergeKey, serde_json::Value) {
+    let key = MergeKey {
+        columns: vec!["_rdlt_root".into(), "line".into()],
+        seq: "_rdlt_seq".into(),
+        root: Some(RootKey {
+            table: "orders".into(),
+            id: "id".into(),
+            seq: "_rdlt_seq".into(),
+        }),
+        changes: Some(ChangeColumns {
+            op: "_rdlt_op".into(),
+            unchanged: Some("_rdlt_unchanged".into()),
+            deletion: Deletion::Soft {
+                at: "deleted_at".into(),
+            },
+        }),
+        history: Some(HistoryColumns {
+            valid_from: "valid_from".into(),
+            valid_to: "valid_to".into(),
+            is_current: "is_current".into(),
+            row_hash: "row_hash".into(),
+        }),
+    };
+    let told = json!({
+        "columns": ["_rdlt_root", "line"],
+        "seq": "_rdlt_seq",
+        "root": { "table": "orders", "id": "id", "seq": "_rdlt_seq" },
+        "changes": {
+            "op": "_rdlt_op",
+            "unchanged": "_rdlt_unchanged",
+            "deletion": { "Soft": { "at": "deleted_at" } },
+        },
+        "history": {
+            "valid_from": "valid_from",
+            "valid_to": "valid_to",
+            "is_current": "is_current",
+            "row_hash": "row_hash",
+        },
+    });
+    (key, told)
+}
+
+/// A replace generation of a child merge table keyed by `key`, and a commit that swaps it in,
+/// follows the child table and drops another.
+fn generation_of(key: MergeKey) -> (TableRef, CommitMeta) {
+    let lines = TablePath::new(["orders", "lines"]).unwrap();
+    let table = TableRef {
+        path: lines.clone(),
+        name: "orders__lines".into(),
+        version: SchemaVersion(3),
+        generation: Some(GenerationId(9)),
+        merge: Some(key.clone()),
+    };
+    let meta = CommitMeta {
+        finish_generations: vec![(lines, GenerationId(9))],
+        child_tables: vec![ChildTable {
+            table: "orders__lines".into(),
+            merge: key,
+        }],
+        drop_tables: vec![DroppedTable {
+            path: TablePath::new(["gone"]).unwrap(),
+            name: "gone".into(),
+        }],
+        ..commit_meta()
+    };
+    (table, meta)
+}
+
+#[test]
+fn a_merge_table_and_what_a_commit_swaps_drops_and_follows_are_told_as_their_json() {
+    let (factory, recorded) = recorder(OPENED);
+    let factory = factory.factory();
+    let (key, told_key) = every_key();
+    let (table, meta) = generation_of(key);
+    within(async {
+        let destination = factory
+            .connect(json!({}), ConnectContext::new())
+            .await
+            .unwrap();
+        let context = OpenContext {
+            pipeline: PipelineId::parse("p").unwrap(),
+        };
+        let mut session = destination.open(&context).await.unwrap().session;
+        session.writer(&table).await.unwrap();
+        session.commit(&meta).await.unwrap();
+    });
+    let told = calls(&recorded);
+    let told_of = |name: &str| {
+        let calls = told.as_array().unwrap();
+        calls.iter().find(|call| call[0] == name).unwrap()[1].clone()
+    };
+    assert_eq!(
+        told_of("writer"),
+        json!({
+            "path": ["orders", "lines"],
+            "name": "orders__lines",
+            "version": 3,
+            "generation": 9,
+            "merge": told_key,
+        })
+    );
+    let committed = told_of("commit");
+    assert_eq!(
+        committed["finish_generations"],
+        json!([[["orders", "lines"], 9]])
+    );
+    assert_eq!(
+        committed["child_tables"],
+        json!([{ "table": "orders__lines", "merge": told_key }])
+    );
+    assert_eq!(
+        committed["drop_tables"],
+        json!([{ "path": ["gone"], "name": "gone" }])
     );
 }
 

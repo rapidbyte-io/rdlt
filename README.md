@@ -346,7 +346,10 @@ Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, ben
   reach the class one at a time, and so do its writers' where it runs one writer, so it needs no
   lock of its own; one whose `capabilities()` says it runs more has its writers called at once,
   each writer's calls one at a time, and `commit` and `close` wait until no writer's call is in
-  flight.
+  flight. A merge table is merged as a Rust destination merges one, by
+  `rdlt.connector.merge`: `merge_sparse(to_arrow(schema), published, buried, incoming, key)`
+  runs Rust's merge, with the GIL released, over any Arrow handed to it, `key` the `MergeKey` in
+  `table["merge"]`, and `read_back` gives a reader every column.
 - **Errors.** `ConnectorError` and its kinds, such as `Transient` and `RateLimited(retry_after=)`,
   say what kind of failure the connector met. `InvalidConfig`, `Unauthorized` and `InvalidData`
   are Rust's `Config`, `Auth` and `Data`, and `COMMIT_STALE`, `TABLE_OWNED` and the rest are its

@@ -16,26 +16,39 @@ __all__ = [
     "SEQ_COLUMN",
     "TABLE_OWNED",
     "UNCHANGED_COLUMN",
+    "Batch",
     "Changes",
     "Checkpoint",
     "DestinationFactory",
     "Events",
     "Host",
+    "MergeError",
     "Notice",
     "Pipeline",
     "Run",
+    "Schema",
     "SourceFactory",
     "StreamContext",
     "Transform",
     "__version__",
+    "admitted",
     "certify_destination",
     "certify_source",
     "certify_transform",
     "clauses",
+    "folded",
+    "holds",
+    "merge_children_sparse",
+    "merge_sparse",
     "minimal_capabilities",
+    "read_back",
+    "refuse_history_generation",
     "serve",
     "table_schema",
+    "to_arrow",
+    "tombstone_schema",
     "unreadable_capabilities",
+    "written_schema",
 ]
 
 __version__: str
@@ -257,3 +270,39 @@ def certify_destination(
 def certify_transform(transform: Transform, inputs: Sequence[pa.RecordBatch]) -> str: ...
 def minimal_capabilities() -> str: ...
 def unreadable_capabilities(answered: str) -> str | None: ...
+
+@final
+class Batch:
+    def __arrow_c_array__(
+        self, requested_schema: object | None = None
+    ) -> tuple[object, object]: ...
+
+@final
+class Schema:
+    def __arrow_c_schema__(self) -> object: ...
+
+class MergeError(Exception): ...
+
+def merge_sparse(
+    schema_of: object,
+    published: Sequence[object],
+    buried: Sequence[object],
+    incoming: Sequence[object],
+    key: str,
+) -> tuple[list[Batch], list[Batch]]: ...
+def merge_children_sparse(
+    schema_of: object,
+    published: Sequence[object],
+    incoming: Sequence[object],
+    key: str,
+    root: str,
+    roots: Sequence[object],
+) -> list[Batch]: ...
+def read_back(schema_of: object, rows: Sequence[object]) -> list[Batch]: ...
+def written_schema(stored: object, changes: str) -> Schema: ...
+def admitted(exported: tuple[object, object], stored: object | None, key: str) -> None: ...
+def holds(held: Sequence[object], schema_of: object) -> None: ...
+def tombstone_schema(schema_of: object, key: str) -> Schema: ...
+def folded(schema_of: object, held: Sequence[object], shapes: int, cells: int) -> list[Batch]: ...
+def refuse_history_generation(table: str) -> None: ...
+def to_arrow(table: str) -> Schema: ...

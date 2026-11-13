@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rdlt.connector import merge
 from rdlt.connector._capabilities import (
     Capabilities,
     DeleteModes,
@@ -53,6 +54,7 @@ from rdlt.connector._secret import Secret
 from rdlt.connector._serve import acknowledging_source_factory, readable_destination_factory, serve
 from rdlt.connector._source import ReadStream, source, stream
 from rdlt.connector._spec import Checkpointing, StreamSpec
+from rdlt.connector._tables import ChangeColumns, HistoryColumns, MergeKey, RootKey, to_arrow
 
 __all__ = [
     "COLUMN_MISSING",
@@ -66,6 +68,7 @@ __all__ = [
     "UNCHANGED_COLUMN",
     "Answer",
     "Capabilities",
+    "ChangeColumns",
     "ChangeOp",
     "Checkpointing",
     "Config",
@@ -77,10 +80,12 @@ __all__ = [
     "Fence",
     "Fenced",
     "Headroom",
+    "HistoryColumns",
     "IdentifierRules",
     "InvalidConfig",
     "InvalidData",
     "Limits",
+    "MergeKey",
     "NestedSupport",
     "OpenContext",
     "Opened",
@@ -89,6 +94,7 @@ __all__ = [
     "PartitionState",
     "RateLimited",
     "ReadStream",
+    "RootKey",
     "SchemaChanges",
     "Secret",
     "StreamContext",
@@ -104,8 +110,10 @@ __all__ = [
     "changes",
     "checkpoint",
     "destination",
+    "merge",
     "readable_destination_factory",
     "serve",
     "source",
     "stream",
+    "to_arrow",
 ]

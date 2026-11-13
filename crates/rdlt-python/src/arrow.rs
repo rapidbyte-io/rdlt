@@ -4,14 +4,16 @@
 #[cfg(test)]
 mod tests;
 
-use arrow_array::ffi::to_ffi;
+use std::sync::Arc;
+
+use arrow_array::ffi::{FFI_ArrowSchema, to_ffi};
 use arrow_array::ffi_stream::ArrowArrayStreamReader;
 use arrow_array::{Array as _, RecordBatch, StructArray};
 use arrow_pyarrow::FromPyArrow as _;
-use arrow_schema::{ArrowError, Schema};
+use arrow_schema::{ArrowError, Schema, SchemaRef};
 use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyAnyMethods as _, PyCapsule, PyTuple};
-use pyo3::{Bound, Py, PyAny, PyErr, Python, intern, pyclass, pyfunction, pymethods};
+use pyo3::{Bound, FromPyObject, Py, PyAny, PyErr, Python, intern, pyclass, pyfunction, pymethods};
 use rdlt_connector::TableSchema;
 
 /// What a Python object holds of Arrow.
@@ -136,11 +138,19 @@ impl ExportedSchema {
 /// what arrow-pyarrow raises of a capsule that holds no schema.
 #[pyfunction]
 pub(crate) fn table_schema(capsule: &Bound<'_, PyAny>) -> Result<String, PyErr> {
-    let producer = Bound::new(capsule.py(), ExportedSchema(capsule.clone().unbind()))?;
-    let schema = Schema::from_pyarrow_bound(producer.as_any())?;
-    let table = TableSchema::from_arrow(&schema)
+    let table = TableSchema::from_arrow(schema(capsule)?.as_ref())
         .map_err(|refused| PyValueError::new_err(refused.to_string()))?;
     Ok(serde_json::to_string(&table).expect("a table schema serializes"))
+}
+
+/// The Arrow schema in `capsule`, which a schema's `__arrow_c_schema__` answered in Python.
+///
+/// # Errors
+///
+/// What arrow-pyarrow raises of a capsule that holds no schema.
+pub(crate) fn schema(capsule: &Bound<'_, PyAny>) -> Result<SchemaRef, PyErr> {
+    let producer = Bound::new(capsule.py(), ExportedSchema(capsule.clone().unbind()))?;
+    Ok(Arc::new(Schema::from_pyarrow_bound(producer.as_any())?))
 }
 
 /// The schema a `pyarrow.Schema` describes.
@@ -150,4 +160,93 @@ pub(crate) fn table_schema(capsule: &Bound<'_, PyAny>) -> Result<String, PyErr> 
 /// `TypeError` where `object` is no schema Arrow can read.
 pub(crate) fn schema_from_pyarrow(object: &Bound<'_, PyAny>) -> Result<Schema, PyErr> {
     Schema::from_pyarrow_bound(object)
+}
+
+/// Arrow Python exported in its own frames and handed over: a batch's schema and array capsules,
+/// or a stream's capsule, as `__arrow_c_array__` and `__arrow_c_stream__` answer them.
+#[derive(FromPyObject)]
+pub(crate) enum Handed<'py> {
+    /// One batch.
+    Batch(Bound<'py, PyAny>, Bound<'py, PyAny>),
+    /// A stream of batches of one schema.
+    Stream(Bound<'py, PyAny>),
+}
+
+/// The batch whose capsules Python exported as `schema` and `array`.
+///
+/// # Errors
+///
+/// What arrow-pyarrow raises of the capsules.
+pub(crate) fn batch<'py>(
+    py: Python<'py>,
+    schema: Bound<'py, PyAny>,
+    array: Bound<'py, PyAny>,
+) -> Result<RecordBatch, PyErr> {
+    let capsules = PyTuple::new(py, [schema, array])?;
+    let producer = Bound::new(py, Exported(capsules.into_any().unbind()))?;
+    RecordBatch::from_pyarrow_bound(producer.as_any())
+}
+
+/// What Python exported of a stream, as a C Data Interface producer.
+#[pyclass(module = "rdlt._native", name = "ExportedStream", frozen)]
+struct ExportedStream(Py<PyAny>);
+
+#[pymethods]
+impl ExportedStream {
+    #[pyo3(signature = (requested_schema=None))]
+    fn __arrow_c_stream__<'py>(
+        &self,
+        py: Python<'py>,
+        requested_schema: Option<&Bound<'py, PyAny>>,
+    ) -> Bound<'py, PyAny> {
+        let _ = requested_schema;
+        self.0.bind(py).clone()
+    }
+}
+
+/// The batches `handed` holds, in order, each stream's read a batch at a time with the GIL
+/// held, since a Python-backed reader runs Python for its next batch.
+///
+/// # Errors
+///
+/// What arrow-pyarrow raises of a capsule, or `ValueError` where a stream fails.
+pub(crate) fn batches(py: Python<'_>, handed: Vec<Handed<'_>>) -> Result<Vec<RecordBatch>, PyErr> {
+    let mut batches = Vec::with_capacity(handed.len());
+    for item in handed {
+        match item {
+            Handed::Batch(schema, array) => batches.push(batch(py, schema, array)?),
+            Handed::Stream(capsule) => {
+                let producer = Bound::new(py, ExportedStream(capsule.unbind()))?;
+                let reader = ArrowArrayStreamReader::from_pyarrow_bound(producer.as_any())?;
+                for batch in reader {
+                    let batch = batch.map_err(|error| {
+                        PyValueError::new_err(format!("a stream of batches failed: {error}"))
+                    })?;
+                    batches.push(batch);
+                }
+            }
+        }
+    }
+    Ok(batches)
+}
+
+/// A schema of Rust's that Python reads through the C Data Interface.
+#[pyclass(module = "rdlt._native", name = "Schema", frozen)]
+pub(crate) struct NativeSchema(SchemaRef);
+
+impl NativeSchema {
+    /// `schema`, as Python will read it.
+    pub(crate) fn new(schema: SchemaRef) -> Self {
+        Self(schema)
+    }
+}
+
+#[pymethods]
+impl NativeSchema {
+    /// The schema as the capsule the C Data Interface's producers answer.
+    fn __arrow_c_schema__<'py>(&self, py: Python<'py>) -> Result<Bound<'py, PyCapsule>, PyErr> {
+        let exported = FFI_ArrowSchema::try_from(self.0.as_ref())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        PyCapsule::new_with_value(py, exported, c"arrow_schema")
+    }
 }

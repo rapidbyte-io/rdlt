@@ -8,7 +8,13 @@ import pytest
 
 import rdlt
 from rdlt.testing import certify_destination, certify_source
-from tests.clauses import DESTINATION_UNMET, KILLED_PAGES, SOURCE_PASSED, outcomes
+from tests.clauses import (
+    DESTINATION_PASSED,
+    DESTINATION_UNMET,
+    KILLED_PAGES,
+    SOURCE_PASSED,
+    outcomes,
+)
 from tests.connectors.tickets import Tickets
 from tests.tls import listening, pki
 
@@ -47,6 +53,26 @@ def test_a_destination_served_with_its_probe_is_certified_at_its_endpoint_read_b
     assert set(found_outcomes) == {"passed", "inapplicable"}, found_outcomes
     assert found_outcomes["inapplicable"] == DESTINATION_UNMET, found_outcomes
     assert certification.result("D-COMMIT").outcome == "passed"
+
+
+def test_a_destination_writing_every_mode_passes_every_clause_at_its_endpoint(
+    tmp_path: Path,
+) -> None:
+    # Its writers are called at once by the served SDK's write tasks, as a host's are.
+    found = pki(tmp_path)
+    with listening(found, "warehouse", "readable_destination_factory(Warehouse)") as endpoint:
+        certification = certify_destination(
+            rdlt.Connector("io.example.warehouse", endpoint=endpoint),
+            config={"path": str(tmp_path / "listening.db")},
+            remote=found.host,
+        )
+        # A certification runs as its report is first asked for: while the warehouse listens.
+        report = certification.report()
+    unpassed = {
+        result.clause: result.reason for result in report.results if result.outcome != "passed"
+    }
+    expected = {"passed": DESTINATION_PASSED, "inapplicable": ["P-CREDIT"]}
+    assert outcomes(certification) == expected, unpassed
 
 
 def test_a_class_served_as_it_is_answers_no_probe_at_its_endpoint(tmp_path: Path) -> None:
