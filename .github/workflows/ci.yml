@@ -156,6 +156,35 @@ jobs:
           PYTHON: ${{ matrix.python }}
           RDLT_REQUIRE_SANDBOX: "1"
 
+  # The Rust examples, a workspace of their own: formatted, linted and tested, the PokeAPI source
+  # spawned in the sandbox among them. `lint` checks their lockfile with every workspace's, and
+  # the Python examples run with the package's suite in `test` and `python`.
+  examples:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
+          install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
+          cache_key_prefix: mise-v1-examples
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Make a sandbox available
+        timeout-minutes: 15
+        run: ./.github/sandbox.sh
+      # A test that needs the sandbox fails where none can be made, rather than skip.
+      - run: just examples
+        env:
+          RDLT_REQUIRE_SANDBOX: "1"
+
   # The simulation's integration tests, built once in its profile into the archive every shard
   # runs.
   sim-archive:

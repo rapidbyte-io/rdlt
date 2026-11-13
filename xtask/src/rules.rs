@@ -61,7 +61,8 @@ pub(crate) struct Finding {
 /// How a file is checked, derived from its path.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FileRole {
-    /// A `tests.rs` file, or a file under `tests/`, `benches/` or `examples/`.
+    /// A `tests.rs` file, or a file under `tests/`, `benches/` or `examples/`, but for the own
+    /// code of an example of the repository's `examples/rust`, beneath its `src/`.
     pub(crate) test: bool,
     /// A file named `mod.rs`.
     pub(crate) mod_rs: bool,
@@ -74,8 +75,13 @@ impl FileRole {
             path.components()
                 .any(|c| c.as_os_str().to_str().is_some_and(|c| dirs.contains(&c)))
         };
+        let example_code = path.starts_with("examples/rust")
+            && path
+                .components()
+                .nth(3)
+                .is_some_and(|c| c.as_os_str() == "src");
         Self {
-            test: named("tests.rs") || under(&["tests", "benches", "examples"]),
+            test: named("tests.rs") || (under(&["tests", "benches", "examples"]) && !example_code),
             mod_rs: named("mod.rs"),
         }
     }

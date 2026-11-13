@@ -1,4 +1,4 @@
-"""Fixtures every suite shares: the reference connectors' binaries, where a host finds them."""
+"""Fixtures the package's suites and the examples share: the reference connectors' binaries."""
 
 from __future__ import annotations
 
@@ -11,10 +11,11 @@ import pytest
 
 pytest_plugins = ["pytester"]
 
-# Appended, so `tests` is importable and the installed `rdlt` still comes first on the path.
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+REPOSITORY = Path(__file__).resolve().parent
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+# Appended, so `tests` is importable and the installed `rdlt` still comes first on the path.
+sys.path.append(str(REPOSITORY / "python"))
+
 BUILT = Path(os.environ.get("RDLT_CONNECTORS_BUILT", str(REPOSITORY / "target" / "debug")))
 REFERENCE = (
     "rdlt-connector-files",

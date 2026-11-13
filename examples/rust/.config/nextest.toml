@@ -1,0 +1,5 @@
+# A test that hangs is ended, rather than left to hold its run, and a failing test leaves the
+# others to run.
+[profile.default]
+fail-fast = false
+slow-timeout = { period = "30s", terminate-after = 4 }

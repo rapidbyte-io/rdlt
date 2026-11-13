@@ -11,7 +11,8 @@ use anyhow::Context as _;
 use cargo_metadata::{Metadata, MetadataCommand};
 
 /// The manifests of the repository's workspaces, relative to its root.
-pub(crate) const MANIFESTS: &[&str] = &["Cargo.toml", "fuzz/Cargo.toml"];
+pub(crate) const MANIFESTS: &[&str] =
+    &["Cargo.toml", "examples/rust/Cargo.toml", "fuzz/Cargo.toml"];
 
 /// The manifests among `manifests` that are no member of a listed workspace, `members`.
 pub(crate) fn unlisted(manifests: &[PathBuf], members: &[PathBuf]) -> Vec<PathBuf> {

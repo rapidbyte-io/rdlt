@@ -46,7 +46,7 @@ python-source = "python"
 python-packages = ["rdlt"]
 
 [tool.pytest.ini_options]
-testpaths = ["python/tests"]
+testpaths = ["python/tests", "examples/python"]
 timeout = 120
 # The installed package is the one tested: pytest puts no source directory before it on the path.
 addopts = [
@@ -63,7 +63,7 @@ xfail_strict = true
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["python"]
+src = ["python", "examples/python/*"]
 # The rest of the repository holds Rust, and Markdown whose code blocks are examples.
 extend-exclude = ["crates", "docs", "fuzz", "xtask"]
 
@@ -101,14 +101,16 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 # The connector template is a project of its own, where `rdlt` sorts as a third party's.
 "crates/rdlt-cli/templates/python/**" = ["I001"]
-"python/examples/**" = ["T201"]
+# An example's program prints what it shows.
+"examples/python/*/main.py" = ["T201"]
+"examples/python/**/test_*.py" = ["D103", "PLR2004", "S101"]
 # A connector's failure classes are named as the Rust SDK names their kinds.
 "python/rdlt/connector/_failures.py" = ["N818"]
 "python/rdlt/_native.pyi" = ["A002"]
 "python/tests/**" = ["D103", "PLR2004", "S101", "S603", "S608"]
 
 [tool.pyright]
-include = ["python", "crates/rdlt-cli/templates/python"]
+include = ["python", "conftest.py", "examples/python", "crates/rdlt-cli/templates/python"]
 extraPaths = ["python", "crates/rdlt-cli/templates/python/src"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"

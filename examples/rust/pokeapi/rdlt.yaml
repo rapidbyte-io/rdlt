@@ -1,0 +1,20 @@
+# PokeAPI's pokemon and types loaded into SQLite in /tmp/pokeapi, each pokemon's nested lists in
+# child tables, with the source spawned as its own binary and granted the network. This example's
+# README says how `rdlt run` runs it.
+version: 1
+pipeline: pokeapi
+source:
+  connector: io.example.pokeapi
+  access: { network: true }
+destination:
+  connector: io.rapidbyte.sqlite
+  config: { path: /tmp/pokeapi/pokeapi.db }
+  access: { write: [/tmp/pokeapi] }
+streams:
+  - name: pokemon
+    read: incremental
+    write: merge
+    nested: { normalize: { max_depth: 1 } }
+  - name: types
+    read: incremental
+    write: merge

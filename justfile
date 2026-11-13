@@ -178,6 +178,17 @@ test *args: python-env
     cargo nextest run --package rdlt --no-default-features -E 'test(/sql_step_needs_the_sql_feature|setting_of_a_feature_not_built/)'
     just python-test
 
+# Check and test the Rust examples, a workspace of their own that builds into this one's target
+# directory, each test within its time limit; `cargo xtask deny` checks their lockfile, and
+# `python-test` runs the Python examples
+[working-directory('examples/rust')]
+examples:
+    cargo fmt --all --check
+    cargo clippy --locked --workspace --all-targets -- -D warnings
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+    cargo nextest run --locked --workspace
+    cargo test --locked --workspace --doc
+
 # Build the simulation's integration tests in the `sim` profile, optimised with its overflow
 # checks and debug assertions kept, into the archive `sim`, `sim-replay`, `stress` and `sim-rate`
 # run
@@ -698,9 +709,9 @@ bench $name $cores="" $filter="" $connectors="":
 
 # Everything the pull-request gate runs, instruction and allocation counts against main among it.
 # Linux only: the counts need valgrind
-ci: lint test (formal-diff "origin/main") coverage miri instructions (sim "" "10000")
+ci: lint test examples (formal-diff "origin/main") coverage miri instructions (sim "" "10000")
 
 # Everything to run before pushing: the quick checks of the pull-request gate, and the formal
 # checks and mutation testing of the change; CI runs the rest of the gate (coverage, Miri, the
 # simulation, macOS, instruction and allocation counts against main) and the formal checks again
-ready base="origin/main": lint test (formal-diff base) (mutants-diff base)
+ready base="origin/main": lint test examples (formal-diff base) (mutants-diff base)
