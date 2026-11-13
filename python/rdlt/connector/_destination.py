@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
@@ -101,10 +102,16 @@ def destination(
       `InvalidConfig(..., code=TABLE_OWNED)`, and a column declared at another type than the
       table holds raises `InvalidData(..., code=SCHEMA_CONFLICT)`.
 
-    A session's calls, its table writers' included, reach the class one at a time. A call the
-    engine stopped waiting for still runs on its thread, the next call of its session, `close()`
-    included, waits for it, and a newer session may open meanwhile: the fence, not the call's
-    end, keeps its commit from landing.
+    A session's calls reach the class one at a time, and so do its table writers' where the
+    destination runs one writer, as `Capabilities.minimal()` does, so such a destination needs no
+    lock of its own. One whose `capabilities()` says it runs more says its table writers may be
+    called at once: each writer's calls come one at a time, beside the other writers' and the
+    session's `apply_schema`, `writer` and `discard_staged`, so what writers share is the author's
+    to lock. No writer's call runs while `commit` or `close` runs, a call the engine stopped
+    waiting for included, and none begins until they return. A call the engine stopped waiting
+    for still runs on its thread, and is waited for as any call is. A newer session may open
+    meanwhile: what an older session's abandoned calls stage is the destination's to keep from a
+    commit, by its fence and by publishing only its session's own epoch.
     """
 
     def made(connector: type[T]) -> type[T]:
@@ -139,27 +146,82 @@ def declaration(connector: type) -> _Declared:
     return cast("_Declared", declared)
 
 
-class _Writer:
-    """An author's table writer, as the native side calls it, one call of a session's at a time."""
+class _Calls:
+    """When a session's calls and its table writers' reach the author.
 
-    def __init__(
-        self,
-        writer: Any,  # noqa: ANN401 - the author's table writer
-        calls: threading.Lock,
-    ) -> None:
+    Where the destination runs one writer, as it does until `capabilities()` answers more, each
+    call waits for every other: one at a time. Where it runs more, the session's calls come one at
+    a time, each writer's one at a time, and writers' calls beside each other and beside the
+    session's `apply_schema`, `writer` and `discard_staged`. A writer's call counts as in flight
+    from the moment it is made, a call the engine stopped waiting for and one queued behind it
+    included: `commit` and `close` start once none is, and none begins until they return.
+    """
+
+    def __init__(self, writers: int) -> None:
+        self._at_once = writers > 1
+        self._session = threading.Lock()
+        """Held across each session call, and each writer's where one writer runs."""
+        self._idle = threading.Condition()
+        """Guards `_in_flight` and `_settling`."""
+        self._in_flight = 0
+        """Writers' calls in flight, where writers run at once."""
+        self._settling = False
+        """Whether `commit` or `close` is waiting for writers' calls, or running."""
+
+    @contextmanager
+    def session(self, *, settled: bool = False) -> Generator[None]:
+        """A session call; where `settled`, once no writer's call is in flight, and none begins."""
+        with self._session:
+            if not (settled and self._at_once):
+                yield
+                return
+            try:
+                with self._idle:
+                    self._settling = True
+                    self._idle.wait_for(lambda: self._in_flight == 0)
+                yield
+            finally:
+                with self._idle:
+                    self._settling = False
+                    self._idle.notify_all()
+
+    @contextmanager
+    def writer(self, own: threading.Lock) -> Generator[None]:
+        """A call of the writer whose calls `own` keeps one at a time, counted before it waits."""
+        if not self._at_once:
+            with self._session:
+                yield
+            return
+        with self._idle:
+            self._idle.wait_for(lambda: not self._settling)
+            self._in_flight += 1
+        try:
+            with own:
+                yield
+        finally:
+            with self._idle:
+                self._in_flight -= 1
+                self._idle.notify_all()
+
+
+class _Writer:
+    """An author's table writer, as the native side calls it, when its session's calls say."""
+
+    def __init__(self, writer: Any, calls: _Calls) -> None:  # noqa: ANN401 - the author's writer
         self._writer, self._calls = writer, calls
+        self._own = threading.Lock()
+        """Held across each of this writer's calls where writers run at once."""
 
     def write(self, segment: int, batch: object) -> None:
         """Stages the native batch `batch`, read as pyarrow's, sharing its buffers."""
         import pyarrow as pa  # noqa: PLC0415
 
-        written = pa.record_batch(cast("Any", batch))
-        with self._calls:
-            self._writer.write(segment, written)
+        with self._calls.writer(self._own):
+            self._writer.write(segment, pa.record_batch(cast("Any", batch)))
 
     def flush(self) -> tuple[int, int]:
         """The rows and bytes the flush staged."""
-        with self._calls:
+        with self._calls.writer(self._own):
             stats = self._writer.flush()
         if not isinstance(stats, WriteStats):
             message = (
@@ -172,41 +234,41 @@ class _Writer:
 class _Session:
     """An author's session, as the native side calls it: arguments and answers as the SDK's JSON.
 
-    Its calls and its table writers' reach the author one at a time, as the Rust SDK orders a
-    session's: a call the engine stopped waiting for still runs, and the next waits for it.
+    Its calls and its table writers' reach the author as `_Calls` says: a call the engine stopped
+    waiting for still runs, and is waited for as any call is.
     """
 
-    def __init__(self, session: Any) -> None:  # noqa: ANN401 - the author's session
+    def __init__(self, session: Any, writers: int) -> None:  # noqa: ANN401 - the author's session
         self._session = session
-        self._calls = threading.Lock()
+        self._calls = _Calls(writers)
 
     def apply_schema(self, change: str) -> None:
         """Applies the schema change `change`."""
         parsed = _parse(change)
-        with self._calls:
+        with self._calls.session():
             self._session.apply_schema(parsed)
 
     def writer(self, table: str) -> _Writer:
         """A table writer of `table`."""
         parsed = _parse(table)
-        with self._calls:
+        with self._calls.session():
             return _Writer(self._session.writer(parsed), self._calls)
 
     def discard_staged(self) -> None:
         """Removes what older sessions staged."""
-        with self._calls:
+        with self._calls.session():
             self._session.discard_staged()
 
     def commit(self, meta: str) -> str:
-        """Commits `meta`, answering its receipt."""
+        """Commits `meta`, answering its receipt, once no writer's call is in flight."""
         parsed = _parse(meta)
-        with self._calls:
+        with self._calls.session(settled=True):
             receipt = self._session.commit(parsed)
         return json.dumps(dict(receipt))
 
     def close(self) -> None:
         """Ends the session, once its calls in flight returned."""
-        with self._calls:
+        with self._calls.session(settled=True):
             self._session.close()
 
 
@@ -219,6 +281,9 @@ class _Connected:
 
     def __init__(self, placement: Callable[[], Placement[_Declared]]) -> None:
         self._placement = placement
+        self._writers = 1
+        """The table writers the instance said it runs at once: one until `capabilities()`
+        answered, which the native side asks and awaits before it opens a session."""
 
     def _instance(self) -> Any:  # noqa: ANN401 - the author's class
         return self._placement().connections[self]
@@ -238,6 +303,7 @@ class _Connected:
                 "rdlt.connector.Capabilities"
             )
             raise TypeError(message)
+        self._writers = found.max_parallel_writers
         return found._json()
 
     def check(self) -> None:
@@ -253,7 +319,7 @@ class _Connected:
         landed = None if opened.landed is None else dict(opened.landed)
         state = [dict(record) for record in opened.state]
         told = {"epoch": opened.epoch, "landed": landed, "state": state}
-        return _Session(opened.session), json.dumps(told)
+        return _Session(opened.session, self._writers), json.dumps(told)
 
     def published(self, table: str) -> list[list[object]]:
         """Each batch `table` published, exported as the C Data Interface's capsules."""

@@ -63,10 +63,19 @@ rdlt's own tests are, reaches those handlers moments after its last call.
 - **The SDK is the Rust SDK.** A Python connector class, which `@source` or `@destination` makes,
   is wrapped as an `rdlt-connector` source or destination described at run time, so barriers,
   checkpoints, frame sizing, limits, credit, heartbeats and deadlines, and a destination's
-  sessions, table writers and commits, are the Rust SDK's. A session's calls, its table writers'
-  included, reach the class one at a time, as the Rust SDK orders them, so an author's destination
-  needs no lock of its own. Its configuration is a pydantic model, whose refusals name the field,
-  the fault and the kind of value, never the value.
+  sessions, table writers and commits, are the Rust SDK's. A session's calls reach the class one
+  at a time, in the order the Rust SDK gives them, and so do its table writers' where the
+  destination runs one writer, as `Capabilities.minimal()` does, so such a destination needs no
+  lock of its own. One whose `capabilities()` says it runs more says its table writers may be
+  called at once, as the Rust SDK's served session calls them: each writer's calls come one at a
+  time, in order, beside the other writers' and the session's `apply_schema`, `writer` and
+  `discard_staged`, and what its writers share, with each other and with the session, is the
+  author's to lock. No writer's call runs while `commit` or `close` runs, a call the engine
+  stopped waiting for included, and none begins until they return. What an older session's
+  abandoned calls stage is the destination's to keep from a commit, by its fence and by
+  publishing only its session's own epoch. A session opened before `capabilities()` answered is
+  called one at a time. Its configuration is a pydantic model, whose refusals name the
+  field, the fault and the kind of value, never the value.
 - **One way to write a source, in the Rust SDK's words.** `rdlt.connector` names what the Rust SDK
   names, in Python's case: `ConnectorError` and its kinds, `RateLimited`'s `retry_after`, a source's
   `streams()`, answering the `ReadStream`s its connection offers, and `discover()`, answering its
