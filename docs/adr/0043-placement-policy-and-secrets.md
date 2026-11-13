@@ -121,8 +121,10 @@ given. A host enforces that only where it closes each of these:
     host's loopback services and the abstract Unix sockets of that namespace. It gives the
     connector, read only, the host's files that resolve names and its stores of trusted
     certificate authorities, without which a granted connector could reach an address but not
-    resolve a name or verify a TLS server. A change the host makes in one shows; a file the host
-    replaces with another keeps the copy the connector started with. Bubblewrap can
+    resolve a name or verify a TLS server. A change the host makes in place shows, and so does
+    one within a bound directory, such as a certificate added to `/etc/ssl/certs`; a file bound
+    itself, such as `/etc/resolv.conf`, that the host replaces with another keeps the copy the
+    connector started with. Bubblewrap can
     give a connector its own namespace with no route at all, or the host's; a namespace with
     only external routes needs a user-mode network stack and is not offered.
   - Outside Linux there is no sandbox (`sandbox_unsupported`): untrusted connectors run
