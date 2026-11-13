@@ -8,6 +8,7 @@ use rdlt_connector::{ConnectorErrorKind, Partition, PartitionId};
 use tokio::sync::mpsc;
 
 use super::{PartitionOut, Pushed, Reading};
+use crate::calls::tests::Unpatch;
 use crate::embedded;
 use crate::json::JsonLimits;
 use crate::runtime;
@@ -964,7 +965,7 @@ fn descriptors_back_to(py: Python<'_>, before: usize) -> bool {
 /// Records, in `builtins.unwatched`, whether each socket a loop stops watching was open then.
 const UNWATCHING: &std::ffi::CStr = c"import asyncio.selector_events as events, builtins, os
 builtins.unwatched = []
-removing = events.BaseSelectorEventLoop.remove_reader
+builtins.removing = removing = events.BaseSelectorEventLoop.remove_reader
 def remove_reader(loop, fd):
     try:
         os.fstat(fd)
@@ -1060,6 +1061,9 @@ async def read(p, c, x):
     yield pa.Table.from_batches([pa.record_batch({'n': [1]})] * 3)";
         drop(drained(py, started(py, warming)));
         py.run(UNWATCHING, None, None).unwrap();
+        let _watching_back = Unpatch(
+            c"import asyncio.selector_events as events, builtins\nevents.BaseSelectorEventLoop.remove_reader = builtins.removing",
+        );
         let before = descriptors();
         let mut left = Vec::new();
         for (unwatched_before, (ending, body)) in ENDINGS.into_iter().enumerate() {
