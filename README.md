@@ -927,7 +927,7 @@ only as the host's `allow_env`, `allow_files` and `secret_store` allow.
 | Placement | Host | What the connector can reach | Platforms |
 |---|---|---|---|
 | In process | `.source::<C>()`, `.destination::<C>()` | Everything the host can; for connectors compiled into the host and trusted | Linux, macOS |
-| Sandboxed process | `Host::new()` | Read-only system directories, its own `/proc` and `/dev`, a private scratch directory held in memory that `TMPDIR` names, the paths it is granted, and its socket on file descriptor 3. A network grant shares the host's whole network. | Linux, with bubblewrap 0.8 or later, kernel 5.11 or later and unprivileged user namespaces |
+| Sandboxed process | `Host::new()` | Read-only system directories, its own `/proc` and `/dev`, a private scratch directory held in memory that `TMPDIR` names, the paths it is granted, and its socket on file descriptor 3. A network grant shares the host's whole network, with the host's files that resolve names and the certificate authorities TLS clients trust. | Linux, with bubblewrap 0.8 or later, kernel 5.11 or later and unprivileged user namespaces |
 | Trusted process | `.trust_binaries()` | The host's own files, network and processes | Linux, macOS |
 | Remote | `.remote(Tls::from_files(cert, key, ca).await?)` | What its own machine allows; reached over mutual TLS 1.3 and dialled again when lost | Any machine the host can reach; a connector served by `rdlt_connector::serve` runs on Linux or macOS |
 
@@ -1036,7 +1036,11 @@ async fn load() -> Result<(), Box<dyn std::error::Error>> {
   asks for (`access`, `ConnectorRef::read`, `write`, `network`) within a root the host names
   (`Host::readable`, `writable`; `Local::readable`, `writable`). By default no root is named and no
   access is given. Network access shares the host's network namespace whole: every interface and
-  route, the host's loopback services and its abstract Unix sockets.
+  route, the host's loopback services and its abstract Unix sockets. It also gives, read only and as
+  they were when the connector started, the host's files that resolve names (`/etc/resolv.conf`,
+  `/etc/hosts`, `/etc/nsswitch.conf`) and its stores of the certificate authorities TLS clients
+  trust, so a connector can reach a service by name over TLS. None is meant to hold a secret, and
+  each is read with the host user's own permissions.
 - A provider honours or refuses every requirement a reference states.
   `.isolation(Isolation::Sandbox)` or `.isolation(Isolation::Remote)` keeps a reference from being placed
   as a connector with the host's access, and `.digest(..)` accepts only the binary with that SHA-256;

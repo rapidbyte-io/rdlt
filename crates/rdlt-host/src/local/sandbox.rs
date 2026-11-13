@@ -41,6 +41,9 @@ pub enum NetworkAccess {
     Denied,
     /// It shares the host's network: every interface and route of the host, the host's own
     /// loopback services, and the abstract Unix sockets of the host's network namespace.
+    ///
+    /// It sees, read only and as they were when it started, the host's files that resolve names
+    /// and the certificate authorities TLS clients trust.
     Granted,
 }
 

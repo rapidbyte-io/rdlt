@@ -118,7 +118,10 @@ given. A host enforces that only where it closes each of these:
     does a step of running it that the operating system refuses (`sandbox_failed`, the system's
     error kept as its cause).
   - The network grant shares the host's network namespace: every interface and route, the
-    host's loopback services and the abstract Unix sockets of that namespace. Bubblewrap can
+    host's loopback services and the abstract Unix sockets of that namespace. It gives the
+    connector, read only and as they were when it started, the host's files that resolve names
+    and its stores of trusted certificate authorities, without which a granted connector could
+    reach an address but not resolve a name or verify a TLS server. Bubblewrap can
     give a connector its own namespace with no route at all, or the host's; a namespace with
     only external routes needs a user-mode network stack and is not offered.
   - Outside Linux there is no sandbox (`sandbox_unsupported`): untrusted connectors run
@@ -293,7 +296,8 @@ Rejected:
     job, or control groups';
   - on macOS, any confinement of a local connector;
   - what a network grant reaches: the host's network namespace, its loopback services and
-    abstract sockets included;
+    abstract sockets included, and the host's files that resolve names and its trusted
+    certificate authorities;
   - what a read grant reaches beyond reading: a read-only bind still lets a connector connect
     to a Unix socket beneath it, as a session bus or an agent's under `/run/user`;
   - a program mounted into a grant: the link rule compares file systems, so a bind mount of
