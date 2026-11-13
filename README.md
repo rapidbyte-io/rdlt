@@ -342,8 +342,11 @@ Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, ben
   is where the class has none, as a Rust destination's `capabilities` does; capabilities Rust's
   cannot hold, as no writers, are refused where they are made. Its `open(context)` answers a
   session whose table writers stage what a commit publishes, each `flush()` answering
-  `WriteStats`; a commit decides with `Fence(epoch, landed).decide(meta)`. A session's calls, its
-  writers' included, reach the class one at a time, so it needs no lock of its own.
+  `WriteStats`; a commit decides with `Fence(epoch, landed).decide(meta)`. A session's calls
+  reach the class one at a time, and so do its writers' where it runs one writer, so it needs no
+  lock of its own; one whose `capabilities()` says it runs more has its writers called at once,
+  each writer's calls one at a time, and `commit` and `close` wait until no writer's call is in
+  flight.
 - **Errors.** `ConnectorError` and its kinds, such as `Transient` and `RateLimited(retry_after=)`,
   say what kind of failure the connector met. `InvalidConfig`, `Unauthorized` and `InvalidData`
   are Rust's `Config`, `Auth` and `Data`, and `COMMIT_STALE`, `TABLE_OWNED` and the rest are its
