@@ -213,16 +213,17 @@ class Store:
         """The table `table` names, claimed for `pipeline`'s session at `epoch` where unowned.
 
         Its path's name and its merge key are recorded. Another pipeline's table is refused, and
-        so is a claim by a session a newer one fenced.
+        so is any claim by a session a newer one fenced: its late call would otherwise record its
+        own merge key over the newer session's.
         """
         name = str(table["name"])
         held = self.table(name)
-        if held is None and self.epoch(pipeline) != epoch:
-            message = f"pipeline {pipeline} has a session newer than epoch {epoch}"
-            raise Fenced(message)
         if held is not None and held.owner != pipeline:
             message = f"table {name} belongs to pipeline {held.owner}"
             raise InvalidConfig(message, code=TABLE_OWNED)
+        if self.epoch(pipeline) != epoch:
+            message = f"pipeline {pipeline} has a session newer than epoch {epoch}"
+            raise Fenced(message)
         key = None if table["merge"] is None else json.dumps(table["merge"])
         self.database.execute(
             "insert into tables values (?, ?, null, ?) on conflict(name) do update set merge = ?",

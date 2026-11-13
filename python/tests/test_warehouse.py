@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 import rdlt
+from rdlt.connector import Fenced, OpenContext
+from rdlt.model import Json
 from rdlt.testing import certify_destination
 from tests.clauses import DESTINATION_PASSED, outcomes
 from tests.connectors import warehouse
-from tests.connectors.warehouse import Warehouse
+from tests.connectors.warehouse import Warehouse, WarehouseConfig
+from tests.connectors.warehouse_store import Store, connected
 from tests.launchers import warehouse_launcher
 
 
@@ -92,3 +96,38 @@ def test_a_merge_load_keeps_one_row_per_key_however_often_it_runs(
         ).build(host(tmp_path, connectors, launchers)).run()
     table = warehouse.published(str(path), "rows")
     assert sorted(cast("list[int]", table["id"].to_pylist())) == list(range(50))
+
+
+KEYED: dict[str, Json] = {
+    "path": ["rows"],
+    "name": "rows",
+    "version": 1,
+    "generation": None,
+    "merge": {
+        "columns": ["id"],
+        "seq": "_rdlt_seq",
+        "root": None,
+        "changes": None,
+        "history": None,
+    },
+}
+"""A merge table's writer, as a session is told it."""
+
+
+def test_a_session_a_newer_one_fenced_claims_no_table_its_pipeline_owns(tmp_path: Path) -> None:
+    path = str(tmp_path / "fenced.db")
+    warehouse = Warehouse(WarehouseConfig(path=path))
+    stale = warehouse.open(OpenContext("fenced")).session
+    stale.writer(KEYED)
+    latest = warehouse.open(OpenContext("fenced")).session
+    latest.writer(KEYED)
+    appended = {**KEYED, "merge": None}
+    with pytest.raises(Fenced):
+        stale.writer(appended)
+    with pytest.raises(Fenced):
+        stale.apply_schema({"add_column": {"table": appended, "field": []}})
+    # The newer session's key stands: its rows are still admitted and merged by it.
+    with closing(connected(path)) as database:
+        held = Store(database).table("rows")
+    assert held is not None
+    assert held.merge == KEYED["merge"]
