@@ -283,9 +283,9 @@ Run it twice from the repository's root, with the connectors' directory and a di
 database:
 
 ```console
-$ python examples/python/quickstart/main.py ~/.local/share/rdlt/connectors .
+$ python examples/python/quickstart/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" .
 succeeded: committed 30 rows
-$ python examples/python/quickstart/main.py ~/.local/share/rdlt/connectors .
+$ python examples/python/quickstart/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" .
 succeeded: committed 0 rows
 ```
 

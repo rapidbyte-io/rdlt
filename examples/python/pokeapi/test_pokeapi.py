@@ -9,6 +9,7 @@ import email.utils
 import importlib.util
 import json
 import runpy
+import shlex
 import sqlite3
 import stat
 import subprocess
@@ -37,6 +38,9 @@ from tests.sandboxes import NO_SANDBOX, without_sandbox
 
 EXAMPLE = Path(__file__).resolve().parent
 PROGRAM = EXAMPLE / "main.py"
+CONNECTORS = "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors"
+"""The connectors' directory each command names, where the README's install puts them; the test
+runs the program with its own."""
 
 KILLED_TYPES = 40_000
 """Types the kill clause's load reads: about a megabyte of rows, a load that outlasts the commits
@@ -218,9 +222,10 @@ def shown(text: str) -> list[str]:
     runs: list[str] = []
     for line in block.splitlines(keepends=True):
         if line.startswith("$ "):
-            command = line.split()[1:]
+            command = shlex.split(line)[1:]
             if command[0].endswith("python"):
                 assert command[1:2] == [program], command
+                assert command[2:3] == [CONNECTORS], command
                 assert len(command[2:]) == 2, command
                 runs.append("")
         elif runs:

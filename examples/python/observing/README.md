@@ -33,7 +33,7 @@ database and a count of commits after which the program asks for the stop itself
 
 ```console
 $ mkdir -p /tmp/observing-python
-$ .venv/bin/python examples/python/observing/main.py ~/.local/share/rdlt/connectors /tmp/observing-python 3
+$ .venv/bin/python examples/python/observing/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" /tmp/observing-python 3
 attempt 1 started
 table events at schema version 1
 commit 1: 50000 rows in 278 ms

@@ -13,9 +13,9 @@ shows. Run it twice from the repository's root, with the connectors' directory a
 for the database:
 
 ```console
-$ .venv/bin/python examples/python/quickstart/main.py ~/.local/share/rdlt/connectors .
+$ .venv/bin/python examples/python/quickstart/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" .
 succeeded: committed 30 rows
-$ .venv/bin/python examples/python/quickstart/main.py ~/.local/share/rdlt/connectors .
+$ .venv/bin/python examples/python/quickstart/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" .
 succeeded: committed 0 rows
 ```
 

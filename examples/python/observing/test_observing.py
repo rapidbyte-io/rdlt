@@ -10,6 +10,7 @@ import importlib.util
 import queue
 import re
 import runpy
+import shlex
 import signal
 import sqlite3
 import subprocess
@@ -28,6 +29,9 @@ EXAMPLE = Path(__file__).resolve().parent
 PROGRAM = EXAMPLE / "main.py"
 PATIENCE = 60.0
 """Seconds a test waits for the program to say something, or to end."""
+CONNECTORS = "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors"
+"""The connectors' directory each command names, where the README's install puts them; the test
+runs the program with its own."""
 
 
 def program() -> ModuleType:
@@ -48,9 +52,10 @@ def shown() -> tuple[list[str], str]:
     runs: list[tuple[list[str], str]] = []
     for line in block.splitlines(keepends=True):
         if line.startswith("$ "):
-            command = line.split()[1:]
+            command = shlex.split(line)[1:]
             if command[0].endswith("python"):
                 assert command[1:2] == [path], command
+                assert command[2:3] == [CONNECTORS], command
                 runs.append((command[4:], ""))
         elif runs:
             arguments, printed = runs[-1]

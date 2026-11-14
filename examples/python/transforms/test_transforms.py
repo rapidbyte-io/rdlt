@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import runpy
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +22,9 @@ EXAMPLE = Path(__file__).resolve().parent
 PROGRAM = EXAMPLE / "main.py"
 KEY = "ORDERS_KEY"
 """The mask's key, which the program reads from the environment."""
+CONNECTORS = "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors"
+"""The connectors' directory each command names, where the README's install puts them; the test
+runs the program with its own."""
 
 
 def program() -> ModuleType:
@@ -45,12 +49,13 @@ def shown(text: str) -> tuple[dict[str, str], list[str]]:
     runs: list[str] = []
     for line in block.splitlines(keepends=True):
         if line.startswith("$ "):
-            command = line.split()[1:]
+            command = shlex.split(line)[1:]
             if command[0] == "export":
                 name, value = command[1].split("=", 1)
                 exported[name] = value
             elif command[0].endswith("python"):
                 assert command[1:2] == [path], command
+                assert command[2:3] == [CONNECTORS], command
                 assert len(command[2:]) == 2, command
                 runs.append("")
         elif runs:

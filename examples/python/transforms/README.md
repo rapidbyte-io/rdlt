@@ -40,7 +40,7 @@ database:
 ```console
 $ export ORDERS_KEY=example-key
 $ mkdir -p /tmp/transforms-python
-$ .venv/bin/python examples/python/transforms/main.py ~/.local/share/rdlt/connectors /tmp/transforms-python
+$ .venv/bin/python examples/python/transforms/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" /tmp/transforms-python
 succeeded: committed 3 rows, 1 filtered out
 id  quantity  total_cents  status    currency  email
 1   2         2500         paid      EUR       925ab9f1e88ac03cf1328a8a0cc12c35736ea4dfa0f36f50f1bdb0a5a38de010
