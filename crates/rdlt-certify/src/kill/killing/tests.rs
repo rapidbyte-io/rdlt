@@ -1,11 +1,13 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use arrow_array::{Int64Array, RecordBatch};
 use rdlt_connector::{
-    BoxFuture, Capabilities, CommitKey, CommitMeta, Destination, DestinationSession,
-    DestinationWriter, Epoch, OpenContext, OpenedSession, PipelineId, Receipt, Result,
-    SchemaVersion, SegmentId, SegmentSet, TableChange, TablePath, TableRef, WriteStats,
+    BoxFuture, Capabilities, CommitKey, CommitMeta, ConnectorError, ConnectorErrorKind,
+    Destination, DestinationSession, DestinationWriter, Epoch, OpenContext, OpenedSession,
+    PipelineId, Receipt, Result, SchemaVersion, SegmentId, SegmentSet, TableChange, TablePath,
+    TableRef, WriteStats,
 };
 use rdlt_host::{CONNECTOR_LOST, Kills};
 
@@ -79,6 +81,122 @@ impl DestinationWriter for TakingWriter {
     fn flush(&mut self) -> BoxFuture<'_, Result<WriteStats>> {
         Box::pin(async { Ok(WriteStats::default()) })
     }
+}
+
+/// A destination that takes every call but fails its `fails`th commit, as a connector killed
+/// before it answers it does.
+struct Failing {
+    capabilities: Capabilities,
+    fails: Option<u64>,
+    commits: Arc<AtomicU64>,
+}
+
+struct FailingSession {
+    fails: Option<u64>,
+    commits: Arc<AtomicU64>,
+}
+
+impl Destination for Failing {
+    fn capabilities(&self) -> &Capabilities {
+        &self.capabilities
+    }
+
+    fn check(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn open<'a>(&'a self, _: &'a OpenContext) -> BoxFuture<'a, Result<OpenedSession>> {
+        Box::pin(async {
+            let session = FailingSession {
+                fails: self.fails,
+                commits: Arc::clone(&self.commits),
+            };
+            Ok(OpenedSession {
+                session: Box::new(session),
+                epoch: Epoch(1),
+                landed: None,
+                state: Vec::new(),
+            })
+        })
+    }
+}
+
+impl DestinationSession for FailingSession {
+    fn apply_schema<'a>(&'a mut self, _: &'a TableChange) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn writer<'a>(
+        &'a mut self,
+        _: &'a TableRef,
+    ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
+        Box::pin(async { Ok(Box::new(TakingWriter) as Box<dyn DestinationWriter>) })
+    }
+
+    fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
+        Box::pin(async move {
+            let commit = self.commits.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.fails == Some(commit) {
+                let message = "the connector was killed before it answered";
+                return Err(ConnectorError::new(ConnectorErrorKind::Transient, message));
+            }
+            Ok(Receipt {
+                key: meta.key,
+                committed_at: SystemTime::now(),
+                rows: 0,
+                bytes: 0,
+            })
+        })
+    }
+
+    fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// What became of a commit through a killing destination.
+#[derive(Debug, PartialEq, Eq)]
+enum Answer {
+    /// It was answered.
+    Answered,
+    /// The destination failed it.
+    Failed,
+    /// It landed and its answer was lost, with a kill.
+    Lost,
+}
+
+/// What becomes of `commits` commits through a killing destination that loses the answer the
+/// schedule's `answer` says, of a destination that fails its `fails`th commit; each lost answer
+/// kills once, and nothing else does.
+async fn answered(answer: u64, fails: Option<u64>, commits: u64) -> Vec<Answer> {
+    let kills = Kills::new();
+    let schedule = Schedule {
+        settled: u64::MAX,
+        commit: u64::MAX,
+        answer: Some(answer),
+    };
+    let failing = Failing {
+        capabilities: Capabilities::minimal(),
+        fails,
+        commits: Arc::default(),
+    };
+    let killing = Killing::new(Arc::new(failing), &kills, schedule);
+    let context = OpenContext {
+        pipeline: PipelineId::parse("answers").expect("a valid id"),
+    };
+    let mut session = killing.open(&context).await.expect("opens").session;
+    let mut answers = Vec::new();
+    for _ in 0..commits {
+        let answer = match session.commit(&meta()).await {
+            Ok(_) => Answer::Answered,
+            Err(lost) if lost.code() == Some(CONNECTOR_LOST) => Answer::Lost,
+            Err(_) => Answer::Failed,
+        };
+        answers.push(answer);
+    }
+    let lost = answers.iter().filter(|answer| **answer == Answer::Lost);
+    assert_eq!(kills.count(), u64::try_from(lost.count()).expect("few"));
+    answers
 }
 
 fn table(name: &str) -> TableRef {
@@ -177,6 +295,27 @@ async fn kills_land_after_the_settled_commit_before_the_scheduled_one_and_losing
         .await
         .expect("the fourth commit answers");
     assert_eq!(kills.count(), 3, "and before no other");
+}
+
+#[tokio::test]
+async fn an_answer_whose_commit_fails_is_lost_from_the_next_commit_that_lands() {
+    use Answer::{Answered, Failed, Lost};
+    let answers = answered(2, Some(2), 4).await;
+    assert_eq!(answers, [Answered, Failed, Lost, Answered]);
+}
+
+#[tokio::test]
+async fn an_answer_is_lost_once() {
+    use Answer::{Answered, Lost};
+    let answers = answered(1, None, 4).await;
+    assert_eq!(answers, [Lost, Answered, Answered, Answered]);
+}
+
+#[tokio::test]
+async fn no_answer_is_lost_before_its_commit() {
+    use Answer::{Answered, Lost};
+    let answers = answered(3, None, 4).await;
+    assert_eq!(answers, [Answered, Answered, Lost, Answered]);
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@
 mod bounded;
 mod destination;
 mod killing;
+mod paced;
 mod rows;
 mod source;
 #[cfg(test)]
@@ -98,8 +99,7 @@ const LOADS: usize = 3;
 /// flight.
 const COMMIT_ROWS: u64 = 16;
 
-/// The load's memory budget, about the least an engine takes: its shares bound what a
-/// source sends ahead of commits.
+/// The load's memory budget, about the least an engine takes.
 const MEMORY: u64 = 40 << 20;
 
 /// The rows a batch the engine writes holds, at most.
@@ -157,7 +157,7 @@ pub(crate) enum Loaded {
 }
 
 /// The loads a clause runs until a kill interrupts one: its kill points count commits, and a
-/// load on a busy machine makes fewer, larger ones, and may end first.
+/// load whose source is not paced makes fewer, larger ones on a busy machine, and may end first.
 pub(crate) const DRAWS: u64 = 4;
 
 /// The outcome of `load`, given the run naming its pipelines and stores and the seed of its
@@ -254,8 +254,7 @@ fn config() -> Result<EngineConfig, Violation> {
         .initial(Duration::from_millis(10))
         .max_delay(Duration::from_millis(200))
         .reset_after_progress(true);
-    // Small batches and little room ahead of the destination, so commits come often and a
-    // source is still reading when the kills land.
+    // Small batches and little room ahead of the destination, so commits come often.
     let batch = BatchPolicy::new(1 << 20, BATCH_ROWS, Duration::from_millis(10), 1 << 20)
         .map_err(Violation::of)?;
     EngineConfig::builder()
