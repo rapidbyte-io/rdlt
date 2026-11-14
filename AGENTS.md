@@ -9,8 +9,9 @@ decisions and their reasons are in `docs/adr/`. Read those before changing code.
 - Check the latest nightly run (`gh run list --workflow nightly.yml --limit 1`). A failing nightly
   is fixed before other work: its gates (the simulation's seeds and coverage, fuzzing, stress,
   the soak of spawned connectors, mutation testing, every Kani proof, the specs' model checking,
-  the resident-memory check, and the Python wheel on CPython 3.11 to 3.15 and free-threaded 3.14
-  on Linux and macOS) run nowhere else.
+  the resident-memory check, and the Python wheel on every CPython from 3.11 to 3.15 and on
+  free-threaded 3.14, on Linux and macOS) run nowhere else; pull requests test the wheel on 3.14
+  on Linux and 3.11 on macOS alone.
 
 ## Before you push
 
