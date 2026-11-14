@@ -1,7 +1,7 @@
 //! What each failure of the API is to the engine: a wait, a retry, or the end of the run.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use rdlt::{Connector, Host, Origin, Pipeline, Side, Stream};
 use rdlt_connector::{ConnectContext, ConnectorError, ConnectorErrorKind, SourceConnector as _};
@@ -45,6 +45,18 @@ async fn each_status_the_api_fails_with_is_an_error_of_its_kind() {
             "{status}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_429_that_names_a_date_asks_for_a_wait_until_then() {
+    let date = SystemTime::now() + Duration::from_secs(8);
+    let api = Api::answering(1, vec![Answer::waiting_until("/api/v2/pokemon", date)]);
+    let error = checked(json!({ "base_url": api.url })).await;
+    let wait = error.retry_after().expect("a 429 asks for a wait");
+    // An HTTP date holds whole seconds, and a moment passed since the server wrote it.
+    let asked = Duration::from_secs(6)..=Duration::from_secs(8);
+    assert_eq!(error.kind(), ConnectorErrorKind::RateLimited);
+    assert!(asked.contains(&wait), "{wait:?}");
 }
 
 #[tokio::test]
@@ -113,10 +125,9 @@ async fn a_body_a_read_cannot_take_ends_the_run_with_no_retry() {
             number("height", "5"),
             number("weight", "10"),
         );
-        format!(
-            r#"{{ "id": {id}, "name": "pokemon-1", "height": {height}, "weight": {weight}, \
-             "types": [], "abilities": [], "stats": [] }}"#
-        )
+        let numbers = format!(r#""id": {id}, "height": {height}, "weight": {weight}"#);
+        let shape = r#""name": "pokemon-1", "types": [], "abilities": [], "stats": []"#;
+        format!("{{ {numbers}, {shape} }}")
     };
     let entry = |url: &str| {
         let entry = format!(r#"{{ "name": "type-5", "url": "{url}" }}"#);
@@ -139,6 +150,8 @@ async fn a_body_a_read_cannot_take_ends_the_run_with_no_retry() {
             entry("/type/18446744073709551616/"),
         ),
     ] {
+        // Each body is JSON: only the value under test is one a read cannot take.
+        assert!(serde_json::from_str::<Value>(&body).is_ok(), "{body}");
         let api = Api::answering(1, vec![Answer::body(path, body.as_str())]);
         let directory = tempfile::tempdir().unwrap();
         let outcome = loaded(&api, stream, &directory.path().join("pokeapi.db")).await;

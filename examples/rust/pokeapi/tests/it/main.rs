@@ -8,3 +8,4 @@ mod failures;
 mod runs;
 mod server;
 mod spawned;
+mod stop;

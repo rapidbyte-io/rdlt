@@ -22,9 +22,10 @@ Succeeded: committed 0 rows
 The second run commits nothing: each partition resumes from the cursor the first run committed
 into the database in the same transaction as its rows.
 `sqlite3 /tmp/quickstart/quickstart.db .tables` shows the `events` table beside the destination's
-bookkeeping, the `_rdlt_*` tables.
+bookkeeping, the `_rdlt_*` tables. The program exits 0 once its run succeeds, and 1, printing the
+error, where the pipeline cannot be built or its run fails.
 
-[`tests/quickstart.rs`](tests/quickstart.rs) runs the program twice and checks that it prints
+[`tests/it/main.rs`](tests/it/main.rs) runs the program twice and checks that it prints
 what the console block above shows, and the repository's README's too, which shows the program
 whole.
 

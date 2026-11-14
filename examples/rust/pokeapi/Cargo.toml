@@ -12,6 +12,7 @@ default-run = "pokeapi"
 rdlt.workspace = true
 rdlt-connector = { workspace = true, features = ["serve"] }
 rdlt-connector-reference.workspace = true
+httpdate.workspace = true
 reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true

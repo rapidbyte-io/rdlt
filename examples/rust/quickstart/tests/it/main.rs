@@ -2,14 +2,19 @@
 //! The quick start prints what its READMEs show, and the repository's README shows it whole.
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
-/// What the quick start prints, run on `database`.
-fn run(database: &Path) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_quickstart"))
+/// How the quick start ends, run on `database`.
+fn ended(database: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_quickstart"))
         .arg(database)
         .output()
-        .expect("the quick start runs");
+        .expect("the quick start runs")
+}
+
+/// What the quick start prints, run on `database`, where it succeeds.
+fn run(database: &Path) -> String {
+    let output = ended(database);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
     String::from_utf8(output.stdout).expect("the quick start prints text")
@@ -79,4 +84,12 @@ fn a_second_run_resumes_and_commits_nothing_as_the_readmes_show() {
 #[test]
 fn the_readme_shows_the_quick_start_whole() {
     assert!(read("../../../README.md").contains(&code()));
+}
+
+#[test]
+fn a_quick_start_that_fails_exits_1() {
+    // The SQLite destination refuses a database in a directory that is not there.
+    let directory = tempfile::tempdir().unwrap();
+    let output = ended(&directory.path().join("missing").join("demo.db"));
+    assert_eq!(output.status.code(), Some(1));
 }

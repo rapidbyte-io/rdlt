@@ -109,11 +109,16 @@ impl ReadStream<PokeApi> for Pokemon {
         out: &mut Emitter<Position>,
     ) -> Result<()> {
         let mut pages = Pages::new(source, "pokemon", cursor);
-        while let Some(entries) = pages.next().await? {
+        // Each page until the list ends, or the engine asks the read to stop.
+        while let Some(Some(entries)) = unless_stopped(out, pages.next()).await? {
             let mut details = Vec::with_capacity(entries.len());
             for entry in &entries {
                 let path = format!("pokemon/{}", entry.id()?);
-                details.push(source.client.get::<Detail>(&path).await?);
+                let detail = source.client.get::<Detail>(&path);
+                let Some(detail) = unless_stopped(out, detail).await? else {
+                    return Ok(());
+                };
+                details.push(detail);
             }
             out.rows(&details).await?;
             out.checkpoint(&pages.after).await?;
@@ -147,7 +152,8 @@ impl ReadStream<PokeApi> for Types {
         out: &mut Emitter<Position>,
     ) -> Result<()> {
         let mut pages = Pages::new(source, "type", cursor);
-        while let Some(entries) = pages.next().await? {
+        // Each page until the list ends, or the engine asks the read to stop.
+        while let Some(Some(entries)) = unless_stopped(out, pages.next()).await? {
             let types = entries.iter().map(|entry| {
                 let name = &entry.name;
                 Ok(Type {
@@ -159,6 +165,20 @@ impl ReadStream<PokeApi> for Types {
             out.checkpoint(&pages.after).await?;
         }
         Ok(())
+    }
+}
+
+/// What `request` answers, or none once the engine asks the read to stop, which drops the request
+/// where it is.
+async fn unless_stopped<T>(
+    out: &Emitter<Position>,
+    request: impl Future<Output = Result<T>>,
+) -> Result<Option<T>> {
+    tokio::select! {
+        // A stop wins over an answer that came with it: the read then ends without sending it.
+        biased;
+        () = out.stopped() => Ok(None),
+        answered = request => answered.map(Some),
     }
 }
 

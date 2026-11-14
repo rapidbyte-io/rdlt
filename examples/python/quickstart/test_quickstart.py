@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import runpy
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -72,3 +73,10 @@ def test_the_quick_start_loads_its_rows_once_as_its_readmes_show(
 
 def test_the_readme_s_quick_start_is_the_example() -> None:
     assert CODE in (REPOSITORY / "README.md").read_text(encoding="utf-8")
+
+
+def test_a_quick_start_that_fails_exits_1(connectors: Path, tmp_path: Path) -> None:
+    # The host refuses a directory for the database that is not there.
+    arguments = [str(EXAMPLE), str(connectors), str(tmp_path / "missing")]
+    ended = subprocess.run([sys.executable, *arguments], capture_output=True, check=False)
+    assert ended.returncode == 1, ended.stderr

@@ -1,17 +1,22 @@
 //! The example's program, run as its README runs it, against the local server.
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 use crate::server::{Answer, Api};
 
-/// What the program prints, loading from `api` into `database`.
-fn run(database: &Path, api: &Api) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_pokeapi"))
+/// How the program ends, loading from `api` into `database`.
+fn ended(database: &Path, api: &Api) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_pokeapi"))
         .arg(database)
         .arg(&api.url)
         .output()
-        .expect("the program runs");
+        .expect("the program runs")
+}
+
+/// What the program prints, loading from `api` into `database`, where it succeeds.
+fn run(database: &Path, api: &Api) -> String {
+    let output = ended(database, api);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
     String::from_utf8(output.stdout).expect("the program prints text")
@@ -95,4 +100,13 @@ fn a_failure_the_engine_retries_loses_no_row() {
     let rows = count(&database, r#"SELECT count(*) FROM "pokemon""#);
     let distinct = count(&database, r#"SELECT count(DISTINCT "id") FROM "pokemon""#);
     assert_eq!((rows, distinct), (151, 151));
+}
+
+#[test]
+fn a_run_that_fails_exits_1() {
+    let api = Api::answering(200, vec![Answer::failed("/api/v2/pokemon/1", 404)]);
+    let directory = tempfile::tempdir().unwrap();
+    let output = ended(&directory.path().join("pokeapi.db"), &api);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(api.unserved(), Vec::<&str>::new());
 }

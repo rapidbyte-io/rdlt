@@ -28,7 +28,7 @@ class Response:
     """What a request gets: a status, a `Retry-After` where it asks for a wait, and a body."""
 
     status: int
-    retry_after: int | None
+    retry_after: int | str | None
     body: str
     cut: bool = False
     """Whether the response claims more than its body, and its connection closes."""
@@ -50,8 +50,11 @@ class Api:
         """Its root, as a connector's `base_url`."""
         threading.Thread(target=self._server.serve_forever, name="api", daemon=True).start()
 
-    def fail(self, path: str, status: int, retry_after: int | None = None) -> None:
-        """Answers the next request for `path`, such as `/api/v2/pokemon/3`, with `status`."""
+    def fail(self, path: str, status: int, retry_after: int | str | None = None) -> None:
+        """Answers the next request for `path`, such as `/api/v2/pokemon/3`, with `status`.
+
+        `retry_after` is the `Retry-After` it sends, seconds or an HTTP date, if any.
+        """
         with self._lock:
             self._answers.setdefault(path, []).append(Response(status, retry_after, FAILED))
 
