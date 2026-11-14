@@ -1,6 +1,9 @@
 //! `K-DESTINATION`: generated rows, loaded into the destination as an engine loads them while the
 //! destination is killed at random points of the load, are each published exactly once.
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -18,8 +21,8 @@ use super::{Loaded, Proof, converged};
 use crate::protocol::Violation;
 use crate::target::Target;
 
-/// The rows a load generates: enough that a load commits many times, so every scheduled kill
-/// finds one in flight.
+/// The rows a load generates: many more than its paced source sends before the last commit a
+/// kill point counts starts, so rows are left to write at every point.
 pub(super) const ROWS: u64 = 2000;
 
 /// `K-DESTINATION` against the destination `target` reaches, which answers to `id`, with
@@ -66,16 +69,14 @@ async fn loaded(
         Err(unloaded) => return Ok(unloaded),
     };
     let name = format!("certify_{run:x}_k");
-    let source = generator(&name, seed).await?;
-    let stream = StreamName::new(&name).map_err(Violation::of)?;
-    let pipeline = PipelineId::parse(&name).map_err(Violation::of)?;
-    let plan = PipelinePlan::new(pipeline, [StreamPlan::new(stream).write(mode)])
-        .map_err(Violation::of)?;
+    let plan = planned(&name, mode)?;
     let killing = Arc::new(Killing::new(
         destination,
         &kills,
         Schedule::seeded(seed, true),
     ));
+    // Paced by the commits, the load is still written at each point, however slow they are.
+    let source: Arc<dyn Source> = killing.paced(generator(&name, seed).await?);
     let interrupted = converged(
         &plan,
         &source,
@@ -121,6 +122,13 @@ pub(super) fn written(modes: WriteModes) -> Result<WriteMode, Loaded> {
             "the destination declares no write mode".to_owned(),
         ))
     }
+}
+
+/// The plan of a load of the stream `name`, written in `mode`, by the pipeline `name`.
+fn planned(name: &str, mode: WriteMode) -> Result<PipelinePlan, Violation> {
+    let stream = StreamName::new(name).map_err(Violation::of)?;
+    let pipeline = PipelineId::parse(name).map_err(Violation::of)?;
+    PipelinePlan::new(pipeline, [StreamPlan::new(stream).write(mode)]).map_err(Violation::of)
 }
 
 /// A generator of [`ROWS`] rows, drawn from `seed`, in the stream `name`.

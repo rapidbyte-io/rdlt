@@ -1,6 +1,6 @@
 //! A destination through which a kill clause kills a connector at scheduled points of its loads:
-//! at a write after a commit, before a commit, and after a commit, losing its answer as a kill
-//! between the commit and its answer does.
+//! at a write once a commit has started, before a commit, and after a commit that landed, losing
+//! its answer as a kill between the commit and its answer does.
 
 #[cfg(test)]
 mod tests;
@@ -14,15 +14,20 @@ use parking_lot::Mutex;
 use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectorError, ConnectorErrorKind, Destination,
     DestinationSession, DestinationWriter, OpenContext, OpenedSession, Receipt, Result, SegmentId,
-    TableChange, TableRef, WriteStats,
+    Source, TableChange, TableRef, WriteStats,
 };
 use rdlt_host::{CONNECTOR_LOST, Kills};
+use tokio::sync::watch;
 
-/// When to kill, counting commits from one across every load.
+use super::paced::{Pace, Paced};
+
+/// When to kill, counting commits from one across every load as each starts.
 ///
-/// A kill lands at the first write after the `settled`th commit, before the `commit`th commit,
-/// and after the `answer`th commit, losing its answer, when set. Each point follows a commit, so
-/// a load killed there resumes from what it recorded.
+/// A kill lands at the first write once the `settled`th commit has started, before the
+/// `commit`th commit, and, when `answer` is set, after the first commit from the `answer`th on
+/// that lands, losing its answer: a lost answer drawn on a commit an earlier point failed is lost
+/// from the next that lands. Each point follows a commit, so a load killed there resumes from
+/// what it recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Schedule {
     pub(crate) settled: u64,
@@ -41,6 +46,14 @@ impl Schedule {
             answer: answers.then_some(2 + (seed >> 16) % 3),
         }
     }
+
+    /// The commits its latest point counts to: the load's source is paced until that many have
+    /// started.
+    fn last(&self) -> u64 {
+        self.settled
+            .max(self.commit)
+            .max(self.answer.unwrap_or_default())
+    }
 }
 
 /// `destination`, killing through `kills` at the points `schedule` names.
@@ -49,13 +62,15 @@ pub(crate) struct Killing {
     points: Arc<Points>,
 }
 
-/// The points reached so far, and the tables written.
+/// The points reached so far, the tables written, and the pace of the load's source.
 struct Points {
     schedule: Schedule,
     kills: Kills,
     settled: AtomicBool,
+    answered: AtomicBool,
     commits: AtomicU64,
     tables: Mutex<Vec<TableRef>>,
+    pace: Arc<watch::Sender<Pace>>,
 }
 
 impl Killing {
@@ -68,8 +83,10 @@ impl Killing {
             schedule,
             kills: kills.clone(),
             settled: AtomicBool::new(false),
+            answered: AtomicBool::new(false),
             commits: AtomicU64::new(0),
             tables: Mutex::new(Vec::new()),
+            pace: Arc::new(watch::Sender::new(Pace::default())),
         };
         Self {
             destination,
@@ -81,10 +98,22 @@ impl Killing {
     pub(crate) fn tables(&self) -> Vec<TableRef> {
         self.points.tables.lock().clone()
     }
+
+    /// `source`, read no further ahead of the commits this destination starts than a window,
+    /// until it has started as many as the schedule's last point counts.
+    pub(super) fn paced(&self, source: Arc<dyn Source>) -> Arc<Paced> {
+        Arc::new(Paced::new(source, Arc::clone(&self.points.pace)))
+    }
+
+    /// The pace of the source [`paced`](Self::paced) gives, as it changes.
+    #[cfg(test)]
+    pub(super) fn pace(&self) -> watch::Receiver<Pace> {
+        self.points.pace.subscribe()
+    }
 }
 
 impl Points {
-    /// Kills before a write when it is the first after the scheduled commit.
+    /// Kills before a write when it is the first once the `settled`th commit has started.
     fn write(&self) {
         let settled = self.commits.load(Ordering::SeqCst) >= self.schedule.settled;
         if settled && !self.settled.swap(true, Ordering::SeqCst) {
@@ -92,14 +121,23 @@ impl Points {
         }
     }
 
-    /// Counts a commit, killing before it when it is the scheduled one; whether to lose its
-    /// answer.
-    fn commit(&self) -> bool {
+    /// Counts a commit as it starts, killing before it when it is the scheduled one, and
+    /// releases the reads of the paced source, so they write as it runs; which commit it is.
+    fn commit(&self) -> u64 {
         let commit = self.commits.fetch_add(1, Ordering::SeqCst) + 1;
+        let last = self.schedule.last();
+        self.pace.send_modify(|pace| pace.start(commit, last));
         if commit == self.schedule.commit {
             self.kills.kill();
         }
-        self.schedule.answer == Some(commit)
+        commit
+    }
+
+    /// Whether to lose the answer of the `commit`th commit, which landed: the first that lands
+    /// from the scheduled one on loses it.
+    fn lose(&self, commit: u64) -> bool {
+        let due = self.schedule.answer.is_some_and(|answer| commit >= answer);
+        due && !self.answered.swap(true, Ordering::SeqCst)
     }
 
     fn written(&self, table: &TableRef) {
@@ -162,9 +200,9 @@ impl DestinationSession for Session {
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
         Box::pin(async move {
-            let lose = self.points.commit();
+            let commit = self.points.commit();
             let receipt = self.session.commit(meta).await?;
-            if lose {
+            if self.points.lose(commit) {
                 self.points.kills.kill();
                 let message = "the connector was killed after the commit, before its answer";
                 return Err(ConnectorError::new(ConnectorErrorKind::Transient, message)

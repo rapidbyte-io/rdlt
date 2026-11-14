@@ -32,32 +32,51 @@ kill what it placed.
   table read back through the probe must hold each row exactly once. It is unobserved when
   nothing reads back what the destination published or it keeps history alone, and inapplicable
   when it declares no write mode (ADR 0050).
-- **Where the kills land.** A seed draws three points, counted in commits across the loads: at
-  the first write after the second or third commit, before the third to fifth commit, and, for
-  a destination, after the second to fourth commit, reporting its answer lost as a kill between
-  a commit and its answer does. Each point follows a commit that published rows (a load's first
-  commit may publish none), so a load killed there resumes from what it recorded, and a
-  connector that breaks exactly-once only across a commit's rows is caught at every schedule:
-  the tests run all eighteen against a destination that records state before rows, and all six
-  of a source's against one that loses what it resumes.
+- **Where the kills land.** A seed draws three points, counted in commits across the loads as
+  each starts: at the first write once the second or third commit has started, before the third
+  to fifth commit, and, for a destination, after the first commit from the second to fourth on
+  that lands, reporting its answer lost as a kill between a commit and its answer does. So a lost
+  answer drawn on a commit an earlier point failed is lost from the next that lands: with the
+  points (2, 3, 2), where the kill at a write fails the second commit and the kill before the
+  third fails it, the answer is lost from the fourth. Each point follows a commit that published
+  rows (a load's first commit may publish none), so a load killed there resumes from what it
+  recorded, and a connector that breaks exactly-once only across a commit's rows is caught at
+  every schedule: the tests run all eighteen against a destination that records state before
+  rows, and all six of a source's against one that loses what it resumes.
 - **The seed** is the time, mixed as SplitMix64 mixes, so a clock that ticks in microseconds, as
   macOS's does, still draws every point; or one chosen (`Target::kill_seed`, `--kill-seed`). A
   failure reports it, so it can be replayed.
 - **The loads are shaped so the kills land in flight**: batches of 8 rows, a commit every 16
-  rows, 1 MiB of engine memory, one event of partition buffer, one write in flight per writer, and
-  a read's credit floor of 64 KiB, so a source runs little ahead of the commits: 64 KiB, or two
-  of its frames where they are larger. A load retries 20 times, quickly, and up to three loads
-  run until one succeeds.
+  rows, 40 MiB of engine memory, one event of partition buffer, one write in flight per writer,
+  and a read's credit floor of 64 KiB, so a placed source runs little ahead of the engine: 64 KiB,
+  or two of its frames where they are larger. A load retries 20 times, quickly, and up to three
+  loads run until one succeeds.
+- **`K-DESTINATION`'s generator is paced by the commits.** An engine writes faster than a
+  destination commits, and with one commit in flight it gathers whatever is written meanwhile:
+  against a destination that takes tens of milliseconds a commit, an optimised engine gathers
+  nearly all 2,000 rows into its second commit, before most points. So until as many commits
+  have started as the latest point counts, each read of the generator holds its next push once it
+  has sent 32 rows of its partition since the latest commit started, or since it started where
+  that is later, as a read of a new attempt does, and sends it as the next commit starts. Every
+  point then finds rows still to write, however slowly the destination commits, and while paced
+  a commit takes about 64 rows. Writes still overlap the commit in flight. The engine took every
+  seal of that commit before calling it, and a read holds only a push that follows a checkpoint,
+  so the rows a holding read sent are sealed, none of them in that commit, and, being at least
+  what makes a commit due, make the next one due. A read answers a barrier it owes while it holds
+  by sending its last checkpoint again.
 - **A clause passes only on a kill that landed** (ADR 0050): for a spawned connector, `SIGKILL`
   to its process group, which the host then sees end the connection unless a process outside
   the group holds it open (`docs/certify/clauses.md`); for one reached at an
   endpoint or served in process, the host's cut of its connection, which lands by itself. The
-  pass notes which (`killed`, `cut`). When no kill landed (the load ended first, as a source
-  smaller than about one credit window does), the clause is unobserved, with the seed. So is
-  `K-SOURCE` when no read of the source started after a kill: one that lands once the source was
-  read to its end, as on a busy machine whose commits come late, leaves nothing to resume. A clause
-  takes at most 300 s, or what `--kill-timeout` (`Target::kill_timeout`) gives it: a connector
-  slower than about two seconds a commit needs more.
+  pass notes which (`killed`, `cut`). When no kill landed, the clause draws new points and loads
+  again, up to four draws (`DRAWS`), and is then unobserved, with the seed: a `K-SOURCE` load may
+  end first, as one of a source smaller than about one credit window does, and a kill may reach
+  nothing, as one of a launcher whose connector outlives it does. `K-SOURCE` is also unobserved
+  when no read of the source started after a kill: one that lands once the source was read to its
+  end, as on a busy machine whose commits come late, leaves nothing to resume. Pacing makes
+  `K-DESTINATION` kill at every point it draws, in its first draw, though two kills may end one
+  connection. A clause takes at most 300 s, or what `--kill-timeout` (`Target::kill_timeout`) gives
+  it: a connector slower than about two seconds a commit needs more.
 - **`S-ARROW-JSON` is not checked.** The engine infers the types of JSON pushes where Arrow
   pushes carry their own, so the same data rendered both ways publishes the same values only once
   a schema pins both, and certification has no way to ask a source for both renderings.
