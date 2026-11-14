@@ -53,6 +53,35 @@ async fn pipeline(database: &str) -> Result<Pipeline, rdlt::Error> {
         .await
 }
 
+/// The stops the program has asked of its run: the status of the first signal heard, and whether
+/// a stop after the next commit was asked, by a signal or by the count.
+#[derive(Debug, Default)]
+struct Stops {
+    heard: Option<i32>,
+    asked: bool,
+}
+
+impl Stops {
+    /// The stop a signal answering `status` asks for: after the next commit at the first signal,
+    /// though the count asked for that stop already, and at once at a later one.
+    fn signalled(&mut self, status: i32) -> StopMode {
+        if self.heard.is_some() {
+            return StopMode::Now;
+        }
+        self.heard = Some(status);
+        self.asked = true;
+        StopMode::AfterCommit
+    }
+
+    /// Whether the `committed`th commit asks for the stop after the next commit: where it is the
+    /// commit `stop_after` names, and no stop was asked before it.
+    fn counted(&mut self, committed: u64, stop_after: Option<u64>) -> bool {
+        let due = Some(committed) == stop_after && !self.asked;
+        self.asked |= due;
+        due
+    }
+}
+
 /// Tells each of a run's `events` as it comes, until the run has ended, and asks the run's
 /// `control` to stop: at a signal `interrupts` hears, such as Ctrl-C, or once `stop_after` commits
 /// have landed.
@@ -64,36 +93,31 @@ async fn watch(
     mut interrupts: Interrupts,
     stop_after: Option<u64>,
 ) -> Option<i32> {
-    let (mut committed, mut stopping, mut heard) = (0, false, None);
+    let (mut committed, mut stops) = (0, Stops::default());
     loop {
         tokio::select! {
             biased;
             // A signal goes first, so one that comes with the run's last event is still heard.
             status = interrupts.heard() => {
-                heard = heard.or(Some(status));
-                // A first signal stops the run after its next commit, a second at once.
-                if stopping {
-                    control.stop(StopMode::Now);
-                } else {
+                let mode = stops.signalled(status);
+                if mode == StopMode::AfterCommit {
                     eprintln!("stopping after the next commit; interrupt again to stop now");
-                    control.stop(StopMode::AfterCommit);
-                    stopping = true;
                 }
+                control.stop(mode);
             }
             told = events.next() => match told {
                 Some(Ok(event)) => {
                     tell(&event);
                     if let EventKind::Committed { .. } = event.kind {
                         committed += 1;
-                        if Some(committed) == stop_after && !stopping {
+                        if stops.counted(committed, stop_after) {
                             println!("stopping after the next commit");
                             control.stop(StopMode::AfterCommit);
-                            stopping = true;
                         }
                     }
                 }
                 Some(Err(lagged)) => println!("missed {} events", lagged.dropped),
-                None => return heard,
+                None => return stops.heard,
             }
         }
     }
@@ -136,3 +160,6 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         (None, None) => Ok(ExitCode::SUCCESS),
     }
 }
+
+#[cfg(test)]
+mod tests;

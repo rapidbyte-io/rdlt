@@ -46,9 +46,9 @@ repository's root, with the connectors' directory and a directory for the wareho
 
 ```console
 $ mkdir -p /tmp/destination-python
-$ .venv/bin/python examples/python/destination/main.py ~/.local/share/rdlt/connectors /tmp/destination-python
+$ .venv/bin/python examples/python/destination/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" /tmp/destination-python
 succeeded: committed 1000 rows, holding 1000
-$ .venv/bin/python examples/python/destination/main.py ~/.local/share/rdlt/connectors /tmp/destination-python
+$ .venv/bin/python examples/python/destination/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" /tmp/destination-python
 succeeded: committed 1000 rows, holding 1000
 ```
 

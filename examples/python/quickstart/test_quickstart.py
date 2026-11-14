@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import runpy
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -17,6 +18,9 @@ EXAMPLE = Path(__file__).resolve().with_name("main.py")
 REPOSITORY = EXAMPLE.parents[3]
 CODE = f"```python\n{EXAMPLE.read_text(encoding='utf-8')}```\n"
 """The quick start as the repository's README shows it."""
+CONNECTORS = "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors"
+"""The connectors' directory each command names, where the README's install puts them; the test
+runs the program with its own."""
 
 
 def shown(text: str) -> list[str]:
@@ -30,9 +34,10 @@ def shown(text: str) -> list[str]:
     runs: list[str] = []
     for line in block.splitlines(keepends=True):
         if line.startswith("$ "):
-            command = line.split()[1:]
+            command = shlex.split(line)[1:]
             if command[0].endswith("python"):
                 assert command[1:2] == [program], command
+                assert command[2:3] == [CONNECTORS], command
                 assert len(command[2:]) == 2, command
                 runs.append("")
         elif runs:

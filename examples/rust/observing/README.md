@@ -19,9 +19,9 @@ partitions of 250,000 messages, into SQLite, read incrementally and committed ev
   counters it renders, as a scrape reads them; a service would serve them, or export them over
   OTLP with the facade's `otel` feature.
 - **A clean stop:** `RunControl::stop(StopMode::AfterCommit)` asks the run to stop reading,
-  commit what it read and end, `Stopped`, and the next run reads on from there. Ctrl-C asks for it,
-  as the command line does, and a second Ctrl-C asks for `StopMode::Now`, which ends the run at
-  once, cancelled, its staging discarded at the next open. `rdlt::Interrupts` hears Ctrl-C, and
+  commit what it read and end, `Stopped`, and the next run reads on from there. The first Ctrl-C
+  asks for it, as the command line does, though the count asked already, and a second asks for
+  `StopMode::Now`, which ends the run at once, cancelled, its staging discarded at the next open. `rdlt::Interrupts` hears Ctrl-C, and
   the termination, hang-up and quit signals, from before the run starts, so the process stops the
   run rather than ending mid-load. Besides, a host that spawns connectors needs it to stop them,
   since a terminal's Ctrl-C does not reach their process groups.
@@ -91,6 +91,10 @@ stopped run's outcome and keeps no sign of the signal.
   next commit, its run ends `Stopped` with what it committed in the table, each message once, and
   the program exits 130. No test sends a second Ctrl-C, which would race the run's end; one stops
   the run at once, and it ends `Cancelled` and exits 130.
+- **Which stop a signal asks for:** unit tests in [`src/tests.rs`](src/tests.rs) hold that the
+  first signal asks for the stop after the next commit, though the count asked for it first, that
+  a later one asks for the stop at once, keeping the first's status, and that the count asks once,
+  and not after a signal.
 
 Next: the same run observed from Python is [`python/observing`](../../python/observing); the
 repository README's [Run control and reporting](../../../README.md#run-control-and-reporting) says

@@ -46,11 +46,11 @@ test checks it prints:
 | Rust PokeAPI | `cd examples/rust && mkdir -p /tmp/pokeapi-rust && cargo run -q -p pokeapi -- /tmp/pokeapi-rust/pokeapi.db` |
 | Rust transforms | `cd examples/rust && export ORDERS_KEY=example-key && mkdir -p /tmp/transforms-rust && cargo run -q -p transforms -- /tmp/transforms-rust/orders.db` |
 | Rust observing | `cd examples/rust && mkdir -p /tmp/observing-rust && cargo run -q -p observing -- /tmp/observing-rust/observing.db 3` |
-| Python quick start | `.venv/bin/python examples/python/quickstart/main.py ~/.local/share/rdlt/connectors .` |
-| Python PokeAPI | `mkdir -p /tmp/pokeapi-python && .venv/bin/python examples/python/pokeapi/main.py ~/.local/share/rdlt/connectors /tmp/pokeapi-python` |
-| Python transforms | `export ORDERS_KEY=example-key && mkdir -p /tmp/transforms-python && .venv/bin/python examples/python/transforms/main.py ~/.local/share/rdlt/connectors /tmp/transforms-python` |
-| Python destination | `mkdir -p /tmp/destination-python && .venv/bin/python examples/python/destination/main.py ~/.local/share/rdlt/connectors /tmp/destination-python` |
-| Python observing | `mkdir -p /tmp/observing-python && .venv/bin/python examples/python/observing/main.py ~/.local/share/rdlt/connectors /tmp/observing-python 3` |
+| Python quick start | `.venv/bin/python examples/python/quickstart/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" .` |
+| Python PokeAPI | `mkdir -p /tmp/pokeapi-python && .venv/bin/python examples/python/pokeapi/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" /tmp/pokeapi-python` |
+| Python transforms | `export ORDERS_KEY=example-key && mkdir -p /tmp/transforms-python && .venv/bin/python examples/python/transforms/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" /tmp/transforms-python` |
+| Python destination | `mkdir -p /tmp/destination-python && .venv/bin/python examples/python/destination/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" /tmp/destination-python` |
+| Python observing | `mkdir -p /tmp/observing-python && .venv/bin/python examples/python/observing/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" /tmp/observing-python 3` |
 
 Run twice, the quick starts and the PokeAPI programs load once and then commit nothing, and the
 destination merges the same rows over themselves; the observing programs read on from where the

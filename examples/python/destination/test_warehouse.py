@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import runpy
+import shlex
 import stat
 import subprocess
 import sys
@@ -23,6 +24,9 @@ from warehouse_store import Store, connected
 
 EXAMPLE = Path(__file__).resolve().parent
 PROGRAM = EXAMPLE / "main.py"
+CONNECTORS = "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors"
+"""The connectors' directory each command names, where the README's install puts them; the test
+runs the program with its own."""
 
 
 def launcher(directory: Path) -> Path:
@@ -174,9 +178,10 @@ def shown(text: str) -> list[str]:
     runs: list[str] = []
     for line in block.splitlines(keepends=True):
         if line.startswith("$ "):
-            command = line.split()[1:]
+            command = shlex.split(line)[1:]
             if command[0].endswith("python"):
                 assert command[1:2] == [program], command
+                assert command[2:3] == [CONNECTORS], command
                 assert len(command[2:]) == 2, command
                 runs.append("")
         elif runs:

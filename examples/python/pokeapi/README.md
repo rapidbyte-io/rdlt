@@ -51,9 +51,9 @@ connectors' directory, a directory for the database and, optionally, another roo
 
 ```console
 $ mkdir -p /tmp/pokeapi-python
-$ .venv/bin/python examples/python/pokeapi/main.py ~/.local/share/rdlt/connectors /tmp/pokeapi-python
+$ .venv/bin/python examples/python/pokeapi/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" /tmp/pokeapi-python
 succeeded: committed 172 rows
-$ .venv/bin/python examples/python/pokeapi/main.py ~/.local/share/rdlt/connectors /tmp/pokeapi-python
+$ .venv/bin/python examples/python/pokeapi/main.py "${XDG_DATA_HOME:-$HOME/.local/share}/rdlt/connectors" /tmp/pokeapi-python
 succeeded: committed 0 rows
 ```
 
