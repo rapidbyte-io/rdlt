@@ -3,7 +3,7 @@
 # of their own, so what only an example needs, such as an HTTP client, is in no product build.
 [workspace]
 resolver = "3"
-members = ["pokeapi", "quickstart"]
+members = ["observing", "pokeapi", "quickstart", "transforms"]
 
 [workspace.package]
 version = "0.0.0"
@@ -13,7 +13,8 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-httpdate = "1.0.3"                                                            # the HTTP dates a 429's Retry-After may give
+httpdate = "1.0.3"                                                             # the HTTP dates a 429's Retry-After may give
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false } # a recorder of a run's metrics, rendered as a scrape reads them
 rdlt = { path = "../../crates/rdlt" }
 rdlt-connector = { path = "../../crates/rdlt-connector" }
 rdlt-connector-reference = { path = "../../crates/rdlt-connector-reference" }

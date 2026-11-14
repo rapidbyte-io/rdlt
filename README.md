@@ -358,6 +358,8 @@ Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, ben
   `rdlt.connector.merge`: `merge_sparse(to_arrow(schema), published, buried, incoming, key)`
   runs Rust's merge, with the GIL released, over any Arrow handed to it, `key` the `MergeKey` in
   `table["merge"]`, and `read_back` gives a reader every column.
+  [`examples/python/destination`](examples/python/destination) is one that writes every way the
+  engine has, certified with every destination clause.
 - **Errors.** `ConnectorError` and its kinds, such as `Transient` and `RateLimited(retry_after=)`,
   say what kind of failure the connector met. `InvalidConfig`, `Unauthorized` and `InvalidData`
   are Rust's `Config`, `Auth` and `Data`, and `COMMIT_STALE`, `TABLE_OWNED` and the rest are its
@@ -404,13 +406,16 @@ next commit and waits for it to end, and a second cancels the run and raises `Ke
 Under `asyncio.run` the first Ctrl-C cancels the main task, and an await of the run cancelled with
 it asks the run to stop after its next commit and raises at once, so the process exits without
 waiting for that commit. Exactly-once still holds: what was committed stays, and the next run reads
-on from the last committed cursor.
+on from the last committed cursor. [`examples/python/observing`](examples/python/observing) prints
+a run's events as they happen, and stops it after a commit at Ctrl-C or from code.
 
 ## Examples
 
 [`examples/`](examples) holds runnable programs in Rust and in Python, from a first pipeline to a
-connector of a real HTTP API, PokeAPI's, which is certified in its tests against a local server.
-Its [index](examples/README.md) says what each shows, how to run it and how it is tested.
+connector of a real HTTP API, PokeAPI's, which is certified in its tests against a local server,
+then a stream reshaped by transforms, a Python destination certified with every destination
+clause, and a run watched and stopped. Its [index](examples/README.md) says what each shows, how
+to run it and how it is tested.
 
 ## Embedding rdlt
 
@@ -533,7 +538,9 @@ they arrive.
   keeps: filter such a stream on its key, or have the source send whole rows.
 
 The memory budget holds a transform to its declared bound before it runs, and measures code's
-output after (ADR 0053).
+output after (ADR 0053). [`examples/rust/transforms`](examples/rust/transforms) reshapes a stream
+with ops and SQL, and [`examples/python/transforms`](examples/python/transforms) with Python
+functions, into the same table, each with a load a transform refuses.
 
 ### Defaults
 
@@ -568,7 +575,9 @@ partition's read, a commit and its phases, and each connector call but a read or
 batch. With the `otel` feature, `rdlt::telemetry::otlp(level)` exports traces and metrics over
 OTLP, configured by the standard `OTEL_*` variables, and the host sends a W3C `traceparent` in each
 call's gRPC metadata. No span, metric label or trace attribute holds a secret or a connector's
-configuration.
+configuration. [`examples/rust/observing`](examples/rust/observing) prints a run's events as they
+happen and its report and counters once it ends, and stops it after a commit at Ctrl-C or from
+code.
 
 ### Behaviour to know
 
