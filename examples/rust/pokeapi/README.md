@@ -39,7 +39,7 @@ Its id is `io.example.pokeapi`, and its configuration's JSON Schema says what ea
 
   | The API answers | The error | The engine |
   |---|---|---|
-  | 429 | `RateLimited`, with the `Retry-After` it gave, or 1 s | Waits, then retries |
+  | 429 | `RateLimited`, with the wait its `Retry-After` gives, in seconds or as an HTTP date, or 1 s | Waits, then retries |
   | 5xx, a timeout, a refused connection, a response cut short | `Transient` | Retries |
   | 401, 403 | `Auth` | Ends the run |
   | Any other 4xx | `Config`, naming the status and the path | Ends the run |
@@ -49,6 +49,8 @@ Its id is `io.example.pokeapi`, and its configuration's JSON Schema says what ea
   request in flight across both streams, gives each request 30 s, its body read, and stops at the
   list's end or at `limit`, whichever comes first. PokeAPI is free and asks to be used gently, so
   the defaults read 151 pokemon, about 160 requests a run, one at a time.
+- **It stops at once:** each request selects on the emitter's `stopped()`, so a read the engine
+  asks to stop drops the request in flight and ends, rather than reading the rest of its page.
 
 ## Running it
 
@@ -73,7 +75,8 @@ nothing: each stream resumes after the last page the first committed.
 `sqlite3 /tmp/pokeapi-rust/pokeapi.db .tables` shows `pokemon` and `types` beside the
 destination's bookkeeping, the `_rdlt_*` tables. A pokemon's `types`, `abilities` and `stats` land
 as JSON in its row; `.nested(Nested::Normalize { max_depth: 1 })` on the `pokemon` stream lands
-them in child tables instead, as the document below does.
+them in child tables instead, as the document below does. The program exits 0 once its run
+succeeds, and 1, printing the error, where the pipeline cannot be built or its run fails.
 
 ### As its own binary, from the command line
 
@@ -110,16 +113,19 @@ says. No test reaches the network. From `examples/rust`, `cargo nextest run -p p
   certified through the protocol and its kill clause too.
 - **Configuration:** its published JSON Schema gives each field's default and `page_size`'s
   range.
-- **Failures:** each status above is the error of its kind, a refused connection and a response
-  cut short are `Transient`, and a body that is not JSON, or JSON of another shape, is `Data`, a
-  count that is text, negative, a float or past `u64`'s largest, or an id that is no run of
-  digits, among them, which ends a run with no retry; a page that names no `next` is no error. A
-  timeout is `Transient` as a refused connection is, and no test waits for one: the timeout is a
-  fixed 30 s, and a field only a test would set is no part of an example.
+- **Failures:** each status above is the error of its kind, a 429 that names an HTTP date asks for a
+  wait until then, a refused connection and a response cut short are `Transient`, and a body that is
+  not JSON, or JSON of another shape, is `Data`, a count that is text, negative, a float or past
+  `u64`'s largest, or an id that is no run of digits, among them, which ends a run with no retry; a
+  page that names no `next` is no error. A timeout is `Transient` as a refused connection is, and no
+  test waits for one: the timeout is a fixed 30 s, and a field only a test would set is no part of
+  an example.
 - **Runs:** the program prints what the console block above shows, which the test reads from this
   README: 151 pokemon and 21 types, then nothing, each pokemon's nested lists as JSON in its row,
   with never more than one request at the server at once. With a 500, a response cut short and a
-  429 on its way, which the server checks it gave, it loses no row.
+  429 on its way, which the server checks it gave, it loses no row. A run that fails exits 1.
+- **Stopping:** a run asked to stop while the server holds a detail request for a minute ends
+  within the test's 20 s.
 - **The document** spawns the binary in the sandbox, granted the network, against the local
   server's address, and lands each pokemon's nested lists in child tables. Where no sandbox can
   be made it is skipped, but in CI on Linux, where it fails.

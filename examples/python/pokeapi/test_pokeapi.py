@@ -5,13 +5,18 @@ It is certified, its failures are told apart, and it runs as the example's progr
 
 from __future__ import annotations
 
+import email.utils
 import importlib.util
+import json
 import runpy
 import sqlite3
 import stat
+import subprocess
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -23,6 +28,7 @@ from rdlt.connector import (
     InvalidConfig,
     InvalidData,
     RateLimited,
+    StreamContext,
     Transient,
     Unauthorized,
 )
@@ -37,6 +43,16 @@ KILLED_TYPES = 40_000
 K-SOURCE's kills follow."""
 
 Serve = Callable[..., Api]
+
+
+class _Unstopped:
+    """A read's context that never asks the read to stop, for a stream a test reads itself."""
+
+    def stopped(self) -> bool:
+        return False
+
+
+UNSTOPPED = cast("StreamContext", _Unstopped())
 
 
 def launcher(directory: Path) -> Path:
@@ -62,11 +78,11 @@ def test_the_source_passes_every_clause_that_applies_to_it(serve: Serve, tmp_pat
     assert by_outcome == {
         "passed": [
             *("P-HANDSHAKE", "P-ORDER", "P-ROLE", "P-LIMITS", "P-HEARTBEAT", "P-MALFORMED"),
-            *("P-CREDIT", "S-CHECK", "S-DISCOVER", "S-PLAN", "S-RESUME", "S-STOP", "K-SOURCE"),
+            *("P-CREDIT", "S-CHECK", "S-DISCOVER", "S-PLAN", "S-RESUME", "S-STOP", "S-BARRIER"),
+            "K-SOURCE",
         ],
-        # Its one partition never ends, it checkpoints only after a page, and it keeps no
-        # position outside the engine.
-        "inapplicable": ["S-PARTITION", "S-BARRIER", "S-ACK"],
+        # Its one partition never ends, and it keeps no position outside the engine.
+        "inapplicable": ["S-PARTITION", "S-ACK"],
     }
     assert len(results) == sum(map(len, by_outcome.values()))
 
@@ -96,6 +112,17 @@ def test_each_status_the_api_fails_with_is_an_error_of_its_kind(
     with pytest.raises(kind) as raised:
         source.check()
     assert getattr(raised.value, "retry_after", None) == wait
+
+
+def test_a_429_that_names_a_date_asks_for_a_wait_until_then(serve: Serve) -> None:
+    api = serve(1)
+    date = datetime.now(UTC) + timedelta(seconds=8)
+    api.fail("/api/v2/pokemon", 429, retry_after=email.utils.format_datetime(date, usegmt=True))
+    with pytest.raises(RateLimited) as raised:
+        PokeApi(PokeApiConfig(base_url=api.url)).check()
+    # An HTTP date holds whole seconds, and a moment passed since the server wrote it.
+    assert raised.value.retry_after is not None
+    assert 6 <= raised.value.retry_after <= 8
 
 
 def test_a_response_cut_short_is_transient(serve: Serve) -> None:
@@ -157,17 +184,20 @@ def entry(url: str) -> str:
 def test_a_body_a_read_cannot_take_is_invalid_data(
     serve: Serve, stream: str, path: str, body: str
 ) -> None:
+    # Each body is JSON: only the value under test is one a read cannot take.
+    json.loads(body)
     api = serve(1)
     api.give(path, body)
     source = PokeApi(PokeApiConfig(base_url=api.url))
     with pytest.raises(InvalidData):
-        list(getattr(source, stream)(Position()))
+        list(getattr(source, stream)(Position(), UNSTOPPED))
 
 
 def test_a_page_without_next_is_the_last(serve: Serve) -> None:
     api = serve(1)
     api.give("/api/v2/type", '{"results": [{"name": "type-1", "url": "/type/1/"}]}')
-    pages = list(PokeApi(PokeApiConfig(base_url=api.url)).pages("type", Position()))
+    source = PokeApi(PokeApiConfig(base_url=api.url))
+    pages = list(source.pages("type", Position(), UNSTOPPED))
     assert [len(entries) for entries, _ in pages] == [1]
 
 
@@ -263,3 +293,11 @@ def test_a_failure_the_engine_retries_loses_no_row(
     assert outcome.report.attempted > 1
     distinct = count(tmp_path, 'SELECT count(DISTINCT "id") FROM "pokemon"')
     assert (count(tmp_path, 'SELECT count(*) FROM "pokemon"'), distinct) == (151, 151)
+
+
+def test_a_run_that_fails_exits_1(serve: Serve, connectors: Path, tmp_path: Path) -> None:
+    api = serve(200)
+    api.fail("/api/v2/pokemon/1", 404)
+    arguments = [str(PROGRAM), str(connectors), str(tmp_path), api.url]
+    ended = subprocess.run([sys.executable, *arguments], capture_output=True, check=False)
+    assert ended.returncode == 1, ended.stderr

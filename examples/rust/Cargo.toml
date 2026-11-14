@@ -13,6 +13,7 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+httpdate = "1.0.3"                                                            # the HTTP dates a 429's Retry-After may give
 rdlt = { path = "../../crates/rdlt" }
 rdlt-connector = { path = "../../crates/rdlt-connector" }
 rdlt-connector-reference = { path = "../../crates/rdlt-connector-reference" }

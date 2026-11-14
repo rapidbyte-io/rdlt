@@ -103,7 +103,7 @@ convention = "google"
 "crates/rdlt-cli/templates/python/**" = ["I001"]
 # An example's program prints what it shows.
 "examples/python/*/main.py" = ["T201"]
-"examples/python/**/test_*.py" = ["D103", "PLR2004", "S101"]
+"examples/python/**/test_*.py" = ["D103", "PLR2004", "S101", "S603"]
 # A connector's failure classes are named as the Rust SDK names their kinds.
 "python/rdlt/connector/_failures.py" = ["N818"]
 "python/rdlt/_native.pyi" = ["A002"]

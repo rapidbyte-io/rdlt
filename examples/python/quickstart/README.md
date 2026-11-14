@@ -20,8 +20,9 @@ succeeded: committed 0 rows
 ```
 
 The second run commits nothing: `users` resumes from the cursor the first run committed with its
-rows. On Linux the SQLite connector runs in bubblewrap, which may write in the database's
-directory alone; where no sandbox can be made, the build raises `rdlt.ConfigError` coded
+rows. A build or a run that fails raises its `rdlt.Error`, so the program exits 1, printing the
+error's traceback. On Linux the SQLite connector runs in bubblewrap, which may write in the
+database's directory alone; where no sandbox can be made, the build raises `rdlt.ConfigError` coded
 `sandbox_missing` or `sandbox_unavailable`, as the README says.
 
 [`test_quickstart.py`](test_quickstart.py) runs it twice and checks that it prints what the

@@ -1,7 +1,7 @@
 //! The API's HTTP client: one request in flight, each bounded in time, and each failure of the
 //! kind the engine decides a retry by.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use rdlt_connector::prelude::*;
 use reqwest::header::{HeaderValue, RETRY_AFTER};
@@ -106,9 +106,8 @@ fn failure(status: StatusCode, retry_after: Option<&HeaderValue>, path: &str) ->
     let message = format!("GET {path} answered {status}");
     match status {
         StatusCode::TOO_MANY_REQUESTS => {
-            let seconds = retry_after.and_then(|value| value.to_str().ok()?.parse().ok());
-            let wait = seconds.map_or(DEFAULT_RETRY_AFTER, Duration::from_secs);
-            ConnectorError::rate_limited(message, Some(wait))
+            let wait = retry_after.and_then(|value| asked(value.to_str().ok()?));
+            ConnectorError::rate_limited(message, Some(wait.unwrap_or(DEFAULT_RETRY_AFTER)))
         }
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
             ConnectorError::new(ConnectorErrorKind::Auth, message)
@@ -118,4 +117,14 @@ fn failure(status: StatusCode, retry_after: Option<&HeaderValue>, path: &str) ->
         }
         _ => ConnectorError::config(message),
     }
+}
+
+/// The wait a `Retry-After` of `value` asks for: a count of seconds, or an HTTP date, of which one
+/// already past asks for none; none where it is neither.
+fn asked(value: &str) -> Option<Duration> {
+    if let Ok(seconds) = value.parse() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let date = httpdate::parse_http_date(value).ok()?;
+    Some(date.duration_since(SystemTime::now()).unwrap_or_default())
 }

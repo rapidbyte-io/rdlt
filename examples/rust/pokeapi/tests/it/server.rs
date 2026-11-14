@@ -5,7 +5,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{Value, json};
 
@@ -24,42 +24,55 @@ pub(crate) struct Answer {
     /// The path, such as `/api/v2/pokemon/3`.
     path: &'static str,
     status: u16,
-    retry_after: Option<u64>,
+    /// The `Retry-After` it sends, if any.
+    retry_after: Option<String>,
     body: String,
     /// Whether the answer is cut short: it claims more than its body and closes.
     cut: bool,
+    /// How long the server holds the request before it answers, unless the server stops first.
+    held: Duration,
 }
 
 impl Answer {
-    /// `status`, with a body that says the test asked for it.
-    pub(crate) fn failed(path: &'static str, status: u16) -> Self {
-        let body = r#"{ "detail": "failed as the test asked" }"#.to_owned();
+    /// `status`, with `body`, at once and whole.
+    fn new(path: &'static str, status: u16, body: impl Into<String>) -> Self {
+        let (retry_after, body, cut, held) = (None, body.into(), false, Duration::ZERO);
         Self {
             path,
             status,
-            retry_after: None,
+            retry_after,
             body,
-            cut: false,
+            cut,
+            held,
         }
+    }
+
+    /// `status`, with a body that says the test asked for it.
+    pub(crate) fn failed(path: &'static str, status: u16) -> Self {
+        Self::new(path, status, r#"{ "detail": "failed as the test asked" }"#)
     }
 
     /// A 429 that asks for a wait of `seconds`.
     pub(crate) fn waiting(path: &'static str, seconds: u64) -> Self {
+        let retry_after = Some(seconds.to_string());
         Self {
-            retry_after: Some(seconds),
+            retry_after,
+            ..Self::failed(path, 429)
+        }
+    }
+
+    /// A 429 that asks for a wait until `date`, as an HTTP date.
+    pub(crate) fn waiting_until(path: &'static str, date: SystemTime) -> Self {
+        let retry_after = Some(httpdate::fmt_http_date(date));
+        Self {
+            retry_after,
             ..Self::failed(path, 429)
         }
     }
 
     /// A 200 whose body is `body`.
     pub(crate) fn body(path: &'static str, body: impl Into<String>) -> Self {
-        Self {
-            path,
-            status: 200,
-            retry_after: None,
-            body: body.into(),
-            cut: false,
-        }
+        Self::new(path, 200, body)
     }
 
     /// A 200 whose connection closes partway through its body.
@@ -68,6 +81,14 @@ impl Answer {
         Self {
             cut: true,
             ..Self::body(path, body)
+        }
+    }
+
+    /// The answer the API gives at `path`, held `held` before it is given.
+    pub(crate) fn held(path: &'static str, held: Duration) -> Self {
+        Self {
+            held,
+            ..Self::new(path, 0, "")
         }
     }
 }
@@ -88,6 +109,8 @@ struct Served {
     answers: Vec<(Answer, AtomicBool)>,
     in_flight: AtomicUsize,
     most: AtomicUsize,
+    /// How many requests the server holds now, as an answer asks.
+    holding: AtomicUsize,
     stopped: AtomicBool,
 }
 
@@ -112,6 +135,7 @@ impl Api {
                 .collect(),
             in_flight: AtomicUsize::new(0),
             most: AtomicUsize::new(0),
+            holding: AtomicUsize::new(0),
             stopped: AtomicBool::new(false),
         });
         let accepted = Arc::clone(&served);
@@ -137,6 +161,11 @@ impl Api {
     /// The most requests the server held at once.
     pub(crate) fn most_at_once(&self) -> usize {
         self.served.most.load(Ordering::SeqCst)
+    }
+
+    /// How many requests the server holds now, as an answer of `Answer::held` asks.
+    pub(crate) fn holding(&self) -> usize {
+        self.served.holding.load(Ordering::SeqCst)
     }
 }
 
@@ -176,8 +205,8 @@ fn answer(stream: &TcpStream, served: &Served) {
     // A connection that sends nothing ends, so the thread answering it can be joined.
     stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
     let (target, agent) = request(stream);
-    let held = served.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-    served.most.fetch_max(held, Ordering::SeqCst);
+    let at_once = served.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+    served.most.fetch_max(at_once, Ordering::SeqCst);
     std::thread::sleep(HELD);
     let (path, query) = target.split_once('?').unwrap_or((&target, ""));
     let mut unanswered = served
@@ -185,10 +214,23 @@ fn answer(stream: &TcpStream, served: &Served) {
         .iter()
         .filter(|(answer, _)| answer.path == path);
     let given = unanswered.find(|(_, given)| !given.swap(true, Ordering::SeqCst));
+    let held = given.map_or(Duration::ZERO, |(answer, _)| answer.held);
+    let until = Instant::now() + held;
+    served
+        .holding
+        .fetch_add(usize::from(!held.is_zero()), Ordering::SeqCst);
+    while Instant::now() < until && !served.stopped.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    served
+        .holding
+        .fetch_sub(usize::from(!held.is_zero()), Ordering::SeqCst);
+    // A held answer is the API's own, once it is given.
+    let given = given.filter(|(answer, _)| answer.held.is_zero());
     let (status, retry_after, body, cut) = match (agent.as_deref(), given) {
         (Some(USER_AGENT), Some((answer, _))) => {
-            let body = answer.body.clone();
-            (answer.status, answer.retry_after, body, answer.cut)
+            let (body, retry_after) = (answer.body.clone(), answer.retry_after.clone());
+            (answer.status, retry_after, body, answer.cut)
         }
         (Some(USER_AGENT), None) => match page(&served.root, served.count, path, query) {
             Some(page) => (200, None, page.to_string(), false),
@@ -205,7 +247,7 @@ fn answer(stream: &TcpStream, served: &Served) {
         }
     };
     let claimed = body.len() + if cut { 64 } else { 0 };
-    let retry = retry_after.map(|seconds| format!("Retry-After: {seconds}\r\n"));
+    let retry = retry_after.map(|value| format!("Retry-After: {value}\r\n"));
     // A status line may leave its reason out, which clients do not read.
     let response = format!(
         "HTTP/1.1 {status} \r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}\
