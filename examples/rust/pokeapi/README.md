@@ -132,4 +132,5 @@ says. No test reaches the network. From `examples/rust`, `cargo nextest run -p p
 
 Next: the repository README's [Certifying a connector](../../../README.md#certifying-a-connector)
 and [Placing connectors](../../../README.md#placing-connectors); the same source in Python is
-[`python/pokeapi`](../../python/pokeapi).
+[`python/pokeapi`](../../python/pokeapi). Then [transforms](../transforms), a stream reshaped
+before it lands.

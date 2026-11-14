@@ -94,4 +94,5 @@ test reaches the network. `just python-test examples/python/pokeapi` runs them:
   429 on its way, which the server checks it gave, it retries and loses no row. A run that fails
   exits 1.
 
-Next: the repository README's [Writing a connector](../../../README.md#writing-a-connector).
+Next: the repository README's [Writing a connector](../../../README.md#writing-a-connector); then
+[transforms](../transforms), a stream reshaped before it lands.

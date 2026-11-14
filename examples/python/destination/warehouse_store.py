@@ -1,9 +1,9 @@
 """The warehouse's store: its sqlite3 tables, and what one transaction reads and writes of them.
 
-It keeps what the Rust SDK's memory destination keeps: each table's owner, schema and merge key,
-its published rows, the tombstones of rows a change stream removed, its replace generations and
-what sessions staged, and each pipeline's fence row and state. Rows are kept as Arrow IPC and
-merged with `rdlt.connector.merge`, in Rust.
+It keeps what the reference memory destination, `MemoryDestination`, keeps: each table's owner,
+schema and merge key, its published rows, the tombstones of rows a change stream removed, its
+replace generations and what sessions staged, and each pipeline's fence row and state. Rows are
+kept as Arrow IPC and merged with `rdlt.connector.merge`, in Rust.
 """
 
 from __future__ import annotations
@@ -324,10 +324,10 @@ class Store:
             )
         for dropped in json_list(meta["drop_tables"]):
             name = str(json_object(dropped)["name"])
-            for table in ("tables", "names"):
-                self.database.execute(f"delete from {table} where name = ?", (name,))
-            for table in ("kept", "staged"):
-                self.database.execute(f"delete from {table} where tbl = ?", (name,))
+            self.database.execute("delete from tables where name = ?", (name,))
+            self.database.execute("delete from names where name = ?", (name,))
+            self.database.execute("delete from kept where tbl = ?", (name,))
+            self.database.execute("delete from staged where tbl = ?", (name,))
         return rows, size
 
     def _owns(self, pipeline: str, meta: Mapping[str, Json]) -> None:

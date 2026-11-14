@@ -64,8 +64,3 @@ def tables_launcher(directory: Path) -> Path:
 def pysqlite_launcher(directory: Path) -> Path:
     """A launcher serving the sqlite3 destination, in `directory`, a directory of its own."""
     return launcher(directory, "pysqlite", "PySqlite")
-
-
-def warehouse_launcher(directory: Path) -> Path:
-    """A launcher serving the warehouse destination, in `directory`, a directory of its own."""
-    return launcher(directory, "warehouse", "Warehouse")

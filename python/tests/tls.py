@@ -89,21 +89,24 @@ def pki(directory: Path) -> Pki:
 
 
 @contextlib.contextmanager
-def listening(found: Pki, module: str, served: str) -> Generator[str, None, None]:
-    """Where what `served` names of `tests.connectors.<module>` listens while the block runs.
+def listening(
+    found: Pki, module: str, served: str, *, beside: Path = TESTS
+) -> Generator[str, None, None]:
+    """Where what `served` names of `module` listens while the block runs.
 
-    `served` is what the launcher hands `rdlt.connector.serve`, such as `Tickets` or
-    `acknowledging_source_factory(Inbox)`, every name in it imported from the module. It is served
-    with `--listen` over mutual TLS with `found`'s certificates, and stops as a listening
+    `module` is imported with `beside` on the path, such as `tests.connectors.inbox` beside the
+    package's tests. `served` is what the launcher hands `rdlt.connector.serve`, such as `Tickets`
+    or `acknowledging_source_factory(Inbox)`, every name in it imported from the module. It is
+    served with `--listen` over mutual TLS with `found`'s certificates, and stops as a listening
     connector does at Ctrl-C once the block ends.
     """
     cert, key = found.server
     args = ["--listen", "127.0.0.1:0", "--tls-cert", str(cert), "--tls-key", str(key)]
     args += ["--tls-client-ca", str(found.ca), "--tls-allow-host", HOST]
     script = (
-        f"import sys\nsys.path.append({str(TESTS)!r})\n"
+        f"import sys\nsys.path.append({str(beside)!r})\n"
         "from rdlt.connector import *\n"
-        f"from tests.connectors.{module} import *\n"
+        f"from {module} import *\n"
         f"raise SystemExit(serve({served}, args={args!r}))\n"
     )
     process = subprocess.Popen(

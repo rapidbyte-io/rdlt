@@ -16,7 +16,11 @@ from tests.clauses import (
     outcomes,
 )
 from tests.connectors.tickets import Tickets
+from tests.launchers import TESTS
 from tests.tls import listening, pki
+
+DESTINATION = TESTS.parent / "examples" / "python" / "destination"
+"""The destination example's directory, which its warehouse is imported from."""
 
 
 def test_a_source_served_with_its_probe_is_certified_at_its_endpoint_s_ack_included(
@@ -24,7 +28,9 @@ def test_a_source_served_with_its_probe_is_certified_at_its_endpoint_s_ack_inclu
 ) -> None:
     found = pki(tmp_path)
     offsets = str(tmp_path / "offsets.db")
-    with listening(found, "inbox", "acknowledging_source_factory(Inbox)") as endpoint:
+    with listening(
+        found, "tests.connectors.inbox", "acknowledging_source_factory(Inbox)"
+    ) as endpoint:
         certification = certify_source(
             rdlt.Connector("io.example.inbox", endpoint=endpoint),
             config={"messages": KILLED_PAGES * 10, "offsets": offsets},
@@ -42,7 +48,9 @@ def test_a_destination_served_with_its_probe_is_certified_at_its_endpoint_read_b
     tmp_path: Path,
 ) -> None:
     found = pki(tmp_path)
-    with listening(found, "pysqlite", "readable_destination_factory(PySqlite)") as endpoint:
+    with listening(
+        found, "tests.connectors.pysqlite", "readable_destination_factory(PySqlite)"
+    ) as endpoint:
         certification = certify_destination(
             rdlt.Connector("io.example.pysqlite", endpoint=endpoint),
             config={"path": str(tmp_path / "listening.db")},
@@ -60,7 +68,8 @@ def test_a_destination_writing_every_mode_passes_every_clause_at_its_endpoint(
 ) -> None:
     # Its writers are called at once by the served SDK's write tasks, as a host's are.
     found = pki(tmp_path)
-    with listening(found, "warehouse", "readable_destination_factory(Warehouse)") as endpoint:
+    served = "readable_destination_factory(Warehouse)"
+    with listening(found, "warehouse", served, beside=DESTINATION) as endpoint:
         certification = certify_destination(
             rdlt.Connector("io.example.warehouse", endpoint=endpoint),
             config={"path": str(tmp_path / "listening.db")},
@@ -78,7 +87,7 @@ def test_a_destination_writing_every_mode_passes_every_clause_at_its_endpoint(
 def test_a_class_served_as_it_is_answers_no_probe_at_its_endpoint(tmp_path: Path) -> None:
     found = pki(tmp_path)
     offsets = str(tmp_path / "offsets.db")
-    with listening(found, "inbox", "Inbox") as endpoint:
+    with listening(found, "tests.connectors.inbox", "Inbox") as endpoint:
         certification = certify_source(
             rdlt.Connector("io.example.inbox", endpoint=endpoint),
             config={"messages": 60, "offsets": offsets},

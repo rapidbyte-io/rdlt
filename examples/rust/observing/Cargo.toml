@@ -1,0 +1,21 @@
+[package]
+name = "observing"
+description = "A run watched: its events as they happen, its report and metrics, and a clean stop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+metrics-exporter-prometheus.workspace = true
+rdlt.workspace = true
+rdlt-connector-reference.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+rusqlite.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

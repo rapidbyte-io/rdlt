@@ -1,9 +1,10 @@
-"""A destination that writes every way the engine has, in one sqlite3 file, as an author would.
+"""A destination that writes every way the engine has, in one sqlite3 file.
 
-It keeps what the Rust SDK's memory destination keeps, in the store `warehouse_store` holds, and
-merges with `rdlt.connector.merge`, in Rust. Every call works in a transaction of its own
-connection, so its table writers flush at once, and a commit is one transaction. Its store outlives
-its process, so a host that kills it finds what it committed.
+It keeps what the reference memory destination, `MemoryDestination`, keeps, in the store
+`warehouse_store` holds, and merges with `rdlt.connector.merge`, in Rust. Every call works in a
+transaction of its own connection, so its table writers flush at once, and a commit is one
+transaction. Its store outlives its process, so a host that kills it finds what it committed. Run
+as a program, it serves itself as a connector binary does.
 
 It widens no column in place: a widen joins two types on the engine's lattice, which a Python
 destination does not hold, so a widen is refused and the engine routes what the column cannot
@@ -35,10 +36,11 @@ from rdlt.connector import (
     WriteStats,
     destination,
     merge,
+    serve,
     to_arrow,
 )
 from rdlt.model import Json
-from tests.connectors.warehouse_store import (
+from warehouse_store import (
     Store,
     connected,
     json_list,
@@ -270,3 +272,7 @@ class Warehouse:
             yield from batches
             return
         yield from merge.read_back(to_arrow(held.schema), batches)
+
+
+if __name__ == "__main__":
+    raise SystemExit(serve(Warehouse))
