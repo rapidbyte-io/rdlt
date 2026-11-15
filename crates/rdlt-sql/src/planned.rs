@@ -1,6 +1,7 @@
 //! A SQL transform planned for one input schema: its output schema, its physical expressions,
 //! the input columns each reads, and the bound on what evaluating them allocates.
 
+mod checked;
 mod compact;
 #[cfg(test)]
 mod tests;
@@ -30,6 +31,7 @@ use datafusion_sql::sqlparser::ast::Statement;
 use rdlt_connector::META_PREFIX;
 use rdlt_engine::{Bound, NAMED_COLUMNS, TransformError};
 
+use self::checked::checked;
 use self::compact::{compacted, variable};
 use crate::functions::ARRAY;
 use crate::provider::{OPTIONS, Provider};
@@ -261,6 +263,7 @@ impl<'a> Compiler<'a> {
         let expr = simplified(expr, &self.simplifying)?;
         let allocated = size::allocated(&expr, self.schema)?;
         let physical = create_physical_expr(&expr, self.schema, &self.props, &self.context)
+            .and_then(|physical| checked(physical, self.schema.as_arrow()))
             .map_err(|error| planning(&error))?;
         let mut bare = &expr;
         while let Expr::Alias(alias) = bare {

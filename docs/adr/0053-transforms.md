@@ -283,6 +283,19 @@ determinism under simulation whatever the configuration says.
   - DataFusion's errors can quote the value they failed on, so none is kept. A refusal names the
     stream, the column and the function, never a value: `transform_invalid` when parsed,
     `transform_schema` when planned for a schema, `transform_failed` for a batch.
+  - Integer arithmetic is exact or fails its batch, `transform_failed`, as a division by zero does,
+    so no value changes quietly. DataFusion plans `+`, `-`, `*` and the negation of an integer to
+    wrap on overflow, so each operator is planned checked and an integer's negation as its checked
+    subtraction from zero. DataFusion checks `/` and `abs`, and `%` of the least value by `-1` is
+    its exact remainder, `0`. A cast to an integer or a decimal fails on a value the type cannot
+    hold, and a `TRY_CAST` gives a null instead. Arrow scales a `Date64` to microseconds or
+    nanoseconds unchecked, which DataFusion checks before a cast but not before a `TRY_CAST`, so a
+    `TRY_CAST` of one is made from the timestamp of its milliseconds, which Arrow scales checked. A
+    float that overflows is an infinity, as IEEE 754 has it. Integers of two types meet in the
+    narrowest integer type that holds both, and a `BIGINT UNSIGNED` meets a signed integer in a
+    decimal. A test holds every operator, negation, `abs` and cast of every integer type, at the
+    edges of each, to a model of its own over `i128`, which DataFusion's executor, wrapping, could
+    not be.
   - Each listed function declares its bound in terms of its arguments: lower and upper case
     three times their input for Unicode's case mappings, a concatenation its parts, a
     replacement by a literal one growth a byte, and a number, a time or a truth its type's
