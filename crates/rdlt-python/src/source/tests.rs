@@ -6,6 +6,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arrow_array::Array as _;
+use arrow_array::cast::AsArray as _;
+use arrow_array::types::Int64Type;
+use arrow_schema::DataType;
 use pyo3::types::{PyAnyMethods as _, PyDict, PyTypeMethods as _};
 use pyo3::{Py, PyAny, Python};
 use rdlt_connector::{
@@ -80,6 +84,54 @@ fn a_python_source_loads_into_the_engine() {
         let (_, error) = loaded(py, "python-loaded", "full", ONE_STREAM);
         assert_eq!(error, None);
         assert_eq!(published_rows("python-loaded", "rows"), 40);
+    });
+}
+
+#[test]
+fn a_python_read_s_decimals_land_as_their_exact_text_and_its_null_structs_as_nulls() {
+    embedded::with(|py| {
+        let body = "\
+from decimal import Decimal
+def read(partition, cursor, context):
+    yield [{'cost': Decimal('12345678901234567.89'), 'payload': {'n': 1, 'note': None}},
+           {'cost': Decimal('5'), 'payload': None},
+           {'cost': Decimal('-0E-3'), 'payload': {'n': None, 'note': 'x'}}]
+    yield {'cost': Decimal('5.5'), 'payload': {'n': 2, 'note': 'y'}}
+stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+streams = [stream]";
+        let (_, error) = loaded(py, "python-values", "full", body);
+        assert_eq!(error, None);
+        let mut landed = Vec::new();
+        for batch in rdlt_connector_reference::published("python-values", "rows") {
+            let cost = batch.column_by_name("cost").unwrap();
+            assert_eq!(cost.data_type(), &DataType::Utf8, "every decimal is text");
+            let cost = cost.as_string::<i32>();
+            let payload = batch.column_by_name("payload").unwrap().as_struct();
+            let n = payload
+                .column_by_name("n")
+                .unwrap()
+                .as_primitive::<Int64Type>();
+            let note = payload.column_by_name("note").unwrap().as_string::<i32>();
+            for row in 0..batch.num_rows() {
+                let fields = payload.is_valid(row).then(|| {
+                    let n = n.is_valid(row).then(|| n.value(row));
+                    (n, note.is_valid(row).then(|| note.value(row).to_owned()))
+                });
+                landed.push((cost.value(row).to_owned(), fields));
+            }
+        }
+        landed.sort();
+        assert_eq!(
+            landed,
+            [
+                ("-0.000".to_owned(), Some((None, Some("x".to_owned())))),
+                ("12345678901234567.89".to_owned(), Some((Some(1), None))),
+                ("5".to_owned(), None),
+                ("5.5".to_owned(), Some((Some(2), Some("y".to_owned())))),
+            ]
+        );
     });
 }
 

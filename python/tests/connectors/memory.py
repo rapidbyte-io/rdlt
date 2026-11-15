@@ -81,6 +81,13 @@ def published(store: str, table: str) -> int:
     return sum(batch.num_rows for batch in held.tables[table].published)
 
 
+def table(store: str, name: str) -> pa.Table:
+    """What `store` published to table `name`, as one table."""
+    held = _STORES[store]
+    with held.lock:
+        return pa.Table.from_batches(held.tables[name].published)
+
+
 def _column(nodes: Json) -> tuple[str, Json]:
     """A column's name and type, from its field: the field's nodes, its root naming it."""
     root, *nested = _list(nodes)

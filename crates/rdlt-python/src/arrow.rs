@@ -27,19 +27,55 @@ pub(crate) enum Produced {
 
 /// What `object` holds of Arrow; none where it is no Arrow producer.
 ///
+/// A stream's arrays are read as batches whose own nulls arrow-rs's reader does not keep, so a
+/// null entry of another library's stream of struct arrays reads as a row of what its fields
+/// hold there; pyarrow's chunked arrays are checked first.
+///
 /// # Errors
 ///
-/// What the producer raises, or `TypeError` for a batch whose struct array holds nulls.
+/// What the producer raises, or `ValueError` for a batch whose struct array holds nulls or a
+/// pyarrow chunked array of structs holding a null entry.
 pub(crate) fn produced(object: &Bound<'_, PyAny>) -> Result<Option<Produced>, PyErr> {
     let py = object.py();
     if object.hasattr(intern!(py, "__arrow_c_array__"))? {
         return RecordBatch::from_pyarrow_bound(object).map(|batch| Some(Produced::Batch(batch)));
     }
     if object.hasattr(intern!(py, "__arrow_c_stream__"))? {
+        refuse_null_structs(object)?;
         return ArrowArrayStreamReader::from_pyarrow_bound(object)
             .map(|reader| Some(Produced::Stream(reader)));
     }
     Ok(None)
+}
+
+/// Refuses `object` where it is a pyarrow chunked array of structs holding a null entry, as a
+/// batch's struct array holding one is refused.
+fn refuse_null_structs(object: &Bound<'_, PyAny>) -> Result<(), PyErr> {
+    let py = object.py();
+    // Only a pyarrow already imported made such an array, so none is imported here.
+    let modules = py
+        .import(intern!(py, "sys"))?
+        .getattr(intern!(py, "modules"))?;
+    let Ok(pyarrow) = modules.get_item(intern!(py, "pyarrow")) else {
+        return Ok(());
+    };
+    if !object.is_instance(&pyarrow.getattr(intern!(py, "ChunkedArray"))?)? {
+        return Ok(());
+    }
+    let structs = pyarrow
+        .getattr(intern!(py, "types"))?
+        .call_method1(
+            intern!(py, "is_struct"),
+            (object.getattr(intern!(py, "type"))?,),
+        )?
+        .is_truthy()?;
+    let nulls: usize = object.getattr(intern!(py, "null_count"))?.extract()?;
+    if structs && nulls > 0 {
+        return Err(PyValueError::new_err(
+            "a chunked array of structs holding a null entry is no stream of rows: yield a table",
+        ));
+    }
+    Ok(())
 }
 
 /// A batch of Rust's that Python reads through the C Data Interface, sharing its buffers: what
