@@ -10,12 +10,16 @@
 //! 2. Only grows the table: existing columns keep their order, identifiers, source columns and
 //!    nullability, and each type only widens; names only extend; the changes are exactly the
 //!    columns added and widened; the version advances by one exactly when there are changes, or
-//!    from 0 to 1 when a normalized stream's table is created.
+//!    from 0 to 1 when a normalized stream's table is created; and every column's type is as a
+//!    table's model holds it, each struct's fields in name order.
 //! 3. Is idempotent: resolving the same batch against the resolved model changes nothing and
 //!    routes it alike.
 //! 4. Is order-free: the batch's columns in another order are refused alike, or give the same
 //!    version, identifiers and types, and route each column to the same identifiers; only the
 //!    added columns' order follows the batch's.
+//!
+//! And a batch of the table's own columns, each of a type its column holds however its fields
+//! are ordered, lacking or null, changes nothing under any policy and goes to those columns.
 //!
 //! Resolution is not order-free across batches: two batches resolved in either order may give
 //! different layouts, as the last test shows.
@@ -24,11 +28,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use proptest::prelude::*;
-use rdlt_connector::strategy::{number_type, scalar_type};
+use rdlt_connector::strategy::{logical_type, number_type, scalar_type};
 use rdlt_connector::{
-    Capabilities, ColumnKey, ColumnPath, Field, LogicalType, SchemaChanges, StreamName,
+    Capabilities, ColumnKey, ColumnPath, Field, Fields, LogicalType, SchemaChanges, StreamName,
     TableSchema, TypeKind,
 };
+use rdlt_testkit::lattice;
 
 use super::{capabilities, columns, created, plan, resolver, schema};
 use crate::error::ErrorKind;
@@ -142,7 +147,7 @@ struct Values<'a> {
 impl Values<'_> {
     /// Whether a column of `column` holds them as they are.
     fn fit(&self, column: &LogicalType) -> bool {
-        column.join(self.logical) == *column
+        lattice::holds(column, self.logical)
     }
 
     /// Whether a column of `column` holds them cast with nothing rounded: 64-bit integers, none
@@ -152,10 +157,10 @@ impl Values<'_> {
     }
 }
 
-/// A column's type: any scalar, `Null` and `Json` among them, or twice as often a number, whose
-/// joins and casts have the most rules.
+/// A column's type: any scalar, `Null` and `Json` among them, twice as often a number, whose
+/// joins and casts have the most rules, or a list or struct, its fields in any order.
 fn column_type() -> impl Strategy<Value = LogicalType> {
-    prop_oneof![1 => scalar_type(), 2 => number_type()]
+    prop_oneof![1 => scalar_type(), 2 => number_type(), 1 => logical_type()]
 }
 
 /// A batch of one to [`BATCH_COLUMNS`] distinct columns of the first `paths` of [`PATHS`].
@@ -363,6 +368,7 @@ fn check(
     };
     loses_no_value(expected, &incoming, &resolution)?;
     only_grows(expected, model, &incoming, &resolution)?;
+    as_modeled(&resolution.model)?;
     idempotent(resolver, &incoming, &resolution)?;
     Ok(Some(resolution.model))
 }
@@ -564,6 +570,16 @@ fn only_grows(
     Ok(())
 }
 
+/// Checks that every column of `model` has its type as a table's model holds it.
+fn as_modeled(model: &Model) -> Result<(), TestCaseError> {
+    for column in &model.columns {
+        let logical = column.logical_type();
+        let modeled = lattice::as_modeled(logical);
+        prop_assert_eq!(logical, &modeled, "{} is not as modeled", column.name());
+    }
+    Ok(())
+}
+
 /// The columns of `model` whose type `resolved` widened, each with the type it had, once each of
 /// them is checked to keep its position, identifier, source column and nullability, and to have
 /// only widened.
@@ -583,7 +599,11 @@ fn widened(model: &Model, resolved: &Model) -> Result<BTreeMap<usize, LogicalTyp
             before.name()
         );
         let (from, to) = (before.logical_type(), after.logical_type());
-        prop_assert_eq!(&from.join(to), to, "column {} narrowed", before.name());
+        prop_assert!(
+            lattice::holds(to, from),
+            "column {} narrowed",
+            before.name()
+        );
         if from != to {
             widened.insert(index, from.clone());
         }
@@ -677,6 +697,79 @@ fn order_free(
     Ok(())
 }
 
+/// Checks that a batch of `model`'s own columns, each cut as [`cut`] cuts it, changes
+/// nothing and goes to those columns: their types hold it whatever the column's policy.
+fn holds_its_own(resolver: &Resolver, model: &Model) -> Result<(), TestCaseError> {
+    let own: Vec<(usize, Column)> = model
+        .columns
+        .iter()
+        .enumerate()
+        .filter_map(|(position, field)| match model.names.owner(field.name())? {
+            ColumnKey::Source(path) => Some((
+                position,
+                Column {
+                    path: path.clone(),
+                    logical: cut(field.logical_type()),
+                    rounding: false,
+                },
+            )),
+            ColumnKey::Variant { .. } => None,
+        })
+        .collect();
+    if own.is_empty() {
+        return Ok(());
+    }
+    let (positions, columns): (Vec<usize>, Vec<Column>) = own.into_iter().unzip();
+    let order = (0..columns.len()).collect::<Vec<_>>();
+    let batch = Batch {
+        columns,
+        creation: Creation::AsModeled,
+        order: order.clone(),
+    };
+    let Some(resolution) = resolved(resolver, model, &incoming(&batch, &order))? else {
+        return Err(TestCaseError::fail("the table refuses its own columns"));
+    };
+    prop_assert!(
+        resolution.changes.is_empty(),
+        "its own columns change the table: {:?}",
+        resolution.changes
+    );
+    let routes: Vec<Route> = positions.into_iter().map(Route::Column).collect();
+    prop_assert_eq!(resolution.routes, routes, "its own columns go elsewhere");
+    Ok(())
+}
+
+/// A type `logical` holds, cut from it as `strategy::cut` draws one, the same way each time: each
+/// struct's fields in reverse order, the first of them left out where it may be null and the
+/// next, where it may be null, holding only nulls, and each list's item named `element`.
+fn cut(logical: &LogicalType) -> LogicalType {
+    match logical {
+        LogicalType::Struct(fields) => {
+            let mut fields: Vec<Field> = fields
+                .iter()
+                .map(|field| {
+                    let cut = cut(field.logical_type());
+                    Field::new(field.name(), cut, field.is_nullable())
+                })
+                .collect();
+            fields.reverse();
+            if fields.first().is_some_and(Field::is_nullable) {
+                fields.remove(0);
+            }
+            if let Some(next) = fields.first_mut().filter(|field| field.is_nullable()) {
+                *next = Field::new(next.name(), LogicalType::Null, true);
+            }
+            LogicalType::Struct(Fields::new(fields).unwrap())
+        }
+        LogicalType::List(item) => LogicalType::List(Box::new(Field::new(
+            "element",
+            cut(item.logical_type()),
+            item.is_nullable(),
+        ))),
+        other => other.clone(),
+    }
+}
+
 /// Each of `model`'s columns by identifier, with its type and nullability.
 fn typed(model: &Model) -> BTreeMap<&str, (&LogicalType, bool)> {
     model
@@ -717,6 +810,7 @@ proptest! {
             }
         }
         let drawn = case_resolver(&case, Policies::Drawn);
+        holds_its_own(&drawn, &model)?;
         let expected = Expected { stream: &case.stream, policies: Policies::Drawn };
         check(&drawn, &expected, &model, &case.batch)?;
     }

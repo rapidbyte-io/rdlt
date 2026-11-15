@@ -3,7 +3,8 @@
 //!
 //! [`drawn`] draws every logical type in every Arrow encoding a source may send, with values across
 //! each type's whole range; [`canon`] says what each value means, whatever type or text holds it;
-//! [`decode`] reads stored cells back to that meaning. Property tests shrink what they draw; the
+//! [`decode`] reads stored cells back to that meaning; [`lattice`] says which types a column
+//! holds, by name, without the lattice's join. Property tests shrink what they draw; the
 //! simulation draws the same values from its seed.
 //!
 //! [`cancel`] drops a call at each point it waits and checks what the call left, for every object
@@ -32,6 +33,7 @@ pub mod failing;
 #[cfg(feature = "fake")]
 pub mod fake;
 pub mod held;
+pub mod lattice;
 pub mod nested;
 pub mod process;
 pub mod required;

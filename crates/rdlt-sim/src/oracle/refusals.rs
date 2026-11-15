@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rdlt_connector::{Capabilities, LogicalType, PartitionId, StreamName};
 use rdlt_engine::{Code, Nested, OnUnsupported, SchemaPolicy, codes};
 use rdlt_testkit::canon::storage;
+use rdlt_testkit::lattice;
 
 use super::arrivals::{Arrival, arrival, widest};
 use super::expected;
@@ -205,7 +206,7 @@ impl<'a> Column<'a> {
         let initial = drift
             .declared
             .as_ref()
-            .map(|declared| drift.hint.clone().unwrap_or_else(|| declared.clone()));
+            .map(|declared| lattice::as_modeled(drift.hint.as_ref().unwrap_or(declared)));
         let arrivals: Vec<Vec<Arrival>> = (0..=phase).map(|at| self.arrivals(at)).collect();
         let outcome = outcome(initial, &arrivals, rules.code(), |current, arrival| {
             rules.step(current, arrival)
@@ -290,8 +291,8 @@ impl Rules<'_> {
             (None, ..) if !self.capabilities.schema_changes.add_column => {
                 return Step::Refused;
             }
-            (None, Some(hint), _) => hint.clone(),
-            (None, None, Some(logical)) => logical,
+            (None, Some(hint), _) => lattice::as_modeled(hint),
+            (None, None, Some(logical)) => lattice::as_modeled(&logical),
             (None, None, None) => return Step::Unknown,
         };
         match arrival.fits(&current) {

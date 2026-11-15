@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rdlt_connector::{Capabilities, ColumnKey, ColumnPath, TablePath, TableSchema};
 use rdlt_engine::{Nested, WriteMode};
 use rdlt_testkit::canon::{Canon, storage};
+use rdlt_testkit::lattice;
 
 use super::expected::{self, Expected, Placement};
 use super::names;
@@ -357,7 +358,7 @@ impl Table<'_> {
     ) -> Option<String> {
         let (physical, logical) = (cell.physical, &cell.logical);
         match placed {
-            Some(Placement::Own(expected)) if !own || logical != expected => {
+            Some(Placement::Own(expected)) if !own || *logical != lattice::as_modeled(expected) => {
                 return Some(format!(
                     "{physical} is {logical}; the model places the value in its own column, of \
                      {expected}"
@@ -371,7 +372,7 @@ impl Table<'_> {
             _ => {}
         }
         if let Some(source) = sent.source()
-            && logical.join(source) != *logical
+            && !lattice::holds(logical, source)
             && !sent.cast_exactly(logical)
         {
             return Some(format!(

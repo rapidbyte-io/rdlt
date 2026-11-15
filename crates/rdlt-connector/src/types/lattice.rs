@@ -8,19 +8,21 @@ use super::{DecimalType, Field, Fields, LogicalType};
 pub(crate) const LIST_ITEM: &str = "item";
 
 impl LogicalType {
-    /// The narrowest type that holds every value of `self` and of `other`.
+    /// The narrowest type that holds every value of `self` and of `other`, in canonical form.
     ///
-    /// The join is associative, commutative and idempotent, `Null` is its identity and `Json`
-    /// absorbs every type. Values are never rounded: an integer joins a float as `Float64` only when
-    /// `Float64` holds every value of both exactly, and floats and decimals join to `Json`.
+    /// The join is associative and commutative and `Json` absorbs every type; on types in
+    /// [canonical form](LogicalType::canonical) it is also idempotent, with `Null` its identity,
+    /// so a canonical `a` holds every value of `b` exactly when `a.join(b) == a`. Values are never
+    /// rounded: an integer joins a float as `Float64` only when `Float64` holds every value of
+    /// both exactly, and floats and decimals join to `Json`.
     #[must_use]
     pub fn join(&self, other: &Self) -> Self {
         use LogicalType as T;
         if self == other {
-            return self.clone();
+            return self.canonical();
         }
         match (self, other) {
-            (T::Null, x) | (x, T::Null) => x.clone(),
+            (T::Null, x) | (x, T::Null) => x.canonical(),
             (a, b) if integer_digits(a).is_some() && integer_digits(b).is_some() => {
                 if integer_digits(a) >= integer_digits(b) {
                     a.clone()
@@ -54,6 +56,34 @@ impl LogicalType {
             _ => T::Json,
         }
     }
+
+    /// The type with every struct's fields in name order and every list's item named `item`, at
+    /// any depth: the form the join returns, which types differing only in those share.
+    #[must_use]
+    pub fn canonical(&self) -> Self {
+        match self {
+            Self::Struct(fields) => {
+                let mut fields: Vec<Field> = fields.iter().map(canonical_field).collect();
+                fields.sort_unstable_by(|left, right| left.name().cmp(right.name()));
+                Self::Struct(Fields(fields))
+            }
+            Self::List(item) => Self::List(Box::new(Field::new(
+                LIST_ITEM,
+                item.logical_type().canonical(),
+                item.is_nullable(),
+            ))),
+            other => other.clone(),
+        }
+    }
+}
+
+/// `field` with its type in canonical form.
+fn canonical_field(field: &Field) -> Field {
+    Field::new(
+        field.name(),
+        field.logical_type().canonical(),
+        field.is_nullable(),
+    )
 }
 
 /// Decimal digits needed for every value of an integer type.
@@ -90,7 +120,8 @@ fn join_decimals(decimal: DecimalType, integer_digits: u8, scale: u8) -> Logical
 
 /// Field-wise join; a field missing on one side becomes nullable.
 ///
-/// Fields come out sorted by name, so the result does not depend on which side listed a field first.
+/// Fields come out in name order, so the result does not depend on which side listed a field
+/// first.
 fn join_structs(a: &Fields, b: &Fields) -> Fields {
     let mut names: BTreeMap<&str, (Option<&Field>, Option<&Field>)> = BTreeMap::new();
     for field in a.iter() {
@@ -114,7 +145,7 @@ fn join_fields(name: &str, left: Option<&Field>, right: Option<&Field>) -> Field
             l.is_nullable() || r.is_nullable(),
         ),
         (Some(only), None) | (None, Some(only)) => {
-            Field::new(name, only.logical_type().clone(), true)
+            Field::new(name, only.logical_type().canonical(), true)
         }
         (None, None) => Field::new(name, LogicalType::Null, true),
     }

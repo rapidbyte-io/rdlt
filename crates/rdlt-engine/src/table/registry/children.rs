@@ -67,7 +67,7 @@ impl Tables {
             self.admit_another(root, &parent.stream)?;
         }
         let resolver = parent.child(root_key, owner);
-        let model = Model::from_state(recorded)?;
+        let model = Model::from_state(recorded, &parent.stream, &table_path)?;
         let table = TableRef {
             name: self.name(&table_path, &resolver.naming)?,
             path: table_path,

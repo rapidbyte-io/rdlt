@@ -15,6 +15,7 @@ use rdlt_connector::{Capabilities, SchemaVersion, SegmentId, TablePath, TableRef
 use rdlt_testkit::canon::{Canon, storage};
 use rdlt_testkit::decode;
 use rdlt_testkit::drawn::{Drawn, neighbors};
+use rdlt_testkit::lattice;
 
 use super::reference::{Expected, lower, merged, unsuperseded, written};
 use super::{ChangeRows, LoweringPlan, Prepared, Stamp};
@@ -102,10 +103,9 @@ fn check(
         let view =
             Arc::new(TableView::new(&table, resolution.model.clone(), &resolver).expect("a view"));
         for (column, lowered) in view.model.columns.iter().zip(&view.lowered) {
-            prop_assert_eq!(
-                lowered,
-                &storage(column.logical_type(), native, capabilities)
-            );
+            let logical = column.logical_type();
+            prop_assert_eq!(logical, &lattice::as_modeled(logical), "not as modeled");
+            prop_assert_eq!(lowered, &storage(logical, native, capabilities));
         }
         let plan = (&resolver, &view, incoming, resolution.routes);
         let case = (mode, beside, first);

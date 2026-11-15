@@ -4,7 +4,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use rdlt_connector::{Field, NameMap, SchemaVersion, TableSchema, TableState};
+use rdlt_connector::{
+    Field, NameMap, SchemaVersion, StreamName, TablePath, TableSchema, TableState,
+};
 
 use crate::error::{Error, ErrorKind, codes};
 
@@ -29,8 +31,19 @@ pub(crate) enum Creation {
 }
 
 impl Model {
-    /// The committed model of a table, or an empty one when nothing is committed.
-    pub(crate) fn from_state(state: Option<&TableState>) -> Result<Self, Error> {
+    /// The committed model of `stream`'s table at `table`, or an empty one when nothing is
+    /// committed.
+    ///
+    /// # Errors
+    ///
+    /// A `Destination` error coded `state_invalid` where state records a schema at version 0, a
+    /// column no source column owns, or a column whose type is not in canonical form, which the
+    /// engine records every type in.
+    pub(crate) fn from_state(
+        state: Option<&TableState>,
+        stream: &StreamName,
+        table: &TablePath,
+    ) -> Result<Self, Error> {
         let Some(state) = state else {
             return Ok(Self::default());
         };
@@ -59,6 +72,21 @@ impl Model {
                 format!("state names no source column for column {}", orphan.name()),
             )
             .with_code(codes::STATE_INVALID));
+        }
+        if let Some(column) = columns
+            .iter()
+            .find(|field| *field.logical_type() != field.logical_type().canonical())
+        {
+            let detail = format!(
+                "stream {stream}: table {table}: state records column {} as {}, its struct \
+                 fields out of name order or a list's item not named item; reset the stream's \
+                 tables to create it again",
+                column.name(),
+                column.logical_type()
+            );
+            return Err(Error::new(ErrorKind::Destination, detail)
+                .with_code(codes::STATE_INVALID)
+                .with_stream(stream));
         }
         Ok(Self {
             version: *version,

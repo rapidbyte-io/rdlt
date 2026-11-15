@@ -7,6 +7,7 @@ use arrow_array::RecordBatch;
 use rdlt_connector::{
     ConnectorError, LogicalType, Result, SCHEMA_CONFLICT, TableChange, TableSchema,
 };
+use rdlt_testkit::lattice;
 
 /// A table's columns: identifier to stored type.
 pub(crate) type Columns = BTreeMap<String, LogicalType>;
@@ -31,7 +32,7 @@ pub(crate) fn apply(columns: &mut Columns, change: &TableChange) -> Result<()> {
     };
     for (name, to, widens) in declared {
         match next.get(name) {
-            Some(held) if held.join(to) == *held => {}
+            Some(held) if lattice::holds(held, to) => {}
             Some(held) if widens => {
                 let joined = held.join(to);
                 next.insert(name.to_owned(), joined);
@@ -52,8 +53,8 @@ pub(crate) fn apply(columns: &mut Columns, change: &TableChange) -> Result<()> {
     Ok(())
 }
 
-/// What in `batch` its table's `columns` cannot take: a column the table lacks, or a type its
-/// column does not hold.
+/// What in `batch` its table's `columns` cannot take: a column the table lacks, a type its
+/// column does not hold, or a struct whose fields are out of name order.
 pub(crate) fn unfit(columns: &Columns, batch: &RecordBatch) -> Vec<String> {
     let schema = match TableSchema::from_arrow(&batch.schema()) {
         Ok(schema) => schema,
@@ -67,8 +68,11 @@ pub(crate) fn unfit(columns: &Columns, batch: &RecordBatch) -> Vec<String> {
             let written = field.logical_type();
             match columns.get(name) {
                 None => Some(format!("wrote column {name}, which the table lacks")),
-                Some(held) if held.join(written) != *held => Some(format!(
+                Some(held) if !lattice::holds(held, written) => Some(format!(
                     "wrote {written:?} to column {name}, which holds {held:?}"
+                )),
+                Some(_) if *written != lattice::as_modeled(written) => Some(format!(
+                    "wrote {written:?} to column {name}, its struct fields out of name order"
                 )),
                 Some(_) => None,
             }

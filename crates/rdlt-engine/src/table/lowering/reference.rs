@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rdlt_connector::{ChangeOp, ColumnKey, ColumnPath, LogicalType};
 use rdlt_testkit::canon::{Canon, canonical, holds};
 use rdlt_testkit::drawn::Scalar;
+use rdlt_testkit::lattice;
 
 use crate::policy::SchemaPolicy;
 use crate::report::DiscardReason;
@@ -240,10 +241,7 @@ fn holding(view: &TableView, name: &str, logical: &LogicalType, exact: bool) -> 
             && *logical == LogicalType::Int64
             && *view.model.columns[index].logical_type() == LogicalType::Float64
     };
-    let fits = |index: &usize| {
-        let column = view.model.columns[*index].logical_type();
-        column.join(logical) == *column
-    };
+    let fits = |index: &usize| lattice::holds(view.model.columns[*index].logical_type(), logical);
     own.filter(|index| fits(index) || cast(*index))
         .or_else(|| variants.into_iter().map(|(_, index)| index).find(fits))
 }

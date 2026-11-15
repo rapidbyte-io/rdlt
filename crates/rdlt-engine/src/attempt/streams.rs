@@ -173,7 +173,7 @@ impl<'a> Planning<'a> {
         let path = TablePath::new([name.to_string()]).map_err(|error| {
             Error::internal(format!("stream {name} has no valid table path: {error}"))
         })?;
-        let mut model = Model::from_state(tables.recorded_table(&path))?;
+        let mut model = Model::from_state(tables.recorded_table(&path), name, &path)?;
         let physical = tables.name(&path, &self.naming)?;
         let lineage = if normalized {
             LineageColumns::Root

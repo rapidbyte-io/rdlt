@@ -305,8 +305,8 @@ async fn booleans_numbers_and_structs_a_column_held_become_their_json_when_it_wi
     let expected = json(&["42", "-9223372036854775808", r#"{"a":1}"#]);
     assert_eq!(text(&held), expected);
     let fields = vec![
-        Field::new("x", LogicalType::Bool, true),
         Field::new("n", LogicalType::Int64, true),
+        Field::new("x", LogicalType::Bool, true),
     ];
     let logical = LogicalType::Struct(fields.try_into().expect("distinct fields"));
     let arrow_schema::DataType::Struct(arrow_fields) = logical.to_arrow() else {
@@ -315,14 +315,14 @@ async fn booleans_numbers_and_structs_a_column_held_become_their_json_when_it_wi
     let structs: ArrayRef = Arc::new(StructArray::new(
         arrow_fields,
         vec![
-            Arc::new(BooleanArray::from(vec![Some(true)])) as ArrayRef,
             Arc::new(Int64Array::from(vec![None::<i64>])) as ArrayRef,
+            Arc::new(BooleanArray::from(vec![Some(true)])) as ArrayRef,
         ],
         None,
     ));
     let (widening, held) = to_json("arrow", logical, Arc::clone(&structs)).await;
     widening.expect("structs widen to JSON");
-    assert_eq!(text(&held), json(&[r#"{"x":true,"n":null}"#, r#"{"a":1}"#]));
+    assert_eq!(text(&held), json(&[r#"{"n":null,"x":true}"#, r#"{"a":1}"#]));
     let booleans: ArrayRef = Arc::new(BooleanArray::from(vec![true]));
     let (widening, held) = to_json("jsonl", LogicalType::Bool, booleans).await;
     let refused = widening.expect_err("lines hold no type");

@@ -77,9 +77,9 @@ impl Draft {
         }
     }
 
-    /// Adds the column for `key`; returns its position.
-    pub(super) fn add(&mut self, key: ColumnKey, logical: LogicalType, nullable: bool) -> usize {
-        self.adds.push((key.clone(), logical, nullable));
+    /// Adds the column for `key`, of `logical` in canonical form; returns its position.
+    pub(super) fn add(&mut self, key: ColumnKey, logical: &LogicalType, nullable: bool) -> usize {
+        self.adds.push((key.clone(), logical.canonical(), nullable));
         self.changes.push(Change::Add { key });
         self.model.columns.len() + self.adds.len() - 1
     }
