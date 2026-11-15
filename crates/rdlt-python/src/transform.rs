@@ -18,13 +18,15 @@ use crate::arrow::{NativeBatch, imported, schema_from_pyarrow};
 use crate::calls;
 use crate::errors::Failure;
 
-/// A Python transform: its callable, whether it filters, and its declared output.
+/// A Python transform: its callable, whether it filters, its declared output, and the output
+/// columns it says it passes on, each with the input column it passes.
 #[derive(Clone)]
 pub(crate) struct PythonTransform {
     name: Arc<str>,
     function: Arc<Py<PyAny>>,
     filters: bool,
     output: Option<SchemaRef>,
+    passes: Option<Arc<[(String, String)]>>,
 }
 
 fn failed(py: Python<'_>, error: &PyErr) -> TransformError {
@@ -71,11 +73,32 @@ impl rdlt::Transform for PythonTransform {
         if self.filters {
             return Ok(Arc::new(input.clone()));
         }
-        if let Some(output) = &self.output {
-            return Ok(Arc::clone(output));
+        let output = match &self.output {
+            Some(output) => Arc::clone(output),
+            None => self
+                .apply(RecordBatch::new_empty(Arc::new(input.clone())))?
+                .schema(),
+        };
+        for (passed, arrived) in self.passes.iter().flat_map(|passes| passes.iter()) {
+            let fits = match (
+                output.field_with_name(passed),
+                input.field_with_name(arrived),
+            ) {
+                (Ok(passed), Ok(arrived)) => {
+                    passed.data_type() == arrived.data_type()
+                        && (passed.is_nullable() || !arrived.is_nullable())
+                }
+                _ => false,
+            };
+            if !fits {
+                let message = format!(
+                    "it says it passes {arrived} on as {passed}, which its input and output do not \
+                     hold alike"
+                );
+                return Err(TransformError::new(message).with_column(passed.clone()));
+            }
         }
-        let empty = RecordBatch::new_empty(Arc::new(input.clone()));
-        Ok(self.apply(empty)?.schema())
+        Ok(output)
     }
 
     fn filters(&self) -> bool {
@@ -105,6 +128,19 @@ impl rdlt::Transform for PythonTransform {
                 .map_err(|error| failed(exported.py(), &error))
         })
     }
+
+    fn passes(&self, input: &Schema) -> Option<Vec<Option<usize>>> {
+        if self.filters {
+            return Some((0..input.fields().len()).map(Some).collect());
+        }
+        let said = self.passes.as_ref()?;
+        let output = self.output(input).ok()?;
+        let places = output.fields().iter().map(|field| {
+            let (_, arrived) = said.iter().find(|(passed, _)| passed == field.name())?;
+            input.index_of(arrived).ok()
+        });
+        Some(places.collect())
+    }
 }
 
 /// A transform written in Python, as the host registers it.
@@ -116,12 +152,14 @@ pub(crate) struct NativeTransform {
 #[pymethods]
 impl NativeTransform {
     #[new]
+    #[pyo3(signature = (name, function, filters, output, passes = None))]
     pub(crate) fn new(
         py: Python<'_>,
         name: String,
         function: Py<PyAny>,
         filters: bool,
         output: Option<Py<PyAny>>,
+        passes: Option<Vec<(String, String)>>,
     ) -> Result<Self, PyErr> {
         let output = output
             .map(|schema| schema_from_pyarrow(schema.bind(py)).map(Arc::new))
@@ -132,6 +170,7 @@ impl NativeTransform {
                 function: Arc::new(function),
                 filters,
                 output,
+                passes: passes.map(Arc::from),
             },
         })
     }
