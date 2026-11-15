@@ -1,7 +1,7 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
-use super::{launcher, locked_now, private, replaceable_now, replaced, swept, target};
+use super::{STAGED, launcher, locked_now, private, replaceable_now, replaced, swept, target};
 use crate::connector::install::InstallError;
 
 fn mode(path: &Path) -> u32 {
@@ -10,6 +10,16 @@ fn mode(path: &Path) -> u32 {
 
 fn chmod(path: &Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// An environment staged in `connectors` that holds `file`.
+fn staged(connectors: &Path, file: &str) -> tempfile::TempDir {
+    let staging = tempfile::Builder::new()
+        .prefix(STAGED)
+        .tempdir_in(connectors)
+        .unwrap();
+    std::fs::write(staging.path().join(file), file).unwrap();
+    staging
 }
 
 #[test]
@@ -91,6 +101,21 @@ fn a_tree_is_made_its_operator_s_alone_and_a_link_and_what_it_leads_to_are_left_
 }
 
 #[test]
+fn a_tree_is_put_in_place_and_the_tree_it_replaced_removed() {
+    let connectors = tempfile::tempdir().unwrap();
+    let tree = connectors.path().join("rdlt-connector-tickets");
+    let left = replaced(staged(connectors.path(), "first"), &tree).unwrap();
+    assert_eq!(left, None);
+    assert!(tree.join("first").is_file(), "the tree is in place");
+    let left = replaced(staged(connectors.path(), "second"), &tree).unwrap();
+    assert_eq!(left, None);
+    assert!(tree.join("second").is_file(), "the new tree is in place");
+    assert!(!tree.join("first").exists(), "the tree replaced is gone");
+    let entries = std::fs::read_dir(connectors.path()).unwrap().count();
+    assert_eq!(entries, 1, "nothing is left beside the tree");
+}
+
+#[test]
 fn an_old_tree_that_cannot_be_removed_is_left_once_the_new_one_is_in_place() {
     let connectors = tempfile::tempdir().unwrap();
     let tree = connectors.path().join("rdlt-connector-tickets");
@@ -99,10 +124,7 @@ fn an_old_tree_that_cannot_be_removed_is_left_once_the_new_one_is_in_place() {
     std::fs::write(held.join("file"), "").unwrap();
     // Its file cannot be removed from it.
     chmod(&held, 0o555);
-    let staged = connectors.path().join(".rdlt-install-new");
-    std::fs::create_dir(&staged).unwrap();
-    std::fs::write(staged.join("new"), "").unwrap();
-    let left = replaced(&staged, &tree, connectors.path()).unwrap();
+    let left = replaced(staged(connectors.path(), "new"), &tree).unwrap();
     assert!(tree.join("new").is_file(), "the new tree is in place");
     let entries: Vec<PathBuf> = std::fs::read_dir(connectors.path())
         .unwrap()
@@ -110,16 +132,43 @@ fn an_old_tree_that_cannot_be_removed_is_left_once_the_new_one_is_in_place() {
         .collect();
     let named = |path: &&PathBuf| {
         let name = path.file_name().unwrap().to_string_lossy();
-        name.starts_with(".rdlt-replaced-")
+        name.starts_with(STAGED)
     };
     match entries.iter().find(named) {
         Some(at) => {
-            assert!(left.is_some(), "the tree left is said");
-            chmod(&at.join("tree/held"), 0o755);
+            assert!(left.is_some(), "what is left is said");
+            chmod(&at.join("held"), 0o755);
         }
         // The superuser removes it all the same.
         None => assert!(left.is_none(), "{left:?}"),
     }
+}
+
+#[test]
+fn a_tree_being_replaced_is_there_throughout() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let connectors = tempfile::tempdir().unwrap();
+    let tree = connectors.path().join("rdlt-connector-tickets");
+    std::fs::create_dir(&tree).unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let watching = {
+        let (tree, done) = (tree.clone(), Arc::clone(&done));
+        std::thread::spawn(move || {
+            let mut missing = 0_u64;
+            while !done.load(Ordering::Relaxed) {
+                missing += u64::from(tree.symlink_metadata().is_err());
+            }
+            missing
+        })
+    };
+    for round in 0..200 {
+        replaced(staged(connectors.path(), &round.to_string()), &tree).unwrap();
+    }
+    done.store(true, Ordering::Relaxed);
+    assert_eq!(watching.join().unwrap(), 0, "the tree was missing while it was replaced");
+    assert!(tree.join("199").is_file(), "the last tree is in place");
 }
 
 #[test]
@@ -144,7 +193,6 @@ async fn what_a_killed_install_left_is_swept_and_nothing_else() {
         std::fs::write(connectors.path().join(name), "").unwrap();
     }
     std::fs::create_dir_all(connectors.path().join(".rdlt-install-a/bin")).unwrap();
-    std::fs::create_dir_all(connectors.path().join(".rdlt-replaced-b/tree")).unwrap();
     std::fs::write(connectors.path().join(".rdlt-install-c"), "").unwrap();
     swept(connectors.path()).await;
     let mut left: Vec<String> = std::fs::read_dir(connectors.path())

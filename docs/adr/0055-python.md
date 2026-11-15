@@ -226,9 +226,10 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   missing runs with `-S`, its packages' directory put on the path by hand. The wheel is named to
   pip by its `file:` URL, so no index is asked for it; the requirements, which an index serves,
   keep one from being given for the run. The tree is made beside the connectors, one install at
-  a time under a lock that also lets the next sweep what a killed one left, and renamed into
-  place, its write taken away from group and others; it records its connector's id, and an
-  install replaces only a tree that records its own (`name_taken` otherwise). The host hashes the
+  a time under a lock that also lets the next sweep what a killed one left, and exchanged with
+  the tree it replaces in one step, so one of the two is in place throughout, its write taken
+  away from group and others; it records its connector's id, and an install replaces only a tree
+  that records its own (`name_taken` otherwise). The host hashes the
   launcher, whose first line names the interpreter, and holds the interpreter by its path, as
   any script's; the installed packages are the operator's files, as a native binary's shared
   libraries are. The environment's interpreter is a link to its base installation, which a
@@ -270,6 +271,8 @@ Rejected:
 - **pyo3-async-runtimes for awaitables.** It hands an awaited answer over by taking the GIL on the
   runtime's blocking pool, and given a runtime whose blocking pool were a daemon thread, the
   closure it hands over would still call asyncio beneath that thread's Rust frames.
+- **Replacing a tree with two renames.** An install ended between them, by a signal or a crash,
+  leaves no tree, and the next install would sweep away the old one.
 
 ## Consequences
 
@@ -279,6 +282,10 @@ installation its environment links to, and `rdlt connector install` refuses it
 (`interpreter_unreachable`). Such a connector is served without an install, `--listen` from an
 environment holding its wheel. An interpreter installed in the connector's own tree, a standalone
 install, would lift that refusal.
+
+Replacing a tree needs a file system that exchanges two names in one step, as Linux's local file
+systems and APFS do; on one that cannot, the tree is removed by hand before its connector is
+installed again.
 
 A directory connector's digest pins its launcher, not what the launcher runs: the interpreter
 its first line names is held by its path, and the packages beside it are the operator's files.

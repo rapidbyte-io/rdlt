@@ -146,7 +146,8 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
 /// with requirements, `--require-hashes` covers every package, the wheel among them.
 ///
 /// Dropped before it ends, as it is when a signal ends the command line, it kills the processes
-/// it started, every process of their groups, and removes the environment it was making.
+/// it started, every process of their groups, and removes the environment it was making; once
+/// that is being put in place, the putting ends first.
 ///
 /// # Errors
 ///
@@ -179,15 +180,14 @@ pub(crate) async fn install(installation: &Installation) -> Result<Installed, In
     let made = async {
         environment::made(&python, staging.path()).await?;
         environment::installed(staging.path(), &described, requirements).await?;
-        tree::finished(staging.path(), launcher, id.as_str()).await?;
-        tree::placed(staging.path(), &at, &connectors).await
-    };
-    let left = made.await;
-    // What is left of the environment, all of it where the install failed, is removed where that
-    // may block; dropped with the install, it is removed at once.
-    blocking(move || drop(staging)).await;
-    Ok(Installed {
-        tree: at,
-        left: left?,
-    })
+        tree::finished(staging.path(), launcher, id.as_str()).await
+    }
+    .await;
+    if let Err(error) = made {
+        // Removed where that may block; dropped with the install, it is removed at once.
+        blocking(move || drop(staging)).await;
+        return Err(error);
+    }
+    let left = tree::placed(staging, &at).await?;
+    Ok(Installed { tree: at, left })
 }

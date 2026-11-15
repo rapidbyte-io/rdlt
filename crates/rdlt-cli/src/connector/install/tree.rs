@@ -1,5 +1,5 @@
 //! The tree an install makes in the connector directory: its launcher, the id it records, its
-//! modes, and its place, where it replaces only an earlier install of its connector.
+//! modes, and its place, where it replaces only an earlier install of its connector, in one step.
 
 #[cfg(test)]
 mod tests;
@@ -10,7 +10,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
-use rustix::fs::FlockOperation;
+use rustix::fs::{FlockOperation, RenameFlags};
 
 use super::{InstallError, blocking, io_error};
 
@@ -20,8 +20,8 @@ const SHEBANG_BYTES: usize = 256;
 /// The file in a tree that names the connector installed there.
 const ID_FILE: &str = "rdlt-connector.id";
 
-/// The beginnings of the names of what an install makes beside its tree while it runs.
-const STAGED: [&str; 2] = [".rdlt-install-", ".rdlt-replaced-"];
+/// The beginning of the name of what an install makes beside its trees while it runs.
+const STAGED: &str = ".rdlt-install-";
 
 /// The file an install holds locked in the connector directory while it runs.
 const LOCK_FILE: &str = ".rdlt-install.lock";
@@ -146,10 +146,7 @@ pub(super) async fn swept(connectors: &Path) {
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name();
-        let stale = STAGED
-            .iter()
-            .any(|staged| name.as_bytes().starts_with(staged.as_bytes()));
-        if !stale {
+        if !name.as_bytes().starts_with(STAGED.as_bytes()) {
             continue;
         }
         let directory = entry.file_type().await.is_ok_and(|kind| kind.is_dir());
@@ -192,7 +189,7 @@ pub(super) async fn staging(connectors: &Path) -> Result<tempfile::TempDir, Inst
     let connectors = connectors.to_owned();
     blocking(move || {
         tempfile::Builder::new()
-            .prefix(STAGED[0])
+            .prefix(STAGED)
             .tempdir_in(&connectors)
             .map_err(io_error(format!(
                 "making a directory in {}",
@@ -249,44 +246,38 @@ fn private(tree: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
-/// Puts the environment `staged` at `tree`, in `connectors`, in place of what is there; why the
-/// tree it replaced is left, where it could not be removed.
+/// Puts the environment made in `staging` at `tree`, in place of what is there, and removes
+/// `staging`, which then holds the tree replaced; why that is left, where it could not be removed.
 pub(super) async fn placed(
-    staged: &Path,
+    staging: tempfile::TempDir,
     tree: &Path,
-    connectors: &Path,
 ) -> Result<Option<String>, InstallError> {
-    let (staged, tree, connectors) = (staged.to_owned(), tree.to_owned(), connectors.to_owned());
-    blocking(move || replaced(&staged, &tree, &connectors)).await
+    let tree = tree.to_owned();
+    blocking(move || replaced(staging, &tree)).await
 }
 
-/// [`placed`], on a thread that may block.
-fn replaced(staged: &Path, tree: &Path, connectors: &Path) -> Result<Option<String>, InstallError> {
-    let moving = || io_error(format!("moving the environment to {}", tree.display()));
+/// [`placed`], on a thread that may block, which alone removes `staging`: an install dropped while
+/// its tree is put in place removes nothing of it.
+fn replaced(staging: tempfile::TempDir, tree: &Path) -> Result<Option<String>, InstallError> {
+    let staged = staging.path().to_owned();
     if tree.symlink_metadata().is_err() {
-        std::fs::rename(staged, tree).map_err(moving())?;
+        std::fs::rename(&staged, tree)
+            .map_err(io_error(format!("moving the environment to {}", tree.display())))?;
         return Ok(None);
     }
-    let replaced = tempfile::Builder::new()
-        .prefix(STAGED[1])
-        .tempdir_in(connectors)
-        .map_err(io_error(format!(
-            "making a directory in {}",
-            connectors.display()
-        )))?;
-    let old = replaced.path().join("tree");
-    std::fs::rename(tree, &old).map_err(io_error(format!("moving {} aside", tree.display())))?;
-    if let Err(error) = std::fs::rename(staged, tree) {
-        // What was installed stays installed.
-        std::fs::rename(&old, tree).ok();
-        return Err(moving()(error));
-    }
-    let kept = replaced.path().to_owned();
-    // The new tree is in place: what is left of the old is swept by the next install.
-    Ok(replaced.close().err().map(|error| {
+    // The two change places at once, so one of them is in place throughout.
+    let cwd = rustix::fs::CWD;
+    rustix::fs::renameat_with(cwd, &staged, cwd, tree, RenameFlags::EXCHANGE).map_err(|error| {
+        let context = format!(
+            "putting the environment in place of {} in one step, which its file system must allow",
+            tree.display()
+        );
+        io_error(context)(error.into())
+    })?;
+    Ok(staging.close().err().map(|error| {
         format!(
             "the tree replaced is left at {}, which the next install removes: {error}",
-            kept.display()
+            staged.display()
         )
     }))
 }
