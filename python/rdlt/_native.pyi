@@ -229,6 +229,7 @@ class Transform:
         function: Callable[[pa.RecordBatch], object],
         filters: bool,
         output: pa.Schema | None,
+        passes: Sequence[tuple[str, str]] | None = None,
     ) -> Transform: ...
     @property
     def name(self) -> str: ...

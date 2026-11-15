@@ -247,3 +247,42 @@ def test_a_push_of_another_kind_than_the_read_mode_reads_fails_as_rust_s_does(
 def test_changes_take_arrow_alone() -> None:
     with pytest.raises(TypeError):
         changes({"id": 1})
+
+
+@rdlt.transform(passes=["id", "value"])
+def tagged(batch: pa.RecordBatch) -> pa.RecordBatch:
+    """Each row tagged, `id` and `value` passed on as they arrived."""
+    return batch.append_column("tag", pa.array(["t"] * batch.num_rows, pa.string()))
+
+
+@rdlt.transform()
+def retagged(batch: pa.RecordBatch) -> pa.RecordBatch:
+    """Each row tagged, saying nothing of what it passes on."""
+    return batch.append_column("tag", pa.array(["t"] * batch.num_rows, pa.string()))
+
+
+@pytest.mark.parametrize(
+    ("transform", "kept"), [(tagged, "before"), (retagged, None)], ids=["passing", "saying-nothing"]
+)
+def test_a_change_log_keeps_a_delete_s_values_in_the_columns_its_transform_passes_on_alone(
+    transform: rdlt.Transform, kept: str | None, tmp_path: Path, connectors: Path
+) -> None:
+    sent = [
+        Change(ChangeOp.INSERT, CAPTURED, 0, "kept", 1, unchanged=False),
+        Change(ChangeOp.DELETE, CAPTURED + 1, 0, "before", 1, unchanged=False),
+    ]
+    rows = stream("rows", primary_key="id", cursor=Position, read_modes=["cdc"])(
+        _sync([changed(sent)])
+    )
+    logged = rdlt.stream("rows", read="cdc", transform=[transform])
+    rdlt.pipeline(
+        "logged",
+        source=rows,
+        destination=into_sqlite(tmp_path),
+        streams=[logged],
+        retry=rdlt.Retry(max_attempts=1),
+    ).build(host(tmp_path, connectors)).run()
+    with closing(sqlite3.connect(tmp_path / "out.db")) as database:
+        query = 'SELECT _rdlt_op, value, tag FROM "rows" ORDER BY _rdlt_seq'
+        landed = database.execute(query).fetchall()
+    assert landed == [(int(ChangeOp.INSERT), "kept", "t"), (int(ChangeOp.DELETE), kept, None)]

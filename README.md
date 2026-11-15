@@ -298,6 +298,12 @@ the namespace, or pass `trust_binaries=True` to run the connector with your own 
 
 **Transforms.** `@rdlt.transform()` makes a function from a pyarrow `RecordBatch` to a batch a
 transform, and `@rdlt.filter()` makes one that answers which rows to keep, as a boolean array.
+`passes=` names the output columns a transform passes on as they arrived, each the input column
+of its name or, given as a mapping, the one it names, as Rust's `Transform::passes` declares
+them: on a change stream a delete or a truncate keeps its values only in those, the keys and the
+change time, and a filter passes every column. A column it names lands as that input column
+whatever the function returns for it, and it names the stream's keys and change time, each as
+itself, or the stream is refused, coded `transform_invalid`.
 `rdlt.stream("users", transform=[...])` runs them in order, on the engine's compute pool. A
 document names a transform its host registered with `host.transform("name", function)` as
 `{"code": "name"}`, and `rdlt.testing.certify_transform` runs the transform clauses against one.

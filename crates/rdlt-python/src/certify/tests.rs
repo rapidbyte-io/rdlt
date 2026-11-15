@@ -52,7 +52,7 @@ fn a_python_transform_s_certification_reports_every_t_clause_in_its_listed_order
             .unwrap()
             .unbind();
         let transform =
-            NativeTransform::new(py, "unchanged".to_owned(), function, false, None).unwrap();
+            NativeTransform::new(py, "unchanged".to_owned(), function, false, None, None).unwrap();
         let batch = py
             .eval(
                 c"__import__('pyarrow').record_batch({'n': [1, 2, 3]})",
