@@ -4,11 +4,12 @@
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray as _;
-use arrow_array::types::{Int32Type, Int64Type};
+use arrow_array::types::{Int8Type, Int32Type, Int64Type};
 use arrow_array::{
-    ArrayRef, BinaryArray, DictionaryArray, FixedSizeBinaryArray, Int8Array, Int32Array,
-    Int64Array, RecordBatch, RunArray, StringArray,
+    Array as _, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray,
+    Int8Array, Int32Array, Int64Array, RecordBatch, RunArray, StringArray,
 };
+use arrow_schema::{Field, Schema};
 use rdlt_connector::{
     ChangeOp, ConnectContext, OP_COLUMN, PipelineId, ReadMode, SEQ_COLUMN, Source, StreamName,
     UNCHANGED_COLUMN, destination_factory, source_factory,
@@ -226,6 +227,167 @@ fn a_query_reading_a_column_an_update_left_unchanged_is_refused_as_partial() {
             Some(codes::TRANSFORM_PARTIAL),
             "{sql}: {error}"
         );
+    }
+}
+
+/// A change log of `people`, transformed by `sql`.
+fn logged(sql: Sql) -> StreamPlan {
+    StreamPlan::new(StreamName::new("people").expect("a valid name"))
+        .read(ReadMode::Cdc)
+        .transform(sql)
+}
+
+/// `batch` through `sql` on a stream merged by key and on a change log, keyed by `id`: the
+/// batches each leaves.
+fn merged_and_logged(sql: &str, batch: &RecordBatch) -> [Vec<RecordBatch>; 2] {
+    [merged, logged].map(|plan| {
+        let plan = plan(Sql::parse(sql).expect("the query parses"));
+        let stage = Transformed::try_new(&plan, &["id"], batch.clone());
+        let output = stage.and_then(|stage| stage.batches());
+        output.unwrap_or_else(|error| panic!("{sql}: {error:?}"))
+    })
+}
+
+/// A change batch of `columns`, then the ops `ops`: `id` may hold no null, every other column
+/// may.
+fn changed(columns: Vec<(&str, ArrayRef)>, ops: &[ChangeOp]) -> RecordBatch {
+    let rows = ops.len();
+    let codes = ops.iter().copied().map(ChangeOp::code).collect::<Vec<_>>();
+    let seqs = (0..rows).map(|row| [u8::try_from(row).expect("few rows"); 16]);
+    let seqs = FixedSizeBinaryArray::try_from_iter(seqs).expect("a position is 16 bytes");
+    let mut fields = Vec::new();
+    let mut arrays = Vec::new();
+    for (name, array) in columns.into_iter().chain([
+        (OP_COLUMN, Arc::new(Int8Array::from(codes)) as ArrayRef),
+        (SEQ_COLUMN, Arc::new(seqs) as ArrayRef),
+    ]) {
+        let nullable = name != "id";
+        fields.push(Field::new(name, array.data_type().clone(), nullable));
+        arrays.push(array);
+    }
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
+        .expect("the columns are of one length")
+}
+
+fn ids(batches: &[RecordBatch]) -> Vec<i64> {
+    let ids = batches.iter().flat_map(|batch| {
+        let ids = batch
+            .column_by_name("id")
+            .expect("a key")
+            .as_primitive::<Int64Type>();
+        ids.values().to_vec()
+    });
+    ids.collect()
+}
+
+#[test]
+fn a_change_stream_computes_nothing_of_a_delete_or_an_upsert_its_filter_turns_into_one() {
+    // Each `price` and `qty` an `INT` of 100000, whose product no `INT` holds, and each `code`
+    // text that is no number: an insert the filter does not keep, and a delete.
+    let ints = |values: Vec<i32>| Arc::new(Int32Array::from(values)) as ArrayRef;
+    let codes = Arc::new(StringArray::from(vec!["x", "y"])) as ArrayRef;
+    let batch = changed(
+        vec![
+            ("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef),
+            ("price", ints(vec![100_000, 100_000])),
+            ("qty", ints(vec![100_000, 100_000])),
+            ("code", codes),
+        ],
+        &[ChangeOp::Insert, ChangeOp::Delete],
+    );
+    for (sql, computed) in [
+        (
+            "SELECT id, price * qty AS total FROM input WHERE qty < 1000",
+            "total",
+        ),
+        (
+            "SELECT id, CAST(code AS BIGINT) AS code FROM input WHERE qty < 1000",
+            "code",
+        ),
+    ] {
+        // A merge turns the insert into a delete; a log drops it.
+        let [merged, logged] = merged_and_logged(sql, &batch);
+        assert_eq!((ids(&merged), ids(&logged)), (vec![1, 2], vec![2]), "{sql}");
+        let ops = merged[0]
+            .column_by_name(OP_COLUMN)
+            .expect("a change batch keeps its ops");
+        let deleted = vec![ChangeOp::Delete.code(); 2];
+        assert_eq!(
+            ops.as_primitive::<Int8Type>().values().to_vec(),
+            deleted,
+            "{sql}"
+        );
+        for output in [&merged[0], &logged[0]] {
+            let schema = output.schema();
+            assert!(
+                !schema.field_with_name("id").expect("the key").is_nullable(),
+                "{sql}"
+            );
+            assert!(
+                schema
+                    .field_with_name(computed)
+                    .expect("computed")
+                    .is_nullable(),
+                "{sql}"
+            );
+            let column = output.column_by_name(computed).expect("computed");
+            assert_eq!(column.null_count(), output.num_rows(), "{sql}");
+        }
+    }
+}
+
+#[test]
+fn a_delete_holds_null_where_a_query_computes_its_column_from_a_column_it_passes_on() {
+    // Every insert in the part consents, so `CASE` hands its `THEN` column back as it is: the
+    // delete's email is that array's too, and must not land.
+    let batch = changed(
+        vec![
+            ("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef),
+            (
+                "consent",
+                Arc::new(BooleanArray::from(vec![true, false])) as ArrayRef,
+            ),
+            (
+                "email",
+                Arc::new(StringArray::from(vec!["a@x", "b@y"])) as ArrayRef,
+            ),
+        ],
+        &[ChangeOp::Insert, ChangeOp::Delete],
+    );
+    let sql = "SELECT id, CASE WHEN consent THEN email ELSE 'hidden' END AS email FROM input";
+    for output in merged_and_logged(sql, &batch) {
+        let emails = output[0]
+            .column_by_name("email")
+            .expect("the email")
+            .as_string::<i32>();
+        assert_eq!(emails.iter().collect::<Vec<_>>(), [Some("a@x"), None]);
+    }
+}
+
+#[test]
+fn rows_a_query_does_not_compute_from_come_back_in_their_places() {
+    let ops = [
+        ChangeOp::Delete,
+        ChangeOp::Insert,
+        ChangeOp::Truncate,
+        ChangeOp::Update,
+        ChangeOp::Delete,
+    ];
+    let ids_sent = Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5])) as ArrayRef;
+    let batch = changed(vec![("id", ids_sent)], &ops);
+    for output in merged_and_logged("SELECT id, id * 10 AS tens FROM input", &batch) {
+        assert_eq!(ids(&output), [1, 2, 3, 4, 5]);
+        let tens = output[0]
+            .column_by_name("tens")
+            .expect("tens")
+            .as_primitive::<Int64Type>();
+        assert_eq!(
+            tens.iter().collect::<Vec<_>>(),
+            [None, Some(20), None, Some(40), None]
+        );
+        let codes = output[0].column_by_name(OP_COLUMN).expect("the ops");
+        let codes = codes.as_primitive::<Int8Type>().values().to_vec();
+        assert_eq!(codes, ops.map(ChangeOp::code));
     }
 }
 

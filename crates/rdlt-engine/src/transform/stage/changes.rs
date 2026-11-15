@@ -10,6 +10,7 @@ use arrow_array::types::Int8Type;
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Int8Array, RecordBatch, RecordBatchOptions,
 };
+use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
 use arrow_schema::{ArrowError, FieldRef, Schema, SchemaRef};
 use arrow_select::filter;
 use rdlt_connector::cost::Allocations;
@@ -222,6 +223,75 @@ impl Changes {
             flags: Some(relined.finish()),
             ..self
         })
+    }
+
+    /// The rows that are inserts or updates, where another row is not: a delete or a truncate.
+    pub(super) fn upserts(&self) -> Option<BooleanArray> {
+        let ops = self.op.values();
+        if ops.iter().all(|op| upsert(*op)) {
+            return None;
+        }
+        Some(ops.iter().map(|op| Some(upsert(*op))).collect())
+    }
+
+    /// Whether an insert or update flags unchanged a column of `reads`, by its place among the
+    /// data columns, or any column where `reads` is none: a delete's or a truncate's flags ask
+    /// nothing, as it holds no values.
+    pub(super) fn upserts_flag(&self, reads: Option<&[usize]>) -> bool {
+        let Some(flags) = &self.flags else {
+            return false;
+        };
+        let rows = flags.iter().zip(self.op.values());
+        let mut bitmaps = rows.filter_map(|(bitmap, op)| bitmap.filter(|_| upsert(*op)));
+        match reads {
+            None => bitmaps.any(|bitmap| bitmap.iter().any(|byte| *byte != 0)),
+            Some(reads) => bitmaps.any(|bitmap| {
+                let unchanged = UnchangedFlags::new(bitmap);
+                reads.iter().any(|column| unchanged.contains(*column))
+            }),
+        }
+    }
+
+    /// The change columns with each delete's and truncate's flags cleared, for a transform that
+    /// declares no lineage they could follow: they ask nothing.
+    pub(super) fn unflagging(self) -> Self {
+        let Some(flags) = &self.flags else {
+            return self;
+        };
+        let rows = flags.iter().zip(self.op.values());
+        let flags: BinaryArray = rows
+            .map(|(bitmap, op)| bitmap.filter(|_| upsert(*op)))
+            .collect();
+        Self {
+            flags: Some(flags),
+            ..self
+        }
+    }
+
+    /// For each of `columns` data columns, by place, the inserts and updates that flag it
+    /// unchanged, where one does.
+    pub(super) fn unchanged_cells(&self, columns: usize) -> Vec<Option<BooleanBuffer>> {
+        let mut cells: Vec<Option<BooleanBufferBuilder>> = (0..columns).map(|_| None).collect();
+        if let Some(flags) = &self.flags {
+            let rows = flags.len();
+            for (row, (bitmap, op)) in flags.iter().zip(self.op.values()).enumerate() {
+                let Some(bitmap) = bitmap.filter(|_| upsert(*op)) else {
+                    continue;
+                };
+                for column in UnchangedFlags::new(bitmap).ordinals_below(columns) {
+                    let cell = cells[column].get_or_insert_with(|| {
+                        let mut cell = BooleanBufferBuilder::new(rows);
+                        cell.append_n(rows, false);
+                        cell
+                    });
+                    cell.set_bit(row, true);
+                }
+            }
+        }
+        let cells = cells.into_iter();
+        cells
+            .map(|cell| cell.map(|mut cell| cell.finish()))
+            .collect()
     }
 
     /// Whether `keep` keeps an insert or update that flags a column unchanged.

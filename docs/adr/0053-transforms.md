@@ -29,7 +29,8 @@ determinism under simulation whatever the configuration says.
     refuses an op naming one, `transform_invalid`, and the stage refuses a chain whose output
     drops or retypes one, `transform_schema`.
   - A transform may declare, for each output column, the input column it passes on unchanged.
-    Ops and SQL do; code need not. The stage refuses a declaring transform whose output under a
+    Ops and SQL do, and code may, which is how a change stream's deletes keep their values in the
+    columns it passes on. The stage refuses a declaring transform whose output under a
     key's, a change column's or the change time's name is not that column passed unchanged,
     `transform_invalid`: a document can name SQL, so SQL is held to the keys code is trusted to
     keep.
@@ -63,6 +64,22 @@ determinism under simulation whatever the configuration says.
 - **Changes.**
   - Transforms see a change batch's data columns alone. The stage sets the change columns aside
     and puts them back after the output.
+  - Transforms judge and compute a change batch's inserts and updates alone. A delete needs only its
+    key and a truncate needs none, so neither reaches a filter or a projection that computes a
+    column, and the projection after a filter does not compute from an upsert the filter turned into
+    a delete: a value no row needs fails no batch. A transform that says it passes every column on
+    runs on the part as it arrived, its deletes and truncates too: its output is the input's
+    columns, but code that fails on a delete's values fails the batch. Such a row leaves each
+    transform with the columns the stream keeps and the columns the transform passes on, as they
+    arrived, and null in the columns it computes. What a transform passes on is what it says it
+    does, the input column whatever it makes there, or, where it says nothing, an array it hands
+    back as it was handed in the part it runs on. A part holding no insert or update is made without
+    another transform that says what it passes on, and run through one that says nothing on none of
+    its rows. Code that hands a column back for some batches and not others, as a `CASE` does where
+    every row takes one branch, says what it passes on, or what a delete keeps there depends on how
+    the stage cuts a batch. On a change stream every output column a transform does not say it
+    passes on, nor the stream keeps, is nullable, and a column it says it passes on is of the input
+    column's type, nullable where that is, or the transform breaks its contract.
   - A transform may declare its lineage: for each output column, the input columns it is
     computed from. Ops and SQL do. After each transform, an output column is unchanged if and
     only if it reads at least one column and every column it reads is unchanged. A constant is
@@ -71,10 +88,15 @@ determinism under simulation whatever the configuration says.
     `transform_partial`, so no derived column is written from a value the source did not send.
     A row where an output column reads both an unchanged and a changed column fails
     `transform_partial` too: its value would be computed from a placeholder.
-  - A column flagged unchanged holds a placeholder, so a filter that reads one cannot judge its
-    row. A filter may declare the columns `keep` reads; a batch whose updates flag one of them,
-    or any column where the filter declares none, is refused, `transform_partial`. A filter on a
-    key passes updates that leave other columns unchanged.
+  - A column flagged unchanged holds a placeholder, so a filter that reads one cannot judge its row.
+    A filter may declare the columns `keep` reads; a batch whose updates flag one of them, or any
+    column where the filter declares none, is refused, `transform_partial`. A filter on a key passes
+    updates that leave other columns unchanged. What a projection computes from a placeholder alone
+    is carried as unchanged and never stored, so a transform computes from a placeholder as from a
+    null where its column may hold one, and passes the placeholder on as it arrived. A placeholder
+    of a column that holds no null is computed from as it was sent, and an expression that fails on
+    it fails its batch. A delete's or a truncate's flags ask nothing: they refuse no transform, and
+    a transform declaring no lineage clears them.
   - On a stream whose table keeps rows by key, merge or history, a filter reading a column
     beyond the key can flip its answer for a row: a row it turned into a delete can come back
     through a partial update, and its unchanged columns then have no current stored value, as a
@@ -106,11 +128,18 @@ determinism under simulation whatever the configuration says.
     Every JSON flush of a stream with a stage is built inside a whole request and reaches the
     stage.
   - Before each transform runs, its declared bound must fit what is left: a bound linear in the
-    input's rows and column bytes, with the output's arrays and the stage's own work on the
-    rows. That is, for a filter, its answer and what the filter rule makes of the rows it does
-    not keep (a copy of those it keeps, or the ops of a change stream matched by key,
-    rewritten), and a change batch's flags rebuilt along the transform's lineage. Moving the
-    flags to the kept columns' places asks for room before the first transform too.
+    input's rows and column bytes, with the output's arrays and the stage's own work on the rows.
+    That is, for a filter, its answer and what the filter rule makes of the rows it does not keep (a
+    copy of those it keeps, or the ops of a change stream matched by key, rewritten), and a change
+    batch's flags rebuilt along the transform's lineage. Moving the flags to the kept columns'
+    places asks for room before the first transform too. A part holding a delete or a truncate is
+    judged in a copy of its inserts and updates, and the step asks room for it as it makes one: the
+    copy, sized to those rows, and for the computed columns taken back to every row the copy again,
+    the transform's bound and a null a row, with each row's place among them. A part holding no
+    insert or update is copied nowhere: a transform that computes a column and says what it passes
+    on is not run on it, and one that says nothing runs on none of its rows, whose copy is charged
+    as empty arrays; the nulls of its computed columns are charged as arrays. A bitmap is charged
+    for each column whose placeholders are read as nulls.
   - A batch whose bound passes what is left is cut in halves. A row that alone does not fit
     fails `row_exceeds_budget`: of kind `Transform` where a transform asked for the room, and of
     kind `Source`, as lowering's own refusal is, where only moving its flags did.
@@ -275,6 +304,10 @@ determinism under simulation whatever the configuration says.
 - A transformed flush holds a quarter of the budget while it lowers, as a normalized JSON flush
   does, so fewer of them lower at once than flushes of streams that do not transform. A JSON
   flush of a stream that only includes columns holds as much while it is built.
+- A change log no longer stores a delete's values in a column a transform computes: a
+  `constant`, a `mask`, and the output of code, Python's among it, that says nothing of what it
+  passes on and copies its columns. A before-image a source sends with its deletes reaches a log
+  only in the columns a transform passes on.
 - An embedder's transform must declare its lineage to take partial updates, and a filter the
   columns it reads. A stream merged by key whose source sends partial updates, such as Postgres
   with TOASTed columns, filters on its key, or has the source send whole rows.

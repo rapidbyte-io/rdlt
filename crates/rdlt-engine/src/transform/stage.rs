@@ -4,12 +4,14 @@
 mod changes;
 mod contract;
 mod decoding;
+mod judged;
 mod refused;
 mod room;
 #[cfg(test)]
 mod tests;
 
 use std::collections::{BTreeSet, VecDeque};
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use arrow_array::{BooleanArray, RecordBatch};
@@ -19,7 +21,7 @@ use rdlt_connector::cost::arrays;
 use rdlt_connector::{ColumnPath, OP_COLUMN, ReadMode, SEQ_COLUMN, UNCHANGED_COLUMN};
 
 use self::changes::{ChangePlaces, Changes};
-use self::contract::{Declared, applied, carried, declares, kept, passed, rejoined};
+use self::contract::{Declared, carried, declares, passed, rejoined, relined};
 use self::decoding::Encoded;
 pub(crate) use self::refused::{Breach, Refusal, refused};
 use super::{Transform, TransformStep, allocated_beyond};
@@ -95,6 +97,14 @@ pub(crate) struct Ran {
 enum Part {
     Done(Ran),
     Split,
+}
+
+/// A part as its chain runs: its data, its change columns set aside, and what they hold beyond
+/// it.
+struct Running {
+    data: RecordBatch,
+    changes: Option<Changes>,
+    held: u64,
 }
 
 impl Stage {
@@ -188,8 +198,14 @@ impl Stage {
                     transform: transform.name().to_owned(),
                     error,
                 })?;
-            declared.push(declares(transform, &current, &output, &self.key)?);
+            let declaring = declares(transform, &current, &output, &self.key)?;
             passed(transform, &current, &output, &guarded)?;
+            let output = if self.changes {
+                judged::relaxed(&output, declaring.passes.as_deref(), &self.kept)
+            } else {
+                output
+            };
+            declared.push(declaring);
             schemas.push(output);
         }
         let data = Arc::clone(schemas.last().expect("a chain starts at its input"));
@@ -296,7 +312,7 @@ impl Stage {
         if remapping > free {
             return too_large(None, part, remapping, free);
         }
-        let (mut data, mut changes) = changes::split(part, chain)?;
+        let (mut data, changes) = changes::split(part, chain)?;
         let mut held = changes.as_ref().map_or(0, |changes| changes.beyond(part));
         if !chain.encoded.is_empty() {
             let (room, beyond) = decoding::room(&data, &chain.encoded, free.saturating_sub(held))?;
@@ -309,47 +325,84 @@ impl Stage {
             data = decoding::decode(&data, &chain.encoded, &chain.schemas[0])?;
             held = room::held(part, &data, changes.as_ref());
         }
+        let mut running = Running {
+            data,
+            changes,
+            held,
+        };
         let mut done = Ran::default();
-        for (index, step) in self.steps.iter().enumerate() {
-            let transform = step.as_transform();
-            let (declared, schema) = (&chain.declared[index], &chain.schemas[index + 1]);
-            let bounded = declared.bound.is_some();
-            let stepping = (transform, declared, self.rule);
-            let room = room::step_room(stepping, &data, changes.as_ref(), schema);
-            if bounded && held.saturating_add(room) > free {
-                return too_large(Some(transform), part, held.saturating_add(room), free);
-            }
-            if let Some(changes) = &changes {
-                carried(transform, declared, changes)?;
-            }
-            if transform.filters() {
-                let keep = kept(transform, bounded, &data)?;
-                if let (FilterRule::Delete, Some(changes)) = (self.rule, &changes) {
-                    rejoined(transform, declared, changes, &keep)?;
-                }
-                (data, changes) = self.filtered(data, changes, &keep, &mut done)?;
-            }
-            let output = applied(transform, declared, &data, schema)?;
-            changes = match (changes, &declared.lineage) {
-                (Some(changes), Some(lineage)) if changes.flags_any_of(None) => {
-                    let mixed = || Refusal::Mixed {
-                        transform: transform.name().to_owned(),
-                    };
-                    Some(changes.relined(lineage).ok_or_else(mixed)?)
-                }
-                (changes, _) => changes,
+        for index in 0..self.steps.len() {
+            running = match self.step(chain, index, part, running, free, &mut done)? {
+                ControlFlow::Continue(running) => running,
+                ControlFlow::Break(cut) => return Ok(cut),
             };
-            data = output;
-            held = room::held(part, &data, changes.as_ref());
-            if !bounded && held > free {
-                return too_large(Some(transform), part, held, free);
-            }
         }
-        let batch = changes::join(data, changes, chain)?;
+        let batch = changes::join(running.data, running.changes, chain)?;
         done.held =
             allocated_beyond(&batch, part).saturating_add(arrays(batch.schema_ref().fields()));
         done.batches.push(batch);
         Ok(Part::Done(done))
+    }
+
+    /// Step `index` of the chain on `running`, of `part`, within `free` bytes, what its filter
+    /// does counted in `done`: the part it leaves, or what the part comes to where it does not
+    /// fit.
+    fn step(
+        &self,
+        chain: &Chain,
+        index: usize,
+        part: &RecordBatch,
+        running: Running,
+        free: u64,
+        done: &mut Ran,
+    ) -> Result<ControlFlow<Part, Running>, Refusal> {
+        let (mut data, mut changes, held) = (running.data, running.changes, running.held);
+        let transform = self.steps[index].as_transform();
+        let (declared, schema) = (&chain.declared[index], &chain.schemas[index + 1]);
+        let bounded = declared.bound.is_some();
+        let stepping = (transform, declared, self.rule);
+        let room = room::step_room(stepping, &data, changes.as_ref(), schema);
+        let cut = |asked| too_large(Some(transform), part, asked, free).map(ControlFlow::Break);
+        if bounded && held.saturating_add(room) > free {
+            return cut(held.saturating_add(room));
+        }
+        if let Some(changes) = &changes {
+            carried(transform, declared, changes)?;
+        }
+        // A change part is judged by its inserts and updates alone, which the step asks room
+        // for as it copies them.
+        let judging = judged::Judging {
+            transform,
+            declared,
+            schema,
+            kept: &self.kept,
+            asked: held.saturating_add(if bounded { room } else { 0 }),
+            free,
+        };
+        if transform.filters() {
+            let keep = match judged::keep(&judging, &data, changes.as_ref())? {
+                ControlFlow::Continue(keep) => keep,
+                ControlFlow::Break(asked) => return cut(asked),
+            };
+            if let (FilterRule::Delete, Some(changes)) = (self.rule, &changes) {
+                rejoined(transform, declared, changes, &keep)?;
+            }
+            (data, changes) = self.filtered(data, changes, &keep, done)?;
+        }
+        let output = match judged::output(&judging, &data, changes.as_ref())? {
+            ControlFlow::Continue(output) => output,
+            ControlFlow::Break(asked) => return cut(asked),
+        };
+        let changes = relined(transform, declared, changes)?;
+        let held = room::held(part, &output, changes.as_ref());
+        if !bounded && held > free {
+            return cut(held);
+        }
+        Ok(ControlFlow::Continue(Running {
+            data: output,
+            changes,
+            held,
+        }))
     }
 
     /// `data` and its `changes` as the stream's filter rule leaves the rows `keep` does not

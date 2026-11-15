@@ -4,8 +4,8 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use arrow_array::{Array, BooleanArray, RecordBatch};
-use arrow_schema::{Schema, SchemaRef};
+use arrow_array::{Array, BooleanArray, RecordBatch, RecordBatchOptions};
+use arrow_schema::{FieldRef, Schema, SchemaRef};
 use arrow_select::filter;
 
 use super::changes::Changes;
@@ -15,6 +15,10 @@ use crate::transform::{Bound, Transform, allocated_beyond};
 /// What a transform declares of batches of one schema.
 #[derive(Debug)]
 pub(super) struct Declared {
+    /// Its output schema, as it declares it.
+    output: SchemaRef,
+    /// For each output column, the input column it passes on unchanged, where it says.
+    pub(super) passes: Option<Vec<Option<usize>>>,
     /// What `keep` and `apply` allocate at most, where it says.
     pub(super) bound: Option<Bound>,
     /// Each output column's input columns, where it says.
@@ -33,7 +37,7 @@ pub(super) struct Declared {
 pub(super) fn declares(
     transform: &dyn Transform,
     input: &Schema,
-    output: &Schema,
+    output: &SchemaRef,
     key: &BTreeSet<String>,
 ) -> Result<Declared, Refusal> {
     let bound = transform.bound(input);
@@ -64,6 +68,8 @@ pub(super) fn declares(
     };
     let flips = transform.filters() && keep_reads.as_ref().is_none_or(beyond);
     Ok(Declared {
+        output: Arc::clone(output),
+        passes: transform.passes(input),
         bound,
         lineage,
         keep_reads,
@@ -83,11 +89,20 @@ pub(super) fn passed(
         return Ok(());
     };
     let name = || transform.name().to_owned();
+    // A column passed on holds what arrived under the output's field, so it must fit it.
+    let holds = |passed: &Option<usize>, field: &FieldRef| {
+        passed.is_none_or(|column| {
+            input.fields().get(column).is_some_and(|arrived| {
+                arrived.data_type() == field.data_type()
+                    && (field.is_nullable() || !arrived.is_nullable())
+            })
+        })
+    };
     let fits = passed.len() == output.fields().len()
         && passed
             .iter()
-            .flatten()
-            .all(|column| *column < input.fields().len());
+            .zip(output.fields())
+            .all(|(passed, field)| holds(passed, field));
     if !fits {
         let breach = Breach::Passes;
         return Err(Refusal::Contract {
@@ -112,22 +127,22 @@ pub(super) fn passed(
     Ok(())
 }
 
-/// Refuses `changes` where they flag columns unchanged that `transform` cannot carry: it
-/// declares no lineage, or it filters reading a flagged column, whose value the source did not
-/// send.
+/// Refuses `changes` where an insert or update flags columns unchanged that `transform` cannot
+/// carry: it declares no lineage, or it filters reading a flagged column, whose value the source
+/// did not send.
 pub(super) fn carried(
     transform: &dyn Transform,
     declared: &Declared,
     changes: &Changes,
 ) -> Result<(), Refusal> {
-    if !changes.flags_any_of(None) {
+    if !changes.upserts_flag(None) {
         return Ok(());
     }
     let name = || transform.name().to_owned();
     if declared.lineage.is_none() {
         return Err(Refusal::Partial { transform: name() });
     }
-    if transform.filters() && changes.flags_any_of(declared.keep_reads.as_deref()) {
+    if transform.filters() && changes.upserts_flag(declared.keep_reads.as_deref()) {
         return Err(Refusal::Unsent { transform: name() });
     }
     Ok(())
@@ -147,6 +162,28 @@ pub(super) fn rejoined(
         return Err(Refusal::Rejoined { transform });
     }
     Ok(())
+}
+
+/// `changes`, their flags carried along the lineage `transform` declares where they flag a
+/// column, refused where a row's output column would read a changed and an unchanged column.
+///
+/// Without a lineage only a delete or a truncate can still flag one, as `carried` refused an
+/// upsert that does, and its flags are cleared.
+pub(super) fn relined(
+    transform: &dyn Transform,
+    declared: &Declared,
+    changes: Option<Changes>,
+) -> Result<Option<Changes>, Refusal> {
+    match (changes, &declared.lineage) {
+        (Some(changes), Some(lineage)) if changes.flags_any_of(None) => {
+            let mixed = || Refusal::Mixed {
+                transform: transform.name().to_owned(),
+            };
+            Ok(Some(changes.relined(lineage).ok_or_else(mixed)?))
+        }
+        (Some(changes), None) if changes.flags_any_of(None) => Ok(Some(changes.unflagging())),
+        (changes, _) => Ok(changes),
+    }
 }
 
 /// What `transform` keeps of `data`, a null keeping nothing.
@@ -178,8 +215,9 @@ pub(super) fn kept(
     })
 }
 
-/// What `transform` makes of `data`: checked against `data`'s rows and the `schema` it
-/// declared, holding the chain's copy of it, and against the bound it declares.
+/// What `transform` makes of `data`: checked against `data`'s rows, the schema it declared and
+/// the bound it declares, and holding `schema`, the chain's schema for it, with `data`'s column
+/// in each column it says it passes on, whatever it made there.
 pub(super) fn applied(
     transform: &dyn Transform,
     declared: &Declared,
@@ -202,7 +240,7 @@ pub(super) fn applied(
         let (input, output) = (data.num_rows(), output.num_rows());
         return Err(breach(Breach::Rows { input, output }));
     }
-    if output.schema_ref().fields() != schema.fields() {
+    if output.schema_ref().fields() != declared.output.fields() {
         return Err(breach(Breach::Schema));
     }
     let output = output
@@ -218,5 +256,15 @@ pub(super) fn applied(
             });
         }
     }
-    Ok(output)
+    let Some(passes) = declared.passes.as_deref() else {
+        return Ok(output);
+    };
+    let (schema, mut columns, rows) = output.into_parts();
+    for (column, passed) in columns.iter_mut().zip(passes) {
+        if let Some(place) = passed {
+            *column = Arc::clone(data.column(*place));
+        }
+    }
+    let options = RecordBatchOptions::new().with_row_count(Some(rows));
+    RecordBatch::try_new_with_options(schema, columns, &options).map_err(|_| breach(Breach::Schema))
 }
