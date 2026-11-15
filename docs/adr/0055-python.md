@@ -237,7 +237,8 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   there alone, whether the host sandboxes its connectors or trusts them, since a tree serves
   either host. A connector the host spawns needs nothing written but its scratch directory and
   `/dev/shm`. An entry point names a class, or a tuple of a source class and a destination class,
-  whose roles the launcher serves in one process.
+  whose roles the launcher serves in one process. What pip and venv print reaches standard error a
+  line at a time, each shown as connector text is, since it holds what a wheel and an index say.
 - **A thread that goes away is told, not inferred.** A read's end is said by `finished` or
   `failed`, and a call's by its answer; a read whose channel closes without a word fails, so a
   thread that died never reads as a finished partition.

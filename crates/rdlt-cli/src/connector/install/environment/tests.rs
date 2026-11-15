@@ -1,9 +1,26 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
-use super::installed;
+use rdlt_connector::text::CUT;
+
+use super::{installed, shown};
 use crate::connector::install::InstallError;
 use crate::connector::install::wheel::Wheel;
+use crate::output::LINE_BYTES;
+
+#[tokio::test]
+async fn what_a_child_prints_is_shown_a_line_at_a_time_and_the_end_of_a_long_line_dropped() {
+    let long = "x".repeat(LINE_BYTES * 2 + 10);
+    let printed = format!("plain\ncoloured \u{1b}[31mred\n{long}\nafter\nunended");
+    let mut written = Vec::new();
+    shown(Some(printed.as_bytes()), &mut written).await;
+    let written = String::from_utf8(written).unwrap();
+    let lines: Vec<&str> = written.lines().collect();
+    let cut = format!("{}{CUT}", "x".repeat(LINE_BYTES - CUT.len()));
+    let expected = ["plain", "coloured \\u{1b}[31mred", cut.as_str(), "after", "unended"];
+    assert_eq!(lines, expected);
+    assert!(written.ends_with('\n'), "every line is ended: {written:?}");
+}
 
 /// An environment in `dir` whose interpreter takes any install and exits with `checking` when it
 /// checks the packages installed.
