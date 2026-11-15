@@ -530,6 +530,7 @@ they arrive.
   tenant's configuration.
 - **SQL** (`rdlt-sql`) is data too: one projection of `input`, optionally filtered, calling only
   the functions `rdlt_sql::function_names()` lists, evaluated batch by batch on the engine's pool.
+  Its integer arithmetic never wraps: a value its type cannot hold fails the batch.
 - **Code** implements `rdlt_engine::Transform`. It runs in process as the embedder's own trusted
   code.
 - **Filters** never leave stale rows. An append drops a row a filter does not keep. A change

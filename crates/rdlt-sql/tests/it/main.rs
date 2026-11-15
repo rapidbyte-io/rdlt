@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod arithmetic;
 mod bounds;
 mod certified;
 mod composed;
