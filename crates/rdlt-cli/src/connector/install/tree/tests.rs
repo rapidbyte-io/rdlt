@@ -2,7 +2,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use super::{
-    STAGED, Staging, launcher, locked_now, private, replaceable_now, replaced, swept, target,
+    STAGED, Staging, exchangeable, exchanged, launcher, locked_now, private, replaceable_now,
+    replaced, swept, target,
 };
 use crate::connector::install::InstallError;
 
@@ -20,7 +21,10 @@ fn staged(connectors: &Path, file: &str) -> Staging {
         .prefix(STAGED)
         .tempdir_in(connectors)
         .unwrap();
-    let staging = Staging(staging);
+    let staging = Staging {
+        directory: staging,
+        _locked: locked_now(connectors).unwrap(),
+    };
     std::fs::create_dir(staging.tree()).unwrap();
     std::fs::write(staging.tree().join(file), file).unwrap();
     std::fs::create_dir(staging.installer()).unwrap();
@@ -116,8 +120,56 @@ fn a_tree_is_put_in_place_and_what_was_staged_beside_it_removed() {
     assert_eq!(left, None);
     assert!(tree.join("second").is_file(), "the new tree is in place");
     assert!(!tree.join("first").exists(), "the tree replaced is gone");
-    let entries = std::fs::read_dir(connectors.path()).unwrap().count();
-    assert_eq!(entries, 1, "nothing is left beside the tree");
+    let mut entries: Vec<String> = std::fs::read_dir(connectors.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    entries.sort_unstable();
+    let expected = [".rdlt-install.lock", "rdlt-connector-tickets"];
+    assert_eq!(entries, expected, "nothing is left beside the tree");
+}
+
+#[test]
+fn the_lock_is_held_until_what_was_staged_is_removed() {
+    let connectors = tempfile::tempdir().unwrap();
+    let tree = connectors.path().join("rdlt-connector-tickets");
+    let staging = staged(connectors.path(), "first");
+    let refused = locked_now(connectors.path()).unwrap_err();
+    assert_eq!(refused.code(), "install_running");
+    replaced(staging, &tree).unwrap();
+    locked_now(connectors.path()).expect("free once the tree is in place");
+}
+
+#[test]
+fn a_file_system_that_cannot_exchange_names_is_found_before_a_tree_is_made() {
+    let connectors = tempfile::tempdir().unwrap();
+    let (directory, tree) = (
+        connectors.path().join("staging"),
+        connectors.path().join("tree"),
+    );
+    std::fs::create_dir(&directory).unwrap();
+    exchangeable(&directory, &tree).expect("nothing is there to replace");
+    std::fs::create_dir(&tree).unwrap();
+    exchangeable(&directory, &tree).expect("this file system exchanges names");
+    assert_eq!(
+        std::fs::read_dir(&directory).unwrap().count(),
+        0,
+        "nothing is left"
+    );
+    // Nothing can be made there to exchange.
+    chmod(&directory, 0o555);
+    let probed = exchangeable(&directory, &tree);
+    // The superuser makes it all the same.
+    let superuser = std::fs::create_dir(directory.join("probe")).is_ok();
+    chmod(&directory, 0o755);
+    if !superuser {
+        assert_eq!(probed.unwrap_err().code(), "io");
+        std::fs::remove_dir(&tree).unwrap();
+        chmod(&directory, 0o555);
+        let unprobed = exchangeable(&directory, &tree);
+        chmod(&directory, 0o755);
+        unprobed.expect("with nothing to replace, nothing is probed");
+    }
 }
 
 #[test]
@@ -256,4 +308,24 @@ fn a_tree_that_cannot_be_looked_at_is_no_tree_that_is_not_there() {
     if !superuser {
         assert_eq!(looked.unwrap_err().code(), "io");
     }
+}
+
+#[test]
+fn a_file_system_that_cannot_exchange_names_is_told_from_any_other_failure() {
+    let connectors = tempfile::tempdir().unwrap();
+    let (one, tree) = (
+        connectors.path().join("one"),
+        connectors.path().join("tree"),
+    );
+    std::fs::create_dir_all(one.join("within")).unwrap();
+    // A directory cannot change places with what is within it: the kernel answers as a file
+    // system that cannot exchange names does.
+    let refused = exchanged(&one, &one.join("within"), &tree).unwrap_err();
+    assert!(
+        matches!(refused, InstallError::Unexchangeable { .. }),
+        "{refused:?}"
+    );
+    let failed = exchanged(&connectors.path().join("absent"), &one, &tree).unwrap_err();
+    assert!(matches!(failed, InstallError::Io { .. }), "{failed:?}");
+    assert_eq!(failed.code(), refused.code());
 }

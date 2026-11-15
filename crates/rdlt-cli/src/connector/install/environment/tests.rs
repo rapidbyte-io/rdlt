@@ -1,8 +1,10 @@
+use std::ffi::OsStr;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use rdlt_connector::text::CUT;
 
-use super::{Own, shown};
+use super::{Own, passed, shown};
 use crate::output::LINE_BYTES;
 
 #[tokio::test]
@@ -40,7 +42,7 @@ type Replacing = fn(&Path);
 
 #[test]
 fn a_tree_whose_interpreter_or_its_configuration_was_replaced_is_refused() {
-    let replacing: [(&str, Replacing); 4] = [
+    let replacing: [(&str, Replacing); 6] = [
         ("bin/python", |path| {
             std::fs::remove_file(path).unwrap();
             std::fs::write(path, "#!/bin/sh\n").unwrap();
@@ -53,6 +55,14 @@ fn a_tree_whose_interpreter_or_its_configuration_was_replaced_is_refused() {
             std::fs::write(path, "home = /elsewhere\n").unwrap();
         }),
         ("pyvenv.cfg", |path| std::fs::remove_file(path).unwrap()),
+        // Read before the tree's own.
+        ("bin/pyvenv.cfg", |path| {
+            std::fs::write(path, "home = /elsewhere\n").unwrap();
+        }),
+        // A path for the interpreter beside it.
+        ("bin/python._pth", |path| {
+            std::fs::write(path, "/elsewhere\n").unwrap();
+        }),
     ];
     for (file, replace) in replacing {
         let dir = tempfile::tempdir().unwrap();
@@ -85,11 +95,15 @@ fn a_configuration_a_package_adds_where_venv_made_none_is_refused() {
 
 #[test]
 fn a_tree_whose_own_files_cannot_be_read_is_refused_as_io() {
-    let unreadable: [(&str, Replacing); 2] = [
+    let unreadable: [(&str, Replacing); 3] = [
         // Its `bin/` a file, which no directory can be read of.
         ("bin", |path| {
             std::fs::remove_dir_all(path).unwrap();
             std::fs::write(path, "").unwrap();
+        }),
+        // Its `bin/` a directory that cannot be listed, though a file in it can be looked for.
+        ("bin", |path| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o311)).unwrap();
         }),
         // Its `pyvenv.cfg` a directory, which no bytes can be read of.
         ("pyvenv.cfg", |path| {
@@ -102,9 +116,52 @@ fn a_tree_whose_own_files_cannot_be_read_is_refused_as_io() {
         let tree = dir.path().join("tree");
         made(&tree);
         replace(&tree.join(file));
-        let Err(refused) = Own::of(&tree) else {
+        let read = Own::of(&tree);
+        // The superuser lists it all the same.
+        let listed = std::fs::read_dir(tree.join("bin")).is_ok_and(|_| file == "bin");
+        if tree.join("bin").is_dir() {
+            let open = std::fs::Permissions::from_mode(0o755);
+            std::fs::set_permissions(tree.join("bin"), open).unwrap();
+        }
+        if listed {
+            continue;
+        }
+        let Err(refused) = read else {
             panic!("{file}: a tree that cannot be read is read");
         };
         assert_eq!(refused.code(), "io", "{file}");
+    }
+}
+
+#[test]
+fn a_child_is_given_only_where_things_are_the_locale_and_how_an_index_is_reached() {
+    for name in [
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "LANGUAGE",
+        "LC_ALL",
+        "LC_CTYPE",
+        "https_proxy",
+        "HTTPS_PROXY",
+        "no_proxy",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+    ] {
+        assert!(passed(OsStr::new(name)), "{name} is held back");
+    }
+    for name in [
+        "PIP_INDEX_URL",
+        "PIP_CONFIG_FILE",
+        "PYTHONPATH",
+        "VIRTUAL_ENV",
+        "LD_PRELOAD",
+        "RUSTUP_TOOLCHAIN",
+        "AWS_SECRET_ACCESS_KEY",
+        "XLC_ALL",
+    ] {
+        assert!(!passed(OsStr::new(name)), "{name} is given");
     }
 }

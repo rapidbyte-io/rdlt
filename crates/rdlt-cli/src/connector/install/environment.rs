@@ -1,10 +1,12 @@
 //! The interpreter an install is asked for, the environments it makes with it, and the pip that
-//! installs into the tree from outside it, each process a group of its own that dies with the
-//! install.
+//! installs wheels alone into the tree from outside it, each process a group of its own that dies
+//! with the install, given what of this process's environment it needs and the install's own
+//! directory to work in.
 
 #[cfg(test)]
 mod tests;
 
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -51,13 +53,46 @@ impl Drop for Group {
     }
 }
 
-/// Whether `command` ran and succeeded, what it prints for a person written to standard error as
-/// it comes, so standard output holds the command line's result alone.
+/// The variables of this process's environment a child of the install is given: where programs,
+/// the home and temporary files are, and what reaching an index through a proxy or with a private
+/// certificate authority needs; the locale's too.
+const PASSED: [&str; 14] = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+];
+
+/// Whether the variable `name` of this process's environment is given to a child of the install.
+fn passed(name: &OsStr) -> bool {
+    let name = name.to_string_lossy();
+    PASSED.contains(&name.as_ref())
+        || ["LANG", "LANGUAGE"].contains(&name.as_ref())
+        || name.starts_with("LC_")
+}
+
+/// Whether `command` ran in `directory` and succeeded, what it prints for a person written to
+/// standard error as it comes, so standard output holds the command line's result alone.
 ///
-/// Its output reaches no terminal of its own: a group of its own is not the terminal's, and with
-/// `tostop` set a write to it would stop the child for ever.
-async fn ran(command: &mut Command) -> bool {
+/// It is given only the variables [`passed`] names, and no file of pip's configuration. Its output
+/// reaches no terminal of its own: a group of its own is not the terminal's, and with `tostop` set
+/// a write to it would stop the child for ever.
+async fn ran(command: &mut Command, directory: &Path) -> bool {
     command
+        .env_clear()
+        .envs(std::env::vars_os().filter(|(name, _)| passed(name)))
+        .env("PIP_CONFIG_FILE", "/dev/null")
+        .current_dir(directory)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -168,7 +203,8 @@ pub(super) async fn made(python: &Path, staging: &Staging) -> Result<(), Install
     let mut tree = Command::new(python);
     tree.args(["-I", "-m", "venv", "--without-pip"])
         .arg(staging.tree());
-    if ran(&mut installer).await && ran(&mut tree).await {
+    let directory = staging.path();
+    if ran(&mut installer, directory).await && ran(&mut tree, directory).await {
         Ok(())
     } else {
         Err(InstallError::VenvFailed {
@@ -178,21 +214,20 @@ pub(super) async fn made(python: &Path, staging: &Staging) -> Result<(), Install
 }
 
 /// Installs `wheel`, and what it needs, into the tree of `staging` in one run of the pip beside
-/// it: binaries only, so no build backend runs, and with `requirements` every package hashed, the
-/// wheel among them, and none but theirs.
+/// it: wheels only, so no build backend runs, and with `lines`, those of a checked requirements
+/// file and the wheel's own, every package hashed, the wheel among them, and none but theirs.
 ///
 /// The tree is pip's prefix, never on its path, and is read after as data alone: a package that
 /// replaced what of the tree is the environment's own is refused.
 pub(super) async fn installed(
     staging: &Staging,
     wheel: &Wheel,
-    requirements: Option<&Path>,
+    lines: Option<&[String]>,
 ) -> Result<(), InstallError> {
     let tree = staging.tree();
     let mut pip = Command::new(staging.installer().join("bin/python"));
-    // pip reads neither its variables, with `--isolated`, nor its files.
-    pip.env("PIP_CONFIG_FILE", "/dev/null")
-        .args(["-I", "-m", "pip", "--isolated", "--no-input"])
+    // pip reads neither its variables, with `--isolated`, nor its files, which `ran` holds back.
+    pip.args(["-I", "-m", "pip", "--isolated", "--no-input"])
         .args(["--disable-pip-version-check", "--no-color", "install"])
         .args([
             "--only-binary=:all:",
@@ -201,41 +236,36 @@ pub(super) async fn installed(
         ])
         .args(["--no-warn-script-location", "--prefix"])
         .arg(&tree);
-    // A direct reference to the file, which no index is asked for.
-    let direct = format!("{} @ {}", wheel.name, wheel.uri);
-    match requirements {
+    match lines {
+        // A direct reference to the file, which no index is asked for.
         None => {
-            pip.arg(&direct);
+            pip.arg(format!("{} @ {}", wheel.name, wheel.uri));
         }
-        Some(requirements) => {
-            let (pinned, line) = (
-                staging.pinned(),
-                format!("{direct} --hash=sha256:{}\n", wheel.sha256),
-            );
-            let written = pinned.clone();
-            blocking(move || std::fs::write(written, line))
+        Some(lines) => {
+            let path = staging.requirements();
+            let text = format!("{}\n", lines.join("\n"));
+            let written = path.clone();
+            blocking(move || std::fs::write(written, text))
                 .await
-                .map_err(io_error("writing the wheel's requirements file"))?;
-            pip.args(["--require-hashes", "-r"])
-                .arg(requirements)
-                .arg("-r")
-                .arg(pinned);
+                .map_err(io_error("writing the requirements file pip reads"))?;
+            pip.args(["--require-hashes", "-r"]).arg(path);
         }
     }
     let own = blocking(move || Own::of(&tree)).await?;
-    if !ran(&mut pip).await {
+    if !ran(&mut pip, staging.path()).await {
         return Err(InstallError::PipFailed);
     }
     blocking(move || own.kept()).await
 }
 
 /// What of a tree is the environment's own, as venv made it: each link of its `bin/`, the
-/// interpreter its launcher runs among them, and its `pyvenv.cfg`, which that interpreter reads as
-/// it starts.
+/// interpreter its launcher runs among them, and the `pyvenv.cfg` that interpreter reads as it
+/// starts, the tree's, with none in `bin/`, which it would read first, and no `._pth` file there,
+/// which would set its path.
 struct Own {
+    bin: PathBuf,
     links: Vec<(PathBuf, PathBuf)>,
-    configuration: PathBuf,
-    configured: Option<Vec<u8>>,
+    configurations: Vec<(PathBuf, Option<Vec<u8>>)>,
 }
 
 impl Own {
@@ -255,12 +285,15 @@ impl Own {
                 }
             }
         }
-        let configuration = tree.join("pyvenv.cfg");
-        let configured = contents(&configuration)?;
+        let mut configurations = Vec::new();
+        for path in [bin.join("pyvenv.cfg"), tree.join("pyvenv.cfg")] {
+            let held = contents(&path)?;
+            configurations.push((path, held));
+        }
         Ok(Self {
+            bin,
             links,
-            configuration,
-            configured,
+            configurations,
         })
     }
 
@@ -274,8 +307,21 @@ impl Own {
                 return Err(replaced(path));
             }
         }
-        if contents(&self.configuration)? != self.configured {
-            return Err(replaced(&self.configuration));
+        for (path, held) in &self.configurations {
+            if &contents(path)? != held {
+                return Err(replaced(path));
+            }
+        }
+        let reading = || io_error(format!("reading {}", self.bin.display()));
+        let entries = match std::fs::read_dir(&self.bin) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            read => read.map_err(reading())?,
+        };
+        for entry in entries {
+            let path = entry.map_err(reading())?.path();
+            if path.as_os_str().as_encoded_bytes().ends_with(b"._pth") {
+                return Err(replaced(&path));
+            }
         }
         Ok(())
     }

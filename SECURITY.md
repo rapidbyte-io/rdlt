@@ -114,13 +114,18 @@ anything runs; none is ignored.
     is executed, so no file can be swapped in between. A directory connector's digest is its
     launcher's alone: it pins neither the interpreter nor the packages installed beside it.
     `rdlt connector install` runs, as the operator, the interpreter named, its `venv` and the
-    pip the interpreter carries, never the connector's code: no interpreter it starts imports
-    from the tree it makes. The wheel is read from its archive with no `site`; pip runs from an
-    environment of its own beside the tree, reads none of its configuration, installs binaries
-    only and installs into the tree as its prefix; and the tree is then read as data alone,
-    refused where a package replaced the environment's interpreter or its `pyvenv.cfg`.
-    Anything run from an installed tree by hand runs the connector's code with your access,
-    outside any sandbox. A sandboxed connector whose binary was replaced since it was placed is
+    pip the interpreter carries, never the connector's code nor a package's build: no
+    interpreter it starts imports from the tree it makes, and nothing pip installs is built from
+    its source. The wheel is read from its archive with no `site`, and refused where it needs a
+    package by a URL; a requirements file is read in rdlt's own grammar, wheels by version or by
+    a `.whl` URL with their hashes and where they are found, and written again for pip, each
+    line seen to read, as pip splits it, as the line checked; pip runs
+    from an environment of its own beside the tree, in the install's own directory, with only the
+    variables it needs, reads none of its configuration, takes wheels alone from an index and
+    installs into the tree as its prefix; and the tree is then read as data alone, refused where
+    a package replaced the environment's interpreter or a `pyvenv.cfg` it reads. Anything run
+    from an installed tree by hand runs the connector's code with your access, outside any
+    sandbox. A sandboxed connector whose binary was replaced since it was placed is
     refused until it is placed again. On macOS an open file cannot be executed: a digest is
     refused there rather than checked against a path.
   - A connector is given its standard streams and its socket, and no other descriptor of the

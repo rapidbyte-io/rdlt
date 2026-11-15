@@ -21,6 +21,8 @@ pub(super) struct Wheel {
     pub(super) sha256: String,
     /// Each `rdlt.connectors` entry point it names: its name, a connector's id, and its target.
     pub(super) entry_points: Vec<(String, String)>,
+    /// Each requirement its metadata names, as written.
+    pub(super) requires: Vec<String>,
 }
 
 /// What the reading answers: the wheel, or why it is none.
@@ -109,8 +111,14 @@ fn held_now(path: &Path) -> Result<Held, InstallError> {
     Ok(held)
 }
 
-/// What the wheel at `path` says of itself, read by `python`.
-pub(super) async fn described(python: &Path, path: &Path) -> Result<Wheel, InstallError> {
+/// What the wheel at `path`, a copy of the operator's `named`, says of itself, read by `python`,
+/// once it is seen to need nothing by a URL: pip would build such a package from its source, as
+/// no index's are, and a connector's dependencies come from an index.
+pub(super) async fn described(
+    python: &Path,
+    path: &Path,
+    named: &Path,
+) -> Result<Wheel, InstallError> {
     let failed = || InstallError::InterpreterFailed {
         python: python.to_owned(),
         asked: "reading the wheel",
@@ -130,23 +138,40 @@ pub(super) async fn described(python: &Path, path: &Path) -> Result<Wheel, Insta
         // It reaches pip's command line and a requirements file's line: a name of anything else
         // could be an option of pip's or a line of its own there.
         Read::Wheel(wheel) if !distribution(&wheel.name) => Err(InstallError::Wheel {
-            path: path.to_owned(),
+            path: named.to_owned(),
             why: format!(
                 "its metadata names the distribution {:?}, which is no distribution's name",
                 wheel.name
             ),
         }),
+        Read::Wheel(wheel) if wheel.requires.iter().any(|required| direct(required)) => {
+            Err(InstallError::Wheel {
+                path: named.to_owned(),
+                why: "its metadata names a package it needs by a URL, which pip would build from \
+                      its source: what a connector needs comes from an index"
+                    .to_owned(),
+            })
+        }
         Read::Wheel(wheel) => Ok(wheel),
         Read::Refused { refused } => Err(InstallError::Wheel {
-            path: path.to_owned(),
+            path: named.to_owned(),
             why: refused,
         }),
     }
 }
 
+/// Whether `required`, a requirement as PEP 508 writes one, names its package by a URL: an `@`
+/// before its markers.
+fn direct(required: &str) -> bool {
+    required
+        .split(';')
+        .next()
+        .is_some_and(|named| named.contains('@'))
+}
+
 /// Whether `name` is a distribution's name as PEP 508 has it: ASCII letters and digits, and `.`,
 /// `_` and `-` between them.
-fn distribution(name: &str) -> bool {
+pub(super) fn distribution(name: &str) -> bool {
     let bytes = name.as_bytes();
     let inner = |byte: &u8| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-');
     match (bytes.first(), bytes.last()) {
