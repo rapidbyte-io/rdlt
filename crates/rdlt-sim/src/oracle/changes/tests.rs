@@ -54,6 +54,7 @@ fn a_counter_filter_on_a_merge_refuses_a_partial_update_it_keeps_and_a_key_filte
             modulus: 2,
             cased: false,
         });
+        stream.projection = None;
         let plan = plan(&[stream]);
         let transformed =
             Transformed::try_new(&plan.streams()[0], &["id"], partial_update()).unwrap();

@@ -43,6 +43,10 @@ pub(crate) const EXCLUDE: u64 = 0x0065_7863_6c75_6465;
 /// its own: "reshape" in ASCII.
 pub(crate) const RESHAPE: u64 = 0x0072_6573_6861_7065;
 
+/// What the draw of each change stream's computed column mixes into its generator: "project" in
+/// ASCII.
+pub(crate) const PROJECT: u64 = 0x0070_726f_6a65_6374;
+
 /// Which of the simulation's features one seed exercises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[expect(

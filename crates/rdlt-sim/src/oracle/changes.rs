@@ -11,7 +11,9 @@ mod tests;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamName, TablePath};
+use rdlt_connector::{
+    ChangeOp, PartitionState, PipelineId, ReadMode, StateEntry, StreamName, TablePath,
+};
 use rdlt_engine::{DeleteMode, Env as _, PipelinePlan, Report, StreamPlan, WriteMode};
 use rdlt_sql::Sql;
 use rdlt_testkit::canon::Canon;
@@ -28,7 +30,7 @@ use super::{Checked, kept_to_the_protocol, settled};
 use crate::canary::Canary;
 use crate::changes::{
     CHANGES_PARTITION, CHANGES_PHASE, ChangeStream, Logged, Merged, Position, ROUNDS, Value,
-    Version,
+    Version, query,
 };
 use crate::destination::{Stored, published_table};
 use crate::env::SimEnv;
@@ -285,9 +287,9 @@ fn plan(streams: &[ChangeStream]) -> PipelinePlan {
         };
         // A partial update flags `value` unchanged, never the key or `n`, so the filter judges
         // every row; a merge whose updates leave a column unchanged filters on its key alone.
-        let plan = match stream.filter {
-            Some(filter) => {
-                let sql = Sql::parse(&filter.query()).expect("the simulation's filter parses");
+        let plan = match query(stream.filter, stream.projection) {
+            Some(query) => {
+                let sql = Sql::parse(&query).expect("the simulation's query parses");
                 plan.transform(sql)
             }
             None => plan,
@@ -318,6 +320,7 @@ fn check(world: &World, stream: &ChangeStream, round: usize, seed: Seed) {
             .find(|(key, _)| key.column().segments().next() == Some("value"));
         assert!(named.is_none(), "{}: names {named:?}", context());
     }
+    computed(stream, &rows, &context);
     if stream.history {
         let mut versions: Vec<Version> = rows.iter().map(version).collect();
         versions.sort();
@@ -357,6 +360,33 @@ fn check(world: &World, stream: &ChangeStream, round: usize, seed: Seed) {
         "{}: the merged table",
         context()
     );
+}
+
+/// Checks the column `stream`'s query computes of each row in `rows`: a merged or kept row holds
+/// what an insert or update set, and a log's delete and truncate rows, computed from by nothing,
+/// hold null.
+fn computed(stream: &ChangeStream, rows: &[Stored], context: &dyn Fn() -> String) {
+    let Some(projection) = stream.projection else {
+        return;
+    };
+    for row in rows {
+        let op = number(row, "_rdlt_op").and_then(|op| i8::try_from(op).ok());
+        let upsert = op.is_none_or(|op| op <= ChangeOp::Update.code());
+        let value = text(row, "value");
+        let computed = projection.computed(value.as_deref(), number(row, "n"));
+        let expected = computed.filter(|_| upsert);
+        let extra = match row.cells.get("extra") {
+            Some(Canon::Text(extra) | Canon::Number(extra)) => Some(extra.clone()),
+            _ => None,
+        };
+        let key = number(row, "id");
+        assert_eq!(
+            extra,
+            expected,
+            "{}: the column computed of key {key:?}",
+            context()
+        );
+    }
 }
 
 /// Checks that every position told to a stream that cannot read again landed after `round`.

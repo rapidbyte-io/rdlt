@@ -1,4 +1,5 @@
-//! A change stream's filter: the column it reads, and how it says no.
+//! A change stream's query: its filter, the column it reads and how it says no, and the column it
+//! computes beside those it passes on.
 
 /// The column a change stream's filter reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,8 +34,8 @@ impl Filter {
         value.is_none_or(|value| value % self.modulus != 1)
     }
 
-    /// The query a plan filters the stream with.
-    pub(crate) fn query(self) -> String {
+    /// The predicate a plan filters the stream by.
+    fn predicate(self) -> String {
         let column = match self.reads {
             Filtered::Key => "id",
             Filtered::Counter => "n",
@@ -42,11 +43,56 @@ impl Filter {
         let modulus = self.modulus;
         if self.cased {
             format!(
-                "SELECT * FROM input WHERE CASE WHEN {column} IS NULL THEN FALSE \
-                 WHEN {column} % {modulus} <> 1 THEN TRUE END"
+                "CASE WHEN {column} IS NULL THEN FALSE WHEN {column} % {modulus} <> 1 THEN TRUE END"
             )
         } else {
-            format!("SELECT * FROM input WHERE {column} % {modulus} <> 1")
+            format!("{column} % {modulus} <> 1")
         }
     }
+}
+
+/// The column `extra` a change stream's query computes beside every column it passes on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Projection {
+    /// A constant text.
+    Constant,
+    /// Twice the counter.
+    Doubled,
+    /// The value, or a text of its own where there is none.
+    Coalesced,
+}
+
+impl Projection {
+    /// The expression the query computes it by.
+    fn expression(self) -> &'static str {
+        match self {
+            Self::Constant => "'c'",
+            Self::Doubled => "n * 2",
+            Self::Coalesced => "coalesce(value, 'none')",
+        }
+    }
+
+    /// What it holds for an insert or update of `value` and counter `n`, as text.
+    pub(crate) fn computed(self, value: Option<&str>, n: Option<i64>) -> Option<String> {
+        match self {
+            Self::Constant => Some("c".to_owned()),
+            Self::Doubled => n.map(|n| (n * 2).to_string()),
+            Self::Coalesced => Some(value.unwrap_or("none").to_owned()),
+        }
+    }
+}
+
+/// The query a plan transforms a change stream with, where it filters or computes: every column
+/// passed on, `extra` beside them where it computes one.
+pub(crate) fn query(filter: Option<Filter>, projection: Option<Projection>) -> Option<String> {
+    if filter.is_none() && projection.is_none() {
+        return None;
+    }
+    let extra = projection.map_or(String::new(), |projection| {
+        format!(", {} AS extra", projection.expression())
+    });
+    let filter = filter.map_or(String::new(), |filter| {
+        format!(" WHERE {}", filter.predicate())
+    });
+    Some(format!("SELECT *{extra} FROM input{filter}"))
 }
