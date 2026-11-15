@@ -116,6 +116,34 @@ def stream(
     changes incompatibly, so a cursor committed in another format fails the read, coded
     `cursor_version`, rather than restart it.
 
+    A row, a dict yielded alone or in a list or tuple, is written as JSON for the engine to type,
+    as a Rust read's `rows` are, so its values land as JSON carries them:
+
+    - `None`: null, the one missing value.
+    - `bool`, `str` and a finite `float`: a flag, text and a 64-bit float.
+    - `int`: exactly at any width, a 64-bit integer, then a decimal of 20, 38 or 76 digits, and
+      JSON text beyond.
+    - `decimal.Decimal`: its exact text, as `str()` writes it, `Decimal("12.50")` as `"12.50"`.
+    - `datetime.date`, `datetime.datetime` and `datetime.time`: the text its `isoformat()`
+      answers, an aware datetime with its offset and a naive one without.
+    - `uuid.UUID`: its hyphenated text.
+    - A dict, a list and a tuple: a struct and a list.
+
+    Any other value fails the read: a float or `Decimal` that is not finite, coded
+    `json_not_finite`; a date or time not equal to itself, as pandas' `NaT`, `json_not_a_time`;
+    anything else, as `bytes`, a `timedelta`, a set, pandas' `NA` or a numpy array or integer,
+    `json_unsupported_type`. A decimal type the stream declares or a column's hint gives does not
+    read a `Decimal`'s text: the decimal column stays null and the text lands in `<name>__json`,
+    or the run fails where the column's policy is `freeze` or its `on_unsupported` is `refuse`.
+    For a column of decimals, timestamps or bytes, yield Arrow, which lands as its types say:
+    `pyarrow.Table.from_pylist(rows)` types `Decimal`s as decimals of the precision and scale they
+    need, and a pandas frame yielded as it is, `yield df`, lands its NaN, `NaT` and `NA` as nulls
+    in columns of its own types. Arrow is read where it lies, not copied, and the engine may hold
+    it after the read moves on: never write again into a buffer a read yielded. A pyarrow
+    chunked array of structs holding a null entry, as a table's struct column, fails the read;
+    another library's stream of struct arrays is read as batches, whose own nulls are not seen,
+    so a null entry lands as a row of what its fields hold there: yield a table, not its column.
+
     Its spec is a Rust stream's `StreamSpec`. `schema`, any Arrow schema, anything with
     `__arrow_c_schema__`, is its declared schema, as `with_schema` declares it, refused here where
     Rust cannot take it. `read_modes` are how it can be read, `ReadMode`s or their names, as

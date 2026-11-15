@@ -626,6 +626,16 @@ code.
 - Floats arriving at a column of 64-bit integers land, by default, in a sibling `<name>__float64`
   column, and integers beyond 76 digits land as JSON text
   ([ADR 0026](docs/adr/0026-json-exactness.md)).
+- A Python read's dict rows are typed from their JSON, as a Rust read's rows are: a `Decimal` lands
+  as its exact text, and a date, time or UUID as its ISO 8601 or hyphenated text, so a typed column
+  of them is yielded as Arrow; a pandas frame is yielded as it is, `yield df`. A declared or hinted
+  decimal type does not read that text: the decimal column stays null and the text lands in
+  `<name>__json`, or the run fails under `freeze` or `on_unsupported: refuse`. A float or
+  `Decimal` that is not finite, pandas' `NaT` and `NA`, and values of other types fail the read,
+  and so does a pyarrow struct column holding a null entry. Another library's stream of struct
+  arrays loses the arrays' own nulls, each a row of what its fields hold there. Arrow a read
+  yields is held where it lies, not copied: never write again into a buffer a read yielded, which
+  the engine may still hold ([ADR 0055](docs/adr/0055-python.md)).
 - The SQLite reference destination refuses a float that is not a number, or negative zero, which
   SQLite would not keep as sent (`float_unstorable`).
 

@@ -53,6 +53,27 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   await cancelled first. So a pipeline with no Python in it keeps committing while Python holds
   the GIL. An await whose answer no daemon thread can take waits until one can, or until it is
   cancelled, as `asyncio.wait_for` does at its timeout.
+- **A row lands as its JSON says, as a Rust read's `rows` do.** A dict a read yields is written as
+  JSON in Rust, and the engine types it as it types any source's JSON: `None` is null, the one
+  missing value; a bool, text and a finite float are themselves; an integer is exact at any width;
+  a date, datetime or time is the text its `isoformat()` answers, and a UUID its hyphenated text.
+  A `Decimal` is the text of its exact digits, read through `Decimal` itself, since JSON has no
+  decimal and the engine reads a number with a fraction as a 64-bit float. A whole one is text
+  too, though an `Int64` or a `Decimal(p, 0)` would hold it, so a column's type never follows a
+  value's exponent; `5`, `5.0` and `5E+0` are three texts, and so three merge keys. A decimal
+  type a stream declares or a hint gives does not read that text: the text goes where any value
+  its column cannot hold goes. A float or `Decimal` that is not finite, a date or time that is
+  not equal to itself by its own `__eq__`, as pandas' `NaT` is, and a value of any other type
+  fail the read, each with a code of its own, so no value lands as another. A typed decimal,
+  temporal or binary column is yielded as Arrow, which lands as its types say, as a Rust read
+  pushes a batch for one; Arrow is held where it lies, so the author must not write again into a
+  buffer a read yielded, which the engine may still hold. A pyarrow chunked array of structs holding
+  a null entry fails the read, as a batch's struct array holding one does. Another library's
+  stream of struct arrays is read as batches whose own nulls arrow-rs's reader drops, and the
+  extension reads no stream itself (ADR 0048), so a null entry of one lands as a row of what its
+  fields hold there. pyarrow's reader refuses such a stream, but reading every stream through it
+  would import every batch twice, and hold every library's stream to what the installed pyarrow
+  can import.
 - **Exceptions cross whole.** A Python exception becomes the connector's or the transform's
   error: its type and message, shown and bounded as connector text, with its traceback as its
   cause. A connector says what kind of failure it met by raising `rdlt.connector.ConnectorError`
@@ -170,18 +191,19 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   Python-backed stream's reader does. `rdlt._reading` is imported when the package loads, so no
   thread imports under Rust.
 - **Five cases run under Rust, and are accepted.** Methods of what a generator yields run inside
-  `push` with its Rust frames beneath them: a value's `isoformat` and a UUID's `__str__`, a `list`
-  subclass's `__iter__`, `__getattr__` through `hasattr`, a producer's `__arrow_c_array__` and
-  `__arrow_c_stream__`, and a Python-backed Arrow reader's next batch. So do a Python-backed
-  stream's next batch, its schema and its release, read in a merge kit's call. So do a raised
-  exception's `__str__`, traceback and declared kind, code and wait, read where a failure is
-  turned into an error, and the finalizers of a connector instance and of a destination's
-  sessions and table writers, which run where the native side lets go of what holds them. So does
-  a user's audit hook, which `_thread.start_new_thread`'s audit event calls as a daemon thread
-  starts the next. A slow one of these at the instant of exit can abort the process on CPython
-  3.11, 3.12 and 3.13.0 to 3.13.7, as above. Moving them means encoding every row, reading every
-  stream into batches, rendering every failure, releasing every connection, or starting every
-  thread, in Python; a process exiting commits nothing further, so no committed data is at risk.
+  `push` with its Rust frames beneath them: a date's or a time's `__eq__` and `isoformat` and a
+  UUID's `__str__`, a `list` subclass's `__iter__`, `__getattr__` through `hasattr`, a producer's
+  `__arrow_c_array__` and `__arrow_c_stream__`, a pyarrow chunked array's `type` and `null_count`
+  and pyarrow's `types.is_struct`, and a Python-backed Arrow reader's next batch. So do a
+  Python-backed stream's next batch, its schema and its release, read in a merge kit's call. So do a
+  raised exception's `__str__`, traceback and declared kind, code and wait, read where a failure is
+  turned into an error, and the finalizers of a connector instance and of a destination's sessions
+  and table writers, which run where the native side lets go of what holds them. So does a user's
+  audit hook, which `_thread.start_new_thread`'s audit event calls as a daemon thread starts the
+  next. A slow one of these at the instant of exit can abort the process on CPython 3.11, 3.12 and
+  3.13.0 to 3.13.7, as above. Moving them means encoding every row, reading every stream into
+  batches, rendering every failure, releasing every connection, or starting every thread, in Python;
+  a process exiting commits nothing further, so no committed data is at risk.
 - **What the native side holds of Python, it reaches weakly.** What the native side holds is opaque
   to Python's collector, so a strong reference from it to a stream function, a transform, a secret
   store or a connector's instance that holds the pipeline it serves could never be collected, and
@@ -228,6 +250,20 @@ Rejected:
   answers no probe unless its launcher's own code asks for it.
 - **orjson for rows.** Encoding in Rust keeps the limits where the push is made, and adds no
   dependency.
+- **A `Decimal` as a JSON number**, which the engine reads as a 64-bit float, rounding what a
+  double does not hold and typing the column by how the value is written. Refusing one with a
+  fraction instead fails the reads of every database's numeric column, where its text keeps every
+  digit. Typing a decimal from a JSON push would change, for every source, how JSON's numbers land
+  (ADRs 0007 and 0026).
+- **A whole `Decimal` as an integer and any other as text**, which keeps a whole one's integer
+  type: a column's type would follow each value's exponent, so a column of `Decimal("5")` and
+  `Decimal("5.5")` would become JSON, or split into a variant across loads.
+- **A declared or hinted decimal column reading a `Decimal`'s text.** A column takes a value of
+  another type only where its type holds that type as it is (the resolver's `place` and
+  `splits`), so it would need fitting by value, and an exact parser of decimal text, since
+  Arrow's cast rounds digits past the scale and refuses an exponent. It is the engine's to add, if
+  ever, for every value JSON carries as text, dates, times and UUIDs among them, not this
+  binding's.
 - **Waking an async read through a daemon thread and `call_soon_threadsafe`**, as an awaited
   answer is handed over: every wait would take a daemon thread and the GIL, which a busy loop
   holds, so the read would fall behind the engine it waits for.

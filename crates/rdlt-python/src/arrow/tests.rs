@@ -115,6 +115,50 @@ fn a_table_and_other_libraries_cross_as_streams() {
 }
 
 #[test]
+fn a_struct_array_with_nulls_is_refused_as_a_batch() {
+    embedded::with(|py| {
+        let array = evaluated(py, "__import__('pyarrow').array([{'n': 1}, None])");
+        let Err(error) = produced(&array) else {
+            panic!("a struct array whose entries are null is no batch")
+        };
+        assert!(
+            error.is_instance_of::<pyo3::exceptions::PyValueError>(py),
+            "{error}"
+        );
+        let whole = evaluated(py, "__import__('pyarrow').array([{'n': 1}, {'n': 2}])");
+        let Some(Produced::Batch(batch)) = produced(&whole).unwrap() else {
+            panic!("a struct array without nulls is a batch")
+        };
+        assert_eq!(batch.num_rows(), 2);
+    });
+}
+
+#[test]
+fn a_chunked_array_of_structs_with_a_null_entry_is_refused_and_one_without_is_a_stream() {
+    embedded::with(|py| {
+        let column = |rows: &str| {
+            evaluated(
+                py,
+                &format!("__import__('pyarrow').table({{'payload': {rows}}})['payload']"),
+            )
+        };
+        let Err(error) = produced(&column("[{'n': 1}, None, {'n': 3}]")) else {
+            panic!("a struct column holding a null entry is no stream of rows")
+        };
+        assert!(
+            error.is_instance_of::<pyo3::exceptions::PyValueError>(py),
+            "{error}"
+        );
+        let Some(Produced::Stream(reader)) = produced(&column("[{'n': 1}, {'n': 3}]")).unwrap()
+        else {
+            panic!("a struct column without nulls is a stream")
+        };
+        let rows: usize = reader.map(|batch| batch.unwrap().num_rows()).sum();
+        assert_eq!(rows, 2);
+    });
+}
+
+#[test]
 fn what_is_no_arrow_producer_is_none() {
     embedded::with(|py| {
         assert!(produced(&evaluated(py, "{'n': 1}")).unwrap().is_none());

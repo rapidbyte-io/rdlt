@@ -69,6 +69,33 @@ fn json_value() -> impl Strategy<Value = serde_json::Value> {
 
 proptest! {
     #[test]
+    fn a_decimal_is_written_as_text_that_reads_back_as_the_same_decimal(
+        sign in prop_oneof![Just(""), Just("-")],
+        digits in "[0-9]{1,90}",
+        exponent in -120_i32..=120,
+    ) {
+        embedded::with(|py| {
+            let code = format!("{{'d': __import__('decimal').Decimal('{sign}{digits}E{exponent}')}}");
+            let row = evaluated(py, &code);
+            let written = lines(&pushes(py, &row, WIDE).expect("a finite decimal writes"));
+            let serde_json::Value::String(text) = &written[0]["d"] else {
+                return Err(TestCaseError::fail(format!("{code}: written as {}", written[0])));
+            };
+            let read = py
+                .import("decimal")
+                .unwrap()
+                .getattr("Decimal")
+                .unwrap()
+                .call1((text.as_str(),))
+                .unwrap();
+            let written_as = read.call_method0("as_tuple").unwrap();
+            let yielded_as = row.get_item("d").unwrap().call_method0("as_tuple").unwrap();
+            prop_assert!(written_as.eq(yielded_as).unwrap(), "{code}: {text}");
+            Ok(())
+        })?;
+    }
+
+    #[test]
     fn a_row_parsed_from_json_is_written_back_as_that_json(
         fields in prop::collection::btree_map("\\PC{1,8}", json_value(), 0..6)
     ) {
@@ -148,7 +175,7 @@ fn python_s_own_values_take_their_json_forms() {
             .to_owned();
         assert!(text.contains("\"big\":1208925819614629174706176"), "{text}");
         assert!(text.contains("\"one\":1.0"), "{text}");
-        assert!(text.contains("\"cost\":12.50"), "{text}");
+        assert_eq!(written[0]["cost"], "12.50");
         assert_eq!(written[0]["yes"], true);
         assert_eq!(written[0]["when"], "2026-11-06");
         assert_eq!(written[0]["at"], "2026-11-06T12:30:00");
@@ -169,7 +196,10 @@ fn a_python_subclass_keeps_its_value_whatever_its_str_says() {
         let text = std::str::from_utf8(&pushes(py, &row, WIDE).unwrap()[0])
             .unwrap()
             .to_owned();
-        assert_eq!(text, "{\"big\":1208925819614629174706176,\"cost\":12.50}\n");
+        assert_eq!(
+            text,
+            "{\"big\":1208925819614629174706176,\"cost\":\"12.50\"}\n"
+        );
     });
 }
 
@@ -185,6 +215,24 @@ fn what_has_no_json_form_is_refused_naming_its_path_and_type_never_its_value() {
                 "json_not_finite",
             ),
             ("{'name': 'hunter2\\udc80'}", "json_not_text"),
+            // Fields of a real date and time, which the base types' `__eq__` finds equal.
+            (
+                "{'at': type('NaT', (__import__('datetime').datetime,), \
+                 {'__eq__': lambda self, other: False, '__hash__': None, \
+                 'isoformat': lambda self: 'hunter2'})(1, 1, 1)}",
+                "json_not_a_time",
+            ),
+            (
+                "{'at': type('NaT', (__import__('datetime').time,), \
+                 {'__eq__': lambda self, other: False, '__hash__': None, \
+                 'isoformat': lambda self: 'hunter2'})()}",
+                "json_not_a_time",
+            ),
+            (
+                "{'at': type('Odd', (__import__('datetime').date,), \
+                 {'__eq__': lambda self, other: 1 / 0, '__hash__': None})(2026, 1, 1)}",
+                "json_raised",
+            ),
             ("['hunter2']", "json_not_object"),
             ("{'set': {'hunter2'}}", "json_unsupported_type"),
         ] {

@@ -61,6 +61,9 @@ pub(crate) enum Unwritten {
     /// A float or decimal that is not finite.
     #[error("row {row}: {path}: a number that is not finite has no JSON form")]
     NotFinite { row: usize, path: String },
+    /// A date or time that is not equal to itself, as pandas' `NaT`, which stands for none.
+    #[error("row {row}: {path}: a date or time not equal to itself is missing: yield None")]
+    NotATime { row: usize, path: String },
     /// Text that is not valid Unicode, as a lone surrogate.
     #[error("row {row}: {path}: text that is not valid Unicode")]
     NotText { row: usize, path: String },
@@ -89,6 +92,7 @@ impl Unwritten {
             Self::Unsupported { .. } => "json_unsupported_type",
             Self::Key { .. } => "json_key_not_text",
             Self::NotFinite { .. } => "json_not_finite",
+            Self::NotATime { .. } => "json_not_a_time",
             Self::NotText { .. } => "json_not_text",
             Self::Deep { .. } => "json_too_deep",
             Self::Large { .. } => "json_push_bytes",
@@ -110,8 +114,8 @@ fn type_name(value: &Bound<'_, PyAny>) -> String {
         .map_or_else(|_| "?".to_owned(), |name| name.to_string())
 }
 
-/// Python's types that take a text form: dates and times (ISO 8601), decimals (their digits, as
-/// a number), UUIDs (their hyphenated text).
+/// Python's types that take a text form: dates and times (ISO 8601), decimals (their exact
+/// digits, which a JSON number would round to a float), UUIDs (their hyphenated text).
 struct Typed<'py> {
     date: Bound<'py, PyType>,
     time: Bound<'py, PyType>,
@@ -286,6 +290,11 @@ impl Writer<'_, '_> {
         if instance(&self.typed.decimal) {
             self.decimal(value)?;
         } else if instance(&self.typed.date) || instance(&self.typed.time) {
+            // The value's own `__eq__`, since pandas' `NaT` holds the fields of a real date.
+            if !value.eq(value).map_err(|error| raised(self.py, &error))? {
+                let (row, path) = self.here();
+                return Err(Unwritten::NotATime { row, path });
+            }
             let iso = value
                 .call_method0("isoformat")
                 .map_err(|error| raised(self.py, &error))?;
@@ -304,8 +313,8 @@ impl Writer<'_, '_> {
         Ok(())
     }
 
-    /// Writes a decimal as a number, read through `Decimal` itself so a subclass's methods
-    /// cannot write anything else here.
+    /// Writes a decimal as the text of its exact digits, read through `Decimal` itself so a
+    /// subclass's methods cannot write anything else here.
     fn decimal(&mut self, value: &Bound<'_, PyAny>) -> Result<(), Unwritten> {
         let decimal = &self.typed.decimal;
         let finite = decimal
@@ -319,8 +328,7 @@ impl Writer<'_, '_> {
         let digits = decimal
             .call_method1("__str__", (value,))
             .map_err(|error| raised(self.py, &error))?;
-        self.out.extend_from_slice(digits.to_string().as_bytes());
-        Ok(())
+        self.text(&digits.to_string())
     }
 }
 

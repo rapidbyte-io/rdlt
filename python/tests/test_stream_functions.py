@@ -694,7 +694,8 @@ def test_other_libraries_results_land(library: str, tmp_path: Path, connectors: 
         elif library == "duckdb":
             yield module.sql("SELECT * FROM range(7) t(n)")
         else:
-            yield pa.Table.from_pandas(module.DataFrame({"n": list(range(7))}))
+            yield module.DataFrame({"n": list(range(4))})
+            yield pa.Table.from_pandas(module.DataFrame({"n": list(range(4, 7))}))
 
     rdlt.pipeline("produced", source=produced, destination=into_sqlite(tmp_path)).build(
         host(tmp_path, connectors)
