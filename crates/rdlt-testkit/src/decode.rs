@@ -128,18 +128,22 @@ fn native(array: &dyn Array, row: usize, logical: &LogicalType, hint: &LogicalTy
     }
 }
 
-/// The native struct or list at `row` of `array`, of `logical`, read as `hint` says.
+/// The native struct or list at `row` of `array`, of `logical`, read as `hint` says: each of a
+/// struct's fields by its name, in the array and in the hint.
 fn nested(array: &dyn Array, row: usize, logical: &LogicalType, hint: &LogicalType) -> Canon {
     match (logical, hint) {
         (LogicalType::Struct(fields), LogicalType::Struct(hints)) => Canon::Object(
             fields
                 .iter()
-                .zip(hints.iter())
-                .zip(array.as_struct().columns())
-                .map(|((field, hint), child)| {
-                    let inner = field.logical_type();
-                    let value = cell(child.as_ref(), row, inner, inner, hint.logical_type());
-                    (field.name().to_owned(), value)
+                .map(|field| {
+                    let (name, inner) = (field.name(), field.logical_type());
+                    let child = array
+                        .as_struct()
+                        .column_by_name(name)
+                        .unwrap_or_else(|| panic!("a native {logical} lacks its field {name}"));
+                    let hint = hints.get(name).map_or(inner, Field::logical_type);
+                    let value = cell(child.as_ref(), row, inner, inner, hint);
+                    (name.to_owned(), value)
                 })
                 .filter(|(_, member)| *member != Canon::Null)
                 .collect(),
