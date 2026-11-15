@@ -12,7 +12,7 @@ use crate::args::Output;
 use crate::ui::{self, Std, Tone, Ui};
 
 /// Bytes: the most of one line of human output.
-const LINE_BYTES: usize = 4_096;
+pub(crate) const LINE_BYTES: usize = 4_096;
 
 /// How long the last things a verb says, and a run's report, may take to reach where they go: a
 /// reader that stopped reading does not hold the exit past it.

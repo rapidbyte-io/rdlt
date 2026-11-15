@@ -7,11 +7,16 @@ mod tests;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use rdlt_connector::text::CUT;
 use rdlt_host::Bubblewrap;
+use tokio::io::{
+    AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufReader,
+};
 use tokio::process::{Child, Command};
 
 use super::wheel::Wheel;
 use super::{InstallError, blocking, io_error};
+use crate::output;
 
 /// What an interpreter says it is: its version, and where its executable, the base executable an
 /// environment it makes links to, and its standard library lie.
@@ -53,8 +58,8 @@ impl Drop for Group {
     }
 }
 
-/// Whether `command` ran and succeeded, what it prints for a person copied to standard error as it
-/// comes, so standard output holds the command line's result alone.
+/// Whether `command` ran and succeeded, what it prints for a person written to standard error as
+/// it comes, so standard output holds the command line's result alone.
 ///
 /// Its output reaches no terminal of its own: a group of its own is not the terminal's, and with
 /// `tostop` set a write to it would stop the child for ever.
@@ -74,16 +79,46 @@ async fn status(command: &mut Command) -> Option<std::process::ExitStatus> {
     let mut child = command.spawn().ok()?;
     let (output, errors) = (child.stdout.take(), child.stderr.take());
     let mut group = Group(child);
-    let (ended, (), ()) = tokio::join!(group.0.wait(), copied(output), copied(errors));
+    let (ended, (), ()) = tokio::join!(
+        group.0.wait(),
+        shown(output, tokio::io::stderr()),
+        shown(errors, tokio::io::stderr())
+    );
     ended.ok()
 }
 
-/// Copies what a child writes to `from` to this process's standard error, until it closes.
-async fn copied(from: Option<impl tokio::io::AsyncRead + Unpin>) {
-    if let Some(mut from) = from {
-        tokio::io::copy(&mut from, &mut tokio::io::stderr())
-            .await
-            .ok();
+/// Writes what a child writes to `from` to `to` until it closes, a line at a time, each shown,
+/// since pip and venv print what a wheel and an index say; of a line longer than a line may be,
+/// the start is written, marked as cut.
+async fn shown(from: Option<impl AsyncRead + Unpin>, mut to: impl AsyncWrite + Unpin) {
+    let Some(from) = from else {
+        return;
+    };
+    let mut reader = BufReader::new(from);
+    let (mut piece, mut within_line) = (Vec::new(), false);
+    loop {
+        piece.clear();
+        let mut bounded = (&mut reader).take(output::LINE_BYTES as u64);
+        match bounded.read_until(b'\n', &mut piece).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        // The rest of a line whose start was written is no line of its own.
+        let continued = within_line;
+        within_line = !piece.ends_with(b"\n");
+        if continued {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&piece);
+        let text = text.trim_end();
+        let cut = if within_line && piece.len() == output::LINE_BYTES {
+            CUT
+        } else {
+            ""
+        };
+        let line = format!("{}\n", output::shown(format_args!("{text}{cut}")));
+        // A line that cannot be written is dropped: the child is read to its end all the same.
+        to.write_all(line.as_bytes()).await.ok();
     }
 }
 

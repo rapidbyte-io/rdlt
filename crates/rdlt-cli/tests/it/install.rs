@@ -199,20 +199,21 @@ async fn a_signal_ends_an_install_with_every_process_it_started_and_leaves_nothi
 }
 
 #[tokio::test]
-async fn what_the_environment_s_making_says_reaches_standard_error_and_nothing_else() {
+async fn what_the_environment_s_making_says_reaches_standard_error_shown_and_nothing_else() {
     let scratch = Scratch::new();
     let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
     std::fs::write(&wheel, "").unwrap();
-    let making = "echo said-on-its-output; echo said-on-its-errors >&2";
+    let making = "printf 'said-on-its-output \\033[2J\\n'; echo said-on-its-errors >&2";
     let python = fake_python_making(&scratch.path().join("python3"), making);
     // The environment is not made, so pip is not there to run.
     let refused = installing(&scratch, &wheel, &python).await;
     assert_eq!(refused.status.code(), Some(2), "{refused:?}");
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(
-        said.contains("said-on-its-output") && said.contains("said-on-its-errors"),
+        said.contains("said-on-its-output \\u{1b}[2J") && said.contains("said-on-its-errors"),
         "{said}"
     );
+    assert!(!said.contains('\u{1b}'), "a control sequence reached the terminal: {said:?}");
     let printed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert_eq!(printed["error"]["code"], "pip_failed", "{printed}");
 }
