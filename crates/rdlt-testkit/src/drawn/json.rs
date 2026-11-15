@@ -63,7 +63,7 @@ fn shaped(depth: u32, width: Width) -> BoxedStrategy<Shape> {
         return leaf;
     }
     let inner = move || shaped(depth - 1, width);
-    let object = proptest::sample::subsequence(vec!["x", "y", "z"], 1..=3)
+    let object = super::some(&["x", "y", "z"])
         .prop_flat_map(move |names| {
             let count = names.len();
             (Just(names), proptest::collection::vec(inner(), count))
@@ -86,10 +86,10 @@ fn shaped(depth: u32, width: Width) -> BoxedStrategy<Shape> {
     prop_oneof![3 => leaf, 1 => object, 1 => array].boxed()
 }
 
-/// A batch of one to three of the columns `a`, `b` and `c`, each of a type [`arrow_shape`]
-/// draws, and up to six rows.
+/// A batch of one to three of the columns `a`, `b` and `c`, in any order, each of a type
+/// [`arrow_shape`] draws, and up to six rows.
 pub fn drawn() -> impl Strategy<Value = Drawn> {
-    proptest::sample::subsequence(vec!["a", "b", "c"], 1..=3)
+    super::some(&["a", "b", "c"])
         .prop_flat_map(|names| {
             let count = names.len();
             (

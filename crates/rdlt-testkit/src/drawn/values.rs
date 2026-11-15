@@ -125,13 +125,13 @@ fn scalar_shape() -> BoxedStrategy<Shape> {
     .boxed()
 }
 
-/// Any type, nested up to `depth` levels.
+/// Any type, nested up to `depth` levels, each struct's fields in any order.
 pub fn shape(depth: u32) -> BoxedStrategy<Shape> {
     if depth == 0 {
         return scalar_shape();
     }
     let inner = move || shape(depth - 1);
-    let structure = proptest::sample::subsequence(vec!["x", "y", "z"], 1..=3)
+    let structure = super::some(&["x", "y", "z"])
         .prop_flat_map(move |names| {
             let count = names.len();
             (Just(names), proptest::collection::vec(inner(), count))
@@ -296,6 +296,7 @@ fn nested(shape: &Shape) -> BoxedStrategy<Scalar> {
                 value(child, field.is_nullable()).prop_map(move |inner| (name.clone(), inner))
             })
             .collect::<Vec<_>>()
+            .prop_shuffle()
             .prop_map(Scalar::Struct)
             .boxed(),
         T::List(item) => {
@@ -362,9 +363,10 @@ fn json_value(depth: u32) -> BoxedStrategy<Value> {
     .boxed()
 }
 
-/// A batch of one to three of the columns `a`, `b` and `c`, each of any shape, and up to six rows.
+/// A batch of one to three of the columns `a`, `b` and `c`, in any order, each of any shape, and
+/// up to six rows.
 pub fn drawn() -> impl Strategy<Value = Drawn> {
-    proptest::sample::subsequence(NAMES.to_vec(), 1..=NAMES.len())
+    super::some(&NAMES)
         .prop_flat_map(|names| {
             let count = names.len();
             (Just(names), proptest::collection::vec(shape(2), count))
