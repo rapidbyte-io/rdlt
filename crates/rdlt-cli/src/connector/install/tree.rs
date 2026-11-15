@@ -184,13 +184,36 @@ fn replaceable_now(tree: &Path, id: &str) -> Result<(), InstallError> {
     }
 }
 
-/// A directory of the install's own beside the trees of `connectors`, removed when it drops.
-pub(super) async fn staging(connectors: &Path) -> Result<tempfile::TempDir, InstallError> {
+/// What an install makes beside the trees of a connector directory while it runs, in a directory
+/// of its own that is removed when it drops: the tree, the environment pip runs from, and the
+/// wheel's requirements file.
+pub(super) struct Staging(tempfile::TempDir);
+
+impl Staging {
+    /// The tree being made.
+    pub(super) fn tree(&self) -> PathBuf {
+        self.0.path().join("tree")
+    }
+
+    /// The environment pip runs from.
+    pub(super) fn installer(&self) -> PathBuf {
+        self.0.path().join("installer")
+    }
+
+    /// The requirements file that names the wheel by its hash.
+    pub(super) fn pinned(&self) -> PathBuf {
+        self.0.path().join("pinned.txt")
+    }
+}
+
+/// A [`Staging`] beside the trees of `connectors`.
+pub(super) async fn staging(connectors: &Path) -> Result<Staging, InstallError> {
     let connectors = connectors.to_owned();
     blocking(move || {
         tempfile::Builder::new()
             .prefix(STAGED)
             .tempdir_in(&connectors)
+            .map(Staging)
             .map_err(io_error(format!(
                 "making a directory in {}",
                 connectors.display()
@@ -246,24 +269,23 @@ fn private(tree: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
-/// Puts the environment made in `staging` at `tree`, in place of what is there, and removes
-/// `staging`, which then holds the tree replaced; why that is left, where it could not be removed.
-pub(super) async fn placed(
-    staging: tempfile::TempDir,
-    tree: &Path,
-) -> Result<Option<String>, InstallError> {
+/// Puts the tree `staging` made at `tree`, in place of what is there, and removes the rest of
+/// `staging`, the tree replaced among it; why that is left, where it could not be removed.
+pub(super) async fn placed(staging: Staging, tree: &Path) -> Result<Option<String>, InstallError> {
     let tree = tree.to_owned();
     blocking(move || replaced(staging, &tree)).await
 }
 
 /// [`placed`], on a thread that may block, which alone removes `staging`: an install dropped while
 /// its tree is put in place removes nothing of it.
-fn replaced(staging: tempfile::TempDir, tree: &Path) -> Result<Option<String>, InstallError> {
-    let staged = staging.path().to_owned();
+fn replaced(staging: Staging, tree: &Path) -> Result<Option<String>, InstallError> {
+    let staged = staging.tree();
     if tree.symlink_metadata().is_err() {
-        std::fs::rename(&staged, tree)
-            .map_err(io_error(format!("moving the environment to {}", tree.display())))?;
-        return Ok(None);
+        std::fs::rename(&staged, tree).map_err(io_error(format!(
+            "moving the environment to {}",
+            tree.display()
+        )))?;
+        return Ok(left(staging, tree));
     }
     // The two change places at once, so one of them is in place throughout.
     let cwd = rustix::fs::CWD;
@@ -274,10 +296,18 @@ fn replaced(staging: tempfile::TempDir, tree: &Path) -> Result<Option<String>, I
         );
         io_error(context)(error.into())
     })?;
-    Ok(staging.close().err().map(|error| {
+    Ok(left(staging, tree))
+}
+
+/// Removes `staging`, all but the tree now at `tree`; why it is left, where it could not be.
+fn left(staging: Staging, tree: &Path) -> Option<String> {
+    let kept = staging.0.path().to_owned();
+    staging.0.close().err().map(|error| {
         format!(
-            "the tree replaced is left at {}, which the next install removes: {error}",
-            staged.display()
+            "what the install made beside {} is left at {}, which the next install removes: \
+             {error}",
+            tree.display(),
+            kept.display()
         )
-    }))
+    })
 }

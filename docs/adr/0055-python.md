@@ -213,32 +213,51 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   it ends. A connector's instances are kept by the placement of its class that the host or the
   builder holds, never by the class, which lives as long as its module.
 - **A Python connector a host spawns is a directory connector with an environment of its own.**
-  `rdlt connector install` makes one virtual environment per connector, with the interpreter the
-  operator names, in the first connector directory, and writes the launcher,
+  `rdlt connector install` makes one virtual environment per connector, its tree, with the
+  interpreter the operator names, in the first connector directory, and writes the launcher,
   `bin/rdlt-connector`, which imports the wheel's one `rdlt.connectors` entry point and serves it,
   run by the environment's interpreter with `-I`, so no `PYTHON*` variable, user site-packages or
-  script directory reaches it. No code of the connector's runs as the operator while it is
-  installed: `-I` keeps `site`, which runs a `.pth` file's import lines whenever an interpreter of
-  the environment starts, so the entry point is read from the wheel's archive by the base
-  interpreter with `-S`, pip installs the wheel and what it needs in one run that starts before
-  any of it is there, binaries only so no build backend runs, every package and the wheel itself
-  hashed where a requirements file is given, and the check that nothing the wheel needs is
-  missing runs with `-S`, its packages' directory put on the path by hand. The wheel is named to
-  pip by its `file:` URL, so no index is asked for it; the requirements, which an index serves,
-  keep one from being given for the run. The tree is made beside the connectors, one install at
-  a time under a lock that also lets the next sweep what a killed one left, and exchanged with
-  the tree it replaces in one step, so one of the two is in place throughout, its write taken
-  away from group and others; it records its connector's id, and an install replaces only a tree
-  that records its own (`name_taken` otherwise). The host hashes the
-  launcher, whose first line names the interpreter, and holds the interpreter by its path, as
-  any script's; the installed packages are the operator's files, as a native binary's shared
-  libraries are. The environment's interpreter is a link to its base installation, which a
+  script directory reaches it. The tree holds the connector's packages and no pip. It is made
+  beside the connectors, one install at a time under a lock that also lets the next sweep what a
+  killed one left, and exchanged with the tree it replaces in one step, so one of the two is in
+  place throughout; its write is taken away from group and others, it records its connector's
+  id, and an install replaces only a tree that records its own (`name_taken` otherwise). The host
+  hashes the launcher, whose first line names the interpreter, and holds the interpreter by its
+  path, as any script's; the installed packages are the operator's files, as a native binary's
+  shared libraries are. The environment's interpreter is a link to its base installation, which a
   sandbox shows only in the system's directories, so on Linux an install takes an interpreter
   there alone, whether the host sandboxes its connectors or trusts them, since a tree serves
   either host. A connector the host spawns needs nothing written but its scratch directory and
   `/dev/shm`. An entry point names a class, or a tuple of a source class and a destination class,
-  whose roles the launcher serves in one process. What pip and venv print reaches standard error a
-  line at a time, each shown as connector text is, since it holds what a wheel and an index say.
+  whose roles the launcher serves in one process.
+- **No interpreter an install starts imports from the tree.** No code of the connector's, nor of
+  a package it needs, runs as the operator while it is installed, and no list of what not to
+  import could keep it so: an interpreter of the environment runs each `.pth` file's import lines
+  and imports `sitecustomize` as it starts, with `-I` as without, and any interpreter whose path
+  holds the tree imports from it whatever it asks for by name, pip's own modules or one pip
+  imports. The install starts these processes, each as the operator:
+  - the base interpreter with `-I -S`, which says what it is, then reads the wheel's entry point
+    and hash from its archive as data;
+  - the base interpreter's `venv`, with `-I`, which makes the tree with no pip, and beside it, in
+    the install's own directory, the environment pip runs from, whose interpreter then runs
+    `ensurepip` to install the pip the base installation carries;
+  - that environment's pip, with `-I`, which installs into the tree as its prefix, the tree never
+    on its path, and starts nothing from it.
+
+  Nothing in the tree is started, its interpreter included, and after pip the tree is read as
+  data alone: a package that replaced a link of its `bin/` or its `pyvenv.cfg`, the interpreter
+  the launcher runs and what that interpreter starts with, is refused (`replaces_environment`),
+  so the interpreter stays venv's link to the base installation. pip installs binaries only, so
+  no build backend runs, and reads none of its configuration, neither its variables
+  (`--isolated`) nor its files (`PIP_CONFIG_FILE` naming `/dev/null`), as `ensurepip` reads none:
+  what is installed, and where, is what the install's command line and its requirements say. The
+  wheel is copied once into a directory of the install's own, and the copy is what is read,
+  hashed and installed, named to pip by its `file:` URL, so no index is asked for it. What it
+  needs comes from PyPI; given a requirements file, which names any other index or links, pip
+  installs the packages it hashes, the wheel among them, and refuses, before it installs
+  anything, a dependency the file does not hash, so every package in the tree is one the
+  operator hashed. What pip and venv print reaches standard error a line at a time, each shown as
+  connector text is, since it holds what a wheel and an index say.
 - **A thread that goes away is told, not inferred.** A read's end is said by `finished` or
   `failed`, and a call's by its answer; a read whose channel closes without a word fails, so a
   thread that died never reads as a finished partition.
@@ -272,6 +291,15 @@ Rejected:
 - **pyo3-async-runtimes for awaitables.** It hands an awaited answer over by taking the GIL on the
   runtime's blocking pool, and given a runtime whose blocking pool were a daemon thread, the
   closure it hands over would still call asyncio beneath that thread's Rust frames.
+- **Running the tree's pip, or any interpreter of the tree, while it is installed**, with `-S` or
+  its packages' directory put on the path by hand: the tree is what the wheel wrote, so its
+  interpreter, its `pyvenv.cfg`, its pip and every module on its path are the wheel's to replace.
+- **Checking the installed packages with `pip check`.** It needs pip to import from the tree;
+  given every dependency to resolve and the requirements' hashes, pip refuses one that is missing
+  or unhashed before it installs anything.
+- **Reading pip's index settings and ignoring the rest.** What pip reads of its configuration
+  changes with its version, so a list of what to ignore would miss some; an index is named in the
+  requirements file instead.
 - **Replacing a tree with two renames.** An install ended between them, by a signal or a crash,
   leaves no tree, and the next install would sweep away the old one.
 
@@ -284,9 +312,13 @@ installation its environment links to, and `rdlt connector install` refuses it
 environment holding its wheel. An interpreter installed in the connector's own tree, a standalone
 install, would lift that refusal.
 
-Replacing a tree needs a file system that exchanges two names in one step, as Linux's local file
-systems and APFS do; on one that cannot, the tree is removed by hand before its connector is
-installed again.
+An installed tree holds no pip, and its packages' scripts name the environment pip ran from,
+which is gone: its packages are read as files, `lib/python3.N/site-packages/*.dist-info`, and
+anything run from it by hand, its interpreter included, runs the connector's code with the
+operator's access, outside any sandbox. An index or links other than PyPI's are named in a
+requirements file, whose every package is then hashed. Replacing a tree needs a file system that
+exchanges two names in one step, as Linux's local file systems and APFS do; on one that cannot,
+the tree is removed by hand before its connector is installed again.
 
 A directory connector's digest pins its launcher, not what the launcher runs: the interpreter
 its first line names is held by its path, and the packages beside it are the operator's files.

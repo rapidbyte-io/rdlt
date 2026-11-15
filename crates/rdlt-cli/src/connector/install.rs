@@ -2,9 +2,10 @@
 //! operator-owned environment with its launcher, made without running any of the connector's
 //! code.
 //!
-//! The wheel's entry point is read from its archive by the base interpreter, with no `site`, so
-//! no `.pth` file runs; pip installs the wheel and what it needs in one run, binaries only, so no
-//! build backend runs; and the check that nothing is missing runs with no `site` either.
+//! No interpreter the install starts imports from the tree it makes. The wheel is copied once and
+//! read from its archive by the base interpreter, with no `site`; pip runs from an environment of
+//! its own beside the tree, binaries only, so no build backend runs, and installs into the tree as
+//! its prefix; and the tree is then read as data alone.
 
 mod environment;
 #[cfg(test)]
@@ -35,7 +36,8 @@ pub(crate) struct Installation {
 pub(crate) struct Installed {
     /// The tree, `rdlt-connector-<the id's last segment>` in the connector directory.
     pub(crate) tree: PathBuf,
-    /// Why the tree it replaced is left beside it, where its removal failed.
+    /// Why what it made beside the tree, the tree it replaced among it, is left there, where its
+    /// removal failed.
     pub(crate) left: Option<String>,
 }
 
@@ -63,13 +65,13 @@ pub(crate) enum InstallError {
     InterpreterUnreachable { path: PathBuf, serving: String },
     #[error("{} could not make the connector's environment", python.display())]
     VenvFailed { python: PathBuf },
-    #[error("pip could not install {what}")]
-    PipFailed { what: &'static str },
+    #[error("pip could not install the wheel and the packages it needs")]
+    PipFailed,
     #[error(
-        "{} could not check the environment's packages: its pip does not import",
-        python.display()
+        "the wheel or a package it needs replaces {}, which is the environment's own",
+        path.display()
     )]
-    CheckUnrun { python: PathBuf },
+    ReplacesEnvironment { path: PathBuf },
     #[error("the wheel names {found} rdlt.connectors entry points; a connector's wheel names one")]
     EntryPoints { found: usize },
     #[error("the entry point {target:?} names no attribute of a module")]
@@ -113,7 +115,8 @@ impl InstallError {
             Self::InterpreterTooOld { .. } => "interpreter_too_old",
             Self::InterpreterUnreachable { .. } => "interpreter_unreachable",
             Self::VenvFailed { .. } => "venv_failed",
-            Self::PipFailed { .. } | Self::CheckUnrun { .. } => "pip_failed",
+            Self::PipFailed => "pip_failed",
+            Self::ReplacesEnvironment { .. } => "replaces_environment",
             Self::EntryPoints { .. } | Self::EntryPointTarget { .. } => "entry_points",
             Self::ConnectorId { .. } => "connector_id",
             Self::ShebangTooLong { .. } => "shebang_too_long",
@@ -142,25 +145,25 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
 /// Installs `installation`'s wheel as a directory connector, replacing an earlier install of the
 /// same connector.
 ///
-/// Only an existing wheel file reaches pip, named by its `file:` URL, which no index is asked for;
-/// with requirements, `--require-hashes` covers every package, the wheel among them.
+/// Only a copy of an existing wheel file reaches pip, named by its `file:` URL, which no index is
+/// asked for; with requirements, `--require-hashes` covers every package, the wheel among them.
 ///
 /// Dropped before it ends, as it is when a signal ends the command line, it kills the processes
-/// it started, every process of their groups, and removes the environment it was making; once
-/// that is being put in place, the putting ends first.
+/// it started, every process of their groups, and removes what it was making; once its tree is
+/// being put in place, the putting ends first.
 ///
 /// # Errors
 ///
 /// An [`InstallError`] naming the step that failed; the connector directory holds nothing new
 /// then, but its lock file.
 pub(crate) async fn install(installation: &Installation) -> Result<Installed, InstallError> {
-    let wheel = wheel::checked(&installation.wheel).await?;
+    let held = wheel::held(&installation.wheel).await?;
     let python = installation
         .python
         .clone()
         .unwrap_or_else(|| PathBuf::from("python3"));
     let facts = environment::facts(&python).await?;
-    let described = wheel::described(&python, &wheel).await?;
+    let described = wheel::described(&python, &held.path()).await?;
     let (name, target) = described.entry_point()?;
     let id = rdlt::ConnectorId::parse(name).map_err(|source| InstallError::ConnectorId {
         name: name.to_owned(),
@@ -178,13 +181,15 @@ pub(crate) async fn install(installation: &Installation) -> Result<Installed, In
     let staging = tree::staging(&connectors).await?;
     let requirements = installation.requirements.as_deref();
     let made = async {
-        environment::made(&python, staging.path()).await?;
-        environment::installed(staging.path(), &described, requirements).await?;
-        tree::finished(staging.path(), launcher, id.as_str()).await
+        environment::made(&python, &staging).await?;
+        environment::installed(&staging, &described, requirements).await?;
+        tree::finished(&staging.tree(), launcher, id.as_str()).await
     }
     .await;
+    // The wheel's copy, and where the install failed all it made, are removed where that may
+    // block; dropped with the install, they are removed at once.
+    blocking(move || drop(held)).await;
     if let Err(error) = made {
-        // Removed where that may block; dropped with the install, it is removed at once.
         blocking(move || drop(staging)).await;
         return Err(error);
     }

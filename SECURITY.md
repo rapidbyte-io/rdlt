@@ -113,12 +113,16 @@ anything runs; none is ignored.
     for entries the user owns. It is opened once, and the open file is what is hashed and what
     is executed, so no file can be swapped in between. A directory connector's digest is its
     launcher's alone: it pins neither the interpreter nor the packages installed beside it.
-    `rdlt connector install` runs, as the operator, the interpreter named and the pip it
-    installs, never the connector's code: the wheel is read from its archive with no `site`, so
-    no `.pth` file runs, pip installs binaries only, and the check after it runs with no `site`
-    either. A sandboxed connector whose binary was replaced since it was placed is refused until
-    it is placed again. On macOS an open file cannot be executed: a digest is refused there
-    rather than checked against a path.
+    `rdlt connector install` runs, as the operator, the interpreter named, its `venv` and the
+    pip the interpreter carries, never the connector's code: no interpreter it starts imports
+    from the tree it makes. The wheel is read from its archive with no `site`; pip runs from an
+    environment of its own beside the tree, reads none of its configuration, installs binaries
+    only and installs into the tree as its prefix; and the tree is then read as data alone,
+    refused where a package replaced the environment's interpreter or its `pyvenv.cfg`.
+    Anything run from an installed tree by hand runs the connector's code with your access,
+    outside any sandbox. A sandboxed connector whose binary was replaced since it was placed is
+    refused until it is placed again. On macOS an open file cannot be executed: a digest is
+    refused there rather than checked against a path.
   - A connector is given its standard streams and its socket, and no other descriptor of the
     host's: after the descriptors it is given are in place, the child marks every other
     close-on-exec, whatever another thread of the host opened meanwhile. A sandboxed connector

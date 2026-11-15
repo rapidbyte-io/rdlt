@@ -138,6 +138,48 @@ async fn a_wheel_installs_into_the_default_connector_directory_made_for_it() {
     assert!(tree.join("bin/rdlt-connector").is_file());
 }
 
+#[tokio::test]
+async fn an_install_reads_none_of_pip_s_configuration() {
+    let Some(python) = system_python() else {
+        return;
+    };
+    let scratch = Scratch::new();
+    let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
+    made_wheel(&python, &wheel);
+    let (configured, set) = (
+        scratch.path().join("configured"),
+        scratch.path().join("set"),
+    );
+    let file = scratch.path().join("pip.conf");
+    std::fs::write(
+        &file,
+        format!("[install]\ntarget = {}\n", configured.display()),
+    )
+    .unwrap();
+    let mut install = scratch.bare_command(&["connector", "install", "--output", "json"]);
+    install
+        .arg(&wheel)
+        .arg("--python")
+        .arg(&python)
+        .env("PIP_CONFIG_FILE", &file)
+        .env("PIP_TARGET", &set);
+    let installed = output_of(&mut install).await;
+    assert_eq!(installed.status.code(), Some(0), "{installed:?}");
+    assert!(
+        !configured.exists(),
+        "pip's configuration file placed the packages"
+    );
+    assert!(!set.exists(), "pip's variables placed the packages");
+    let tree = scratch
+        .path()
+        .join("data/rdlt/connectors/rdlt-connector-tickets");
+    let imported = std::process::Command::new(tree.join("bin/python"))
+        .args(["-I", "-c", "import tickets"])
+        .output()
+        .expect("the tree's interpreter runs");
+    assert!(imported.status.success(), "{imported:?}");
+}
+
 /// The entries of `connectors` an install makes while it runs, and leaves only if it is cut off.
 fn staged(connectors: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(connectors) else {
@@ -213,7 +255,10 @@ async fn what_the_environment_s_making_says_reaches_standard_error_shown_and_not
         said.contains("said-on-its-output \\u{1b}[2J") && said.contains("said-on-its-errors"),
         "{said}"
     );
-    assert!(!said.contains('\u{1b}'), "a control sequence reached the terminal: {said:?}");
+    assert!(
+        !said.contains('\u{1b}'),
+        "a control sequence reached the terminal: {said:?}"
+    );
     let printed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert_eq!(printed["error"]["code"], "pip_failed", "{printed}");
 }
