@@ -7,10 +7,10 @@ use std::ops::Range;
 use rdlt_connector::ChangeOp;
 use rdlt_engine::{DeleteMode, OnTruncate, WriteMode};
 
-use super::filter::{Filter, Filtered};
+use super::filter::{Filter, Filtered, Projection};
 use super::history::whole;
 use crate::rng::SplitMix64;
-use crate::swarm::{EXCLUDE, Features, RESHAPE};
+use crate::swarm::{EXCLUDE, Features, PROJECT, RESHAPE};
 
 #[cfg(test)]
 mod tests;
@@ -69,6 +69,9 @@ pub struct ChangeStream {
     /// The stream's filter: an insert or update it does not keep is filtered out, a merge's
     /// turned into a delete of its key; none where the stream filters nothing.
     pub filter: Option<Filter>,
+    /// The column `extra` the stream's query computes beside every column it passes on, which a
+    /// delete and a truncate hold null; none where it computes none.
+    pub projection: Option<Projection>,
 }
 
 /// Whether a change stream loads its `value` column, and whether its source sends it.
@@ -163,6 +166,7 @@ impl ChangeWorkload {
     ) -> Self {
         let mut excluding = SplitMix64::new(apart.clone().next_u64() ^ EXCLUDE);
         let mut reshaping = SplitMix64::new(apart.clone().next_u64() ^ RESHAPE);
+        let mut projecting = SplitMix64::new(apart.clone().next_u64() ^ PROJECT);
         let streams = (0..=rng.below(3))
             .map(|index| {
                 let replayable = !(features.forgetting && index.is_multiple_of(2));
@@ -194,6 +198,10 @@ impl ChangeWorkload {
                         modulus: i64::try_from(modulus).unwrap_or(2),
                         cased,
                     });
+                }
+                let (projects, kind) = (projecting.chance(500), projecting.below(3));
+                if features.transform && projects {
+                    stream.projection = Some(stream.projected(kind));
                 }
                 stream
             })
@@ -256,6 +264,20 @@ impl ChangeStream {
             history: false,
             value: Value::Loaded,
             filter: None,
+            projection: None,
+        }
+    }
+
+    /// The column the stream's query computes of `kind`: one reading `value` only where the
+    /// stream loads it and a merge's updates never leave it unchanged, as a column computed from
+    /// it would then land null on a key no row holds yet.
+    fn projected(&self, kind: u64) -> Projection {
+        let partial = self.events.iter().any(|event| event.partial);
+        let reads = self.value == Value::Loaded && !(self.write == WriteMode::Merge && partial);
+        match kind {
+            0 => Projection::Constant,
+            2 if reads => Projection::Coalesced,
+            _ => Projection::Doubled,
         }
     }
 

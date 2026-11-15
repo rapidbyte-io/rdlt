@@ -1,7 +1,9 @@
+use std::collections::BTreeSet;
+
 use rdlt_connector::ChangeOp;
 use rdlt_engine::{DeleteMode, OnTruncate, WriteMode};
 
-use super::{ChangeStream, ChangeWorkload, Event, Value};
+use super::{ChangeStream, ChangeWorkload, Event, Projection, Value};
 use crate::changes::{Filter, Filtered};
 use crate::rng::SplitMix64;
 use crate::swarm::Features;
@@ -306,6 +308,7 @@ fn change_streams_filter_and_list_their_columns_only_where_drawn_to_and_never_wh
             // Nothing else a transforming seed draws differs.
             let mut alike = drawn.clone();
             alike.filter = None;
+            alike.projection = None;
             if alike.value == Value::Unlisted {
                 alike.value = Value::Loaded;
             }
@@ -316,4 +319,51 @@ fn change_streams_filter_and_list_their_columns_only_where_drawn_to_and_never_wh
     assert!(on_key > 20, "{on_key} streams filter on their key");
     assert!(cased > 50, "{cased} streams answer with null");
     assert!(unlisted > 50, "{unlisted} streams list their columns");
+}
+
+#[test]
+fn change_streams_compute_a_column_of_each_kind_filtered_or_not_on_every_kind_of_table() {
+    let mut reached = BTreeSet::new();
+    for seed in 0..500 {
+        let features = Features {
+            transform: true,
+            ..Features::ALL
+        };
+        let workload = ChangeWorkload::generate(
+            &mut SplitMix64::new(seed),
+            features,
+            &mut SplitMix64::new(!seed),
+        );
+        for stream in &workload.streams {
+            let Some(projection) = stream.projection else {
+                continue;
+            };
+            let partial = stream.events.iter().any(|event| event.partial);
+            if projection == Projection::Coalesced {
+                // `value` read only where it is loaded and never left unchanged by a merge.
+                assert_eq!(stream.value, Value::Loaded, "seed {seed}");
+                assert!(
+                    !(stream.write == WriteMode::Merge && partial),
+                    "seed {seed}"
+                );
+            }
+            let table = match (stream.history, stream.write) {
+                (true, _) => "history",
+                (false, WriteMode::Merge) => "merge",
+                (false, _) => "log",
+            };
+            reached.insert((format!("{projection:?}"), stream.filter.is_some(), table));
+        }
+    }
+    for projection in ["Constant", "Doubled", "Coalesced"] {
+        for filtered in [false, true] {
+            for table in ["history", "merge", "log"] {
+                let combination = (projection.to_owned(), filtered, table);
+                assert!(
+                    reached.contains(&combination),
+                    "{combination:?} is never drawn"
+                );
+            }
+        }
+    }
 }

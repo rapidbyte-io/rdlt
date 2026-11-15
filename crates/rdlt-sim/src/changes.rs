@@ -6,6 +6,7 @@ mod history;
 mod source;
 mod workload;
 
+pub(crate) use filter::query;
 pub use filter::{Filter, Filtered};
 pub(crate) use history::Version;
 pub(crate) use source::{CHANGES as CHANGES_PHASE, CHANGES_PARTITION};
