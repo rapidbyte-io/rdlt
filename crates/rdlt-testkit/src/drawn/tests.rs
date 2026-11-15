@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
-use rdlt_connector::{LogicalType, TypeKind};
+use rdlt_connector::{Field, LogicalType, TypeKind};
 
 use serde_json::json;
 
@@ -60,6 +60,40 @@ fn the_drawn_shapes_hold_every_type_in_every_encoding() {
     }
     let missing: Vec<_> = expected.difference(&drawn).collect();
     assert!(missing.is_empty(), "never drawn: {missing:?}");
+}
+
+/// Whether `names` are in name order.
+fn in_order<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
+    let names: Vec<&str> = names.into_iter().collect();
+    names.is_sorted()
+}
+
+#[test]
+fn drawn_batches_name_columns_and_struct_fields_in_any_order_and_members_apart_from_fields() {
+    let mut runner = TestRunner::deterministic();
+    let (mut columns, mut fields, mut members) = (false, false, false);
+    for strategy in [values::drawn().boxed(), pushed::drawn().boxed()] {
+        for _ in 0..2_000 {
+            let (named, rows) = strategy.new_tree(&mut runner).expect("a batch").current();
+            columns |= !in_order(named.iter().map(|(name, _)| name.as_str()));
+            for (_, shape) in &named {
+                if let LogicalType::Struct(types) = &shape.logical {
+                    fields |= !in_order(types.iter().map(Field::name));
+                }
+            }
+            for row in &rows {
+                for ((_, shape), value) in named.iter().zip(row) {
+                    if let (LogicalType::Struct(types), Scalar::Struct(inner)) =
+                        (&shape.logical, value)
+                    {
+                        let typed = types.iter().map(Field::name);
+                        members |= !typed.eq(inner.iter().map(|(name, _)| name.as_str()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(columns && fields && members, "{columns} {fields} {members}");
 }
 
 #[test]
@@ -151,11 +185,7 @@ fn a_decimal_s_json_text_has_its_scale_and_no_leading_zeros() {
         text(&format!("00{wide}"), &pushed::integers().logical),
         wide
     );
-    let nested = LogicalType::List(Box::new(rdlt_connector::Field::new(
-        "item",
-        decimal(4, 1),
-        true,
-    )));
+    let nested = LogicalType::List(Box::new(Field::new("item", decimal(4, 1), true)));
     let list = Scalar::List(vec![Scalar::Decimal("15".to_owned()), Scalar::Null]);
     assert_eq!(pushed::text(&list, &nested), "[1.5,null]");
 }

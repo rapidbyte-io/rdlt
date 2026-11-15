@@ -94,8 +94,8 @@ pub fn neighbor(shape: &Shape) -> BoxedStrategy<Shape> {
     }
 }
 
-/// A struct like `fields`, of `children`, with one field changed to a neighbor, one added or one
-/// removed.
+/// A struct like `fields`, of `children`, with one field changed to a neighbor, one added, one
+/// removed, or its fields in another order.
 fn structure(fields: &Fields, children: &[Shape]) -> BoxedStrategy<Shape> {
     let members: Vec<(Field, Shape)> = fields
         .iter()
@@ -151,16 +151,17 @@ fn structure(fields: &Fields, children: &[Shape]) -> BoxedStrategy<Shape> {
             })
             .boxed()
     };
-    prop_oneof![2 => changed, 1 => added, 1 => removed].boxed()
+    let reordered = Just(members).prop_shuffle().prop_map(rebuild).boxed();
+    prop_oneof![2 => changed, 1 => added, 1 => removed, 1 => reordered].boxed()
 }
 
-/// One to four batches over the columns `a`, `b` and `c`: each batch holds some of the columns, each of its base
-/// type, a neighbor of it, or now and then another type.
+/// One to four batches over the columns `a`, `b` and `c`: each batch holds some of the columns, in
+/// any order, each of its base type, a neighbor of it, or now and then another type.
 pub fn batches() -> impl Strategy<Value = Vec<Drawn>> {
     proptest::collection::vec(shape(2), NAMES.len()).prop_flat_map(|bases| {
         let batch = {
             let bases = bases.clone();
-            proptest::sample::subsequence((0..NAMES.len()).collect::<Vec<_>>(), 1..=NAMES.len())
+            super::some(&(0..NAMES.len()).collect::<Vec<_>>())
                 .prop_flat_map(move |columns| {
                     let shapes: Vec<BoxedStrategy<Shape>> = columns
                         .iter()

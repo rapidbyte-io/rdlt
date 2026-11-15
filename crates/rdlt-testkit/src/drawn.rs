@@ -9,6 +9,9 @@ pub mod neighbors;
 mod tests;
 pub mod values;
 
+use std::fmt::Debug;
+
+use proptest::prelude::*;
 use rdlt_connector::TypeKind;
 use serde_json::Value;
 
@@ -49,6 +52,14 @@ pub enum Scalar {
 
 /// A batch: its columns' names and shapes, and its rows' values.
 pub type Drawn = (Vec<(String, Shape)>, Vec<Vec<Scalar>>);
+
+/// One or more of `items`, in any order: a struct's fields or a batch's columns, so the same
+/// names reach the engine in every order.
+pub fn some<T: Clone + Debug + 'static>(
+    items: &[T],
+) -> impl Strategy<Value = Vec<T>> + Clone + use<T> {
+    proptest::sample::subsequence(items.to_vec(), 1..=items.len()).prop_shuffle()
+}
 
 /// Every kind of value a destination may store natively.
 pub const KINDS: [TypeKind; 19] = [
