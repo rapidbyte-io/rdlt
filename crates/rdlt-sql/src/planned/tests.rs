@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray as _;
-use arrow_array::types::{Int32Type, Int64Type};
+use arrow_array::types::{
+    Float64Type, Int32Type, Int64Type, TimestampMicrosecondType, TimestampNanosecondType,
+};
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Date64Array, Decimal256Array,
-    DictionaryArray, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray, NullArray,
-    RecordBatch, RunArray, StringArray, StringViewArray,
+    DictionaryArray, Float64Array, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray,
+    NullArray, RecordBatch, RunArray, StringArray, StringViewArray, TimestampMicrosecondArray,
 };
-use arrow_buffer::i256;
+use arrow_buffer::{NullBuffer, i256};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion_expr::col;
 use datafusion_expr::logical_plan::builder::{LogicalPlanBuilder, LogicalTableSource};
@@ -330,6 +332,156 @@ fn a_failure_names_its_column_and_function_and_never_a_value() {
     let sql = Sql::parse("SELECT abs(n) AS a FROM input").unwrap();
     let failed = sql.apply(wrapped).unwrap_err();
     assert_eq!(failed.to_string(), "column a: evaluating abs failed");
+}
+
+#[test]
+fn arithmetic_beyond_its_type_fails_the_batch_wherever_it_stands() {
+    let ints = |values: Vec<i32>| Arc::new(Int32Array::from(values)) as ArrayRef;
+    let batch = RecordBatch::try_from_iter([
+        ("price", ints(vec![100_000, 3])),
+        ("quantity", ints(vec![100_000, 4])),
+        ("n", ints(vec![i32::MIN, 5])),
+    ])
+    .unwrap();
+    for expression in [
+        "price * quantity",
+        "CAST(price AS BIGINT) * 92233720368548",
+        "92233720368548 * CAST(price AS BIGINT)",
+        "-n",
+        "abs(n)",
+        "abs(price * quantity)",
+        "CAST(price * quantity AS BIGINT)",
+        "CASE WHEN n < 0 THEN price * quantity END",
+        "coalesce(price * quantity, 0)",
+        "price * quantity IN (1, 2)",
+        "price * quantity BETWEEN 1 AND 2",
+    ] {
+        let sql = Sql::parse(&format!("SELECT {expression} AS y FROM input")).unwrap();
+        let failed = sql.apply(batch.clone()).unwrap_err();
+        assert_eq!(failed.column(), Some("y"), "{expression}");
+        let alone = sql.apply(batch.slice(1, 1));
+        assert!(alone.is_ok(), "{expression}: {alone:?}");
+    }
+    let filtered = Sql::parse("SELECT n FROM input WHERE price * quantity > 0").unwrap();
+    assert!(filtered.keep(&batch).is_err());
+    assert!(filtered.keep(&batch.slice(1, 1)).unwrap().value(0));
+    let exact = |query: &str| {
+        let applied = Sql::parse(query).unwrap().apply(batch.slice(1, 1)).unwrap();
+        applied.column(0).as_primitive::<Int32Type>().value(0)
+    };
+    assert_eq!(exact("SELECT price * quantity AS y FROM input"), 12);
+    assert_eq!(exact("SELECT -n AS y FROM input"), -5);
+    // A literal is a `BIGINT`, so a sum with one widens to hold what an `INT` does not.
+    let query = "SELECT price + 2147483647 - 2147483647 + quantity AS s FROM input";
+    let widened = Sql::parse(query).unwrap().apply(batch).unwrap();
+    let widened = widened.column(0).as_primitive::<Int64Type>();
+    assert_eq!(widened.values().to_vec(), [200_000, 7]);
+}
+
+#[test]
+fn constant_arithmetic_beyond_its_type_fails_each_batch_that_evaluates_it() {
+    let least = Arc::new(Int64Array::from(vec![i64::MIN, 5])) as ArrayRef;
+    let batch = RecordBatch::try_from_iter([("n", least)]).unwrap();
+    let listed = [
+        "n IN (9223372036854775807 + 1)",
+        "n NOT IN (9223372036854775807 + 1)",
+        "n IN (CAST(100 AS TINYINT) + CAST(100 AS TINYINT))",
+    ];
+    let constants = ["9223372036854775807 + 1", "-(-9223372036854775807 - 1)"];
+    for expression in constants.iter().chain(&listed) {
+        let sql = Sql::parse(&format!("SELECT {expression} AS y FROM input")).unwrap();
+        for part in [batch.clone(), batch.slice(1, 1)] {
+            let applied = sql.apply(part);
+            assert!(applied.is_err(), "{expression}: {applied:?}");
+        }
+    }
+    for predicate in listed {
+        let sql = Sql::parse(&format!("SELECT n FROM input WHERE {predicate}")).unwrap();
+        for part in [batch.clone(), batch.slice(1, 1)] {
+            let kept = sql.keep(&part);
+            assert!(kept.is_err(), "{predicate}: {kept:?}");
+        }
+    }
+    // A list is read item by item until every row is answered, so the item that overflows fails
+    // a batch only where a row's answer needs it.
+    let sql = Sql::parse("SELECT n FROM input WHERE n IN (5, 9223372036854775807 + 1)").unwrap();
+    assert!(sql.keep(&batch).is_err());
+    assert_eq!(
+        sql.keep(&batch.slice(1, 1)).unwrap(),
+        BooleanArray::from(vec![true])
+    );
+}
+
+#[test]
+fn a_list_of_constants_keeps_its_answers_once_its_operators_are_checked() {
+    let ones = Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef;
+    let batch = RecordBatch::try_from_iter([("n", ones)]).unwrap();
+    let sql = Sql::parse("SELECT n NOT IN (1, NULL) AS y FROM input").unwrap();
+    let applied = sql.apply(batch).unwrap();
+    let answers: Vec<Option<bool>> = applied.column(0).as_boolean().iter().collect();
+    assert_eq!(answers, [Some(false), None]);
+}
+
+#[test]
+fn a_row_an_operation_does_not_reach_never_fails_its_batch() {
+    // The null's slot holds the least `INT` beneath it.
+    let held = Int32Array::new(
+        vec![i32::MIN, 5].into(),
+        Some(NullBuffer::from(vec![false, true])),
+    );
+    let least = Int32Array::from(vec![i32::MIN, 5]);
+    for (expression, column, expected) in [
+        ("-n", &held, -5),
+        ("n * n", &held, 25),
+        ("CASE WHEN n > 0 THEN -n END", &least, -5),
+    ] {
+        let column = Arc::new(column.clone()) as ArrayRef;
+        let batch = RecordBatch::try_from_iter([("n", column)]).unwrap();
+        let sql = Sql::parse(&format!("SELECT {expression} AS y FROM input")).unwrap();
+        let applied = sql.apply(batch).unwrap();
+        let applied = applied.column(0).as_primitive::<Int32Type>();
+        let values: Vec<_> = applied.iter().collect();
+        assert_eq!(values, [None, Some(expected)], "{expression}");
+    }
+}
+
+#[test]
+fn negating_a_float_zero_keeps_its_sign() {
+    let zero = Arc::new(Float64Array::from(vec![0.0])) as ArrayRef;
+    let batch = RecordBatch::try_from_iter([("f", zero)]).unwrap();
+    let sql = Sql::parse("SELECT -f AS y FROM input").unwrap();
+    let negated = sql.apply(batch).unwrap();
+    let negated = negated.column(0).as_primitive::<Float64Type>().value(0);
+    assert!(negated.is_sign_negative(), "{negated}");
+}
+
+#[test]
+fn a_date64_cast_to_a_finer_timestamp_fails_beyond_it_and_is_exact_within_it() {
+    // 9999-12-31, beyond what nanoseconds since 1970 hold.
+    let last = 253_402_214_400_000_i64;
+    let batch = RecordBatch::try_from_iter([
+        ("d", Arc::new(Date64Array::from(vec![last])) as ArrayRef),
+        (
+            "t",
+            Arc::new(TimestampMicrosecondArray::from(vec![1_234_567])) as ArrayRef,
+        ),
+    ])
+    .unwrap();
+    let applied = |expression: &str| {
+        let sql = Sql::parse(&format!("SELECT {expression} AS y FROM input")).unwrap();
+        sql.apply(batch.clone())
+    };
+    assert!(applied("CAST(d AS TIMESTAMP)").is_err());
+    assert!(applied("d > CAST(t AS TIMESTAMP)").is_err());
+    let tried = applied("TRY_CAST(d AS TIMESTAMP)").unwrap();
+    assert!(tried.column(0).is_null(0));
+    let micros = applied("TRY_CAST(d AS TIMESTAMP(6))").unwrap();
+    let micros = micros.column(0).as_primitive::<TimestampMicrosecondType>();
+    assert_eq!(micros.value(0), last * 1000);
+    // A finer timestamp keeps the digits a millisecond does not hold.
+    let nanos = applied("TRY_CAST(t AS TIMESTAMP(9))").unwrap();
+    let nanos = nanos.column(0).as_primitive::<TimestampNanosecondType>();
+    assert_eq!(nanos.value(0), 1_234_567_000);
 }
 
 #[test]
