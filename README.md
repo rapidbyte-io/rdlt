@@ -392,9 +392,11 @@ or a tuple of a source class and a destination class, such as `CONNECTORS = (Tic
 whose roles the installed launcher serves in one process. `rdlt connector install` installs its
 wheel as a directory connector, `rdlt-connector-tickets/` in the first connector directory: an
 environment of its own, whose launcher, `bin/rdlt-connector`, a host spawns and sandboxes as it does
-a binary. None of the connector's code runs while it is installed. With `--requirements`, a file of
-every package the wheel needs, each with its hash, pip installs those alone; until `rdlt`'s wheel is
-published, that file names one built from the repository,
+a binary. None of the connector's code runs while it is installed, and anything run from the tree by
+hand runs it with your access. pip reads none of its own configuration: with `--requirements`, a
+file of every package the wheel needs, each with its hash, which also names any index other than
+PyPI's, pip installs those alone; until `rdlt`'s wheel is published, that file names one built from
+the repository,
 `rdlt @ file:///<its path> --hash=sha256:<its digest>`, as
 [`python/tests/test_directory.py`](python/tests/test_directory.py) writes it. On Linux the
 environment's interpreter must lie in the system's directories, which the sandbox shows, such as

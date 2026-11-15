@@ -183,6 +183,36 @@ async fn what_is_no_wheel_file_is_refused_before_any_interpreter_runs() {
 }
 
 #[tokio::test]
+async fn the_wheel_is_described_and_installed_from_a_copy_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let python = fake_python(dir.path(), &facts("3, 14, 0", "/usr"), DESCRIBED, 0);
+    // It keeps what it is asked to read, and says where it was.
+    let (read, seen) = (dir.path().join("read"), dir.path().join("seen"));
+    let script = std::fs::read_to_string(&python).unwrap().replacen(
+        "elif [ \"$#\" = 5 ]; then ",
+        &format!(
+            "elif [ \"$#\" = 5 ]; then cp \"$5\" '{}'; printf '%s' \"$5\" > '{}'; ",
+            seen.display(),
+            read.display()
+        ),
+        1,
+    );
+    std::fs::write(&python, script).unwrap();
+    let asked = installation(dir.path(), python);
+    std::fs::write(&asked.wheel, "the wheel's bytes").unwrap();
+    install(&asked).await.unwrap_err();
+    let read = PathBuf::from(std::fs::read_to_string(read).unwrap());
+    assert_ne!(read, asked.wheel, "the operator's file is read");
+    assert_eq!(
+        read.file_name(),
+        asked.wheel.file_name(),
+        "pip reads a wheel's name"
+    );
+    assert_eq!(std::fs::read(seen).unwrap(), b"the wheel's bytes");
+    assert!(!read.exists(), "the copy is removed with the install");
+}
+
+#[tokio::test]
 async fn what_an_install_that_was_killed_left_is_swept_by_the_next() {
     let dir = tempfile::tempdir().unwrap();
     let python = fake_python(dir.path(), &facts("3, 14, 0", "/usr"), DESCRIBED, 0);
@@ -219,8 +249,13 @@ fn wheel(
          \x20w.writestr('{name}-0.1.0.dist-info/RECORD', '')\n",
         built = built.display().to_string()
     );
+    // Regular files, executable: pip installs a script executable only so.
     for (file, text) in files {
-        writeln!(script, " w.writestr({file:?}, {text:?})").unwrap();
+        writeln!(
+            script,
+            " i = zipfile.ZipInfo({file:?})\n i.external_attr = 0o100755 << 16\n w.writestr(i, {text:?})"
+        )
+        .unwrap();
     }
     let made = std::process::Command::new(python)
         .arg("-c")
@@ -298,6 +333,19 @@ async fn a_wheel_installs_as_a_directory_connector_with_its_launcher() {
     assert!(launcher.contains("from tickets import Tickets"));
     let recorded = std::fs::read_to_string(tree.join("rdlt-connector.id")).unwrap();
     assert_eq!(recorded, "io.example.tickets\n");
+    let imported = std::process::Command::new(tree.join("bin/python"))
+        .args(["-I", "-c", "import tickets"])
+        .status()
+        .unwrap();
+    assert!(
+        imported.success(),
+        "the tree's interpreter imports the wheel's package"
+    );
+    let pip = walkdir::WalkDir::new(&tree)
+        .into_iter()
+        .map(Result::unwrap)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("pip"));
+    assert!(pip.is_none(), "the tree holds {pip:?}");
     let executable = tree.join("bin/rdlt-connector").metadata().unwrap();
     assert_eq!(executable.permissions().mode() & 0o777, 0o755);
     for entry in walkdir::WalkDir::new(&tree).follow_links(false) {
@@ -382,10 +430,14 @@ async fn a_requirements_file_installs_only_what_it_hashes_and_all_that_is_needed
     };
     let dir = tempfile::tempdir().unwrap();
     let connectors = dir.path().join("connectors");
-    let dependency = wheel(dir.path(), &python, "needed", &[], "", &[]);
+    // Where pip finds the dependency, which only the first requirements below hash.
+    let found = dir.path().join("found");
+    std::fs::create_dir(&found).unwrap();
+    let dependency = wheel(&found, &python, "needed", &[], "", &[]);
+    // No index is asked for what a file leaves out.
     let requirements = |name: &str, text: &str| {
         let path = dir.path().join(name);
-        std::fs::write(&path, text).unwrap();
+        std::fs::write(&path, format!("--no-index\n{text}")).unwrap();
         Some(path)
     };
     let hashed = requirements("hashed.txt", &pinned("needed", &dependency));
@@ -393,19 +445,119 @@ async fn a_requirements_file_installs_only_what_it_hashes_and_all_that_is_needed
     let tree = installed(&python, made.clone(), hashed, &connectors)
         .await
         .unwrap();
-    assert!(tree.join("bin/rdlt-connector").is_file());
+    let imported = std::process::Command::new(tree.join("bin/python"))
+        .args(["-I", "-c", "import tickets, needed"])
+        .status()
+        .unwrap();
+    assert!(
+        imported.success(),
+        "the tree holds the wheel and what it needs"
+    );
     let uri = format!("file://{}", dependency.display());
-    let unhashed = requirements("unhashed.txt", &format!("needed @ {uri}\n"));
-    let refused = installed(&python, made.clone(), unhashed, &connectors)
-        .await
-        .unwrap_err();
-    assert_eq!(refused.code(), "pip_failed", "{refused}");
     let other = wheel(dir.path(), &python, "other", &[], "", &[]);
-    let incomplete = requirements("incomplete.txt", &pinned("other", &other));
-    let refused = installed(&python, made, incomplete, &connectors)
+    let links = format!("--find-links {}\n", found.display());
+    for (name, text) in [
+        ("unhashed.txt", format!("needed @ {uri}\n")),
+        ("left-out.txt", pinned("other", &other)),
+        ("found.txt", format!("{links}{}", pinned("other", &other))),
+    ] {
+        let refused = installed(
+            &python,
+            made.clone(),
+            requirements(name, &text),
+            &connectors,
+        )
         .await
         .unwrap_err();
-    assert_eq!(refused.code(), "pip_failed", "{refused}");
+        assert_eq!(refused.code(), "pip_failed", "{name}: {refused}");
+        let other = std::process::Command::new(tree.join("bin/python"))
+            .args(["-I", "-c", "import other"])
+            .status()
+            .unwrap();
+        assert!(!other.success(), "{name}: the tree in place changed");
+    }
+}
+
+/// A way a wheel's files could run as its installer: its name, the files that plant it, how an
+/// interpreter of the tree that holds them runs them, and the refusal an install answers it with,
+/// where it is refused.
+#[derive(Debug)]
+struct Route {
+    name: &'static str,
+    files: Vec<(String, String)>,
+    running: &'static [&'static str],
+    refused: Option<&'static str>,
+}
+
+/// Every way a wheel's files could run as its installer, each writing `marker(name)` when it runs.
+fn routes(marker: &dyn Fn(&str) -> PathBuf) -> Vec<Route> {
+    let writes = |name: &str| {
+        format!(
+            "import pathlib; pathlib.Path({:?}).write_text('ran')\n",
+            marker(name).display().to_string()
+        )
+    };
+    let file = |path: &str, text: String| (path.to_owned(), text);
+    vec![
+        // `site` runs a `.pth` file's import lines whenever an interpreter of the environment
+        // starts, and imports `sitecustomize`.
+        Route {
+            name: "pth",
+            files: vec![file("tickets-startup.pth", writes("pth"))],
+            running: &["-I", "-c", "pass"],
+            refused: None,
+        },
+        Route {
+            name: "sitecustomize",
+            files: vec![file("sitecustomize.py", writes("sitecustomize"))],
+            running: &["-I", "-c", "pass"],
+            refused: None,
+        },
+        // A package of pip's name, over the environment's own pip where it has one.
+        Route {
+            name: "pip",
+            files: vec![
+                file("pip/__init__.py", writes("pip")),
+                file("pip/__main__.py", writes("pip")),
+            ],
+            running: &["-I", "-m", "pip"],
+            refused: None,
+        },
+        // A module pip's own code imports where it finds one.
+        Route {
+            name: "attr",
+            files: vec![file("attr.py", writes("attr"))],
+            running: &["-I", "-c", "import attr"],
+            refused: None,
+        },
+        // A script over the environment's interpreter.
+        Route {
+            name: "interpreter",
+            files: vec![file(
+                "tickets-0.1.0.data/scripts/python",
+                format!("#!/bin/sh\ntouch '{}'\n", marker("interpreter").display()),
+            )],
+            running: &["-I", "-c", "pass"],
+            refused: Some("replaces_environment"),
+        },
+    ]
+}
+
+/// Asserts that the interpreter of the tree at `tree` runs each of `routes`, which its install did
+/// not: what each planted is in place.
+fn run_by_the_tree(tree: &Path, routes: &[Route], marker: &dyn Fn(&str) -> PathBuf) {
+    for route in routes {
+        std::fs::remove_file(marker(route.name)).ok();
+        let started = std::process::Command::new(tree.join("bin/python"))
+            .args(route.running)
+            .output()
+            .unwrap();
+        assert!(
+            marker(route.name).exists(),
+            "{}: the tree's interpreter does not run it: {started:?}",
+            route.name
+        );
+    }
 }
 
 #[tokio::test]
@@ -413,29 +565,51 @@ async fn no_code_of_the_wheel_runs_while_it_is_installed() {
     let Some(python) = system_python() else {
         return;
     };
-    let dir = tempfile::tempdir().unwrap();
-    let connectors = dir.path().join("connectors");
-    let marker = dir.path().join("ran");
-    // `site` runs a `.pth` file's import lines whenever an interpreter of the environment starts.
-    let startup = format!(
-        "import pathlib; pathlib.Path({:?}).write_text('ran')\n",
-        marker.display().to_string()
-    );
-    let files = [("tickets-startup.pth", startup.as_str())];
-    let built = wheel(dir.path(), &python, "tickets", &[], TICKETS, &files);
-    installed(&python, built.clone(), None, &connectors)
-        .await
-        .unwrap();
-    assert!(!marker.exists(), "the wheel's .pth ran as its installer");
-    let other = wheel(dir.path(), &python, "other", &[], "", &[]);
-    let requirements = dir.path().join("requirements.txt");
-    std::fs::write(&requirements, pinned("other", &other)).unwrap();
-    installed(&python, built, Some(requirements), &connectors)
-        .await
-        .unwrap();
+    let (_dir, dir) = resolved();
+    let connectors = dir.join("connectors");
+    let marker = |name: &str| dir.join(format!("ran-{name}"));
+    let other = wheel(&dir, &python, "other", &[], "", &[]);
+    let requirements = dir.join("requirements.txt");
+    let text = format!("--no-index\n{}", pinned("other", &other));
+    std::fs::write(&requirements, text).unwrap();
+    let (refused, taken): (Vec<Route>, Vec<Route>) = routes(&marker)
+        .into_iter()
+        .partition(|route| route.refused.is_some());
+    // One wheel of every route an install takes, and one of each route it refuses.
+    let mut planted = vec![taken];
+    planted.extend(refused.into_iter().map(|route| vec![route]));
+    let mut ran = Vec::new();
+    for routes in &planted {
+        let files: Vec<(&str, &str)> = routes
+            .iter()
+            .flat_map(|route| &route.files)
+            .map(|(path, text)| (path.as_str(), text.as_str()))
+            .collect();
+        let refusal = routes.first().and_then(|route| route.refused);
+        let built = wheel(&dir, &python, "tickets", &[], TICKETS, &files);
+        for asked in [None, Some(requirements.clone())] {
+            let with = if asked.is_some() { "with" } else { "without" };
+            let answered = installed(&python, built.clone(), asked, &connectors).await;
+            for route in routes.iter().filter(|route| marker(route.name).exists()) {
+                ran.push(format!("{} {with} requirements", route.name));
+            }
+            match (answered, refusal) {
+                (Ok(tree), None) => run_by_the_tree(&tree, routes, &marker),
+                (Err(error), Some(code)) if error.code() == code => {}
+                (answered, refusal) => {
+                    let names: Vec<&str> = routes.iter().map(|route| route.name).collect();
+                    let said = format!("{answered:?}, not {refusal:?}");
+                    ran.push(format!("{names:?} {with} requirements: {said}"));
+                }
+            }
+            for route in routes {
+                std::fs::remove_file(marker(route.name)).ok();
+            }
+        }
+    }
     assert!(
-        !marker.exists(),
-        "the wheel's .pth ran as its installer, with requirements"
+        ran.is_empty(),
+        "the wheel's code ran as its installer: {ran:#?}"
     );
 }
 

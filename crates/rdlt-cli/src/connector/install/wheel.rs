@@ -1,7 +1,7 @@
-//! The wheel an install is asked for: an existing wheel file, read from its archive, never
-//! imported or run.
+//! The wheel an install is asked for: an existing wheel file, copied once, and the copy read from
+//! its archive, never imported or run.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -45,16 +45,31 @@ impl Wheel {
     }
 }
 
-/// `path` as an absolute path, once it is seen to be an existing regular file named `*.whl` that
-/// can be read: nothing else reaches pip, which would take a name for a package of an index, or a
-/// leading `-` for one of its options.
-pub(super) async fn checked(path: &Path) -> Result<PathBuf, InstallError> {
-    let path = path.to_owned();
-    blocking(move || checked_now(&path)).await
+/// A copy of the wheel an install is asked for, in a directory of its own that is removed when it
+/// drops: the operator's file is read once, and the copy is what is described, hashed and
+/// installed.
+pub(super) struct Held {
+    directory: tempfile::TempDir,
+    name: OsString,
 }
 
-/// [`checked`], on a thread that may block.
-fn checked_now(path: &Path) -> Result<PathBuf, InstallError> {
+impl Held {
+    /// The copy, named as the wheel is, since pip reads a wheel's name.
+    pub(super) fn path(&self) -> PathBuf {
+        self.directory.path().join(&self.name)
+    }
+}
+
+/// A copy of the wheel at `path`, once it is seen to be an existing regular file named `*.whl` that
+/// can be read: nothing else reaches pip, which would take a name for a package of an index, or a
+/// leading `-` for one of its options.
+pub(super) async fn held(path: &Path) -> Result<Held, InstallError> {
+    let path = path.to_owned();
+    blocking(move || held_now(&path)).await
+}
+
+/// [`held`], on a thread that may block.
+fn held_now(path: &Path) -> Result<Held, InstallError> {
     let refused = |why: &str| InstallError::Wheel {
         path: path.to_owned(),
         why: why.to_owned(),
@@ -71,11 +86,27 @@ fn checked_now(path: &Path) -> Result<PathBuf, InstallError> {
     if !metadata.is_file() {
         return Err(refused("it is not a regular file"));
     }
-    if absolute.extension() != Some(OsStr::new("whl")) {
+    let whl = absolute.extension() == Some(OsStr::new("whl"));
+    let Some(name) = absolute.file_name().filter(|_| whl) else {
         return Err(refused("its name does not end in .whl"));
-    }
-    std::fs::File::open(&absolute).map_err(io_error(format!("reading {}", path.display())))?;
-    Ok(absolute)
+    };
+    let reading = || io_error(format!("reading {}", path.display()));
+    let mut wheel = std::fs::File::open(&absolute).map_err(reading())?;
+    // Absolute, as a file's URL is.
+    let temporary = std::path::absolute(std::env::temp_dir())
+        .map_err(io_error("resolving the directory for temporary files"))?;
+    let directory = tempfile::Builder::new()
+        .prefix("rdlt-install-")
+        .tempdir_in(temporary)
+        .map_err(io_error("making a directory for the wheel's copy"))?;
+    let held = Held {
+        directory,
+        name: name.to_owned(),
+    };
+    let mut copy =
+        std::fs::File::create_new(held.path()).map_err(io_error("making the wheel's copy"))?;
+    io::copy(&mut wheel, &mut copy).map_err(reading())?;
+    Ok(held)
 }
 
 /// What the wheel at `path` says of itself, read by `python`.

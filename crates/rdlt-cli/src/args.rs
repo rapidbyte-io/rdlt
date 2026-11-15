@@ -236,11 +236,13 @@ pub(crate) enum ConnectorAction {
     ///
     /// The environment is made in the first connector directory with Python 3.11 or later, and
     /// holds the connector's packages and its launcher, `bin/rdlt-connector`; none of the
-    /// connector's code runs while it is installed. Installing a connector again replaces its
-    /// tree, and only a tree an install of that connector made: a pipeline running it then fails,
-    /// its files gone with the tree replaced, and is run again once the install is done. The
-    /// tree's `bin/pip` and other scripts name the directory the environment was made in, so
-    /// run its packages' tools as `<tree>/bin/python -m pip`. While it runs, an install holds
+    /// connector's code runs while it is installed, since pip runs from an environment of its own
+    /// and reads none of its configuration. Installing a connector again replaces its tree, in one
+    /// step, and only a tree an install of that connector made: a pipeline running it then fails,
+    /// its files gone with the tree replaced, and is run again once the install is done. The tree
+    /// holds no pip, and anything run from it by hand, its interpreter included, runs the
+    /// connector's code with your access, outside any sandbox: its packages are read as files,
+    /// `lib/python3.N/site-packages/*.dist-info`. While it runs, an install holds
     /// `.rdlt-install.lock` in the connector directory, a file of its own, and it records the
     /// connector's id in the tree as `rdlt-connector.id`.
     Install(InstallArgs),
@@ -258,6 +260,9 @@ pub(crate) struct InstallArgs {
     pub(crate) python: Option<PathBuf>,
     /// A requirements file holding, each with its hash, every package the wheel needs: only
     /// those are installed.
+    ///
+    /// Any index but pip's default, and any links, are named in it, since pip reads none of its
+    /// own configuration.
     #[arg(long, value_name = "FILE")]
     pub(crate) requirements: Option<PathBuf>,
 }
