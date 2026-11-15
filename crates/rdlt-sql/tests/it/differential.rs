@@ -3,9 +3,13 @@
 //! none, for the listed expressions and for drawn queries, on each batch whole and cut as the
 //! stage cuts it.
 
-use arrow_array::{Array as _, RecordBatch};
+use std::sync::Arc;
+
+use arrow_array::{Array, ArrayRef, RecordBatch, StringArray};
 use arrow_schema::{DataType, Fields};
+use arrow_select::concat::concat;
 use arrow_select::filter::{filter_record_batch, prep_null_mask_filter};
+use datafusion::arrow::compute;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use proptest::prelude::*;
@@ -59,9 +63,48 @@ fn typed(fields: &Fields) -> Typed {
         .collect()
 }
 
+/// Why the rows of `ours` differ from those of `theirs`, each column's values compared as Arrow
+/// compares them, a null apart from every value and text byte by byte in whatever layout.
+fn rows_differ(ours: &[RecordBatch], theirs: &[RecordBatch]) -> Option<String> {
+    if columns(ours) == columns(theirs) {
+        return None;
+    }
+    let (ours, theirs) = (shown(ours), shown(theirs));
+    Some(format!("rows: ours\n{ours}\nDataFusion's\n{theirs}"))
+}
+
+/// Each column of `batches`, their rows together and text laid out as `Utf8`: none where they hold
+/// no row.
+fn columns(batches: &[RecordBatch]) -> Vec<ArrayRef> {
+    let held: Vec<&RecordBatch> = batches
+        .iter()
+        .filter(|batch| batch.num_rows() > 0)
+        .collect();
+    let Some(first) = held.first() else {
+        return Vec::new();
+    };
+    let columns = (0..first.num_columns()).map(|column| {
+        let parts: Vec<&dyn Array> = held
+            .iter()
+            .map(|batch| batch.column(column).as_ref())
+            .collect();
+        let column = concat(&parts).expect("a column's parts are of one type");
+        match column.data_type() {
+            DataType::LargeUtf8 | DataType::Utf8View => {
+                compute::cast(&column, &DataType::Utf8).expect("text casts to text")
+            }
+            _ => column,
+        }
+    });
+    columns.collect()
+}
+
 /// What `text` gives over `batch` and its columns' types, from DataFusion's executor, or why it
 /// refused it.
-async fn executed(context: &SessionContext, text: &str) -> Result<(String, Typed), String> {
+async fn executed(
+    context: &SessionContext,
+    text: &str,
+) -> Result<(Vec<RecordBatch>, Typed), String> {
     let frame = context.sql(text).await.map_err(|error| error.to_string())?;
     let physical = frame.create_physical_plan().await;
     let physical = physical.map_err(|error| error.to_string())?;
@@ -69,14 +112,14 @@ async fn executed(context: &SessionContext, text: &str) -> Result<(String, Typed
     let task = context.task_ctx();
     let batches = datafusion::physical_plan::collect(physical, task).await;
     let batches = batches.map_err(|error| error.to_string())?;
-    Ok((shown(&batches), types))
+    Ok((batches, types))
 }
 
-/// What rdlt-sql gives: its rows as [`shown`] prints them, each column's type and whether its
-/// schema allows nulls, and whether each column holds one.
+/// What rdlt-sql gives: its rows, each column's type and whether its schema allows nulls, and
+/// whether each column holds one.
 #[derive(Debug)]
 struct Evaluated {
-    shown: String,
+    outputs: Vec<RecordBatch>,
     types: Typed,
     nulls: Vec<bool>,
 }
@@ -86,17 +129,17 @@ struct Evaluated {
 ///
 /// Either planner may prove a column holds no null where the other does not, so neither's
 /// nullability binds the other's: rdlt-sql's need only be true of what it gives.
-fn differs(ours: &Evaluated, theirs: &(String, Typed)) -> Option<String> {
-    let (shown, types) = theirs;
-    if ours.shown != *shown {
-        return Some(format!("rows: ours\n{}\nDataFusion's\n{shown}", ours.shown));
-    }
+fn differs(ours: &Evaluated, theirs: &(Vec<RecordBatch>, Typed)) -> Option<String> {
+    let (batches, types) = theirs;
     let ours_types = ours.types.iter().map(|(data_type, _)| data_type);
     if !ours_types.eq(types.iter().map(|(data_type, _)| data_type)) {
         return Some(format!(
             "types: ours {:?}, DataFusion's {types:?}",
             ours.types
         ));
+    }
+    if let Some(rows) = rows_differ(&ours.outputs, batches) {
+        return Some(rows);
     }
     let said = ours.types.iter().map(|(_, nullable)| *nullable);
     let unsound = said
@@ -149,10 +192,11 @@ fn evaluated(parts: &[RecordBatch], text: &str) -> Result<Evaluated, String> {
         let mut columns = outputs.iter().map(|output| output.column(column));
         columns.any(|column| column.null_count() > 0)
     });
+    let nulls = nulls.collect();
     Ok(Evaluated {
-        shown: shown(&outputs),
+        outputs,
         types: typed(output.fields()),
-        nulls: nulls.collect(),
+        nulls,
     })
 }
 
@@ -195,9 +239,26 @@ async fn a_concat_datafusion_folds_to_no_arguments_gives_what_the_query_folded_b
             .expect("the query as folded runs");
         for parts in cuts(&batch) {
             let ours = evaluated(&parts, text).expect("the query as written runs");
-            assert_eq!(ours.shown, expected, "seed {seed}, {} parts", parts.len());
+            let difference = rows_differ(&ours.outputs, &expected);
+            assert!(
+                difference.is_none(),
+                "seed {seed}, {} parts: {difference:?}",
+                parts.len()
+            );
         }
     }
+}
+
+#[test]
+fn rows_compared_tell_a_null_from_an_empty_text_and_trailing_spaces_from_none() {
+    let rows = |texts: Vec<Option<&str>>| {
+        let column = Arc::new(StringArray::from(texts)) as ArrayRef;
+        vec![RecordBatch::try_from_iter([("y", column)]).expect("one column")]
+    };
+    let spaced = rows(vec![Some("a "), Some("bcd")]);
+    assert!(rows_differ(&rows(vec![None]), &rows(vec![Some("")])).is_some());
+    assert!(rows_differ(&spaced, &rows(vec![Some("a"), Some("bcd")])).is_some());
+    assert!(rows_differ(&spaced, &spaced).is_none());
 }
 
 proptest! {
