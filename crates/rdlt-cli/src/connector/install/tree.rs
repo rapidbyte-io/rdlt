@@ -11,6 +11,7 @@ use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt 
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{FlockOperation, RenameFlags};
+use rustix::io::Errno;
 
 use super::{InstallError, blocking, io_error};
 
@@ -129,7 +130,7 @@ fn locked_now(connectors: &Path) -> Result<File, InstallError> {
         .map_err(io_error(format!("opening {}", path.display())))?;
     match rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => Ok(file),
-        Err(rustix::io::Errno::WOULDBLOCK) => Err(InstallError::InstallRunning {
+        Err(Errno::WOULDBLOCK) => Err(InstallError::InstallRunning {
             connectors: connectors.to_owned(),
         }),
         Err(error) => Err(io_error(format!("locking {}", path.display()))(
@@ -186,40 +187,97 @@ fn replaceable_now(tree: &Path, id: &str) -> Result<(), InstallError> {
 
 /// What an install makes beside the trees of a connector directory while it runs, in a directory
 /// of its own that is removed when it drops: the tree, the environment pip runs from, and the
-/// wheel's requirements file.
-pub(super) struct Staging(tempfile::TempDir);
+/// requirements file pip reads.
+pub(super) struct Staging {
+    directory: tempfile::TempDir,
+    /// The connector directory's lock, held until what was staged is removed.
+    _locked: File,
+}
 
 impl Staging {
+    /// The directory itself, where the install's processes run.
+    pub(super) fn path(&self) -> &Path {
+        self.directory.path()
+    }
+
     /// The tree being made.
     pub(super) fn tree(&self) -> PathBuf {
-        self.0.path().join("tree")
+        self.path().join("tree")
     }
 
     /// The environment pip runs from.
     pub(super) fn installer(&self) -> PathBuf {
-        self.0.path().join("installer")
+        self.path().join("installer")
     }
 
-    /// The requirements file that names the wheel by its hash.
-    pub(super) fn pinned(&self) -> PathBuf {
-        self.0.path().join("pinned.txt")
+    /// The requirements file pip reads.
+    pub(super) fn requirements(&self) -> PathBuf {
+        self.path().join("requirements.txt")
     }
 }
 
-/// A [`Staging`] beside the trees of `connectors`.
-pub(super) async fn staging(connectors: &Path) -> Result<Staging, InstallError> {
-    let connectors = connectors.to_owned();
+/// A [`Staging`] beside the trees of `connectors`, holding their lock, `locked`, until it is
+/// removed: once the tree at `tree` is there to replace, it is seen that the file system can
+/// exchange two names in one step, before anything is made.
+pub(super) async fn staging(
+    connectors: &Path,
+    locked: File,
+    tree: &Path,
+) -> Result<Staging, InstallError> {
+    let (connectors, tree) = (connectors.to_owned(), tree.to_owned());
     blocking(move || {
-        tempfile::Builder::new()
+        let directory = tempfile::Builder::new()
             .prefix(STAGED)
             .tempdir_in(&connectors)
-            .map(Staging)
             .map_err(io_error(format!(
                 "making a directory in {}",
                 connectors.display()
-            )))
+            )))?;
+        exchangeable(directory.path(), &tree)?;
+        Ok(Staging {
+            directory,
+            _locked: locked,
+        })
     })
     .await
+}
+
+/// Refuses, where the tree at `tree` is there to replace, a file system that cannot exchange two
+/// names of `directory` in one step.
+fn exchangeable(directory: &Path, tree: &Path) -> Result<(), InstallError> {
+    if tree.symlink_metadata().is_err() {
+        return Ok(());
+    }
+    let (one, other) = (directory.join("one"), directory.join("other"));
+    for made in [&one, &other] {
+        std::fs::create_dir(made).map_err(io_error(format!(
+            "making a directory in {}",
+            directory.display()
+        )))?;
+    }
+    exchanged(&one, &other, tree)?;
+    for made in [&one, &other] {
+        std::fs::remove_dir(made).map_err(io_error(format!("removing {}", made.display())))?;
+    }
+    Ok(())
+}
+
+/// Exchanges the names `one` and `other`, as replacing the tree at `tree` does: a file system that
+/// cannot is told from any other failure.
+fn exchanged(one: &Path, other: &Path, tree: &Path) -> Result<(), InstallError> {
+    let cwd = rustix::fs::CWD;
+    rustix::fs::renameat_with(cwd, one, cwd, other, RenameFlags::EXCHANGE).map_err(|error| {
+        let unable = [Errno::INVAL, Errno::OPNOTSUPP, Errno::NOTSUP, Errno::NOSYS];
+        if unable.contains(&error) {
+            InstallError::Unexchangeable {
+                tree: tree.to_owned(),
+                source: error.into(),
+            }
+        } else {
+            let context = format!("exchanging {} with {}", one.display(), other.display());
+            io_error(context)(error.into())
+        }
+    })
 }
 
 /// Writes `launcher` and the id of its connector into the environment at `environment`, and
@@ -288,21 +346,15 @@ fn replaced(staging: Staging, tree: &Path) -> Result<Option<String>, InstallErro
         return Ok(left(staging, tree));
     }
     // The two change places at once, so one of them is in place throughout.
-    let cwd = rustix::fs::CWD;
-    rustix::fs::renameat_with(cwd, &staged, cwd, tree, RenameFlags::EXCHANGE).map_err(|error| {
-        let context = format!(
-            "putting the environment in place of {} in one step, which its file system must allow",
-            tree.display()
-        );
-        io_error(context)(error.into())
-    })?;
+    exchanged(&staged, tree, tree)?;
     Ok(left(staging, tree))
 }
 
-/// Removes `staging`, all but the tree now at `tree`; why it is left, where it could not be.
+/// Removes `staging`, all but the tree now at `tree`, and then lets go of the lock it holds; why
+/// it is left, where it could not be removed.
 fn left(staging: Staging, tree: &Path) -> Option<String> {
-    let kept = staging.0.path().to_owned();
-    staging.0.close().err().map(|error| {
+    let kept = staging.path().to_owned();
+    staging.directory.close().err().map(|error| {
         format!(
             "what the install made beside {} is left at {}, which the next install removes: \
              {error}",

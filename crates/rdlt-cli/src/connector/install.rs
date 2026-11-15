@@ -2,12 +2,16 @@
 //! operator-owned environment with its launcher, made without running any of the connector's
 //! code.
 //!
-//! No interpreter the install starts imports from the tree it makes. The wheel is copied once and
-//! read from its archive by the base interpreter, with no `site`; pip runs from an environment of
-//! its own beside the tree, binaries only, so no build backend runs, and installs into the tree as
-//! its prefix; and the tree is then read as data alone.
+//! No interpreter the install starts imports from the tree it makes, and nothing pip installs is
+//! built from its source. The wheel is copied once and read from its archive by the base
+//! interpreter, with no `site`, and refused where it needs a package by a URL; a requirements file
+//! is read in rdlt's own grammar, wheels alone, and written again for pip, each line seen to read
+//! for pip as the line checked; pip runs from an environment of its own beside the tree, takes
+//! wheels alone from an index, and installs into the tree as its prefix; and the tree is then read
+//! as data alone.
 
 mod environment;
+mod requirements;
 #[cfg(test)]
 mod tests;
 mod tree;
@@ -58,13 +62,31 @@ pub(crate) enum InstallError {
          its connectors could not start one installed with it: install it with a system Python, \
          `--python /usr/bin/python3.N` (3.11 or later), or serve it without installing it, from \
          an environment holding its wheel, with `python -I -c '{serving}' --listen ADDRESS` and \
-         the TLS flags, the pipeline naming that endpoint",
+         the TLS flags, the pipeline naming that endpoint, which runs the connector's code with \
+         your access, outside any sandbox",
         path.display(),
         Bubblewrap::SYSTEM.join(", ")
     )]
     InterpreterUnreachable { path: PathBuf, serving: String },
+    #[error(
+        "replacing {} needs a file system that exchanges two names in one step, which this one \
+         does not: remove {} and install again",
+        tree.display(),
+        tree.display()
+    )]
+    Unexchangeable {
+        tree: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("{} could not make the connector's environment", python.display())]
     VenvFailed { python: PathBuf },
+    #[error("{} line {line} is refused: {why}", path.display())]
+    Requirements {
+        path: PathBuf,
+        line: usize,
+        why: requirements::Refused,
+    },
     #[error("pip could not install the wheel and the packages it needs")]
     PipFailed,
     #[error(
@@ -115,6 +137,7 @@ impl InstallError {
             Self::InterpreterTooOld { .. } => "interpreter_too_old",
             Self::InterpreterUnreachable { .. } => "interpreter_unreachable",
             Self::VenvFailed { .. } => "venv_failed",
+            Self::Requirements { .. } => "requirements",
             Self::PipFailed => "pip_failed",
             Self::ReplacesEnvironment { .. } => "replaces_environment",
             Self::EntryPoints { .. } | Self::EntryPointTarget { .. } => "entry_points",
@@ -123,7 +146,7 @@ impl InstallError {
             Self::ShebangWhitespace { .. } => "shebang_whitespace",
             Self::NameTaken { .. } => "name_taken",
             Self::InstallRunning { .. } => "install_running",
-            Self::Io { .. } => "io",
+            Self::Io { .. } | Self::Unexchangeable { .. } => "io",
         }
     }
 }
@@ -146,7 +169,8 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
 /// same connector.
 ///
 /// Only a copy of an existing wheel file reaches pip, named by its `file:` URL, which no index is
-/// asked for; with requirements, `--require-hashes` covers every package, the wheel among them.
+/// asked for; with requirements, read in rdlt's grammar, `--require-hashes` covers every package,
+/// the wheel among them.
 ///
 /// Dropped before it ends, as it is when a signal ends the command line, it kills the processes
 /// it started, every process of their groups, and removes what it was making; once its tree is
@@ -158,12 +182,29 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
 /// then, but its lock file.
 pub(crate) async fn install(installation: &Installation) -> Result<Installed, InstallError> {
     let held = wheel::held(&installation.wheel).await?;
-    let python = installation
+    let requirements = match &installation.requirements {
+        Some(path) => Some(requirements::read(path).await?),
+        None => None,
+    };
+    let named = installation
         .python
         .clone()
         .unwrap_or_else(|| PathBuf::from("python3"));
+    // A path is taken from here: the install's processes run in a directory of their own.
+    let python = if named.components().count() > 1 {
+        std::path::absolute(&named).map_err(io_error(format!("resolving {}", named.display())))?
+    } else {
+        named
+    };
     let facts = environment::facts(&python).await?;
-    let described = wheel::described(&python, &held.path()).await?;
+    let described = wheel::described(&python, &held.path(), &installation.wheel).await?;
+    let requirements = match requirements {
+        Some(mut lines) => {
+            lines.push(requirements::wheel_line(&described, &installation.wheel)?);
+            Some(lines)
+        }
+        None => None,
+    };
     let (name, target) = described.entry_point()?;
     let id = rdlt::ConnectorId::parse(name).map_err(|source| InstallError::ConnectorId {
         name: name.to_owned(),
@@ -175,14 +216,13 @@ pub(crate) async fn install(installation: &Installation) -> Result<Installed, In
     let last = id.as_str().rsplit('.').next().unwrap_or(id.as_str());
     let at = connectors.join(format!("rdlt-connector-{last}"));
     let launcher = tree::launcher(&at, module, attribute)?;
-    let _locked = tree::locked(&connectors).await?;
+    let locked = tree::locked(&connectors).await?;
     tree::swept(&connectors).await;
     tree::replaceable(&at, id.as_str()).await?;
-    let staging = tree::staging(&connectors).await?;
-    let requirements = installation.requirements.as_deref();
+    let staging = tree::staging(&connectors, locked, &at).await?;
     let made = async {
         environment::made(&python, &staging).await?;
-        environment::installed(&staging, &described, requirements).await?;
+        environment::installed(&staging, &described, requirements.as_deref()).await?;
         tree::finished(&staging.tree(), launcher, id.as_str()).await
     }
     .await;

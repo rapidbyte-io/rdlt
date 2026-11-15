@@ -9,7 +9,7 @@ use crate::support::{Scratch, output_of};
 /// An interpreter at `path` that answers the facts query with `facts`, and says of any wheel that
 /// it is one connector's.
 fn fake_python(path: &Path, facts: &str) -> PathBuf {
-    let described = r#"{"name": "tickets", "uri": "file:///absent.whl", "sha256": "00", "entry_points": [["io.example.tickets", "tickets:Tickets"]]}"#;
+    let described = r#"{"name": "tickets", "uri": "file:///absent.whl", "sha256": "00", "entry_points": [["io.example.tickets", "tickets:Tickets"]], "requires": []}"#;
     let script =
         format!("#!/bin/sh\nif [ \"$#\" = 5 ]; then echo '{described}'; else echo '{facts}'; fi\n");
     std::fs::write(path, script).expect("the script writes");
@@ -32,9 +32,26 @@ fn fake_python_making(path: &Path, making: &str) -> PathBuf {
     python
 }
 
-/// `connector install` of `wheel` with `python`, as JSON, its host the scratch's XDG directories'.
-async fn installing(scratch: &Scratch, wheel: &Path, python: &Path) -> std::process::Output {
+/// `connector install`, as JSON, its host the scratch's XDG directories': what it asks a network
+/// for goes through a proxy that answers nothing, so no install here reaches one.
+fn install_command(scratch: &Scratch) -> tokio::process::Command {
     let mut install = scratch.bare_command(&["connector", "install", "--output", "json"]);
+    for proxy in [
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+    ] {
+        install.env(proxy, "http://127.0.0.1:9");
+    }
+    install.env_remove("no_proxy").env_remove("NO_PROXY");
+    install
+}
+
+/// `connector install` of `wheel` with `python`, as [`install_command`] runs it.
+async fn installing(scratch: &Scratch, wheel: &Path, python: &Path) -> std::process::Output {
+    let mut install = install_command(scratch);
     install.arg(wheel).arg("--python").arg(python);
     output_of(&mut install).await
 }
@@ -96,12 +113,13 @@ fn system_python() -> Option<PathBuf> {
     usable.then_some(python)
 }
 
-/// A pure-Python wheel at `wheel`, of one connector entry point, made by `python`'s zipfile.
-fn made_wheel(python: &Path, wheel: &Path) {
+/// A pure-Python wheel at `wheel`, of one connector entry point, needing `requires`, made by
+/// `python`'s zipfile.
+fn made_wheel(python: &Path, wheel: &Path, requires: &str) {
     let script = format!(
         "import zipfile\nwith zipfile.ZipFile({:?}, 'w') as w:\n\
          \x20w.writestr('tickets/__init__.py', 'class Tickets: pass\\n')\n\
-         \x20w.writestr('tickets-0.1.0.dist-info/METADATA', 'Metadata-Version: 2.1\\nName: tickets\\nVersion: 0.1.0\\n')\n\
+         \x20w.writestr('tickets-0.1.0.dist-info/METADATA', 'Metadata-Version: 2.1\\nName: tickets\\nVersion: 0.1.0\\n{requires}')\n\
          \x20w.writestr('tickets-0.1.0.dist-info/WHEEL', 'Wheel-Version: 1.0\\nGenerator: test\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n')\n\
          \x20w.writestr('tickets-0.1.0.dist-info/entry_points.txt', '[rdlt.connectors]\\nio.example.tickets = tickets:Tickets\\n')\n\
          \x20w.writestr('tickets-0.1.0.dist-info/RECORD', '')\n",
@@ -124,7 +142,7 @@ async fn a_wheel_installs_into_the_default_connector_directory_made_for_it() {
     };
     let scratch = Scratch::new();
     let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
-    made_wheel(&python, &wheel);
+    made_wheel(&python, &wheel, "");
     let installed = installing(&scratch, &wheel, &python).await;
     assert_eq!(installed.status.code(), Some(0), "{installed:?}");
     let said: serde_json::Value = serde_json::from_slice(&installed.stdout).unwrap();
@@ -145,7 +163,7 @@ async fn an_install_reads_none_of_pip_s_configuration() {
     };
     let scratch = Scratch::new();
     let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
-    made_wheel(&python, &wheel);
+    made_wheel(&python, &wheel, "");
     let (configured, set) = (
         scratch.path().join("configured"),
         scratch.path().join("set"),
@@ -156,7 +174,7 @@ async fn an_install_reads_none_of_pip_s_configuration() {
         format!("[install]\ntarget = {}\n", configured.display()),
     )
     .unwrap();
-    let mut install = scratch.bare_command(&["connector", "install", "--output", "json"]);
+    let mut install = install_command(&scratch);
     install
         .arg(&wheel)
         .arg("--python")
@@ -178,6 +196,153 @@ async fn an_install_reads_none_of_pip_s_configuration() {
         .output()
         .expect("the tree's interpreter runs");
     assert!(imported.status.success(), "{imported:?}");
+}
+
+/// A pure-Python wheel of the distribution `name` 0.1.0 in `dir`, needing `requires`, made by
+/// `python`'s zipfile.
+fn made_dependency(python: &Path, dir: &Path, name: &str, requires: &str) -> PathBuf {
+    let wheel = dir.join(format!("{name}-0.1.0-py3-none-any.whl"));
+    let script = format!(
+        "import zipfile\nwith zipfile.ZipFile({:?}, 'w') as w:\n\
+         \x20w.writestr('{name}/__init__.py', '')\n\
+         \x20w.writestr('{name}-0.1.0.dist-info/METADATA', 'Metadata-Version: 2.1\\nName: {name}\\nVersion: 0.1.0\\n{requires}')\n\
+         \x20w.writestr('{name}-0.1.0.dist-info/WHEEL', 'Wheel-Version: 1.0\\nGenerator: test\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n')\n\
+         \x20w.writestr('{name}-0.1.0.dist-info/RECORD', '')\n",
+        wheel.display().to_string()
+    );
+    let made = std::process::Command::new(python)
+        .arg("-c")
+        .arg(script)
+        .status();
+    assert!(
+        made.expect("the interpreter runs").success(),
+        "the wheel is made"
+    );
+    wheel
+}
+
+/// A source distribution of `planted` 1.0 in `dir`, whose build backend, in its tree, writes
+/// `marker` when it is imported.
+fn made_source(python: &Path, dir: &Path, marker: &Path) -> PathBuf {
+    let built = dir.join("planted-1.0.tar.gz");
+    let backend = format!(
+        "import pathlib\npathlib.Path({:?}).write_text('built')\n",
+        marker.display().to_string()
+    );
+    let project =
+        "[build-system]\nrequires = []\nbuild-backend = 'backend'\nbackend-path = ['.']\n";
+    let script = format!(
+        "import io, tarfile\nwith tarfile.open({built:?}, 'w:gz') as archive:\n\
+         \x20for name, text in [('pyproject.toml', {project:?}), ('backend.py', {backend:?}), \
+         ('PKG-INFO', 'Metadata-Version: 2.1\\nName: planted\\nVersion: 1.0\\n')]:\n\
+         \x20 data = text.encode()\n\
+         \x20 info = tarfile.TarInfo('planted-1.0/' + name)\n\
+         \x20 info.size = len(data)\n\
+         \x20 archive.addfile(info, io.BytesIO(data))\n",
+        built = built.display().to_string()
+    );
+    let made = std::process::Command::new(python)
+        .arg("-c")
+        .arg(script)
+        .status();
+    assert!(
+        made.expect("the interpreter runs").success(),
+        "the source distribution is made"
+    );
+    built
+}
+
+/// The SHA-256 digest of the file at `path`, in hex.
+fn sha256(path: &Path) -> String {
+    use sha2::Digest as _;
+    let bytes = std::fs::read(path).expect("the file reads");
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+
+#[tokio::test]
+async fn a_source_a_hashed_wheel_needs_by_its_url_is_refused_for_its_hash_unbuilt() {
+    let Some(python) = system_python() else {
+        return;
+    };
+    let scratch = Scratch::new();
+    let marker = scratch.path().join("built");
+    let source = made_source(&python, scratch.path(), &marker);
+    let needs = format!("Requires-Dist: planted @ file://{}\\n", source.display());
+    let carrier = made_dependency(&python, scratch.path(), "carrier", &needs);
+    let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
+    made_wheel(&python, &wheel, "Requires-Dist: carrier\\n");
+    let requirements = scratch.path().join("requirements.txt");
+    let line = format!(
+        "carrier @ file://{} --hash=sha256:{}",
+        carrier.display(),
+        sha256(&carrier)
+    );
+    std::fs::write(&requirements, format!("--no-index\n{line}\n")).unwrap();
+    let mut install = install_command(&scratch);
+    install
+        .arg(&wheel)
+        .arg("--python")
+        .arg(&python)
+        .arg("--requirements")
+        .arg(&requirements);
+    let refused = output_of(&mut install).await;
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let printed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(printed["error"]["code"], "pip_failed", "{printed}");
+    // pip's own words say which rule refused it, before anything was built.
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        said.contains("Hashes are required in --require-hashes mode"),
+        "{said}"
+    );
+    assert!(!marker.exists(), "a build backend ran as the installer");
+}
+
+#[tokio::test]
+async fn an_interpreter_named_by_a_relative_path_is_found_where_the_install_was_asked() {
+    let scratch = Scratch::new();
+    let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
+    std::fs::write(&wheel, "").unwrap();
+    let made = scratch.path().join("made");
+    let making = format!("touch '{}'", made.display());
+    fake_python_making(&scratch.path().join("python3"), &making);
+    let mut install = install_command(&scratch);
+    install.arg(&wheel).arg("--python").arg("./python3");
+    let refused = output_of(&mut install).await;
+    let printed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    // It made the environments, and pip, which it did not make, is not there to run.
+    assert_eq!(printed["error"]["code"], "pip_failed", "{printed}");
+    assert!(made.exists(), "the interpreter named made no environment");
+}
+
+#[tokio::test]
+async fn a_package_the_requirements_found_but_did_not_hash_is_refused_for_its_hash() {
+    let Some(python) = system_python() else {
+        return;
+    };
+    let scratch = Scratch::new();
+    let found = scratch.path().join("found");
+    std::fs::create_dir(&found).unwrap();
+    made_dependency(&python, &found, "needed", "");
+    let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
+    made_wheel(&python, &wheel, "Requires-Dist: needed\\n");
+    let requirements = scratch.path().join("requirements.txt");
+    let text = format!("--no-index\n--find-links {}\n", found.display());
+    std::fs::write(&requirements, text).unwrap();
+    let mut install = install_command(&scratch);
+    install
+        .arg(&wheel)
+        .arg("--python")
+        .arg(&python)
+        .arg("--requirements")
+        .arg(&requirements);
+    let refused = output_of(&mut install).await;
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let printed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(printed["error"]["code"], "pip_failed", "{printed}");
+    // pip found it, and refused it as unhashed: its own words say which rule.
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("--require-hashes mode"), "{said}");
 }
 
 /// The entries of `connectors` an install makes while it runs, and leaves only if it is cut off.
@@ -261,6 +426,32 @@ async fn what_the_environment_s_making_says_reaches_standard_error_shown_and_not
     );
     let printed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert_eq!(printed["error"]["code"], "pip_failed", "{printed}");
+}
+
+#[tokio::test]
+async fn the_environment_s_making_is_given_only_what_it_needs_in_the_install_s_own_directory() {
+    let scratch = Scratch::new();
+    let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
+    std::fs::write(&wheel, "").unwrap();
+    let making = "echo \"probe=${RDLT_PROBE:-held} pip=$PIP_CONFIG_FILE home=${HOME:+given} \
+                  in=$(pwd)\"";
+    let python = fake_python_making(&scratch.path().join("python3"), making);
+    let mut install = install_command(&scratch);
+    install
+        .arg(&wheel)
+        .arg("--python")
+        .arg(&python)
+        .env("RDLT_PROBE", "given");
+    let refused = output_of(&mut install).await;
+    let said = String::from_utf8_lossy(&refused.stderr);
+    for given in ["probe=held", "pip=/dev/null", "home=given"] {
+        assert!(said.contains(given), "{given}: {said}");
+    }
+    let connectors = std::fs::canonicalize(scratch.path())
+        .unwrap()
+        .join("data/rdlt/connectors");
+    let staging = format!("in={}/.rdlt-install-", connectors.display());
+    assert!(said.contains(&staging), "{staging}: {said}");
 }
 
 /// On a terminal that stops a process of a background group as it writes, as `stty tostop`

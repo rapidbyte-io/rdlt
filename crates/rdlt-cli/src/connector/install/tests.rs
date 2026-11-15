@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use super::{InstallError, Installation, install};
 
 /// A wheel of one connector entry point, as the fake interpreter below describes every wheel.
-const DESCRIBED: &str = r#"{"name": "tickets", "uri": "file:///absent.whl", "sha256": "00", "entry_points": [["io.example.tickets", "tickets:Tickets"]]}"#;
+const DESCRIBED: &str = r#"{"name": "tickets", "uri": "file:///absent.whl", "sha256": "00", "entry_points": [["io.example.tickets", "tickets:Tickets"]], "requires": []}"#;
 
 /// An interpreter in `dir` that answers the facts query with `facts`, says `described` of any
 /// wheel, exits with `reading` when asked to read one, and touches `made` when asked to make an
@@ -85,8 +85,7 @@ async fn a_wheel_is_read_by_its_interpreter_before_anything_is_made() {
     assert_eq!(crashed.code(), "interpreter_failed", "{crashed}");
     let refused = refusal(&python, r#"{"refused": "File is not a zip file"}"#, 0).await;
     assert_eq!(refused.code(), "wheel", "{refused}");
-    let none =
-        r#"{"name": "tickets", "uri": "file:///absent.whl", "sha256": "00", "entry_points": []}"#;
+    let none = r#"{"name": "tickets", "uri": "file:///absent.whl", "sha256": "00", "entry_points": [], "requires": []}"#;
     let none = refusal(&python, none, 0).await;
     assert!(
         matches!(none, InstallError::EntryPoints { found: 0 }),
@@ -291,12 +290,32 @@ fn system_python() -> Option<PathBuf> {
 }
 
 /// Installs `wheel` with `python` into `connectors`, with `requirements` where given; the tree.
+///
+/// No install here reaches a network: a requirements file says `--no-index`, and a wheel installed
+/// without one needs nothing.
 async fn installed(
     python: &Path,
     wheel: PathBuf,
     requirements: Option<PathBuf>,
     connectors: &Path,
 ) -> Result<PathBuf, InstallError> {
+    match &requirements {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).unwrap();
+            let offline = text.lines().any(|line| line.trim() == "--no-index");
+            assert!(offline, "{}: no --no-index", path.display());
+        }
+        None => {
+            if let Ok(described) = super::wheel::described(python, &wheel, &wheel).await {
+                assert_eq!(
+                    described.requires,
+                    Vec::<String>::new(),
+                    "{}",
+                    wheel.display()
+                );
+            }
+        }
+    }
     let asked = Installation {
         wheel,
         python: Some(python.to_owned()),
@@ -453,28 +472,127 @@ async fn a_requirements_file_installs_only_what_it_hashes_and_all_that_is_needed
         imported.success(),
         "the tree holds the wheel and what it needs"
     );
+    // pip finds the dependency where the files below say, and takes it once it is hashed.
+    let links = format!("--find-links {}\n", found.display());
+    let found_and_hashed = format!(
+        "{links}needed==0.1.0 --hash=sha256:{}\n",
+        sha256(&dependency)
+    );
+    let found_and_hashed = requirements("found-and-hashed.txt", &found_and_hashed);
+    installed(&python, made.clone(), found_and_hashed, &connectors)
+        .await
+        .expect("a dependency found and hashed is installed");
     let uri = format!("file://{}", dependency.display());
     let other = wheel(dir.path(), &python, "other", &[], "", &[]);
-    let links = format!("--find-links {}\n", found.display());
-    for (name, text) in [
-        ("unhashed.txt", format!("needed @ {uri}\n")),
-        ("left-out.txt", pinned("other", &other)),
-        ("found.txt", format!("{links}{}", pinned("other", &other))),
+    for (name, text, refused) in [
+        // Refused before anything is read.
+        ("unhashed.txt", format!("needed @ {uri}\n"), "requirements"),
+        // Found as above, and refused by pip for the hash the file does not give it.
+        (
+            "left-out.txt",
+            format!("{links}{}", pinned("other", &other)),
+            "pip_failed",
+        ),
     ] {
-        let refused = installed(
+        let answered = installed(
             &python,
             made.clone(),
             requirements(name, &text),
             &connectors,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(refused.code(), "pip_failed", "{name}: {refused}");
+        );
+        let error = answered.await.unwrap_err();
+        assert_eq!(error.code(), refused, "{name}: {error}");
         let other = std::process::Command::new(tree.join("bin/python"))
             .args(["-I", "-c", "import other"])
             .status()
             .unwrap();
         assert!(!other.success(), "{name}: the tree in place changed");
+    }
+}
+
+/// A source distribution of `planted` 1.0 in `dir`, whose build backend, in its tree, writes
+/// `marker` when it is imported; and its hash.
+fn planted(dir: &Path, python: &Path, marker: &Path) -> (PathBuf, String) {
+    let built = dir.join("planted-1.0.tar.gz");
+    let backend = format!(
+        "import pathlib\npathlib.Path({:?}).write_text('built')\n",
+        marker.display().to_string()
+    );
+    let project =
+        "[build-system]\nrequires = []\nbuild-backend = 'backend'\nbackend-path = ['.']\n";
+    let script = format!(
+        "import io, tarfile\nwith tarfile.open({built:?}, 'w:gz') as archive:\n\
+         \x20for name, text in [('pyproject.toml', {project:?}), ('backend.py', {backend:?}), \
+         ('PKG-INFO', 'Metadata-Version: 2.1\\nName: planted\\nVersion: 1.0\\n')]:\n\
+         \x20 data = text.encode()\n\
+         \x20 info = tarfile.TarInfo('planted-1.0/' + name)\n\
+         \x20 info.size = len(data)\n\
+         \x20 archive.addfile(info, io.BytesIO(data))\n",
+        built = built.display().to_string()
+    );
+    let made = std::process::Command::new(python)
+        .arg("-c")
+        .arg(script)
+        .status();
+    assert!(made.unwrap().success(), "the source distribution is made");
+    let hash = sha256(&built);
+    (built, hash)
+}
+
+#[tokio::test]
+async fn nothing_pip_would_build_from_its_source_is_installed() {
+    let Some(python) = system_python() else {
+        return;
+    };
+    let (_dir, dir) = resolved();
+    let connectors = dir.join("connectors");
+    let marker = dir.join("built");
+    let found = dir.join("found");
+    std::fs::create_dir(&found).unwrap();
+    let (source, hash) = planted(&found, &python, &marker);
+    let uri = format!("file://{}", source.display());
+    let by_url = format!("planted @ {uri}");
+    let links = format!("--no-index\n--find-links {}\n", found.display());
+    let cases = [
+        // What the wheel itself needs by a URL.
+        (&[by_url.as_str()][..], None, "wheel"),
+        // A requirements file naming it by its URL.
+        (
+            &[][..],
+            Some(format!("--no-index\n{by_url} --hash=sha256:{hash}\n")),
+            "requirements",
+        ),
+        // A requirements file letting pip take sources.
+        (
+            &[][..],
+            Some(format!(
+                "--no-binary :all:\n{links}planted==1.0 --hash=sha256:{hash}\n"
+            )),
+            "requirements",
+        ),
+        // A requirement whose markers would end where an option of pip's begins.
+        (
+            &[][..],
+            Some(format!(
+                "{links}planted==1.0;--no-binary=planted --hash=sha256:{hash}\n"
+            )),
+            "requirements",
+        ),
+    ];
+    for (index, (requires, text, refused)) in cases.into_iter().enumerate() {
+        let made = tickets(&dir, &python, requires);
+        let requirements = text.map(|text| {
+            let path = dir.join(format!("requirements-{index}.txt"));
+            std::fs::write(&path, text).unwrap();
+            path
+        });
+        let answered = installed(&python, made, requirements, &connectors).await;
+        let error = answered.unwrap_err();
+        assert_eq!(error.code(), refused, "{index}: {error}");
+        assert!(
+            !marker.exists(),
+            "{index}: a build backend ran as the installer"
+        );
     }
 }
 
@@ -530,6 +648,16 @@ fn routes(marker: &dyn Fn(&str) -> PathBuf) -> Vec<Route> {
             running: &["-I", "-c", "import attr"],
             refused: None,
         },
+    ]
+    .into_iter()
+    .chain(refused(marker))
+    .collect()
+}
+
+/// The ways a wheel's files could run as its installer that the install refuses.
+fn refused(marker: &dyn Fn(&str) -> PathBuf) -> Vec<Route> {
+    let file = |path: &str, text: String| (path.to_owned(), text);
+    vec![
         // A script over the environment's interpreter.
         Route {
             name: "interpreter",
@@ -538,6 +666,26 @@ fn routes(marker: &dyn Fn(&str) -> PathBuf) -> Vec<Route> {
                 format!("#!/bin/sh\ntouch '{}'\n", marker("interpreter").display()),
             )],
             running: &["-I", "-c", "pass"],
+            refused: Some("replaces_environment"),
+        },
+        // A path for the interpreter beside it.
+        Route {
+            name: "path",
+            files: vec![file(
+                "tickets-0.1.0.data/scripts/python._pth",
+                "/elsewhere\n".to_owned(),
+            )],
+            running: &[],
+            refused: Some("replaces_environment"),
+        },
+        // A configuration beside the interpreter, which it reads before the tree's.
+        Route {
+            name: "configuration",
+            files: vec![file(
+                "tickets-0.1.0.data/scripts/pyvenv.cfg",
+                "home = /elsewhere\n".to_owned(),
+            )],
+            running: &[],
             refused: Some("replaces_environment"),
         },
     ]
@@ -670,6 +818,7 @@ async fn a_wheel_whose_metadata_names_no_distribution_is_refused_before_anything
             "uri": "file:///absent.whl",
             "sha256": "00",
             "entry_points": [["io.example.tickets", "tickets:Tickets"]],
+            "requires": [],
         });
         let python = fake_python(
             dir.path(),

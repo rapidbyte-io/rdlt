@@ -393,16 +393,18 @@ whose roles the installed launcher serves in one process. `rdlt connector instal
 wheel as a directory connector, `rdlt-connector-tickets/` in the first connector directory: an
 environment of its own, whose launcher, `bin/rdlt-connector`, a host spawns and sandboxes as it does
 a binary. None of the connector's code runs while it is installed, and anything run from the tree by
-hand runs it with your access. pip reads none of its own configuration: with `--requirements`, a
-file of every package the wheel needs, each with its hash, which also names any index other than
-PyPI's, pip installs those alone; until `rdlt`'s wheel is published, that file names one built from
-the repository,
+hand runs it with your access. pip installs wheels alone and reads none of its own configuration:
+with `--requirements`, a file of every package the wheel needs, each a wheel with its hash, which
+also names any index other than PyPI, pip installs those alone. Its lines are rdlt's grammar,
+`name==version` or `name @ URL` of a `.whl` with `--hash=sha256:...`, and `--index-url`,
+`--extra-index-url`, `--find-links` or `--no-index`; `uv export` writes such a file. Until `rdlt`'s
+wheel is published, that file names one built from the repository,
 `rdlt @ file:///<its path> --hash=sha256:<its digest>`, as
 [`python/tests/test_directory.py`](python/tests/test_directory.py) writes it. On Linux the
 environment's interpreter must lie in the system's directories, which the sandbox shows, such as
 `--python /usr/bin/python3.12`: one beneath a home directory, as uv, pyenv and mise install them, is
 refused as `interpreter_unreachable`, and such a connector is served with `--listen` from an
-environment holding its wheel instead.
+environment holding its wheel instead, which runs its code with your access, outside any sandbox.
 
 **The GIL** is held for Python's own calls alone. Each partition of a Python source reads on a
 thread it holds while it reads and releases the GIL while it waits for the engine, and a transform

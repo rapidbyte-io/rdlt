@@ -219,9 +219,11 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   run by the environment's interpreter with `-I`, so no `PYTHON*` variable, user site-packages or
   script directory reaches it. The tree holds the connector's packages and no pip. It is made
   beside the connectors, one install at a time under a lock that also lets the next sweep what a
-  killed one left, and exchanged with the tree it replaces in one step, so one of the two is in
-  place throughout; its write is taken away from group and others, it records its connector's
-  id, and an install replaces only a tree that records its own (`name_taken` otherwise). The host
+  killed one left, held until what the install made beside the tree is removed, and exchanged
+  with the tree it replaces in one step, so one of the two is in place throughout; a file system
+  that cannot exchange two names is found before anything is made. Its write is taken away from
+  group and others, it records its connector's id, and an install replaces only a tree that
+  records its own (`name_taken` otherwise). The host
   hashes the launcher, whose first line names the interpreter, and holds the interpreter by its
   path, as any script's; the installed packages are the operator's files, as a native binary's
   shared libraries are. The environment's interpreter is a link to its base installation, which a
@@ -244,20 +246,55 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   - that environment's pip, with `-I`, which installs into the tree as its prefix, the tree never
     on its path, and starts nothing from it.
 
-  Nothing in the tree is started, its interpreter included, and after pip the tree is read as
-  data alone: a package that replaced a link of its `bin/` or its `pyvenv.cfg`, the interpreter
-  the launcher runs and what that interpreter starts with, is refused (`replaces_environment`),
-  so the interpreter stays venv's link to the base installation. pip installs binaries only, so
-  no build backend runs, and reads none of its configuration, neither its variables
-  (`--isolated`) nor its files (`PIP_CONFIG_FILE` naming `/dev/null`), as `ensurepip` reads none:
-  what is installed, and where, is what the install's command line and its requirements say. The
-  wheel is copied once into a directory of the install's own, and the copy is what is read,
-  hashed and installed, named to pip by its `file:` URL, so no index is asked for it. What it
-  needs comes from PyPI; given a requirements file, which names any other index or links, pip
-  installs the packages it hashes, the wheel among them, and refuses, before it installs
-  anything, a dependency the file does not hash, so every package in the tree is one the
-  operator hashed. What pip and venv print reaches standard error a line at a time, each shown as
+  venv and pip run in the install's own directory and are given of the operator's environment
+  only where programs, the home and temporary files are, the locale, the proxies and the
+  certificate authorities an index may need, and `PIP_CONFIG_FILE` naming `/dev/null`. Nothing in
+  the tree is started, its interpreter included, and after pip the tree is read as data alone: a
+  package that replaced a link of its `bin/`, or the `pyvenv.cfg` its interpreter reads, the
+  tree's, or one beside it in `bin/`, which it would read first, or that added a `._pth` file
+  there, which would set its path, is refused (`replaces_environment`), so the interpreter stays
+  venv's link to the base installation. An interpreter named by a relative path is found from
+  where the install was asked, since venv and pip run in a directory of their own. pip
+  reads none of its configuration, neither its variables (`--isolated`) nor its files, as
+  `ensurepip` reads none: what is installed, and where, is what the install's command line and
+  its requirements say. The wheel is copied once into a directory of the install's own, and the
+  copy is what is read, hashed and installed, named to pip by its `file:` URL, so no index is
+  asked for it. What pip and venv print reaches standard error a line at a time, each shown as
   connector text is, since it holds what a wheel and an index say.
+- **Nothing pip installs is built from its source.** A build backend is a package's own code,
+  run as whoever builds it. pip's `--only-binary=:all:` holds the packages it finds in an index
+  or a directory of links, but not one named by a URL, which pip builds whatever it is. So every
+  way a URL could reach pip is closed:
+  - the wheel's metadata, read as data, is refused where it needs a package by a URL (an `@`
+    before a requirement's markers), and what it needs comes from PyPI, whose packages pip refuses
+    where they need one by a URL;
+  - a requirements file is read in rdlt's own grammar and written again as the file pip reads. A
+    line names a wheel by its version, `name[extras]==version`, or by a URL ending in `.whl`,
+    `name @ URL`, with its hash, `--hash=sha256:...` (or `sha384`, `sha512`), and markers where
+    it needs them; or it names where packages are found, `--index-url` (`-i`),
+    `--extra-index-url`, `--find-links` (`-f`) or `--no-index`, a relative path taken from the
+    file's directory. Lines join and comments end as pip has them. Anything else is refused,
+    naming its line (`requirements`): another file (`-r`, `-c`), an editable (`-e`),
+    `--no-binary`, `--only-binary`, `--trusted-host`, which would have pip trust a host without
+    checking its certificate, `--pre` and every other option, and `${...}`, since no variable is
+    expanded, an index's credentials coming from `.netrc`. The file holds printable ASCII, spaces
+    and tabs alone, its lines ending in `\n` or `\r\n`: pip breaks lines where Python's
+    `splitlines` does, at `\r`, `\x1c` and `U+2028` among others, so any other character is
+    refused, naming it, lest one line rdlt checked be two pip reads. Each part is read in its own
+    grammar: PEP 508's for names and extras, PEP 440's for versions, so none reads as a file's
+    name, RFC 3986's for URLs, a SHA-2 digest of its length in hex for hashes, and PEP 508's for
+    markers, a variable of the environment compared with a quoted value, joined by `and` and `or`
+    and nested in parentheses, a value holding letters, digits and `._+*,!~<>=-` alone and
+    starting with no `-`. The file pip reads is written from what was read, and each line is seen
+    to read as pip reads it before it is written: pip splits a requirement's line at its spaces,
+    taking every word from the first that starts with `-` for an option, so each of those must be
+    one of the line's hashes and no other word may start so; it splits an option's line as a
+    shell does, so it must split into the option and the value checked; and neither may hold a
+    `#` that starts a comment or a `${` it would expand;
+  - with a requirements file, pip installs only the packages it hashes, the wheel among them, and
+    refuses, before it builds or installs anything, a dependency the file does not hash, one a
+    package found there needs by a URL among them, so every package in the tree is one the
+    operator hashed.
 - **A thread that goes away is told, not inferred.** A read's end is said by `finished` or
   `failed`, and a call's by its answer; a read whose channel closes without a word fails, so a
   thread that died never reads as a finished partition.
@@ -300,6 +337,10 @@ Rejected:
 - **Reading pip's index settings and ignoring the rest.** What pip reads of its configuration
   changes with its version, so a list of what to ignore would miss some; an index is named in the
   requirements file instead.
+- **Giving pip the operator's requirements file as written**, or a list of its options to
+  refuse: pip's own grammar reads further files, expands variables and takes options that let it
+  build from source, so a connector's own requirements file would be a way to run its code.
+- **Running pip in the sandbox.** Only Linux has one, and the install is the same on macOS.
 - **Replacing a tree with two renames.** An install ended between them, by a signal or a crash,
   leaves no tree, and the next install would sweep away the old one.
 
@@ -315,10 +356,14 @@ install, would lift that refusal.
 An installed tree holds no pip, and its packages' scripts name the environment pip ran from,
 which is gone: its packages are read as files, `lib/python3.N/site-packages/*.dist-info`, and
 anything run from it by hand, its interpreter included, runs the connector's code with the
-operator's access, outside any sandbox. An index or links other than PyPI's are named in a
-requirements file, whose every package is then hashed. Replacing a tree needs a file system that
-exchanges two names in one step, as Linux's local file systems and APFS do; on one that cannot,
-the tree is removed by hand before its connector is installed again.
+operator's access, outside any sandbox. Any index but PyPI, and any links, are named in a
+requirements file, whose every package is then hashed, a connector's dependencies being wheels
+alone. An index's credentials come from `.netrc`, and pip sends its `default` entry, where it has
+one, to every index host the file names. Replacing a tree needs a file system that exchanges two
+names in one step, as ext4, XFS, Btrfs, tmpfs and APFS do; on one that cannot, such as vfat,
+exFAT or OpenZFS before 2.2, which answer the exchange `EINVAL`, `EOPNOTSUPP` or `ENOSYS`, the
+install says so before it makes anything, and the tree is removed by hand before its connector
+is installed again; any other failure of the exchange is told as I/O.
 
 A directory connector's digest pins its launcher, not what the launcher runs: the interpreter
 its first line names is held by its path, and the packages beside it are the operator's files.

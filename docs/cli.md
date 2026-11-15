@@ -962,7 +962,7 @@ Options:
 ```text
 Installs a Python connector's wheel as a directory connector, an environment of its own.
 
-The environment is made in the first connector directory with Python 3.11 or later, and holds the connector's packages and its launcher, `bin/rdlt-connector`; none of the connector's code runs while it is installed, since pip runs from an environment of its own and reads none of its configuration. Installing a connector again replaces its tree, in one step, and only a tree an install of that connector made: a pipeline running it then fails, its files gone with the tree replaced, and is run again once the install is done. The tree holds no pip, and anything run from it by hand, its interpreter included, runs the connector's code with your access, outside any sandbox: its packages are read as files, `lib/python3.N/site-packages/*.dist-info`. While it runs, an install holds `.rdlt-install.lock` in the connector directory, a file of its own, and it records the connector's id in the tree as `rdlt-connector.id`.
+The environment is made in the first connector directory with Python 3.11 or later, and holds the connector's packages and its launcher, `bin/rdlt-connector`; none of the connector's code runs while it is installed, since pip runs from an environment of its own, reads none of its configuration and installs wheels alone, refusing a wheel that needs a package by a URL. Installing a connector again replaces its tree, in one step, and only a tree an install of that connector made: a pipeline running it then fails, its files gone with the tree replaced, and is run again once the install is done. The tree holds no pip, and anything run from it by hand, its interpreter included, runs the connector's code with your access, outside any sandbox: its packages are read as files, `lib/python3.N/site-packages/*.dist-info`. While it runs, an install holds `.rdlt-install.lock` in the connector directory, a file of its own, and it records the connector's id in the tree as `rdlt-connector.id`.
 
 Usage: install [OPTIONS] <WHEEL>
 
@@ -977,7 +977,7 @@ Options:
       --requirements <FILE>
           A requirements file holding, each with its hash, every package the wheel needs: only those are installed.
           
-          Any index but pip's default, and any links, are named in it, since pip reads none of its own configuration.
+          Each line names a wheel, `name==version` or `name @ URL` of a `.whl`, with its `--hash`, or where wheels are found, `--index-url`, `--extra-index-url`, `--find-links` or `--no-index`, since pip reads none of its own configuration. Any other line is refused, and no `${...}` is expanded: an index's credentials come from `.netrc`.
 
       --host <PATH>
           The operator's host file; by default `$XDG_CONFIG_HOME/rdlt/host.yaml`, where it exists
