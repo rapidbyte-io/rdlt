@@ -530,6 +530,10 @@ they arrive.
   stream merged by key turns its upsert into a delete, which the stream's delete mode applies.
   A filter on a stream that could not carry that delete is refused when the plan is built.
   `StreamReport::filtered` counts what filters dropped and turned into deletes.
+- **Change streams**: transforms compute from inserts and updates alone. A delete or a truncate
+  leaves each transform with the stream's keys and change time and the columns the transform
+  passes on, as ops and SQL say they do, code with `Transform::passes` and Python with
+  `passes=`, and null in the columns it computes; a change log stores no delete's values there.
 - **Partial updates** pass a transform that declares its lineage, as ops and SQL do: a column
   computed only from unchanged columns stays unchanged, and one computed from an unchanged and
   a changed column is refused. A filter takes them where it declares the columns it reads and

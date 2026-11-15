@@ -1,10 +1,11 @@
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray as _;
 use arrow_array::types::{Int8Type, Int32Type, Int64Type};
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray, Int8Array,
-    Int32Array, Int64Array, RecordBatch, RunArray, StringArray, StructArray,
+    Int32Array, Int64Array, ListArray, RecordBatch, RunArray, StringArray, StructArray,
 };
 use arrow_buffer::{BooleanBuffer, NullBuffer};
 use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
@@ -13,6 +14,8 @@ use rdlt_connector::{
     ChangeOp, ColumnPath, OP_COLUMN, ReadMode, SEQ_COLUMN, StreamName, UNCHANGED_COLUMN,
 };
 
+use super::changes::Changes;
+use super::judged::Judging;
 use super::{Breach, Part, Ran, Refusal, Stage, decoding};
 use crate::error::{ErrorKind, codes};
 use crate::plan::{StreamPlan, WriteMode};
@@ -999,6 +1002,733 @@ fn a_log_filter_drops_failing_upserts_and_keeps_deletes_and_truncates() {
     let seqs = seqs.as_fixed_size_binary();
     let last: Vec<u8> = (0..seqs.len()).map(|row| seqs.value(row)[15]).collect();
     assert_eq!(last, [1, 2, 3]);
+}
+
+/// A filter and a projection failing on any row whose name is `bad`, and turning one whose name
+/// is `drop` into what its stream does with a row it does not keep, written as an embedder's.
+struct Judge;
+
+impl Judge {
+    fn judged(batch: &RecordBatch, refused: &[&str]) -> Result<Vec<bool>, TransformError> {
+        let names = batch.column_by_name("name").unwrap().as_string::<i32>();
+        let names: Vec<Option<&str>> = names.iter().collect();
+        if names.iter().flatten().any(|name| refused.contains(name)) {
+            return Err(TransformError::new("judged a row it must not"));
+        }
+        Ok(names.iter().map(|name| *name != Some("drop")).collect())
+    }
+}
+
+impl Transform for Judge {
+    fn name(&self) -> &'static str {
+        "judge"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        Ok(Arc::new(input.clone()))
+    }
+
+    fn filters(&self) -> bool {
+        true
+    }
+
+    fn keep(&self, batch: &RecordBatch) -> Result<BooleanArray, TransformError> {
+        Ok(BooleanArray::from(Self::judged(batch, &["bad"])?))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        Self::judged(&batch, &["bad", "drop"])?;
+        let columns = batch.columns().iter();
+        let copied =
+            columns.map(|column| arrow_select::concat::concat(&[column.as_ref()]).unwrap());
+        Ok(RecordBatch::try_new(batch.schema(), copied.collect()).unwrap())
+    }
+}
+
+/// Changes to people: an insert, an update the filter does not keep, and a delete and a truncate
+/// whose names no transform may judge.
+fn judged_changes() -> RecordBatch {
+    let ids = Int64Array::from(vec![Some(1), Some(2), Some(3), None]);
+    let names = StringArray::from(vec!["keep", "drop", "bad", "bad"]);
+    let ops = [
+        ChangeOp::Insert,
+        ChangeOp::Update,
+        ChangeOp::Delete,
+        ChangeOp::Truncate,
+    ];
+    let ops = Int8Array::from(ops.iter().map(|op| op.code()).collect::<Vec<_>>());
+    let seqs = FixedSizeBinaryArray::try_from_iter((0..4_u8).map(|row| [row; 16])).unwrap();
+    RecordBatch::try_from_iter([
+        ("id", Arc::new(ids) as ArrayRef),
+        ("name", Arc::new(names) as ArrayRef),
+        (OP_COLUMN, Arc::new(ops) as ArrayRef),
+        (SEQ_COLUMN, Arc::new(seqs) as ArrayRef),
+    ])
+    .unwrap()
+}
+
+fn texts(batches: &[RecordBatch], column: &str) -> Vec<Option<String>> {
+    let texts = batches.iter().flat_map(|batch| {
+        let texts = batch.column_by_name(column).unwrap().as_string::<i32>();
+        texts
+            .iter()
+            .map(|text| text.map(str::to_owned))
+            .collect::<Vec<_>>()
+    });
+    texts.collect()
+}
+
+#[test]
+fn a_change_stream_s_transforms_judge_and_compute_its_inserts_and_updates_alone() {
+    let delete = ChangeOp::Delete.code();
+    let merged = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(code(Judge));
+    let output = ran(&merged, &["id"], judged_changes(), u64::MAX).unwrap();
+    assert_eq!(
+        ops(&output.batches),
+        [
+            (Some(1), ChangeOp::Insert.code()),
+            (Some(2), delete),
+            (Some(3), delete),
+            (None, ChangeOp::Truncate.code())
+        ]
+    );
+    // The key is kept by name; the name, which the transform computes, only for the insert.
+    let named = [Some("keep".to_owned()), None, None, None];
+    assert_eq!(texts(&output.batches, "name"), named);
+    assert_eq!((output.deleted, output.dropped), (1, 0));
+    let logged = stream().read(ReadMode::Cdc).transform(code(Judge));
+    let output = ran(&logged, &["id"], judged_changes(), u64::MAX).unwrap();
+    assert_eq!(ids(&output.batches), [Some(1), Some(3), None]);
+    assert_eq!(
+        texts(&output.batches, "name"),
+        [Some("keep".to_owned()), None, None]
+    );
+    assert_eq!((output.deleted, output.dropped), (0, 1));
+}
+
+#[test]
+fn a_row_a_transform_does_not_judge_keeps_what_it_passes_on_and_holds_null_in_what_it_computes() {
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(Op::rename([("name", "label")]))
+        .transform(Op::constant([("tag", Literal::Text("t".to_owned()))]));
+    let batch = changes(&[
+        (Some(1), ChangeOp::Insert, None),
+        (Some(2), ChangeOp::Delete, None),
+        (None, ChangeOp::Truncate, None),
+    ]);
+    let output = run(&plan, &["id"], batch.clone(), u64::MAX).unwrap();
+    assert_eq!(ids(&output), [Some(1), Some(2), None]);
+    // What a rename passes on arrives as it was, a delete's and a truncate's too, sharing its array.
+    let labels = output[0].column_by_name("label").unwrap();
+    assert!(Arc::ptr_eq(labels, batch.column_by_name("name").unwrap()));
+    let tags = [Some("t".to_owned()), None, None];
+    assert_eq!(texts(&output, "tag"), tags);
+    let schema = output[0].schema();
+    assert!(schema.field_with_name("tag").unwrap().is_nullable());
+    // A stream not read as changes computes every row, and its constant holds no null.
+    let appended = stream().transform(Op::constant([("tag", Literal::Text("t".to_owned()))]));
+    let stage = Stage::new(&appended, &[], None).unwrap();
+    let chain = stage.chain(people(&[1]).schema_ref()).unwrap();
+    assert!(
+        !chain
+            .data_output()
+            .field_with_name("tag")
+            .unwrap()
+            .is_nullable()
+    );
+}
+
+#[test]
+fn a_change_stream_s_declared_schema_and_its_batches_meet_one_output() {
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(Op::constant([("tag", Literal::Integer(7))]));
+    let key = [ColumnPath::from("id")];
+    let stage = Stage::new(&plan, &key, None).unwrap();
+    let batch = changes(&[(Some(1), ChangeOp::Insert, None)]);
+    let chained = stage.chain(batch.schema_ref()).unwrap();
+    let data = batch.schema().project(&[0, 1]).unwrap();
+    let declared = stage.declared(&Arc::new(data)).unwrap();
+    assert_eq!(declared.data_output(), chained.data_output());
+}
+
+/// 64 changes of a thousand-byte note each, of the ops `op` gives each row.
+fn noted_changes(op: impl Fn(i64) -> ChangeOp) -> RecordBatch {
+    let noted = noted(64);
+    let ops = (0..64).map(|row| op(row).code());
+    let ops = Int8Array::from(ops.collect::<Vec<_>>());
+    let seqs = (0..64_u8).map(|row| [row; 16]);
+    let seqs = FixedSizeBinaryArray::try_from_iter(seqs).unwrap();
+    let mut columns = noted.columns().to_vec();
+    columns.extend([Arc::new(ops) as ArrayRef, Arc::new(seqs) as ArrayRef]);
+    let mut fields: Vec<_> = noted.schema().fields().iter().cloned().collect();
+    fields.push(Arc::new(Field::new(OP_COLUMN, DataType::Int8, false)));
+    let seq = DataType::FixedSizeBinary(16);
+    fields.push(Arc::new(Field::new(SEQ_COLUMN, seq, false)));
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+}
+
+#[test]
+fn judging_a_part_s_inserts_and_updates_asks_room_for_their_copy_alone() {
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(Op::constant([("tag", Literal::Integer(7))]));
+    let parts = |op: fn(i64) -> ChangeOp, free| run(&plan, &["id"], noted_changes(op), free);
+    // Updates alone are computed from as they arrived, sharing every note.
+    assert_eq!(parts(|_| ChangeOp::Update, 100_000).unwrap().len(), 1);
+    // A delete among 63 updates has the updates' rows copied for the constant to be computed
+    // from, and the copy charged once for itself and once for what is taken back from it: some
+    // 63 KiB each, which this room does not hold at once.
+    let last = |row: i64| match row {
+        63 => ChangeOp::Delete,
+        _ => ChangeOp::Update,
+    };
+    let judged = parts(last, 100_000).unwrap();
+    assert!(judged.len() > 1, "{}", judged.len());
+    let expected: Vec<Option<i64>> = (0..64).map(Some).collect();
+    assert_eq!(ids(&judged), expected);
+    // Deletes alone copy nothing and compute nothing: the constant's nulls are what they ask.
+    assert_eq!(parts(|_| ChangeOp::Delete, 10_000).unwrap().len(), 1);
+    // An update among 63 deletes has its row alone copied.
+    let first = |row: i64| match row {
+        0 => ChangeOp::Update,
+        _ => ChangeOp::Delete,
+    };
+    assert_eq!(parts(first, 10_000).unwrap().len(), 1);
+    // A transform computing nothing runs on the part as it arrived, copying nothing.
+    let renamed = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(Op::rename([("note", "text")]));
+    let renamed = run(&renamed, &["id"], noted_changes(last), 10_000).unwrap();
+    assert_eq!(renamed.len(), 1);
+}
+
+/// How `judge`, the first step's filter or transform, judges a change part.
+type Judgement<T> =
+    fn(&Judging<'_>, &RecordBatch, Option<&Changes>) -> Result<ControlFlow<u64, T>, Refusal>;
+
+/// The room `judge` asks to judge `batch` on `plan`'s first step, checked to be the least it
+/// takes, and what it makes in that room.
+fn least_room<T>(plan: &StreamPlan, batch: &RecordBatch, judge: Judgement<T>) -> (u64, T) {
+    let key = [ColumnPath::from("id")];
+    let stage = Stage::new(plan, &key, None).unwrap();
+    let chain = stage.chain(batch.schema_ref()).unwrap();
+    let (data, changes) = super::changes::split(batch, &chain).unwrap();
+    let judged = |free| {
+        let judging = Judging {
+            transform: stage.steps[0].as_transform(),
+            declared: &chain.declared[0],
+            schema: &chain.schemas[1],
+            kept: &stage.kept,
+            asked: 0,
+            free,
+        };
+        judge(&judging, &data, changes.as_ref()).unwrap()
+    };
+    let ControlFlow::Break(asked) = judged(0) else {
+        panic!("judging asked no room");
+    };
+    assert!(matches!(judged(asked - 1), ControlFlow::Break(again) if again == asked));
+    let ControlFlow::Continue(made) = judged(asked) else {
+        panic!("judging took more room than it asked");
+    };
+    (asked, made)
+}
+
+#[test]
+fn judging_a_change_part_takes_the_room_it_asks_and_no_more() {
+    let merged = || stream().read(ReadMode::Cdc).write(WriteMode::Merge);
+    let last = |row: i64| match row {
+        63 => ChangeOp::Delete,
+        _ => ChangeOp::Update,
+    };
+    // A filter judges a copy of the 63 updates, their notes a thousand bytes each.
+    let sieve = merged().transform(code(Sieve));
+    let (asked, kept) = least_room(&sieve, &noted_changes(last), super::judged::keep);
+    assert!(asked > 63_000, "{asked}");
+    assert_eq!(kept.true_count(), 64);
+    // A constant is computed from such a copy, and taken back to every row from it.
+    let constant = merged().transform(Op::constant([("tag", Literal::Integer(7))]));
+    let (asked, made) = least_room(&constant, &noted_changes(last), super::judged::output);
+    assert!(asked > 2 * 63_000, "{asked}");
+    assert_eq!(made.column_by_name("tag").unwrap().null_count(), 1);
+    // Deletes alone ask for the constant's nulls alone.
+    let deletes = noted_changes(|_| ChangeOp::Delete);
+    let (asked, made) = least_room(&constant, &deletes, super::judged::output);
+    assert!(asked < 1_000, "{asked}");
+    assert_eq!(made.column_by_name("tag").unwrap().null_count(), 64);
+}
+
+/// A transform saying it passes every input column on, of which it hands `name` back masked, and
+/// adding `extra` where it `computes` one.
+struct Masking {
+    computes: bool,
+}
+
+impl Transform for Masking {
+    fn name(&self) -> &'static str {
+        "masking"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        let mut fields: Vec<_> = input.fields().iter().cloned().collect();
+        if self.computes {
+            fields.push(Arc::new(Field::new("extra", DataType::Utf8, true)));
+        }
+        Ok(Arc::new(Schema::new(fields)))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        let rows = batch.num_rows();
+        let mut columns = batch.columns().to_vec();
+        let name = batch.schema_ref().index_of("name").unwrap();
+        columns[name] = Arc::new(StringArray::from(vec!["masked"; rows]));
+        if self.computes {
+            columns.push(Arc::new(StringArray::from(vec!["x"; rows])));
+        }
+        Ok(RecordBatch::try_new(self.output(batch.schema_ref())?, columns).unwrap())
+    }
+
+    fn passes(&self, input: &Schema) -> Option<Vec<Option<usize>>> {
+        let mut passed: Vec<_> = (0..input.fields().len()).map(Some).collect();
+        if self.computes {
+            passed.push(None);
+        }
+        Some(passed)
+    }
+}
+
+fn names_of(batches: &[RecordBatch]) -> Vec<Option<String>> {
+    let names = batches.iter().flat_map(|batch| {
+        let column = batch.column_by_name("name").unwrap();
+        let names = column.as_string::<i32>().iter();
+        names
+            .map(|name| name.map(str::to_owned))
+            .collect::<Vec<_>>()
+    });
+    names.collect()
+}
+
+#[test]
+fn a_column_a_transform_says_it_passes_on_lands_as_it_arrived_whatever_the_transform_makes() {
+    let arrived = || vec![Some("n1".to_owned()), Some("n2".to_owned())];
+    for computes in [false, true] {
+        let masking = || code(Masking { computes });
+        let appended = run(
+            &stream().transform(masking()),
+            &[],
+            people(&[1, 2]),
+            u64::MAX,
+        );
+        assert_eq!(names_of(&appended.unwrap()), arrived(), "{computes}");
+        let merged = stream()
+            .read(ReadMode::Cdc)
+            .write(WriteMode::Merge)
+            .transform(masking());
+        let parts = [
+            [ChangeOp::Insert, ChangeOp::Update],
+            [ChangeOp::Insert, ChangeOp::Delete],
+            [ChangeOp::Delete, ChangeOp::Delete],
+        ];
+        for ops in parts {
+            let batch = changes(&[(Some(1), ops[0], None), (Some(2), ops[1], None)]);
+            let made = run(&merged, &["id"], batch, u64::MAX).unwrap();
+            assert_eq!(names_of(&made), arrived(), "{computes} {ops:?}");
+        }
+    }
+}
+
+/// A transform handing back a copy of each column it is handed, saying nothing of what it passes
+/// on.
+struct Copying;
+
+impl Transform for Copying {
+    fn name(&self) -> &'static str {
+        "copying"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        Ok(Arc::new(input.clone()))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        let columns = batch.columns().iter();
+        let copied =
+            columns.map(|column| arrow_select::concat::concat(&[column.as_ref()]).unwrap());
+        Ok(RecordBatch::try_new(batch.schema(), copied.collect()).unwrap())
+    }
+}
+
+/// A change batch of `rows`, each its id, its op and how many items its list holds.
+fn listed(rows: &[(i64, ChangeOp, usize)]) -> RecordBatch {
+    let ids = Int64Array::from_iter_values(rows.iter().map(|row| row.0));
+    let lists = rows.iter().map(|row| Some(vec![Some(7_i64); row.2]));
+    let items = ListArray::from_iter_primitive::<Int64Type, _, _>(lists);
+    let ops = Int8Array::from_iter_values(rows.iter().map(|row| row.1.code()));
+    let seqs = (0..rows.len()).map(|row| [u8::try_from(row).unwrap(); 16]);
+    let seqs = FixedSizeBinaryArray::try_from_iter(seqs).unwrap();
+    RecordBatch::try_from_iter([
+        ("id", Arc::new(ids) as ArrayRef),
+        ("items", Arc::new(items) as ArrayRef),
+        (OP_COLUMN, Arc::new(ops) as ArrayRef),
+        (SEQ_COLUMN, Arc::new(seqs) as ArrayRef),
+    ])
+    .unwrap()
+}
+
+#[test]
+fn a_delete_holding_a_long_list_fits_beside_no_insert_or_update_to_copy() {
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(code(Copying));
+    // The delete's list of ten thousand items takes some 80 KB, which this room does not hold.
+    let alone = run(
+        &plan,
+        &["id"],
+        listed(&[(1, ChangeOp::Delete, 10_000)]),
+        20_000,
+    )
+    .unwrap();
+    assert_eq!(ids(&alone), [Some(1)]);
+    assert_eq!(alone[0].column_by_name("items").unwrap().null_count(), 1);
+    // Beside an update the part is cut, and each half fits.
+    let beside = listed(&[(1, ChangeOp::Update, 1), (2, ChangeOp::Delete, 10_000)]);
+    let cut = run(&plan, &["id"], beside, 20_000).unwrap();
+    assert_eq!(cut.len(), 2);
+    assert_eq!(ids(&cut), [Some(1), Some(2)]);
+}
+
+/// A transform passing on `id` and `name` as it says, and adding `echo`, which it says it
+/// computes but hands back as `name`'s own array.
+struct Echo;
+
+impl Transform for Echo {
+    fn name(&self) -> &'static str {
+        "echo"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        let mut fields: Vec<_> = input.fields().iter().cloned().collect();
+        fields.push(Arc::new(Field::new("echo", DataType::Utf8, true)));
+        Ok(Arc::new(Schema::new(fields)))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        let mut columns = batch.columns().to_vec();
+        columns.push(Arc::clone(batch.column_by_name("name").unwrap()));
+        Ok(RecordBatch::try_new(self.output(batch.schema_ref())?, columns).unwrap())
+    }
+
+    fn passes(&self, input: &Schema) -> Option<Vec<Option<usize>>> {
+        let mut passed: Vec<_> = (0..input.fields().len()).map(Some).collect();
+        passed.push(None);
+        Some(passed)
+    }
+}
+
+#[test]
+fn a_column_a_transform_says_it_computes_holds_null_for_a_delete_though_handed_back() {
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(code(Echo));
+    let batch = changes(&[
+        (Some(1), ChangeOp::Insert, None),
+        (Some(2), ChangeOp::Delete, None),
+    ]);
+    let output = run(&plan, &["id"], batch, u64::MAX).unwrap();
+    assert_eq!(
+        texts(&output, "name"),
+        [Some("n1".to_owned()), Some("n2".to_owned())]
+    );
+    assert_eq!(texts(&output, "echo"), [Some("n1".to_owned()), None]);
+}
+
+#[test]
+fn a_delete_keeps_what_code_hands_back_alone_or_beside_an_insert() {
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(code(Unlined));
+    let alone = changes(&[(Some(2), ChangeOp::Delete, None)]);
+    let beside = changes(&[
+        (Some(1), ChangeOp::Insert, None),
+        (Some(2), ChangeOp::Delete, None),
+    ]);
+    let alone = run(&plan, &["id"], alone, u64::MAX).unwrap();
+    let beside = run(&plan, &["id"], beside, u64::MAX).unwrap();
+    assert_eq!(texts(&alone, "name"), [Some("n2".to_owned())]);
+    assert_eq!(texts(&beside, "name")[1..], [Some("n2".to_owned())]);
+}
+
+/// A transform passing on `id` and adding `tens`, ten times it, declaring its lineage.
+struct Tenfold;
+
+impl Transform for Tenfold {
+    fn name(&self) -> &'static str {
+        "tenfold"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        let id = input.field_with_name("id").unwrap().clone();
+        let tens = Field::new("tens", DataType::Int64, true);
+        Ok(Arc::new(Schema::new(vec![id, tens])))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        let ids = batch.column_by_name("id").unwrap();
+        let tens: Int64Array = ids
+            .as_primitive::<Int64Type>()
+            .iter()
+            .map(|id| id.map(|id| id * 10))
+            .collect();
+        let columns = vec![Arc::clone(ids), Arc::new(tens) as ArrayRef];
+        Ok(RecordBatch::try_new(self.output(batch.schema_ref())?, columns).unwrap())
+    }
+
+    fn lineage(&self, input: &Schema) -> Option<Vec<Vec<usize>>> {
+        let id = input.index_of("id").ok()?;
+        Some(vec![vec![id], vec![id]])
+    }
+
+    fn passes(&self, input: &Schema) -> Option<Vec<Option<usize>>> {
+        Some(vec![input.index_of("id").ok(), None])
+    }
+}
+
+fn tens(batches: &[RecordBatch]) -> Vec<Option<i64>> {
+    let tens = batches.iter().flat_map(|batch| {
+        let tens = batch
+            .column_by_name("tens")
+            .unwrap()
+            .as_primitive::<Int64Type>();
+        tens.iter().collect::<Vec<_>>()
+    });
+    tens.collect()
+}
+
+#[test]
+fn rows_a_transform_does_not_judge_come_back_in_their_places() {
+    let batch = changes(&[
+        (Some(1), ChangeOp::Delete, None),
+        (Some(2), ChangeOp::Insert, None),
+        (None, ChangeOp::Truncate, None),
+        (Some(4), ChangeOp::Update, None),
+        (Some(5), ChangeOp::Delete, None),
+    ]);
+    let merged = stream().read(ReadMode::Cdc).write(WriteMode::Merge);
+    let logged = stream().read(ReadMode::Cdc);
+    for plan in [merged, logged] {
+        let output = run(
+            &plan.transform(code(Tenfold)),
+            &["id"],
+            batch.clone(),
+            u64::MAX,
+        );
+        let output = output.unwrap();
+        assert_eq!(ids(&output), [Some(1), Some(2), None, Some(4), Some(5)]);
+        assert_eq!(tens(&output), [None, Some(20), None, Some(40), None]);
+        let codes: Vec<i8> = ops(&output).into_iter().map(|(_, op)| op).collect();
+        let sent = [
+            ChangeOp::Delete,
+            ChangeOp::Insert,
+            ChangeOp::Truncate,
+            ChangeOp::Update,
+            ChangeOp::Delete,
+        ];
+        assert_eq!(codes, sent.map(ChangeOp::code));
+    }
+}
+
+#[test]
+fn a_column_passed_on_or_kept_that_holds_no_null_holds_none_on_a_change_stream() {
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(Op::constant([("tag", Literal::Integer(7))]));
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new(OP_COLUMN, DataType::Int8, false),
+        Field::new(SEQ_COLUMN, DataType::FixedSizeBinary(16), false),
+    ]);
+    let key = [ColumnPath::from("id")];
+    let stage = Stage::new(&plan, &key, None).unwrap();
+    let chain = stage.chain(&Arc::new(schema)).unwrap();
+    let output = chain.data_output();
+    let nullable = |name: &str| output.field_with_name(name).unwrap().is_nullable();
+    assert_eq!(
+        (nullable("id"), nullable("name"), nullable("tag")),
+        (false, false, true)
+    );
+}
+
+/// A transform passing `id` and `name` on, declaring its lineage, and adding `checked`, which it
+/// computes from `name`, failing on a placeholder.
+struct Strict;
+
+impl Transform for Strict {
+    fn name(&self) -> &'static str {
+        "strict"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        let mut fields: Vec<_> = input.fields().iter().cloned().collect();
+        fields.push(Arc::new(Field::new("checked", DataType::Utf8, true)));
+        Ok(Arc::new(Schema::new(fields)))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        let names = batch.column_by_name("name").unwrap().as_string::<i32>();
+        if names.iter().flatten().any(|name| name == "placeholder") {
+            return Err(TransformError::new("computed from a placeholder"));
+        }
+        let mut columns = batch.columns().to_vec();
+        columns.push(Arc::new(names.clone()));
+        Ok(RecordBatch::try_new(self.output(batch.schema_ref())?, columns).unwrap())
+    }
+
+    fn lineage(&self, input: &Schema) -> Option<Vec<Vec<usize>>> {
+        let mut lineage: Vec<_> = (0..input.fields().len())
+            .map(|column| vec![column])
+            .collect();
+        lineage.push(vec![input.index_of("name").ok()?]);
+        Some(lineage)
+    }
+
+    fn passes(&self, input: &Schema) -> Option<Vec<Option<usize>>> {
+        let mut passed: Vec<_> = (0..input.fields().len()).map(Some).collect();
+        passed.push(None);
+        Some(passed)
+    }
+}
+
+#[test]
+fn a_placeholder_is_computed_from_as_a_null_and_passed_on_as_it_arrived() {
+    let plan = stream()
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .transform(code(Strict));
+    let flagged: &[u8] = &[0b0000_0010];
+    let sent = changes(&[
+        (Some(1), ChangeOp::Update, Some(flagged)),
+        (Some(2), ChangeOp::Insert, None),
+    ]);
+    let mut columns = sent.columns().to_vec();
+    columns[1] = Arc::new(StringArray::from(vec!["placeholder", "real"]));
+    let sent = RecordBatch::try_new(sent.schema(), columns).unwrap();
+    // `name` may hold null, so its placeholder is read as one.
+    let mut fields: Vec<Field> = sent
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.as_ref().clone())
+        .collect();
+    fields[1] = Field::new("name", DataType::Utf8, true);
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(schema, sent.columns().to_vec()).unwrap();
+    let output = run(&plan, &["id"], batch, u64::MAX).unwrap();
+    let names = [Some("placeholder".to_owned()), Some("real".to_owned())];
+    assert_eq!(texts(&output, "name"), names);
+    assert_eq!(texts(&output, "checked"), [None, Some("real".to_owned())]);
+    // A column that holds no null has its placeholder computed from as it was sent.
+    let refused = run(&plan, &["id"], sent, u64::MAX).unwrap_err();
+    assert!(matches!(refused, Refusal::Failed { .. }), "{refused:?}");
+}
+
+#[test]
+fn a_delete_s_flags_refuse_no_transform_and_one_without_a_lineage_clears_them() {
+    let flagged: &[u8] = &[0b0000_0010];
+    let batch = || {
+        changes(&[
+            (Some(1), ChangeOp::Insert, None),
+            (Some(2), ChangeOp::Delete, Some(flagged)),
+        ])
+    };
+    let merged = || stream().read(ReadMode::Cdc).write(WriteMode::Merge);
+    let unlined = run(
+        &merged().transform(code(Unlined)),
+        &["id"],
+        batch(),
+        u64::MAX,
+    )
+    .unwrap();
+    let flags = unlined[0].column_by_name(UNCHANGED_COLUMN).unwrap();
+    assert_eq!(flags.null_count(), 2);
+    let reading = code(Even {
+        reads: Some(vec![1]),
+        lined: true,
+    });
+    let judged = run(&merged().transform(reading), &["id"], batch(), u64::MAX).unwrap();
+    assert_eq!(ids(&judged), [Some(1), Some(2)]);
+}
+
+#[test]
+fn a_part_none_of_whose_rows_flags_a_column_passes_its_flags_on_as_they_arrived() {
+    let none: &[u8] = &[0];
+    let batch = changes(&[
+        (Some(1), ChangeOp::Insert, None),
+        (Some(2), ChangeOp::Delete, Some(none)),
+    ]);
+    let merged = stream().read(ReadMode::Cdc).write(WriteMode::Merge);
+    let unlined = run(&merged.transform(code(Unlined)), &["id"], batch, u64::MAX).unwrap();
+    let flags = unlined[0].column_by_name(UNCHANGED_COLUMN).unwrap();
+    let flags = flags.as_binary::<i32>();
+    assert!(flags.is_null(0));
+    assert!(flags.is_valid(1));
+    assert!(flags.value(1).is_empty());
+}
+
+/// A transform saying it passes `id` on where it outputs it as text.
+struct Retyped;
+
+impl Transform for Retyped {
+    fn name(&self) -> &'static str {
+        "retyped"
+    }
+
+    fn output(&self, _input: &Schema) -> Result<SchemaRef, TransformError> {
+        Ok(Arc::new(Schema::new(vec![Field::new(
+            "id",
+            DataType::Utf8,
+            true,
+        )])))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        let ids = StringArray::from(vec![None::<&str>; batch.num_rows()]);
+        let columns = vec![Arc::new(ids) as ArrayRef];
+        Ok(RecordBatch::try_new(self.output(batch.schema_ref())?, columns).unwrap())
+    }
+
+    fn passes(&self, _input: &Schema) -> Option<Vec<Option<usize>>> {
+        Some(vec![Some(0)])
+    }
+}
+
+#[test]
+fn a_transform_saying_it_passes_a_column_on_as_another_type_breaks_its_contract() {
+    let stage = Stage::new(&stream().transform(code(Retyped)), &[], None).unwrap();
+    let refused = stage.chain(people(&[1]).schema_ref()).unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            Refusal::Contract {
+                breach: Breach::Passes,
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
 }
 
 #[test]

@@ -109,8 +109,18 @@ pub trait Transform: Send + Sync + 'static {
     }
 
     /// For each output column of batches of `input`, the input column, by ordinal, it passes on
-    /// unchanged, where it does: what holds a declarative transform to the keys, change columns
-    /// and change time it must pass as they arrive; none for trusted code, which is not held.
+    /// unchanged, where it does: what holds a transform to the keys, change columns and change
+    /// time it must pass as they arrive, and what keeps a delete's or a truncate's values, which
+    /// no transform computes from, in the columns passed on.
+    ///
+    /// A column it says it passes on is the input column, whatever `apply` makes there, so a
+    /// column it changes is not one it says it passes on, or the change is dropped.
+    ///
+    /// Code that says nothing is not held, and a delete keeps only the stream's keys and change
+    /// time, and any column whose array the code hands back as it was handed, in a part it runs
+    /// on; another column of the delete holds null. Code that hands a column back for some
+    /// batches and not others, as a `CASE` does where every row takes one branch, says what it
+    /// passes on, or what a delete keeps there depends on how the stage cuts its batch.
     fn passes(&self, _input: &Schema) -> Option<Vec<Option<usize>>> {
         None
     }
