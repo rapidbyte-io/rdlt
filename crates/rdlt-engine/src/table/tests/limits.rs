@@ -2,7 +2,7 @@
 
 use rdlt_connector::{LogicalType, SchemaVersion, TableState};
 
-use super::{capabilities, created, plan, resolver, schema};
+use super::{capabilities, created, from_state, plan, resolver, schema};
 use crate::error::{ErrorKind, codes};
 use crate::table::model::Model;
 
@@ -25,12 +25,12 @@ fn a_schema_change_past_the_last_version_is_refused() {
     let resolver = resolver(capabilities(), plan(), &[]);
     let model = created(&resolver, &[("id", LogicalType::Int64)]);
     let wider = schema(&[("id", LogicalType::Int64), ("extra", LogicalType::Utf8)]);
-    let next = Model::from_state(Some(&recorded(&model, u32::MAX - 1))).unwrap();
+    let next = from_state(Some(&recorded(&model, u32::MAX - 1))).unwrap();
     assert_eq!(
         resolver.resolve(&next, &wider).unwrap().model.version,
         u32::MAX
     );
-    let last = Model::from_state(Some(&recorded(&model, u32::MAX))).unwrap();
+    let last = from_state(Some(&recorded(&model, u32::MAX))).unwrap();
     let error = resolver.resolve(&last, &wider).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Schema);
     assert_eq!(error.code(), Some(codes::SCHEMA_VERSION_EXHAUSTED));
@@ -46,14 +46,9 @@ fn a_schema_change_past_the_last_version_is_refused() {
 fn a_recorded_schema_at_version_zero_is_refused() {
     let resolver = resolver(capabilities(), plan(), &[]);
     let model = created(&resolver, &[("id", LogicalType::Int64)]);
-    let error = Model::from_state(Some(&recorded(&model, 0))).unwrap_err();
+    let error = from_state(Some(&recorded(&model, 0))).unwrap_err();
     assert_eq!(error.code(), Some(codes::STATE_INVALID));
-    assert_eq!(
-        Model::from_state(Some(&recorded(&model, 1)))
-            .unwrap()
-            .version,
-        1
-    );
+    assert_eq!(from_state(Some(&recorded(&model, 1))).unwrap().version, 1);
 }
 
 #[test]

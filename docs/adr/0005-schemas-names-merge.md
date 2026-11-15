@@ -48,6 +48,20 @@ different types.
   change, which the column's policy applies (`evolve`), refuses (`freeze`) or discards
   (`discard_row`, `discard_value`). Settings resolve column → stream → pipeline in one function. A
   child table's columns take the settings of the stream's column whose arrays the table holds.
+- **A type has one form in the model.** A column's type is recorded with each struct's fields in
+  name order and each list's item named `item`, at any depth: the form the lattice's join returns. A
+  destination's native struct therefore has its fields in name order whichever record, partition or
+  declaration came first, and a widen puts a new field where its name sorts without moving the
+  others. A batch's column whose join with the column is the column's own type holds nothing the
+  column cannot, so a struct whose fields arrive in another order, lack ones that may be null or
+  hold only nulls is a value the column holds under every policy, and lowering reads each of its
+  fields into the column's struct by name. Keeping a column's fields in the order first seen and
+  comparing by name is rejected: the table's layout would depend on which flush resolved first, and
+  its first widen, a join, would reorder it. State records every type in this form; a recorded
+  column that is not is refused as `state_invalid`, since a model and a destination's stored struct
+  could then disagree on its order, and resetting the stream's tables creates it again. The
+  reference destinations refuse a declared type not in this form, so they hold only types the join
+  compares rightly.
 - **Evolution widens in place or adds a variant.** A change the destination can apply, or that
   does not change how it stores the column, widens the column. Otherwise, under `variant_column`,
   values land in `<name>__<kind>`, the variant of the joined type's kind, widened while the

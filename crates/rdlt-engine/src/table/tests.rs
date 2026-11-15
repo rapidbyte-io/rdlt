@@ -86,6 +86,12 @@ fn schema(fields: &[(&str, LogicalType)]) -> Incoming {
     )
 }
 
+/// The model state records for stream `s`'s table `t`.
+fn from_state(state: Option<&rdlt_connector::TableState>) -> Result<Model, crate::error::Error> {
+    let table = TablePath::new(["t"]).unwrap();
+    Model::from_state(state, &StreamName::new("s").unwrap(), &table)
+}
+
 /// The model once `resolver` creates the table from `fields`.
 fn created(resolver: &Resolver, fields: &[(&str, LogicalType)]) -> Model {
     resolver
@@ -272,6 +278,87 @@ fn a_frozen_table_still_takes_values_its_columns_hold() {
         .resolve(&model, &schema(&[("id", LogicalType::Int16)]))
         .unwrap();
     assert_eq!(resolution.routes, [Route::Column(0)]);
+}
+
+/// A struct of `fields`, each of which may be null.
+fn structure(fields: &[(&str, LogicalType)]) -> LogicalType {
+    let fields = fields
+        .iter()
+        .map(|(name, logical)| Field::new(*name, logical.clone(), true))
+        .collect();
+    LogicalType::Struct(rdlt_connector::Fields::new(fields).unwrap())
+}
+
+fn list_of(item: &str, logical: LogicalType) -> LogicalType {
+    LogicalType::List(Box::new(Field::new(item, logical, true)))
+}
+
+#[test]
+fn a_column_holds_structs_in_any_field_order_lacking_or_null_and_lists_however_named() {
+    use LogicalType as T;
+    let address = structure(&[("zip", T::Utf8), ("city", T::Utf8)]);
+    let tags = list_of("element", T::Int64);
+    let declared = [("address", address.clone()), ("tags", tags.clone())];
+    let modeled = [
+        ("address", structure(&[("city", T::Utf8), ("zip", T::Utf8)])),
+        ("tags", list_of("item", T::Int64)),
+    ]
+    .map(|(name, logical)| (name.to_owned(), logical));
+    let arriving = [
+        ("address", structure(&[("zip", T::Utf8), ("city", T::Utf8)])),
+        ("address", structure(&[("city", T::Utf8), ("zip", T::Utf8)])),
+        ("address", structure(&[("city", T::Utf8)])),
+        ("address", structure(&[("zip", T::Utf8), ("city", T::Null)])),
+        ("tags", list_of("item", T::Int32)),
+    ];
+    let policies = [
+        SchemaPolicy::Freeze,
+        SchemaPolicy::DiscardRow,
+        SchemaPolicy::DiscardValue,
+        SchemaPolicy::Evolve,
+    ];
+    for (policy, hinted) in policies
+        .into_iter()
+        .flat_map(|policy| [(policy, false), (policy, true)])
+    {
+        let mut stream = plan().schema(SchemaSettings::new().policy(policy));
+        if hinted {
+            stream = stream
+                .hint("address", address.clone())
+                .hint("tags", tags.clone());
+        }
+        let resolver = resolver(capabilities(), stream, &[]);
+        let model = created(&resolver, &declared);
+        assert_eq!(columns(&model), modeled, "{policy:?}, hinted {hinted}");
+        for (name, logical) in &arriving {
+            let resolution = resolver
+                .resolve(&model, &schema(&[(*name, logical.clone())]))
+                .unwrap();
+            let own = usize::from(*name == "tags");
+            assert_eq!(
+                resolution.routes,
+                [Route::Column(own)],
+                "{policy:?} {logical}"
+            );
+            assert!(resolution.changes.is_empty(), "{policy:?} {logical}");
+        }
+    }
+}
+
+#[test]
+fn a_struct_holds_in_any_field_order_the_fields_a_widen_gave_it() {
+    use LogicalType as T;
+    let resolver = resolver(capabilities(), plan(), &[]);
+    let model = created(&resolver, &[("s", structure(&[("a", T::Int64)]))]);
+    let inner = structure(&[("z", T::Int64), ("y", T::Int64)]);
+    let wider = schema(&[("s", structure(&[("a", T::Int64), ("m", inner)]))]);
+    let model = resolver.resolve(&model, &wider).unwrap().model;
+    let lacking = structure(&[("m", structure(&[("y", T::Int64)]))]);
+    let resolution = resolver
+        .resolve(&model, &schema(&[("s", lacking)]))
+        .unwrap();
+    assert_eq!(resolution.routes, [Route::Column(0)]);
+    assert!(resolution.changes.is_empty());
 }
 
 #[test]
@@ -814,7 +901,7 @@ proptest! {
 #[test]
 fn models_come_from_committed_state() {
     use rdlt_connector::{NameMap, TableState};
-    assert_eq!(Model::from_state(None).unwrap(), Model::default());
+    assert_eq!(from_state(None).unwrap(), Model::default());
     let resolver = resolver(capabilities(), plan(), &[]);
     let model = created(&resolver, &[("id", LogicalType::Int64)]);
     let state = TableState {
@@ -825,23 +912,54 @@ fn models_come_from_committed_state() {
         history: false,
         ..TableState::default()
     };
-    assert_eq!(Model::from_state(Some(&state)).unwrap(), model);
+    assert_eq!(from_state(Some(&state)).unwrap(), model);
     let named_only = TableState {
         schema: None,
         ..state.clone()
     };
-    let unnamed = Model::from_state(Some(&named_only)).unwrap();
+    let unnamed = from_state(Some(&named_only)).unwrap();
     assert!(!unnamed.created() && unnamed.columns.is_empty());
     assert_eq!(unnamed.names, model.names);
     let orphan = TableState {
         names: NameMap::default(),
         ..state
     };
-    let error = Model::from_state(Some(&orphan)).unwrap_err();
+    let error = from_state(Some(&orphan)).unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
         (ErrorKind::Destination, Some(codes::STATE_INVALID))
     );
+}
+
+#[test]
+fn state_recording_a_type_out_of_canonical_form_is_refused() {
+    use LogicalType as T;
+    use rdlt_connector::TableState;
+    let resolver = resolver(capabilities(), plan(), &[]);
+    let model = created(&resolver, &[("meta", structure(&[("a", T::Int64)]))]);
+    for recorded in [
+        structure(&[("b", T::Int64), ("a", T::Int64)]),
+        structure(&[("m", list_of("element", T::Int64))]),
+    ] {
+        let fields = vec![Field::new("meta", recorded.clone(), true)];
+        let state = TableState {
+            schema: Some((SchemaVersion(1), TableSchema::new(fields).unwrap())),
+            names: model.names.clone(),
+            ..TableState::default()
+        };
+        let error = from_state(Some(&state)).unwrap_err();
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ErrorKind::Destination, Some(codes::STATE_INVALID)),
+            "{recorded}"
+        );
+        let canonical = vec![Field::new("meta", recorded.canonical(), true)];
+        let state = TableState {
+            schema: Some((SchemaVersion(1), TableSchema::new(canonical).unwrap())),
+            ..state
+        };
+        assert!(from_state(Some(&state)).is_ok(), "{recorded}");
+    }
 }
 
 #[test]

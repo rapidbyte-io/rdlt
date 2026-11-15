@@ -6,6 +6,8 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use bytes::Bytes;
+use rdlt_connector::LogicalType;
+use rdlt_connector_reference::schema;
 use rdlt_engine::{ErrorKind, Nested, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings, codes};
 use serde_json::{Value, json};
 
@@ -290,9 +292,89 @@ async fn kept_beside_one_hostile(name: &str, first: &'static str, second: &str) 
     (ids, outcome.report.streams["events"].discarded_rows)
 }
 
+/// Loads `{"id":1,"meta":<meta>}` as `policy` says, its nested values stored as `nested` says,
+/// into a table whose struct `meta` was made from an object naming `b` before `a`: the run's
+/// status and discards, row 1's `meta` as published, as JSON text, and the names of the table's
+/// struct fields in order, none where it stores the struct as JSON or has no table.
+async fn struct_then(
+    store: &str,
+    (policy, nested): (SchemaPolicy, Nested),
+    meta: &str,
+) -> (Held, String, Vec<String>) {
+    let settings = SchemaSettings::default().nested(nested).policy(policy);
+    let first = Sent::Json(Bytes::from_static(br#"{"id":0,"meta":{"b":1,"a":2}}"#));
+    let second = Sent::Json(Bytes::from(format!(r#"{{"id":1,"meta":{meta}}}"#)));
+    let outcome = load(store, settings, first, second).await;
+    let report = outcome.report.streams.get("events");
+    let discarded = report.map(|report| (report.discarded_rows, report.discarded_values));
+    let (rows, values) = discarded.unwrap_or_default();
+    let held = (outcome.report.status, rows, values);
+    let rows = published_json(store, "events");
+    let published = match rows
+        .iter()
+        .find(|row| row["id"] == 1)
+        .map(|row| &row["meta"])
+    {
+        Some(Value::String(text)) => text.clone(),
+        other => other.map_or_else(String::new, Value::to_string),
+    };
+    let table = schema(store, "events");
+    let meta = table.as_ref().and_then(|table| table.fields().get("meta"));
+    let names = match meta.map(rdlt_connector::Field::logical_type) {
+        Some(LogicalType::Struct(fields)) => {
+            fields.iter().map(|field| field.name().to_owned()).collect()
+        }
+        _ => Vec::new(),
+    };
+    (held, published, names)
+}
+
+/// A run's status, and the rows and values it discarded.
+type Held = (RunStatus, u64, u64);
+
+#[tokio::test(start_paused = true)]
+async fn objects_in_any_order_lacking_or_null_fields_keep_their_struct_under_every_policy() {
+    // As JSON text, the struct renders its fields in the table's order, here name order: native
+    // rows as the destination renders them, nulls left out, and JSON as the engine renders it.
+    let cases = [
+        (r#"{"b":3,"a":4}"#, [r#"{"a":4,"b":3}"#, r#"{"a":4,"b":3}"#]),
+        (r#"{"a":5,"b":6}"#, [r#"{"a":5,"b":6}"#, r#"{"a":5,"b":6}"#]),
+        (r#"{"b":7}"#, [r#"{"b":7}"#, r#"{"a":null,"b":7}"#]),
+        (r#"{"b":8,"a":null}"#, [r#"{"b":8}"#, r#"{"a":null,"b":8}"#]),
+    ];
+    let policies = [
+        SchemaPolicy::Freeze,
+        SchemaPolicy::DiscardRow,
+        SchemaPolicy::DiscardValue,
+    ];
+    let mut layouts = Vec::new();
+    for (stored, nested) in [Nested::Native, Nested::Json].into_iter().enumerate() {
+        for (case, (meta, published_as)) in cases.into_iter().enumerate() {
+            let expected = published_as[stored];
+            for policy in policies {
+                let store = format!("struct_held_{case}_{policy:?}_{nested:?}").to_lowercase();
+                let (held, published, names) = struct_then(&store, (policy, nested), meta).await;
+                let at = format!("{meta} under {policy:?}, {nested:?}");
+                assert_eq!(held, (RunStatus::Succeeded, 0, 0), "{at}");
+                assert_eq!(published, expected, "{at}");
+                layouts.push((nested, names));
+            }
+        }
+    }
+    // A native struct holds its fields in name order, whichever came first.
+    let native: &[&str] = &["a", "b"];
+    for (nested, names) in &layouts {
+        let expected = if *nested == Nested::Native {
+            native
+        } else {
+            &[]
+        };
+        assert_eq!(names, expected, "{nested:?}");
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn objects_in_any_order_or_lacking_fields_keep_their_struct_beside_one_hostile_row() {
-    // The table's struct has its fields in the order first seen, not by name.
     let second = "{\"id\":1,\"meta\":{\"b\":3,\"a\":4}}\n{\"id\":2,\"meta\":{\"a\":5,\"b\":6}}\n\
                   {\"id\":3,\"meta\":{\"b\":7}}\n{\"id\":4,\"meta\":{}}\n{\"id\":5,\"meta\":\"s\"}";
     let first = r#"{"id":0,"meta":{"b":1,"a":2}}"#;

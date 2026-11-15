@@ -278,8 +278,8 @@ impl Resolver {
                 return Ok(route);
             }
             let hint = self.settings.stream.hinted(&column.path);
-            let logical = hint.unwrap_or(column.logical).clone();
-            self.identifies(column, &logical)?;
+            let logical = hint.unwrap_or(column.logical);
+            self.identifies(column, logical)?;
             draft.add(key, logical, !column.is_key)
         };
         self.place(draft, column, original)
@@ -422,7 +422,7 @@ impl Resolver {
         };
         let kind = joined.kind();
         let Some(existing) = draft.find(&key(kind)) else {
-            return draft.add(key(kind), joined.clone(), true);
+            return draft.add(key(kind), joined, true);
         };
         let current = draft.column_type(existing);
         let wider = current.join(column.logical);
@@ -437,7 +437,7 @@ impl Resolver {
         let json = key(TypeKind::Json);
         draft
             .find(&json)
-            .unwrap_or_else(|| draft.add(json, LogicalType::Json, true))
+            .unwrap_or_else(|| draft.add(json, &LogicalType::Json, true))
     }
 
     /// Whether the destination can change a column of `from` to `to` in place: they are stored
@@ -481,7 +481,9 @@ impl Resolver {
     }
 }
 
-/// Whether a column of `current` holds every value of `incoming` as it is.
+/// Whether a column of `current` holds every value of `incoming` as it is: a column's type is in
+/// canonical form, which the join returns where it adds nothing, so `incoming`'s struct fields
+/// may come in any order, lack fields that may be null, or hold only nulls.
 fn fits(current: &LogicalType, incoming: &LogicalType) -> bool {
     current.join(incoming) == *current
 }

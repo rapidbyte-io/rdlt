@@ -4,6 +4,7 @@
 use rdlt_connector::{Capabilities, LogicalType, TypeKind};
 use rdlt_engine::{Nested, SchemaPolicy, codes};
 use rdlt_testkit::canon::storage;
+use rdlt_testkit::lattice;
 
 use super::{Arrival, Outcome, Step, outcome, widens};
 use crate::workload::{Relaxed, SimStream};
@@ -70,7 +71,7 @@ pub(super) fn key_step(
         && joined != LogicalType::Json
         && widens(current, &joined, nested, capabilities)
         && (by_values || rendered_alike);
-    if joined == *current || widened {
+    if lattice::holds(current, logical) || widened {
         Step::To(joined)
     } else {
         Step::Refused

@@ -7,7 +7,7 @@ use arrow_schema::{
 use proptest::prelude::*;
 
 use super::{DecimalType, Field, Fields, LogicalType, TimeUnit, TypeError, TypeKind};
-use crate::strategy::logical_type;
+use crate::strategy::{cut, logical_type, respelled};
 
 fn decimal(precision: u8, scale: u8) -> LogicalType {
     LogicalType::Decimal(DecimalType::new(precision, scale).unwrap())
@@ -103,6 +103,22 @@ fn struct_joins_merge_fields_and_make_missing_ones_nullable() {
         ("tags", list(LogicalType::Utf8, false), true),
     ]);
     assert_eq!(a.join(&b), expected);
+}
+
+#[test]
+fn a_join_lists_fields_in_name_order_and_names_list_items_item_at_any_depth() {
+    use LogicalType as T;
+    let inner = structure(&[("z", T::Int64, true), ("y", T::Int64, true)]);
+    let named = structure(&[("y", T::Int64, true), ("z", T::Int64, true)]);
+    let one = structure(&[("a", T::Int64, true)]);
+    let both = structure(&[("m", inner, true), ("a", T::Int64, true)]);
+    let joined = structure(&[("a", T::Int64, true), ("m", named, true)]);
+    assert_eq!(one.join(&both), joined);
+    assert_eq!(both.join(&both), joined);
+    assert_eq!(T::Null.join(&both), joined);
+    let element = T::List(Box::new(Field::new("element", T::Int64, true)));
+    assert_eq!(element.join(&element), list(T::Int64, true));
+    assert_eq!(element.join(&T::Null), list(T::Int64, true));
 }
 
 #[test]
@@ -333,10 +349,35 @@ proptest! {
     }
 
     #[test]
-    fn join_is_idempotent_with_null_as_identity_and_json_on_top(a in logical_type()) {
-        prop_assert_eq!(a.join(&a), a.clone());
-        prop_assert_eq!(LogicalType::Null.join(&a), a.clone());
+    fn join_is_idempotent_on_canonical_types_with_null_as_identity_and_json_on_top(
+        a in logical_type(),
+    ) {
+        let canonical = a.canonical();
+        prop_assert_eq!(a.join(&a), canonical.clone());
+        prop_assert_eq!(canonical.join(&canonical), canonical.clone());
+        prop_assert_eq!(LogicalType::Null.join(&a), canonical);
         prop_assert_eq!(LogicalType::Json.join(&a), LogicalType::Json);
+    }
+
+    #[test]
+    fn a_join_is_canonical_holds_its_inputs_however_spelled_and_depends_on_no_spelling(
+        (a, respelled) in logical_type().prop_flat_map(|a| (respelled(&a), Just(a)))
+            .prop_map(|(respelled, a)| (a, respelled)),
+        b in logical_type(),
+    ) {
+        let joined = a.join(&b);
+        prop_assert_eq!(joined.canonical(), joined.clone());
+        prop_assert_eq!(joined.join(&respelled), joined.clone());
+        prop_assert_eq!(respelled.join(&b), joined);
+    }
+
+    #[test]
+    fn a_canonical_type_is_its_join_with_whatever_is_cut_from_it(
+        (a, cut) in logical_type().prop_flat_map(|a| (cut(&a), Just(a)))
+            .prop_map(|(cut, a)| (a, cut)),
+    ) {
+        let a = a.canonical();
+        prop_assert_eq!(a.join(&cut), a);
     }
 
     #[test]

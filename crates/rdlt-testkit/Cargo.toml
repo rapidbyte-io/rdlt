@@ -50,6 +50,7 @@ tracing-core.workspace = true
 
 [dev-dependencies]
 hyper = { workspace = true, features = ["client", "http2"] }
+rdlt-connector = { workspace = true, features = ["strategy"] }
 
 [lints]
 workspace = true

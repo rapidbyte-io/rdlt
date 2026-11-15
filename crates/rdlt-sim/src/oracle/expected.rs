@@ -12,6 +12,7 @@ use rdlt_connector::LogicalType;
 use rdlt_engine::SchemaPolicy;
 use rdlt_testkit::drawn::Scalar;
 use rdlt_testkit::drawn::json::text;
+use rdlt_testkit::lattice;
 use serde_json::Value;
 
 use super::arrivals::{Arrival, all, alone, arrival, fixed, splits, widest};
@@ -219,7 +220,7 @@ fn changed(stream: &SimStream, row: &Row, column: usize) -> Chance {
 /// A hinted type never changes; a declared one changes only for a value it does not hold, which a
 /// column that discards never takes; an undeclared column that evolves takes the type of the first
 /// batch holding it and keeps it while every batch, and every push shredded with one, arrives as
-/// that type. Values nested in a stream that normalizes have none.
+/// that type, its struct fields in any order. Values nested in a stream that normalizes have none.
 fn owned(stream: &SimStream, delivered: &[Row], column: usize) -> Option<LogicalType> {
     if stream.normalized() && !stream.whole(column) {
         return None;
@@ -248,6 +249,7 @@ fn owned(stream: &SimStream, delivered: &[Row], column: usize) -> Option<Logical
                 arrivals.iter().map(|arrival| arrival.logical()).collect();
             let mut distinct: Vec<LogicalType> = Vec::new();
             for logical in types? {
+                let logical = lattice::as_modeled(&logical);
                 if !distinct.contains(&logical) {
                     distinct.push(logical);
                 }

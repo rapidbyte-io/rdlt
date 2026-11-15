@@ -11,6 +11,7 @@ mod tests;
 use rdlt_connector::{DecimalType, LogicalType};
 use rdlt_testkit::drawn::Scalar;
 use rdlt_testkit::held::held;
+use rdlt_testkit::lattice;
 
 use crate::workload::{Row, SimStream};
 
@@ -60,10 +61,10 @@ impl Arrival {
     /// cannot say.
     pub(super) fn fits(&self, column: &LogicalType) -> Option<bool> {
         match self {
-            Self::Typed(logical) => Some(column.join(logical) == *column),
+            Self::Typed(logical) => Some(lattice::holds(column, logical)),
             // A column of 64-bit floats takes them cast.
             Self::ExactInt => {
-                Some(column.join(&LogicalType::Int64) == *column || *column == LogicalType::Float64)
+                Some(lattice::holds(column, &LogicalType::Int64) || *column == LogicalType::Float64)
             }
             Self::Container if *column == LogicalType::Json => Some(true),
             Self::Container => match column {

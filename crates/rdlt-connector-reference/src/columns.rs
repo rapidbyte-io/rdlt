@@ -9,8 +9,11 @@ use rdlt_connector::{
 ///
 /// A change the columns already reflect changes nothing. A column declared at a type the table's
 /// column does not hold is a `Data` error coded `schema_conflict`; a widen makes the column the
-/// join of its type and the new one.
+/// join of its type and the new one. A type not in canonical form, which the engine declares
+/// every type in, is a `Data` error, so the table holds only canonical types, which hold
+/// exactly what the join says.
 pub(crate) fn changed(schema: Option<&TableSchema>, change: &TableChange) -> Result<TableSchema> {
+    canonical(change)?;
     let schema = match (schema, change) {
         (Some(schema), _) => schema,
         (None, TableChange::Create { schema, .. }) => return Ok(schema.clone()),
@@ -67,6 +70,29 @@ fn add(fields: &mut Vec<Field>, field: &Field, change: &TableChange) -> Result<(
     }
 }
 
+/// Refuses `change` where it declares a type not in canonical form.
+fn canonical(change: &TableChange) -> Result<()> {
+    let declared: Vec<(&str, &LogicalType)> = match change {
+        TableChange::Create { schema, .. } => schema
+            .fields()
+            .iter()
+            .map(|field| (field.name(), field.logical_type()))
+            .collect(),
+        TableChange::AddColumn { field, .. } => vec![(field.name(), field.logical_type())],
+        TableChange::Widen { column, to, .. } => vec![(column.as_ref(), to)],
+    };
+    match declared
+        .into_iter()
+        .find(|(_, logical)| **logical != logical.canonical())
+    {
+        Some((name, logical)) => Err(ConnectorError::data(format!(
+            "table {} declares column {name} as {logical}, not in canonical form",
+            change.table().name
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Whether `column` holds every value of `logical`.
 fn holds(column: &Field, logical: &LogicalType) -> bool {
     column.logical_type().join(logical) == *column.logical_type()
@@ -82,3 +108,6 @@ fn conflict(change: &TableChange, existing: &Field) -> ConnectorError {
     ))
     .with_code(SCHEMA_CONFLICT)
 }
+
+#[cfg(test)]
+mod tests;

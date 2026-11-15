@@ -153,7 +153,7 @@ fn fits(to: &LogicalType, value: &Value, nullable: bool) -> bool {
         }
         (LogicalType::Struct(_) | LogicalType::List(_), _) => false,
         (LogicalType::Float64, _) if kind(value) == (Kind::Int { exact: true }) => true,
-        (to, value) => to.join(&logical(&kind(value))) == *to,
+        (to, value) => crate::lattice::holds(to, &logical(&kind(value))),
     }
 }
 

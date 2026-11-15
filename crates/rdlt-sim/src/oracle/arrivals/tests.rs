@@ -1,4 +1,4 @@
-use rdlt_connector::LogicalType;
+use rdlt_connector::{Field, Fields, LogicalType};
 use rdlt_testkit::drawn::Scalar;
 
 use super::{Arrival, pushed, shredded};
@@ -42,6 +42,25 @@ fn pushed_scalars_are_inferred_as_json_holds_them() {
 }
 
 #[test]
+fn a_struct_column_holds_its_fields_in_any_order_lacking_or_null() {
+    use LogicalType as T;
+    let structure = |fields: &[(&str, T)]| {
+        let fields = fields
+            .iter()
+            .map(|(name, logical)| Field::new(*name, logical.clone(), true))
+            .collect();
+        T::Struct(Fields::new(fields).unwrap())
+    };
+    let column = structure(&[("x", T::Int64), ("w", T::Utf8)]);
+    let fits = |arriving: &[(&str, T)]| Arrival::Typed(structure(arriving)).fits(&column);
+    assert_eq!(fits(&[("x", T::Int64)]), Some(true));
+    assert_eq!(fits(&[("w", T::Utf8), ("x", T::Int64)]), Some(true));
+    assert_eq!(fits(&[("x", T::Int64), ("w", T::Null)]), Some(true));
+    assert_eq!(fits(&[("v", T::Int64)]), Some(false));
+    assert_eq!(fits(&[("x", T::Utf8)]), Some(false));
+}
+
+#[test]
 fn a_push_mixing_types_arrives_as_their_join() {
     let typed = Arrival::Typed;
     let int = typed(LogicalType::Int64);
@@ -65,11 +84,7 @@ fn a_push_mixing_types_arrives_as_their_join() {
 fn only_json_surely_holds_a_pushed_container() {
     assert_eq!(Arrival::Container.fits(&LogicalType::Json), Some(true));
     assert_eq!(Arrival::Container.fits(&LogicalType::Int64), Some(false));
-    let list = LogicalType::List(Box::new(rdlt_connector::Field::new(
-        "item",
-        LogicalType::Int64,
-        true,
-    )));
+    let list = LogicalType::List(Box::new(Field::new("item", LogicalType::Int64, true)));
     assert_eq!(Arrival::Container.fits(&list), None);
 }
 
