@@ -250,8 +250,9 @@ A formal layer is added to the layers of its class, never in place of one.
   commit takes what it sealed; a read of an unbounded partition may end on its own, the rows after
   its last checkpoint read again by the next; a partition named again resumes where it was
   committed; a bounded one that ended on a checkpoint is read again once its end commits, and one a
-  read finished on rows after its last checkpoint is done (ADR 0004): plans pass it over while the
-  source says it ends, and refuse the run, ending its reads, once the source says it never ends;
+  read finished on rows after its last checkpoint is done (ADR 0004), the destination holding those
+  rows and its cursor, where a read of it resumes, left at that checkpoint: plans pass it over while
+  the source says it ends, and refuse the run, ending its reads, once the source says it never ends;
   rows arrive as the run reads, and the run may crash. No partition is lost or doubled: no row is
   skipped or held twice (`NoPartitionLostOrDoubled`: one read of a partition at most, each read's
   next segment starting where the destination holds the partition, every row below a position held
@@ -262,29 +263,28 @@ A formal layer is added to the layers of its class, never in place of one.
   plan refuses only where a done partition the source names never ends, and passes over one it says
   ends, the specification's tests hold, not TLC. A dropped partition drains, its sealed rows
   committed unless the run crashes first (`RemovedDrains`), which TLC checks under weak fairness of
-  every commit. Each invariant has a test that breaks its rule, a plan reading a done partition
-  again from before the rows its read finished on among them, and a plan that never starts a
-  partition the source adds, never stops one it dropped, or never reads again one whose read ended
-  fails `PlansFollowTheSource` in TLC. Its header names `tlc`: the model is finite, and TLC checks
-  every state, 1,569,164 of them, at three partitions, one of two rows and two of one, and two
-  changes or crashes; that covers every run a bounded check could explore. Every invariant and
-  temporal property over them takes about 21 minutes on one core of a developer's machine; the time
-  on the nightly runner is not measured, and the nightly job's limit is 120 minutes. `just quint`
-  tests and simulates 2,000 runs of 60 steps of each module, among them `replan_rows2`, at two rows
-  of every partition and three changes or crashes, which no checker explores. In the simulation, a
-  churning source (ADR 0031) retires, adds and names again partitions while runs follow it, through
-  the seeds' faults, and checks named for the invariants hold its runs.
-  `no_partition_lost_or_doubled` holds, in the engine's process, that no run reads a partition twice
-  at once. Beside it, in every placement, unless a reset races the runs, the destination holds that
-  no row of an incremental stream lands below where it held the partition, and the contents check
-  holds that every row lands once. `plans_follow_the_source` holds, in the engine's process on the
-  single thread, that a read whose partition a later plan dropped sends no more than its partition's
-  channel holds and one in flight. Its other half, that a partition named comes to be read, holds
-  only at each phase's end, where every partition is named again and every row must land.
-  `removed_drains` holds, in the engine's process, that an undisturbed run that succeeded in one
-  attempt, with every run beside it, commits every checkpoint the engine took from a read of a
-  partition its plans dropped. Beside them, the engine's tests
-  `a_following_run_starts_the_partitions_its_source_adds`,
+  every commit. Each invariant has a test that breaks its rule, a plan that starts a done partition
+  from its cursor, as it starts any other, among them, and a plan that never starts a partition the
+  source adds, never stops one it dropped, or never reads again one whose read ended fails
+  `PlansFollowTheSource` in TLC. Its header names `tlc`: the model is finite, and TLC checks every
+  state, 1,631,793 of them, at three partitions, one of two rows and two of one, and two changes or
+  crashes; that covers every run a bounded check could explore. Every invariant and temporal
+  property over them takes about 30 minutes on one core of a developer's machine; the time on the
+  nightly runner is not measured, and the nightly job's limit is 120 minutes. `just quint` tests and
+  simulates 2,000 runs of 60 steps of each module, among them `replan_rows2`, at two rows of every
+  partition and three changes or crashes, which no checker explores. In the simulation, a churning
+  source (ADR 0031) retires, adds and names again partitions while runs follow it, through the
+  seeds' faults, and checks named for the invariants hold its runs. `no_partition_lost_or_doubled`
+  holds, in the engine's process, that no run reads a partition twice at once. Beside it, in every
+  placement, unless a reset races the runs, the destination holds that no row of an incremental
+  stream lands below where it held the partition, and the contents check holds that every row lands
+  once. `plans_follow_the_source` holds, in the engine's process on the single thread, that a read
+  whose partition a later plan dropped sends no more than its partition's channel holds and one in
+  flight. Its other half, that a partition named comes to be read, holds only at each phase's end,
+  where every partition is named again and every row must land. `removed_drains` holds, in the
+  engine's process, that an undisturbed run that succeeded in one attempt, with every run beside it,
+  commits every checkpoint the engine took from a read of a partition its plans dropped. Beside
+  them, the engine's tests `a_following_run_starts_the_partitions_its_source_adds`,
   `a_following_run_reads_a_bounded_stream_again_as_it_grows`,
   `a_run_for_a_while_follows_its_source_and_loads_each_message_once` and
   `a_partition_a_plan_drops_and_names_again_reads_on_from_where_it_was_committed` exercise
@@ -310,22 +310,28 @@ A formal layer is added to the layers of its class, never in place of one.
   the place its rows fill, and each run's read follows ADR 0004's rule: a full read resumes a cycle
   filling the same place and begins a new one otherwise, and a read that is not full resumes a cycle
   that filled the table, which its first commit ends, and is refused where the cycle fills a
-  generation. The table merges, so the model holds where rows land and not how often, which
-  `exactly_once.qnt` holds. The rows below the position are held in the place the recorded cycle
-  fills, the table where none is recorded (`PositionsHoldTheirRows`), and a recorded cycle's own
-  reads landed every row below the position, so a full read reads every row
-  (`CyclesReadFromTheBeginning`). Each has a test that breaks it under the rule the engine had
-  before it recorded where a cycle's rows land, which resumed any recorded cycle and let an
-  incremental read leave it recorded: a full read resuming a cycle of another place, and a read that
-  is not full resuming a cycle that fills a generation, break the first, and a read that is not full
-  leaving a cycle recorded the second. Its header names `tlc`: at three rows TLC checks every state,
-  502 of them, in about a second. `just quint` tests it and simulates 2,000 runs of 40 steps. The
-  simulation changes a stream's modes only between phases, each of which ends with no full read in
-  progress (ADR 0024), so it never meets a cycle under a changed plan; the engine's tests in
-  `tests/it/cycles.rs` hold each case on the memory destination: a full read resuming or beginning
-  anew for each pair of write modes, an incremental read resuming a cycle that filled the table and
-  ending it, its refusal of a replace cycle with no table changed and its two remedies, and a reset
-  ending a replace cycle while the table keeps its rows.
+  generation. The rows are a fixed set of ids the table merges, so the model holds where rows land
+  and not how often, which `exactly_once.qnt` holds, and sees no generation but the recorded
+  cycle's: that a new cycle draws a generation of its own, and that a read that is not full of a
+  cycle filling a generation is refused rather than begun from the beginning, which would land the
+  table's copy again, the engine's tests alone hold (`reset.rs`'
+  `a_replace_run_retried_after_a_reset_of_positions_it_raced_fills_a_new_generation` and the refusal
+  in `cycles.rs`). The rows below the position are held in the place the recorded cycle fills, the
+  table where none is recorded (`PositionsHoldTheirRows`), and a recorded cycle's own reads landed
+  every row below the position, so a full read reads every row (`CyclesReadFromTheBeginning`). Each
+  has a test that breaks it under a rule that records no place with a cycle, which resumes any
+  recorded cycle and lets an incremental read leave it recorded: a full read resuming a cycle of
+  another place, and a read that is not full resuming a cycle that fills a generation, break the
+  first, and a read that is not full leaving a cycle recorded the second. Its header names `tlc`: at
+  three rows TLC checks every state, 502 of them, in about a second. `just quint` tests it and
+  simulates 2,000 runs of 40 steps. The simulation changes a stream's modes only between phases,
+  each of which ends with no full read in progress (ADR 0024), so it never meets a cycle under a
+  changed plan; the engine's tests in `tests/it/cycles.rs` hold each case on the memory destination:
+  a full read resuming or beginning anew for each pair of write modes, history among them, an
+  incremental read and a change read resuming a cycle that filled the table and ending it, their
+  refusal of a replace cycle with no table changed and its two remedies, a cycle of two partitions,
+  one done and one at a cursor, begun anew and resumed, and a reset ending a replace cycle while the
+  table keeps its rows.
 
 ### Tools
 

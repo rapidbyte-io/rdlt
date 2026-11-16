@@ -1,18 +1,19 @@
-// Re-planning in a continuous run, as ADR 0031 decides it. A following run reads each partition
-// its source names and commits what each sealed at a checkpoint. Each re-plan reads the source's
+// Re-planning in a continuous run, as ADR 0031 decides it. A following run reads each partition its
+// source names and commits what each sealed at a checkpoint. Each re-plan reads the source's
 // partitions again: a running partition the plan no longer names is stopped, its rows up to its
 // last checkpoint committed by a later commit, those after read again should a plan name it again;
 // an ended partition whose end is not committed waits for a later plan; and every partition the
-// plan names that no read holds starts from where the destination holds it, a bounded one that
-// ended on a checkpoint included, so a table is polled. A read of a bounded partition may instead
-// end on rows after its last checkpoint, which its end seals: its commit records the partition
-// done, with no position past those rows, so a plan passes it over while its source says it ends,
-// and refuses the run, ending its reads, once its source says it never ends, since reading it from
-// its last checkpoint would hold those rows twice and passing it over would miss every row it
-// gains. Partitions appear and disappear between plans, and change from bounded to unbounded and
-// back, a read keeping the kind its partition had when it started; a read of an unbounded
-// partition may end on its own, the rows after its last checkpoint read again by the next; rows
-// arrive as the run reads; the run may crash, and the next plans from what was committed.
+// plan names that no read holds starts from its cursor, where the destination holds it, a bounded
+// one that ended on a checkpoint included, so a table is polled. A read of a bounded partition may
+// instead end on rows after its last checkpoint, which its end seals: its commit records the
+// partition done, the destination holding those rows and no cursor past them, only the one of its
+// last checkpoint before them, so a plan passes it over while its source says it ends, and refuses
+// the run, ending its reads, once its source says it never ends, since reading it from that
+// checkpoint would hold those rows twice and passing it over would miss every row it gains.
+// Partitions appear and disappear between plans, and change from bounded to unbounded and back, a
+// read keeping the kind its partition had when it started; a read of an unbounded partition may end
+// on its own, the rows after its last checkpoint read again by the next; rows arrive as the run
+// reads; the run may crash, and the next plans from what was committed.
 //
 // quint main: replan replan_rows2
 // quint steps: --step simulated --max-steps 60
@@ -33,18 +34,18 @@ module replan_protocol {
   // ---- State
 
   /// A read of a partition: whether the partition ends where its rows end, as when the read
-  /// started; the offset its next segment starts at; how far it read and sealed; whether a plan
-  /// stopped it; whether it ended, and on rows after its last checkpoint; and whether a commit
-  /// took all it sealed by its end.
+  /// started; the offset its next segment starts at; how far it read, sealed and last
+  /// checkpointed, which only an end on rows after that checkpoint seals past; whether a plan
+  /// stopped it; whether it ended; and whether a commit took all it sealed by its end.
   type Read = {
     part: str,
     bounded: bool,
     base: int,
     read: int,
     sealed: int,
+    checkpointed: int,
     stopped: bool,
     ended: bool,
-    onRows: bool,
     landed: bool,
   }
 
@@ -56,8 +57,11 @@ module replan_protocol {
   var arrived: str -> int
   /// The run's reads.
   var reads: Set[Read]
-  /// Where the destination holds each partition.
+  /// Where the destination holds each partition: every row below it is held.
   var committed: str -> int
+  /// The cursor of each partition's last checkpoint the destination holds, where a read of it
+  /// resumes: where it holds the partition, but for a done one, whose rows past it are held.
+  var cursor: str -> int
   /// How often the destination holds each row of each partition.
   var rows: str -> (int -> int)
   /// The source's changes and the run's crashes left.
@@ -73,21 +77,22 @@ module replan_protocol {
   /// The reads of `part`.
   def readsOf(part: str): Set[Read] = reads.filter(r => r.part == part)
 
-  /// A read of `part` from where the destination holds it.
+  /// A read of `part` from its cursor.
   def fresh(part: str): Read = {
     part: part,
     bounded: bounded.contains(part),
-    base: committed.get(part),
-    read: committed.get(part),
-    sealed: committed.get(part),
+    base: cursor.get(part),
+    read: cursor.get(part),
+    sealed: cursor.get(part),
+    checkpointed: cursor.get(part),
     stopped: false,
     ended: false,
-    onRows: false,
     landed: false,
   }
 
   /// Every variable but `reads`, `committed` and `rows`, as it is.
   action keep: bool = all {
+    cursor' = cursor,
     named' = named,
     bounded' = bounded,
     arrived' = arrived,
@@ -104,6 +109,7 @@ module replan_protocol {
     arrived' = PARTS.mapBy(p => ROWS.get(p) - 1),
     reads' = Set(),
     committed' = PARTS.mapBy(_ => 0),
+    cursor' = PARTS.mapBy(_ => 0),
     rows' = PARTS.mapBy(p => zero(p)),
     changes' = CHANGES,
     done' = Set(),
@@ -125,6 +131,7 @@ module replan_protocol {
       reads' = if (refuses) Set() else settled.union(started),
       refused' = refuses,
       committed' = committed,
+      cursor' = cursor,
       rows' = rows,
       named' = named,
       bounded' = bounded,
@@ -155,7 +162,7 @@ module replan_protocol {
       not(r.stopped),
       not(r.ended),
       r.sealed < r.read or ends,
-      reads' = reads.exclude(Set(r)).union(Set({ ...r, sealed: r.read, ended: ends })),
+      reads' = reads.exclude(Set(r)).union(Set({ ...r, sealed: r.read, checkpointed: r.read, ended: ends })),
       committed' = committed,
       rows' = rows,
       keep,
@@ -171,7 +178,7 @@ module replan_protocol {
     not(r.ended),
     r.read == arrived.get(r.part),
     r.sealed < r.read,
-    reads' = reads.exclude(Set(r)).union(Set({ ...r, sealed: r.read, ended: true, onRows: true })),
+    reads' = reads.exclude(Set(r)).union(Set({ ...r, sealed: r.read, ended: true })),
     committed' = committed,
     rows' = rows,
     keep,
@@ -191,8 +198,9 @@ module replan_protocol {
   }
 
   /// The run commits every read's sealed segment, the rows from where its last ended to its seal,
-  /// and every sealed end, recording done each partition whose read ended on rows; a stopped read
-  /// drains, its rows committed, and gives its place up.
+  /// and every sealed end with the cursor of its last checkpoint, recording done each partition
+  /// whose read ended on rows past it; a stopped read drains, its rows committed, and gives its
+  /// place up.
   action commit = {
     val pending = reads.filter(r => r.sealed > r.base or (r.ended and not(r.landed)))
     all {
@@ -200,8 +208,9 @@ module replan_protocol {
       rows' = pending.fold(rows, (rs, r) =>
         rs.set(r.part, 0.to(ROWS.get(r.part) - 1).filter(o => r.base <= o and o < r.sealed).fold(rs.get(r.part), (counts, o) => counts.set(o, counts.get(o) + 1)))),
       committed' = pending.fold(committed, (c, r) => c.set(r.part, r.sealed)),
+      cursor' = pending.fold(cursor, (c, r) => c.set(r.part, r.checkpointed)),
       reads' = reads.filter(r => not(r.stopped)).map(r => { ...r, base: r.sealed, landed: r.ended }),
-      done' = done.union(pending.filter(r => r.onRows).map(r => r.part)),
+      done' = done.union(pending.filter(r => r.checkpointed < r.sealed).map(r => r.part)),
       named' = named,
       bounded' = bounded,
       arrived' = arrived,
@@ -220,6 +229,7 @@ module replan_protocol {
     reads' = reads,
     committed' = committed,
     rows' = rows,
+    cursor' = cursor,
     done' = done,
     refused' = refused,
   }
@@ -235,6 +245,7 @@ module replan_protocol {
     reads' = reads,
     committed' = committed,
     rows' = rows,
+    cursor' = cursor,
     done' = done,
     refused' = refused,
   }
@@ -250,6 +261,7 @@ module replan_protocol {
     arrived' = arrived,
     committed' = committed,
     rows' = rows,
+    cursor' = cursor,
     done' = done,
     refused' = refused,
   }
@@ -307,7 +319,7 @@ module replan_protocol {
   })
 
   /// Every variable.
-  val vars = (named, bounded, arrived, reads, committed, rows, changes, done, refused)
+  val vars = (named, bounded, arrived, reads, committed, cursor, rows, changes, done, refused)
 
   /// Whether a read of `p` a plan stopped holds sealed rows not yet committed.
   def draining(p: str): bool = readsOf(p).exists(r => r.stopped and r.sealed > r.base)
@@ -355,10 +367,19 @@ module replan_protocol {
     keep,
   }
 
+  /// A plan that starts every partition it names no read holds, done ones too, from its cursor,
+  /// which a plan never does.
+  action replanDone = all {
+    reads' = reads.union(named.filter(p => readsOf(p) == Set()).map(p => fresh(p))),
+    committed' = committed,
+    rows' = rows,
+    keep,
+  }
+
   /// A plan that starts every partition it names no read holds from its beginning, not from where
   /// the destination holds it, which a plan never does.
   action replanFromStart = all {
-    reads' = reads.union(named.filter(p => readsOf(p) == Set()).map(p => { ...fresh(p), base: 0, read: 0, sealed: 0 })),
+    reads' = reads.union(named.filter(p => readsOf(p) == Set()).map(p => { ...fresh(p), base: 0, read: 0, sealed: 0, checkpointed: 0 })),
     committed' = committed,
     rows' = rows,
     keep,
@@ -532,9 +553,9 @@ module replan_rows2 {
       .then(replan)
       .then(readOn("p0"))
       .then(finishOn("p0"))
-      .expect(readsOf("p0").forall(r => r.ended and r.onRows and r.sealed == 1))
+      .expect(readsOf("p0").forall(r => r.ended and r.checkpointed == 0 and r.sealed == 1))
       .then(commit)
-      .expect(done == Set("p0") and committed.get("p0") == 1)
+      .expect(done == Set("p0") and committed.get("p0") == 1 and cursor.get("p0") == 0)
       .then(arrive("p0"))
       .then(replan)
       .expect(readsOf("p0") == Set() and not(refused) and NoPartitionLostOrDoubled)
@@ -554,8 +575,8 @@ module replan_rows2 {
       .then(replan)
       .expect(not(refused) and readsOf("p0") == Set() and readsOf("p1").size() == 1)
 
-  /// A plan that read a done partition again from before the rows its read finished on would hold
-  /// them twice: the invariant refuses it.
+  /// A plan that started a done partition the source says never ends would read it from its
+  /// cursor, before the rows its read finished on, and hold them twice: the invariant refuses it.
   run aPlanReadingADonePartitionAgainWouldHoldRowsTwiceTest =
     init
       .then(replan)
@@ -564,11 +585,13 @@ module replan_rows2 {
       .then(commit)
       .then(reshape(Set("p0"), Set()))
       .then(replan)
-      .then(replanFromStart)
+      .expect(refused and reads == Set())
+      .then(replanDone)
+      .expect(readsOf("p0").forall(r => r.base == 0) and not(NoPartitionLostOrDoubled))
       .then(readOn("p0"))
       .then(checkpointOn("p0"))
       .then(commit)
-      .expect(not(NoPartitionLostOrDoubled))
+      .expect(rows.get("p0").get(0) == 2)
 
   /// A plan that started a partition beside its stopped read would read it twice at once: the
   /// invariant refuses it.
