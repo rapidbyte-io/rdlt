@@ -42,7 +42,7 @@ fn sample_state() -> PipelineState {
         state.recorded_by.insert(position, Epoch(number));
     }
     orders.completed = vec![GenerationId(0), GenerationId(1)];
-    state.resets.insert(stream("orders"), Epoch(3));
+    state.resets.insert(stream("orders"));
     let mut names = NameMap::default();
     names.insert(ColumnPath::from("id"), "id").unwrap();
     let variant = ColumnKey::Variant {
@@ -94,10 +94,9 @@ fn records_of(state: &PipelineState) -> Vec<StateRecord> {
             });
         }
     }
-    for (stream, epoch) in &state.resets {
+    for stream in &state.resets {
         entries.push(StateEntry::Reset {
             stream: stream.clone(),
-            epoch: *epoch,
         });
     }
     for (path, table) in &state.tables {
@@ -201,16 +200,15 @@ fn deleting_a_full_read_in_progress_forgets_where_its_rows_land() {
 fn a_stream_s_reset_marker_is_kept_apart_from_its_position_and_deleting_it_forgets_it() {
     let mut state = sample_state();
     let key = StateKey::Reset(stream("orders"));
-    assert_eq!(state.resets[&stream("orders")], Epoch(3));
+    assert!(state.resets.contains(&stream("orders")));
     state.apply(&StateChange::Delete(key.encode())).unwrap();
     assert!(state.resets.is_empty());
     assert_eq!(state.streams[&stream("orders")].phase, 1);
     let marker = StateEntry::Reset {
         stream: stream("events"),
-        epoch: Epoch(9),
     };
     state.apply(&StateChange::Put(marker.to_record())).unwrap();
-    assert_eq!(state.resets[&stream("events")], Epoch(9));
+    assert!(state.resets.contains(&stream("events")));
     assert!(!state.streams.contains_key(&stream("events")));
 }
 
@@ -507,19 +505,13 @@ fn states() -> impl Strategy<Value = PipelineState> {
         ),
         0..3,
     );
-    let resets = proptest::collection::btree_map(
-        prop_oneof![Just("a"), Just("b"), Just("e")],
-        any::<u64>(),
-        0..3,
-    );
+    let resets =
+        proptest::collection::btree_set(prop_oneof![Just("a"), Just("b"), Just("e")], 0..3);
     (any::<u64>(), streams, resets)
         .prop_map(|(epoch, streams, resets)| {
             let mut state = PipelineState {
                 epoch: Epoch(epoch),
-                resets: resets
-                    .into_iter()
-                    .map(|(name, epoch)| (stream(name), Epoch(epoch)))
-                    .collect(),
+                resets: resets.into_iter().map(stream).collect(),
                 ..PipelineState::default()
             };
             for (name, (phase, partitions, read, completed)) in streams {
@@ -1108,6 +1100,39 @@ fn a_table_s_entries() -> [StateEntry; 3] {
             identity: Identity::Position,
         },
     ]
+}
+
+#[test]
+fn a_stream_s_full_read_and_reset_marker_are_this_json() {
+    let full_read = StateEntry::Generation {
+        stream: stream("orders"),
+        generation: GenerationId(7),
+        fills: Fills::Generation,
+    };
+    let reset = StateEntry::Reset {
+        stream: stream("orders"),
+    };
+    let expected = [
+        (
+            full_read,
+            r#"{"generation":{"namespace":null,"name":"orders"}}"#,
+            concat!(
+                r#"{"v":7,"entry":{"generation":{"stream":{"namespace":null,"name":"orders"},"#,
+                r#""generation":7,"fills":"generation"}}}"#,
+            ),
+        ),
+        (
+            reset,
+            r#"{"reset":{"namespace":null,"name":"orders"}}"#,
+            r#"{"v":7,"entry":{"reset":{"stream":{"namespace":null,"name":"orders"}}}}"#,
+        ),
+    ];
+    for (entry, key, value) in expected {
+        let record = entry.to_record();
+        assert_eq!(record.key, key);
+        assert_eq!(std::str::from_utf8(&record.value).unwrap(), value);
+        assert_eq!(StateEntry::from_record(&record).unwrap(), entry);
+    }
 }
 
 #[test]

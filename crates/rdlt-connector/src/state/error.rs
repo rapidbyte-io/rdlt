@@ -27,7 +27,7 @@ pub enum StateError {
         /// What is wrong, as it is shown.
         reason: String,
     },
-    /// The value was written by a newer format.
+    /// The value was written in another format.
     #[error(
         "state value for `{key}` is format {version}; this build reads format {}",
         super::STATE_VERSION

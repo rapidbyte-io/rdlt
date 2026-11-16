@@ -1,4 +1,4 @@
-use rdlt_connector::{Epoch, PipelineState, StreamName, StreamState};
+use rdlt_connector::{PipelineState, StreamName, StreamState};
 
 use super::recorded;
 use crate::error::codes;
@@ -21,7 +21,7 @@ fn a_stream_is_reset_by_its_own_name_never_by_one_displayed_as_it_is() {
     assert_eq!(refused.code(), Some(codes::STREAM_NOT_FOUND));
     // A reset marker records a stream too.
     let mut reset = PipelineState::default();
-    reset.resets.insert(namespaced(), Epoch(3));
+    reset.resets.insert(namespaced());
     recorded(&reset, &namespaced()).expect("recorded by its reset");
 }
 
@@ -29,7 +29,7 @@ fn a_stream_is_reset_by_its_own_name_never_by_one_displayed_as_it_is() {
 fn a_stream_another_recorded_stream_is_displayed_as_is_refused_as_ambiguous() {
     let mut state = PipelineState::default();
     state.streams.insert(namespaced(), StreamState::default());
-    state.resets.insert(displayed_alike(), Epoch(2));
+    state.resets.insert(displayed_alike());
     for stream in [namespaced(), displayed_alike()] {
         let refused = recorded(&state, &stream).expect_err("their tables are one");
         assert_eq!(refused.code(), Some(codes::STREAM_AMBIGUOUS), "{stream}");
