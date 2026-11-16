@@ -1,26 +1,26 @@
 //! The requirements file an install is given, read as rdlt's own grammar and written again as the
 //! file pip reads, so that nothing in it can have pip build a package from its source.
 //!
-//! A line names a wheel by its version, `name[extras]==version`, or by its URL, `name @ URL`
-//! ending in `.whl`, with its hash, `--hash=sha256:...` (or `sha384`, `sha512`), and markers where
-//! it needs them; or it names where packages are found: `--index-url`, `--extra-index-url`,
-//! `--find-links` or `--no-index`. Lines join and comments end as pip has them. The file holds
-//! printable ASCII, spaces and tabs alone, its lines ending in `\n` or `\r\n`, so it breaks into
-//! lines as pip breaks it. Anything else is refused, naming its line, and no variable is
+//! A line names a wheel by its version, `name[extras]==version`, with its hash,
+//! `--hash=sha256:...` (or `sha384`, `sha512`), and markers where it needs them; or it names where
+//! wheels are found: `--index-url`, `--extra-index-url`, `--find-links` or `--no-index`. A wheel at
+//! a URL is named so, by `--find-links` and its version, never as `name @ URL`, which pip would
+//! read as a path or build whatever it is. Lines join and comments end as pip has them. The file
+//! holds printable ASCII, spaces and tabs alone, its lines ending in `\n` or `\r\n`, so it breaks
+//! into lines as pip breaks it. Anything else is refused, naming its line, and no variable is
 //! expanded; so are `--trusted-host`, which would have pip trust a host without checking its
 //! certificate, and `--pre`. What pip reads is written from the parts read, each in its own
-//! grammar, and each line written is seen to read, as pip reads it, as the line checked.
+//! grammar: no requirement holds a `/` or `\`, nor ends as an archive's name does, so pip reads
+//! none as a path, and each line splits, as pip splits it, into the options checked.
 
 mod markers;
 mod pip;
 #[cfg(test)]
 mod tests;
-mod version;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use super::wheel::Wheel;
 use super::{InstallError, blocking, io_error};
 
 /// The options that name where packages are found, each with its value, as pip reads them.
@@ -32,14 +32,27 @@ const PLACES: [(&str, &str); 5] = [
     ("-f", "--find-links"),
 ];
 
-/// The schemes a wheel's URL may have.
-const SCHEMES: [&str; 3] = ["https://", "http://", "file:"];
-
 /// The characters of a URL besides ASCII letters and digits, as RFC 3986 has them.
 const URL: &[u8] = b"-._~:/?#[]@!$&'()*+,;=%";
 
 /// Each algorithm a hash may name, and how many hex digits its digest has.
 const DIGESTS: [(&str, usize); 3] = [("sha256", 64), ("sha384", 96), ("sha512", 128)];
+
+/// The extensions by which pip takes a name for an archive's, as its `is_archive_file` reads them.
+const ARCHIVES: [&str; 12] = [
+    ".zip",
+    ".whl",
+    ".tar.bz2",
+    ".tbz",
+    ".tar.gz",
+    ".tgz",
+    ".tar",
+    ".tar.xz",
+    ".txz",
+    ".tlz",
+    ".tar.lz",
+    ".tar.lzma",
+];
 
 /// Why a requirements file is refused.
 #[derive(Debug, PartialEq)]
@@ -59,6 +72,70 @@ impl fmt::Display for Refused {
                 "it holds {character:?}, which is no printable ASCII, space or tab"
             ),
         }
+    }
+}
+
+/// A line of the file pip reads, as rdlt read it.
+#[derive(Debug, PartialEq)]
+enum Line {
+    /// A wheel by its version.
+    Pinned(Pinned),
+    /// Where wheels are found: the option, written in full, and its value.
+    Place { option: &'static str, value: String },
+    /// That no index is asked.
+    NoIndex,
+}
+
+/// A wheel by its version, as rdlt read it.
+#[derive(Debug, PartialEq)]
+struct Pinned {
+    name: String,
+    extras: Vec<String>,
+    version: String,
+    /// Its markers, written again from their grammar.
+    markers: Option<String>,
+    /// Each hash, `algorithm:hex`.
+    hashes: Vec<String>,
+}
+
+impl Line {
+    /// The line as pip is given it.
+    fn written(&self) -> String {
+        match self {
+            Self::Pinned(pinned) => pinned.written(),
+            // pip splits an option's line as a shell does, so the value is quoted.
+            Self::Place { option, value } => format!("{option} '{value}'"),
+            Self::NoIndex => "--no-index".to_owned(),
+        }
+    }
+}
+
+impl Pinned {
+    /// The requirement before its options, as pip is given it.
+    fn requirement(&self) -> String {
+        let mut written = self.name.clone();
+        if !self.extras.is_empty() {
+            written.push('[');
+            written.push_str(&self.extras.join(","));
+            written.push(']');
+        }
+        written.push_str("==");
+        written.push_str(&self.version);
+        if let Some(markers) = &self.markers {
+            written.push_str(" ; ");
+            written.push_str(markers);
+        }
+        written
+    }
+
+    /// The line as pip is given it.
+    fn written(&self) -> String {
+        let mut written = self.requirement();
+        for hash in &self.hashes {
+            written.push_str(" --hash=");
+            written.push_str(hash);
+        }
+        written
     }
 }
 
@@ -82,21 +159,34 @@ fn read_now(path: &Path) -> Result<Vec<String>, InstallError> {
     })
 }
 
-/// The line that names `wheel`, a copy of the operator's `named`, to pip by its URL and its hash,
-/// written as a checked line is.
-pub(super) fn wheel_line(wheel: &Wheel, named: &Path) -> Result<String, InstallError> {
-    let hash = format!("--hash=sha256:{}", wheel.sha256);
-    requirement(&[wheel.name.as_str(), "@", wheel.uri.as_str(), &hash]).map_err(|why| {
-        InstallError::Wheel {
+/// The line that names the wheel to pip, by `reference`, its name and `file:` URL, and its
+/// `sha256`, the hash of the operator's `named`: no other requirement holds a `/`.
+pub(super) fn wheel_line(
+    reference: &str,
+    sha256: &str,
+    named: &Path,
+) -> Result<String, InstallError> {
+    let hash = format!("sha256:{sha256}");
+    let line = format!("{reference} --hash={hash}");
+    if digest(&hash) && pip::reads_requirement(&line, &[hash.as_str()]) {
+        Ok(line)
+    } else {
+        Err(InstallError::Wheel {
             path: named.to_owned(),
-            why: why.to_string(),
-        }
-    })
+            why: "pip would read its line as other than it was checked".to_owned(),
+        })
+    }
 }
 
 /// The lines of `text`, a requirements file in `directory`, as pip is given them; the number of
 /// the first line refused, and why, otherwise.
 fn checked(text: &str, directory: &Path) -> Result<Vec<String>, (usize, Refused)> {
+    Ok(parsed(text, directory)?.iter().map(Line::written).collect())
+}
+
+/// The lines of `text`, a requirements file in `directory`, as rdlt read them; the number of the
+/// first line refused, and why, otherwise.
+fn parsed(text: &str, directory: &Path) -> Result<Vec<Line>, (usize, Refused)> {
     let text = characters(text)?;
     let mut lines = Vec::new();
     for (number, line) in logical(text) {
@@ -105,12 +195,12 @@ fn checked(text: &str, directory: &Path) -> Result<Vec<String>, (usize, Refused)
             return Err((number, Refused::Line(why)));
         }
         let tokens: Vec<&str> = line.split_whitespace().collect();
-        let checked = if tokens[0].starts_with('-') {
+        let read = if tokens[0].starts_with('-') {
             place(&tokens, directory)
         } else {
-            requirement(&tokens)
+            requirement(&tokens).map(Line::Pinned)
         };
-        lines.push(checked.map_err(|why| (number, why))?);
+        lines.push(read.map_err(|why| (number, why))?);
     }
     Ok(lines)
 }
@@ -179,10 +269,10 @@ fn uncommented(line: &str) -> &str {
 
 /// An option line naming where packages are found, as pip is given it; a relative path is taken
 /// from `directory`, where the file lies.
-fn place(tokens: &[&str], directory: &Path) -> Result<String, Refused> {
+fn place(tokens: &[&str], directory: &Path) -> Result<Line, Refused> {
     let refused = Refused::Line("it gives pip an option an install does not take");
     if tokens == ["--no-index"] {
-        return Ok("--no-index".to_owned());
+        return Ok(Line::NoIndex);
     }
     let named = match tokens {
         [option] => option.split_once('='),
@@ -205,37 +295,25 @@ fn place(tokens: &[&str], directory: &Path) -> Result<String, Refused> {
     } else {
         directory.join(PathBuf::from(value)).display().to_string()
     };
-    // pip splits an option's line as a shell does, so the value is quoted.
-    let line = format!("{long} '{value}'");
-    if !pip::reads_option(&line, long, &value) {
-        return Err(unreadable);
+    let line = Line::Place {
+        option: long,
+        value: value.clone(),
+    };
+    if pip::reads_option(&line.written(), long, &value) {
+        Ok(line)
+    } else {
+        Err(unreadable)
     }
-    Ok(line)
 }
 
-/// A requirement line, a wheel by its version or its URL with its hashes, as pip is given it.
-fn requirement(tokens: &[&str]) -> Result<String, Refused> {
+/// A requirement line, a wheel by its version with its hashes.
+fn requirement(tokens: &[&str]) -> Result<Pinned, Refused> {
     let split = tokens
         .iter()
         .position(|token| token.starts_with('-'))
         .unwrap_or(tokens.len());
     let (named, options) = tokens.split_at(split);
-    let mut hashes = Vec::new();
-    let mut options = options.iter();
-    while let Some(option) = options.next() {
-        let hash = match *option {
-            "--hash" => options.next().copied(),
-            option => option.strip_prefix("--hash="),
-        };
-        let Some(hash) = hash.filter(|hash| digest(hash)) else {
-            let why = "a requirement takes no option but its hash, a SHA-2 digest in hex";
-            return Err(Refused::Line(why));
-        };
-        hashes.push(hash);
-    }
-    if hashes.is_empty() {
-        return Err(Refused::Line("a requirement names no hash"));
-    }
+    let hashes = hashed(options)?;
     let named = named.join(" ");
     let (head, markers) = match named.split_once(';') {
         Some((head, markers)) => {
@@ -247,50 +325,81 @@ fn requirement(tokens: &[&str]) -> Result<String, Refused> {
         }
         None => (named.trim(), None),
     };
-    let mut line = if let Some((name, url)) = head.split_once('@') {
-        let name = with_extras(name.trim())?;
-        format!("{name} @ {}", wheel_url(url.trim())?)
-    } else {
-        let no_version = Refused::Line("it names no wheel by one version");
-        let (name, version) = head.split_once("==").ok_or(no_version)?;
-        let (name, version) = (with_extras(name.trim())?, version.trim());
-        if !version::version(version) {
-            return Err(Refused::Line("its version is not PEP 440's"));
-        }
-        format!("{name}=={version}")
+    if head.contains('@') {
+        let why = "it names a wheel by a URL: name the URL's directory or index with \
+                   `--find-links` or `--index-url`, and the wheel as `name==version` with its hash";
+        return Err(Refused::Line(why));
+    }
+    let no_version = Refused::Line("it names no wheel by one version");
+    let (named, version) = head.split_once("==").ok_or(no_version)?;
+    let (name, extras) = with_extras(named.trim())?;
+    let version = version.trim();
+    if !super::version::version(version) {
+        return Err(Refused::Line("its version is not PEP 440's"));
+    }
+    let pinned = Pinned {
+        name,
+        extras,
+        version: version.to_owned(),
+        markers,
+        hashes,
     };
-    if let Some(markers) = markers {
-        line.push_str(" ; ");
-        line.push_str(&markers);
-    }
-    for hash in &hashes {
-        line.push_str(" --hash=");
-        line.push_str(hash);
-    }
-    if !pip::reads_requirement(&line, &hashes) {
+    let (requirement, line) = (pinned.requirement(), pinned.written());
+    let hashes: Vec<&str> = pinned.hashes.iter().map(String::as_str).collect();
+    let pathless = [head, requirement.as_str(), line.as_str()]
+        .into_iter()
+        .all(|text| !text.contains(['/', '\\']) && !archive(text));
+    if !pathless || !pip::reads_requirement(&line, &hashes) {
         return Err(Refused::Line(
             "pip would read it as other than it was checked",
         ));
     }
-    Ok(line)
+    Ok(pinned)
 }
 
-/// `url`, once it is a wheel's: of a scheme pip downloads, in RFC 3986's characters, its path
-/// ending in `.whl`.
-#[expect(
-    clippy::case_sensitive_file_extension_comparisons,
-    reason = "pip takes a file for a wheel by its extension in lower case alone"
-)]
-fn wheel_url(url: &str) -> Result<&str, Refused> {
-    let path = url.split(['#', '?']).next().unwrap_or_default();
-    let wheel = SCHEMES.iter().any(|scheme| url.starts_with(scheme))
-        && path.ends_with(".whl")
-        && url.bytes().all(self::url);
-    if wheel {
-        Ok(url)
+/// The hashes `options`, a requirement's, name, each `algorithm:hex`; why they are none, or other
+/// options too, otherwise.
+fn hashed(options: &[&str]) -> Result<Vec<String>, Refused> {
+    let mut hashes = Vec::new();
+    let mut options = options.iter();
+    while let Some(option) = options.next() {
+        let hash = match *option {
+            "--hash" => options.next().copied(),
+            option => option.strip_prefix("--hash="),
+        };
+        let Some(hash) = hash.filter(|hash| digest(hash)) else {
+            let why = "a requirement takes no option but its hash, a SHA-2 digest in hex";
+            return Err(Refused::Line(why));
+        };
+        hashes.push(hash.to_owned());
+    }
+    if hashes.is_empty() {
+        return Err(Refused::Line("a requirement names no hash"));
+    }
+    Ok(hashes)
+}
+
+/// Whether pip reads `text` as an archive's name: its extension, as pip's `splitext` takes it, a
+/// `.tar` before it included, is an archive's, in any case.
+fn archive(text: &str) -> bool {
+    let (base, extension) = split_extension(text);
+    let extension = if base.to_ascii_lowercase().ends_with(".tar") {
+        &text[base.len() - ".tar".len()..]
     } else {
-        let why = "its URL names no wheel, which pip would build from its source";
-        Err(Refused::Line(why))
+        extension
+    };
+    ARCHIVES.contains(&extension.to_ascii_lowercase().as_str())
+}
+
+/// `path` split before its extension as Python's `posixpath.splitext` splits it: at the last `.`
+/// of its last segment, unless only dots come before it there.
+fn split_extension(path: &str) -> (&str, &str) {
+    let segment = path.rfind('/').map_or(0, |slash| slash + 1);
+    match path.rfind('.') {
+        Some(dot) if dot >= segment && path[segment..dot].bytes().any(|byte| byte != b'.') => {
+            path.split_at(dot)
+        }
+        _ => (path, ""),
     }
 }
 
@@ -309,9 +418,9 @@ fn digest(hash: &str) -> bool {
     })
 }
 
-/// `named`, a distribution's name as PEP 508 has it, with its extras where it names them, written
-/// again from its parts.
-fn with_extras(named: &str) -> Result<String, Refused> {
+/// The name and the extras of `named`, a distribution's name as PEP 508 has it, with its extras
+/// where it names them.
+fn with_extras(named: &str) -> Result<(String, Vec<String>), Refused> {
     let refused = || Refused::Line("it names no distribution");
     let (name, extras): (&str, Vec<&str>) = match named.split_once('[') {
         Some((name, rest)) => {
@@ -324,9 +433,8 @@ fn with_extras(named: &str) -> Result<String, Refused> {
     if !distribution(name) || !extras.iter().all(|extra| distribution(extra)) {
         return Err(refused());
     }
-    if extras.is_empty() {
-        Ok(name.to_owned())
-    } else {
-        Ok(format!("{name}[{}]", extras.join(",")))
-    }
+    Ok((
+        name.to_owned(),
+        extras.into_iter().map(str::to_owned).collect(),
+    ))
 }

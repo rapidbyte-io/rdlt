@@ -3,18 +3,20 @@
 //! code.
 //!
 //! No interpreter the install starts imports from the tree it makes, and nothing pip installs is
-//! built from its source. The wheel is copied once and read from its archive by the base
-//! interpreter, with no `site`, and refused where it needs a package by a URL; a requirements file
-//! is read in rdlt's own grammar, wheels alone, and written again for pip, each line seen to read
-//! for pip as the line checked; pip runs from an environment of its own beside the tree, takes
-//! wheels alone from an index, and installs into the tree as its prefix; and the tree is then read
-//! as data alone.
+//! built from its source. The wheel, taken only under a wheel's file name, is copied once and read
+//! from its archive by the base interpreter, with no `site`, refused where it needs a package by a
+//! URL, and named to pip by its copy's absolute `file:` URL; a requirements file is read in rdlt's
+//! own grammar, wheels by version alone, and written again for pip with no requirement pip would
+//! read as a path; pip runs from an environment of its own beside the tree, takes wheels alone
+//! from an index or a directory of links, and installs into the tree as its prefix; and the tree
+//! is then read as data alone.
 
 mod environment;
 mod requirements;
 #[cfg(test)]
 mod tests;
 mod tree;
+mod version;
 mod wheel;
 
 use std::io;
@@ -198,9 +200,15 @@ pub(crate) async fn install(installation: &Installation) -> Result<Installed, In
     };
     let facts = environment::facts(&python).await?;
     let described = wheel::described(&python, &held.path(), &installation.wheel).await?;
+    let reference = wheel::reference(&described.name, &held.path(), &installation.wheel)?;
     let requirements = match requirements {
         Some(mut lines) => {
-            lines.push(requirements::wheel_line(&described, &installation.wheel)?);
+            let sha256 = &described.sha256;
+            lines.push(requirements::wheel_line(
+                &reference,
+                sha256,
+                &installation.wheel,
+            )?);
             Some(lines)
         }
         None => None,
@@ -222,7 +230,7 @@ pub(crate) async fn install(installation: &Installation) -> Result<Installed, In
     let staging = tree::staging(&connectors, locked, &at).await?;
     let made = async {
         environment::made(&python, &staging).await?;
-        environment::installed(&staging, &described, requirements.as_deref()).await?;
+        environment::installed(&staging, &reference, requirements.as_deref()).await?;
         tree::finished(&staging.tree(), launcher, id.as_str()).await
     }
     .await;

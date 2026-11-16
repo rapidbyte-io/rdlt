@@ -19,7 +19,6 @@ use tokio::io::{
 use tokio::process::{Child, Command};
 
 use super::tree::Staging;
-use super::wheel::Wheel;
 use super::{InstallError, blocking, io_error};
 use crate::output;
 
@@ -213,15 +212,16 @@ pub(super) async fn made(python: &Path, staging: &Staging) -> Result<(), Install
     }
 }
 
-/// Installs `wheel`, and what it needs, into the tree of `staging` in one run of the pip beside
-/// it: wheels only, so no build backend runs, and with `lines`, those of a checked requirements
-/// file and the wheel's own, every package hashed, the wheel among them, and none but theirs.
+/// Installs the wheel `reference` names, and what it needs, into the tree of `staging` in one run
+/// of the pip beside it: wheels only, so no build backend runs, and with `lines`, those of a
+/// checked requirements file and the wheel's own, every package hashed, the wheel among them, and
+/// none but theirs.
 ///
 /// The tree is pip's prefix, never on its path, and is read after as data alone: a package that
 /// replaced what of the tree is the environment's own is refused.
 pub(super) async fn installed(
     staging: &Staging,
-    wheel: &Wheel,
+    reference: &str,
     lines: Option<&[String]>,
 ) -> Result<(), InstallError> {
     let tree = staging.tree();
@@ -239,7 +239,7 @@ pub(super) async fn installed(
     match lines {
         // A direct reference to the file, which no index is asked for.
         None => {
-            pip.arg(format!("{} @ {}", wheel.name, wheel.uri));
+            pip.arg(reference);
         }
         Some(lines) => {
             let path = staging.requirements();

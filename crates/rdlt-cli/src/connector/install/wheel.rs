@@ -1,9 +1,13 @@
-//! The wheel an install is asked for: an existing wheel file, copied once, and the copy read from
-//! its archive, never imported or run.
+//! The wheel an install is asked for: an existing file a wheel's name names, copied once, and the
+//! copy read from its archive, never imported or run, and named to pip by its `file:` URL.
 
-use std::ffi::{OsStr, OsString};
+#[cfg(test)]
+mod tests;
+
+use std::fmt::Write as _;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 
 use tokio::process::Command;
@@ -15,8 +19,6 @@ use super::{InstallError, blocking, io_error};
 pub(super) struct Wheel {
     /// Its distribution's name.
     pub(super) name: String,
-    /// Its `file:` URL.
-    pub(super) uri: String,
     /// The SHA-256 digest of its bytes, in hex.
     pub(super) sha256: String,
     /// Each `rdlt.connectors` entry point it names: its name, a connector's id, and its target.
@@ -52,7 +54,7 @@ impl Wheel {
 /// installed.
 pub(super) struct Held {
     directory: tempfile::TempDir,
-    name: OsString,
+    name: String,
 }
 
 impl Held {
@@ -62,9 +64,9 @@ impl Held {
     }
 }
 
-/// A copy of the wheel at `path`, once it is seen to be an existing regular file named `*.whl` that
-/// can be read: nothing else reaches pip, which would take a name for a package of an index, or a
-/// leading `-` for one of its options.
+/// A copy of the wheel at `path`, once it is seen to be an existing regular file that can be read,
+/// named as a wheel is: nothing else reaches pip, which would build a file of any other name, or
+/// take a name for a package of an index, or a leading `-` for one of its options.
 pub(super) async fn held(path: &Path) -> Result<Held, InstallError> {
     let path = path.to_owned();
     blocking(move || held_now(&path)).await
@@ -88,14 +90,16 @@ fn held_now(path: &Path) -> Result<Held, InstallError> {
     if !metadata.is_file() {
         return Err(refused("it is not a regular file"));
     }
-    let whl = absolute.extension() == Some(OsStr::new("whl"));
-    let Some(name) = absolute.file_name().filter(|_| whl) else {
-        return Err(refused("its name does not end in .whl"));
+    let named = absolute.file_name().and_then(|name| name.to_str());
+    let Some(name) = named.filter(|name| file_name(name)) else {
+        return Err(refused(
+            "its name is no wheel's, {name}-{version}-{python}-{abi}-{platform}.whl",
+        ));
     };
     let reading = || io_error(format!("reading {}", path.display()));
     let mut wheel = std::fs::File::open(&absolute).map_err(reading())?;
-    // Absolute, as a file's URL is.
-    let temporary = std::path::absolute(std::env::temp_dir())
+    // Absolute and with every link resolved, as the copy's URL names it.
+    let temporary = std::fs::canonicalize(std::env::temp_dir())
         .map_err(io_error("resolving the directory for temporary files"))?;
     let directory = tempfile::Builder::new()
         .prefix("rdlt-install-")
@@ -158,6 +162,72 @@ pub(super) async fn described(
             why: refused,
         }),
     }
+}
+
+/// What names the wheel copied to `held`, the distribution `name`, to pip: its name and `file:` URL.
+///
+/// It is written once the copy's name is a wheel's and its path absolute, with no `..` in it, so
+/// that pip reads it as that URL and no other file. The operator's `named` names it where it is
+/// refused.
+pub(super) fn reference(name: &str, held: &Path, named: &Path) -> Result<String, InstallError> {
+    let refused = |why: &str| InstallError::Wheel {
+        path: named.to_owned(),
+        why: why.to_owned(),
+    };
+    let file = held.file_name().and_then(|file| file.to_str());
+    if !held.is_absolute() || !file.is_some_and(file_name) || !distribution(name) {
+        return Err(refused("its copy is named by no absolute path to a wheel"));
+    }
+    let mut uri = "file://".to_owned();
+    for component in held.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(part) => {
+                uri.push('/');
+                for byte in part.as_bytes() {
+                    if byte.is_ascii_alphanumeric() || b"-._~".contains(byte) {
+                        uri.push(char::from(*byte));
+                    } else {
+                        write!(uri, "%{byte:02X}").expect("a string takes what is written to it");
+                    }
+                }
+            }
+            _ => return Err(refused("its copy's path holds a step out of a directory")),
+        }
+    }
+    Ok(format!("{name} @ {uri}"))
+}
+
+/// Whether `file` is a wheel's file name as pip reads one:
+/// `{name}-{version}(-{build})?-{python}-{abi}-{platform}.whl`, the name and the tags of ASCII
+/// letters, digits, `.` and `_`, the name starting with no `.`, the build with a digit, and the
+/// version PEP 440's.
+pub(super) fn file_name(file: &str) -> bool {
+    let Some(stem) = file.strip_suffix(".whl") else {
+        return false;
+    };
+    let tagged = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._".contains(&byte))
+    };
+    let parts: Vec<&str> = stem.split('-').collect();
+    let (name, version, build, tags) = match parts.as_slice() {
+        [name, version, python, abi, platform] => (*name, *version, None, [python, abi, platform]),
+        [name, version, build, python, abi, platform] => {
+            (*name, *version, Some(*build), [python, abi, platform])
+        }
+        _ => return false,
+    };
+    let numbered = build.is_none_or(|build| {
+        tagged(build) && build.starts_with(|first: char| first.is_ascii_digit())
+    });
+    tagged(name)
+        && !name.starts_with('.')
+        && super::version::version(version)
+        && numbered
+        && tags.iter().all(|tag| tagged(tag))
 }
 
 /// Whether `required`, a requirement as PEP 508 writes one, names its package by a URL: an `@`

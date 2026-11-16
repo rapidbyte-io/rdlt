@@ -1,7 +1,10 @@
-//! How pip reads a line of the requirements file rdlt writes for it, so that each line is seen to
-//! read as the line rdlt checked before it is written: pip ends a line at its comment, expands
-//! `${...}`, splits a requirement's line at its spaces, taking each word from the first that
-//! starts with `-` for its options, and splits options as a shell does.
+//! How pip splits a line of the requirements file rdlt writes for it into a requirement and its
+//! options.
+//!
+//! Each line is seen to split into the options rdlt checked before it is written: pip ends a line
+//! at its comment, expands `${...}`, splits a requirement's line at its spaces, taking each word
+//! from the first that starts with `-` for its options, and splits options as a shell does. What
+//! pip then makes of a requirement's text is not modelled here.
 
 #[cfg(test)]
 mod tests;

@@ -22,7 +22,6 @@ except Exception as error:
 else:
     said = {
         "name": name,
-        "uri": path.as_uri(),
         "sha256": sha256,
         "entry_points": entry_points,
         "requires": requires,

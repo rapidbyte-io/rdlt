@@ -103,7 +103,7 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # A connector install that makes a real environment runs venv and pip, seconds each, and more
 # beside other tests.
 [[profile.mutants.overrides]]
-filter = "package(rdlt-cli) & (test(/^connector::install::tests::/) | (binary(it) & test(/^install::/)))"
+filter = "package(rdlt-cli) & (test(/^connector::install::(requirements::)?tests::/) | (binary(it) & test(/^install::/)))"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
 # The SQLite differential tests run hundreds of cases, each syncing a database to disk: on a shared

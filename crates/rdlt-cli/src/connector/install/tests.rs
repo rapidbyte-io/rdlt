@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use super::{InstallError, Installation, install};
 
 /// A wheel of one connector entry point, as the fake interpreter below describes every wheel.
-const DESCRIBED: &str = r#"{"name": "tickets", "uri": "file:///absent.whl", "sha256": "00", "entry_points": [["io.example.tickets", "tickets:Tickets"]], "requires": []}"#;
+const DESCRIBED: &str = r#"{"name": "tickets", "sha256": "00", "entry_points": [["io.example.tickets", "tickets:Tickets"]], "requires": []}"#;
 
 /// An interpreter in `dir` that answers the facts query with `facts`, says `described` of any
 /// wheel, exits with `reading` when asked to read one, and touches `made` when asked to make an
@@ -85,7 +85,7 @@ async fn a_wheel_is_read_by_its_interpreter_before_anything_is_made() {
     assert_eq!(crashed.code(), "interpreter_failed", "{crashed}");
     let refused = refusal(&python, r#"{"refused": "File is not a zip file"}"#, 0).await;
     assert_eq!(refused.code(), "wheel", "{refused}");
-    let none = r#"{"name": "tickets", "uri": "file:///absent.whl", "sha256": "00", "entry_points": [], "requires": []}"#;
+    let none = r#"{"name": "tickets", "sha256": "00", "entry_points": [], "requires": []}"#;
     let none = refusal(&python, none, 0).await;
     assert!(
         matches!(none, InstallError::EntryPoints { found: 0 }),
@@ -142,16 +142,33 @@ async fn what_is_no_wheel_file_is_refused_before_any_interpreter_runs() {
     let python = dir.path().join("python3");
     std::fs::write(&python, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
     std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::create_dir(dir.path().join("directory.whl")).unwrap();
-    std::fs::write(dir.path().join("archive.zip"), "").unwrap();
-    for wheel in [
+    std::fs::create_dir(dir.path().join("directory-0.1.0-py3-none-any.whl")).unwrap();
+    // Files pip would not read as wheels, whatever their last characters.
+    let misnamed = [
+        "archive.zip",
+        ".whl",
+        "..whl",
+        "...whl",
+        "x.whl",
+        "tickets-0.1.0.whl",
+        ".tickets-0.1.0-py3-none-any.whl",
+        "tickets-0.1.0-py3-none-any.WHL",
+        "tickets-0.1.0.tar.gz",
+    ];
+    for name in misnamed {
+        std::fs::write(dir.path().join(name), "").unwrap();
+    }
+    let named = [
         PathBuf::from("tickets"),
         PathBuf::from("-r"),
         PathBuf::from("--index-url=https://example.invalid/simple"),
-        dir.path().join("directory.whl"),
-        dir.path().join("archive.zip"),
-        dir.path().join("absent.whl"),
-    ] {
+        dir.path().join("directory-0.1.0-py3-none-any.whl"),
+        dir.path().join("absent-0.1.0-py3-none-any.whl"),
+    ];
+    for wheel in named
+        .into_iter()
+        .chain(misnamed.iter().map(|name| dir.path().join(name)))
+    {
         let asked = Installation {
             wheel: wheel.clone(),
             ..installation(dir.path(), python.clone())
@@ -160,16 +177,17 @@ async fn what_is_no_wheel_file_is_refused_before_any_interpreter_runs() {
         assert_eq!(refused.code(), "wheel", "{}: {refused}", wheel.display());
         assert!(!ran.exists(), "{}: an interpreter ran", wheel.display());
     }
-    let unreadable = dir.path().join("unreadable.whl");
+    let unreadable = dir.path().join("unreadable-0.1.0-py3-none-any.whl");
     std::fs::write(&unreadable, "").unwrap();
     std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
     let shut = dir.path().join("shut");
     std::fs::create_dir(&shut).unwrap();
-    std::fs::write(shut.join("held.whl"), "").unwrap();
+    let held = shut.join("held-0.1.0-py3-none-any.whl");
+    std::fs::write(&held, "").unwrap();
     std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
     // The superuser reads them all the same.
     if std::fs::File::open(&unreadable).is_err() {
-        for wheel in [unreadable, shut.join("held.whl")] {
+        for wheel in [unreadable, held] {
             let asked = Installation {
                 wheel: wheel.clone(),
                 ..installation(dir.path(), python.clone())
@@ -274,7 +292,7 @@ fn tickets(dir: &Path, python: &Path, requires: &[&str]) -> PathBuf {
 
 /// An interpreter the sandbox shows: the system's, where it is 3.11 or later with `venv`; none
 /// elsewhere, unless `RDLT_REQUIRE_SYSTEM_PYTHON` says one must be here.
-fn system_python() -> Option<PathBuf> {
+pub(super) fn system_python() -> Option<PathBuf> {
     let python = PathBuf::from("/usr/bin/python3");
     let check = "import sys, ensurepip, venv; sys.exit(sys.version_info < (3, 11))";
     let usable = std::process::Command::new(&python)
@@ -433,11 +451,12 @@ fn sha256(path: &Path) -> String {
     format!("{:x}", sha2::Sha256::digest(std::fs::read(path).unwrap()))
 }
 
-/// A requirements line for the wheel at `path`, with its hash.
+/// Requirements lines for the wheel at `path`, of the distribution `name` 0.1.0: where it is found,
+/// and its version with its hash.
 fn pinned(name: &str, path: &Path) -> String {
+    let found = path.parent().unwrap().display();
     format!(
-        "{name} @ file://{} --hash=sha256:{}\n",
-        path.display(),
+        "--find-links {found}\n{name}==0.1.0 --hash=sha256:{}\n",
         sha256(path)
     )
 }
@@ -539,6 +558,68 @@ fn planted(dir: &Path, python: &Path, marker: &Path) -> (PathBuf, String) {
     (built, hash)
 }
 
+/// The source of `planted` that [`planted`] archives, as a zip named `.whl` in `dir`, which pip
+/// reads as no wheel; and its hash.
+fn zipped(dir: &Path, python: &Path, source: &Path) -> (PathBuf, String) {
+    let built = dir.join(".whl");
+    let script = format!(
+        "import tarfile, zipfile\n\
+         with tarfile.open({source:?}) as tar, zipfile.ZipFile({built:?}, 'w') as archive:\n\
+         \x20for member in tar.getmembers():\n\
+         \x20 archive.writestr(member.name.split('/', 1)[1], tar.extractfile(member).read())\n",
+        source = source.display().to_string(),
+        built = built.display().to_string()
+    );
+    let made = std::process::Command::new(python)
+        .arg("-c")
+        .arg(script)
+        .status();
+    assert!(made.unwrap().success(), "the zip is made");
+    let hash = sha256(&built);
+    (built, hash)
+}
+
+/// Every requirements file, each with what the wheel needs and the refusal it is answered with,
+/// that would have pip build `source`, in `found`, a source distribution of `planted`, its hash
+/// `hash`, or `zip`, its zip named `.whl`, of hash `zipped`, were it not refused.
+fn sources(
+    found: &Path,
+    source: &Path,
+    hash: &str,
+    (zip, zipped): (&Path, &str),
+) -> Vec<(Vec<String>, Option<String>, &'static str)> {
+    let by_url = format!("planted @ file://{}", source.display());
+    let links = format!("--no-index\n--find-links {}\n", found.display());
+    // From where pip runs, `<connectors>/.rdlt-install-*`, up to the directory beside it.
+    let walked = format!(
+        "planted @ https://h.example/x-1-py3-none-any.whl?/../../../../../found/{} \
+         --hash=sha256:{hash}\n",
+        source.file_name().unwrap().to_str().unwrap()
+    );
+    let file = |text: String| (Vec::new(), Some(text), "requirements");
+    vec![
+        // What the wheel itself needs by a URL.
+        (vec![by_url.clone()], None, "wheel"),
+        // A requirements file naming it by its URL.
+        file(format!("--no-index\n{by_url} --hash=sha256:{hash}\n")),
+        // A requirements file letting pip take sources.
+        file(format!(
+            "--no-binary :all:\n{links}planted==1.0 --hash=sha256:{hash}\n"
+        )),
+        // A requirement whose markers would end where an option of pip's begins.
+        file(format!(
+            "{links}planted==1.0;--no-binary=planted --hash=sha256:{hash}\n"
+        )),
+        // A URL ending in `.whl` that pip reads as no wheel's.
+        file(format!(
+            "--no-index\nplanted @ file://{} --hash=sha256:{zipped}\n",
+            zip.display()
+        )),
+        // A wheel's URL whose query walks, as pip reads it, to a source beside the install.
+        file(format!("--no-index\n{walked}")),
+    ]
+}
+
 #[tokio::test]
 async fn nothing_pip_would_build_from_its_source_is_installed() {
     let Some(python) = system_python() else {
@@ -550,37 +631,11 @@ async fn nothing_pip_would_build_from_its_source_is_installed() {
     let found = dir.join("found");
     std::fs::create_dir(&found).unwrap();
     let (source, hash) = planted(&found, &python, &marker);
-    let uri = format!("file://{}", source.display());
-    let by_url = format!("planted @ {uri}");
-    let links = format!("--no-index\n--find-links {}\n", found.display());
-    let cases = [
-        // What the wheel itself needs by a URL.
-        (&[by_url.as_str()][..], None, "wheel"),
-        // A requirements file naming it by its URL.
-        (
-            &[][..],
-            Some(format!("--no-index\n{by_url} --hash=sha256:{hash}\n")),
-            "requirements",
-        ),
-        // A requirements file letting pip take sources.
-        (
-            &[][..],
-            Some(format!(
-                "--no-binary :all:\n{links}planted==1.0 --hash=sha256:{hash}\n"
-            )),
-            "requirements",
-        ),
-        // A requirement whose markers would end where an option of pip's begins.
-        (
-            &[][..],
-            Some(format!(
-                "{links}planted==1.0;--no-binary=planted --hash=sha256:{hash}\n"
-            )),
-            "requirements",
-        ),
-    ];
+    let (zip, zipped_hash) = zipped(&found, &python, &source);
+    let cases = sources(&found, &source, &hash, (&zip, &zipped_hash));
     for (index, (requires, text, refused)) in cases.into_iter().enumerate() {
-        let made = tickets(&dir, &python, requires);
+        let requires: Vec<&str> = requires.iter().map(String::as_str).collect();
+        let made = tickets(&dir, &python, &requires);
         let requirements = text.map(|text| {
             let path = dir.join(format!("requirements-{index}.txt"));
             std::fs::write(&path, text).unwrap();
@@ -815,7 +870,6 @@ async fn a_wheel_whose_metadata_names_no_distribution_is_refused_before_anything
         let dir = tempfile::tempdir().unwrap();
         let named = serde_json::json!({
             "name": name,
-            "uri": "file:///absent.whl",
             "sha256": "00",
             "entry_points": [["io.example.tickets", "tickets:Tickets"]],
             "requires": [],

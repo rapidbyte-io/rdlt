@@ -116,13 +116,15 @@ anything runs; none is ignored.
     `rdlt connector install` runs, as the operator, the interpreter named, its `venv` and the
     pip the interpreter carries, never the connector's code nor a package's build: no
     interpreter it starts imports from the tree it makes, and nothing pip installs is built from
-    its source. The wheel is read from its archive with no `site`, and refused where it needs a
-    package by a URL; a requirements file is read in rdlt's own grammar, wheels by version or by
-    a `.whl` URL with their hashes and where they are found, and written again for pip, each
-    line seen to read, as pip splits it, as the line checked; pip runs
-    from an environment of its own beside the tree, in the install's own directory, with only the
-    variables it needs, reads none of its configuration, takes wheels alone from an index and
-    installs into the tree as its prefix; and the tree is then read as data alone, refused where
+    its source. The wheel is taken only under a wheel's file name, read from its archive with no
+    `site`, refused where it needs a package by a URL, and named to pip by its copy's absolute
+    `file:` URL; a requirements file is read in rdlt's own grammar, wheels by version with their
+    hashes and where they are found, never a wheel by its URL, and written again for pip with no
+    requirement but the wheel's own holding a `/` or ending as an archive's name does, so pip
+    reads none as a path; pip runs from an environment of its own beside the tree, in the
+    install's own directory, with only the variables it needs, reads none of its configuration,
+    takes wheels alone from an index or a directory of links and installs into the tree as its
+    prefix; and the tree is then read as data alone, refused where
     a package replaced the environment's interpreter or a `pyvenv.cfg` it reads. Anything run
     from an installed tree by hand runs the connector's code with your access, outside any
     sandbox. A sandboxed connector whose binary was replaced since it was placed is

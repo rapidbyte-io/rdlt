@@ -262,10 +262,11 @@ pub(crate) struct InstallArgs {
     /// A requirements file holding, each with its hash, every package the wheel needs: only
     /// those are installed.
     ///
-    /// Each line names a wheel, `name==version` or `name @ URL` of a `.whl`, with its `--hash`, or
-    /// where wheels are found, `--index-url`, `--extra-index-url`, `--find-links` or `--no-index`,
-    /// since pip reads none of its own configuration. Any other line is refused, and no `${...}`
-    /// is expanded: an index's credentials come from `.netrc`.
+    /// Each line names a wheel, `name==version` with its `--hash`, or where wheels are found,
+    /// `--index-url`, `--extra-index-url`, `--find-links` or `--no-index`, since pip reads none of
+    /// its own configuration: a wheel at a URL is named by `--find-links` and its version. Any
+    /// other line is refused, and no `${...}` is expanded: an index's credentials come from
+    /// `.netrc`.
     #[arg(long, value_name = "FILE")]
     pub(crate) requirements: Option<PathBuf>,
 }
