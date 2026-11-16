@@ -5,6 +5,13 @@ use rdlt_connector::{Cursor, Partition, PartitionId, PartitionState, ReadMode, S
 
 use crate::error::{Error, codes};
 
+/// What a refusal of a read that has no position to resume from says a reset does: it helps
+/// only a source that ends each incremental read on a checkpoint, since an incremental read of a
+/// partition that never ends lands only the rows before its last checkpoint.
+pub(crate) const RESET_REMEDY: &str = "reset it with its tables so that incremental reads start \
+                                       from its beginning, which lands every row only where its \
+                                       source ends each incremental read on a checkpoint";
+
 /// Where `stream`'s planned `partition`, read as `read` says, is read from, given its committed
 /// `position`: its cursor, or its beginning where it has none; `None` for one a read finished.
 ///
@@ -22,7 +29,7 @@ pub(crate) fn resumed(
 ) -> Result<Option<(Partition, Option<Cursor>)>, Error> {
     match position {
         Some(PartitionState::Done) if partition.is_unbounded() && read != ReadMode::Full => {
-            Err(cursor_missing(stream, &partition))
+            Err(cursor_missing(stream, &partition, read))
         }
         Some(PartitionState::Done) => Ok(None),
         Some(PartitionState::Cursor(cursor)) => Ok(Some((partition, Some(cursor.clone())))),
@@ -30,20 +37,30 @@ pub(crate) fn resumed(
     }
 }
 
-/// The refusal of a read that is not full of `stream`'s `partition`, which never ends and which a
-/// read finished on rows with no checkpoint after them, as a full read does, whether it
-/// checkpointed before them or never: in the user's terms, with what the user can do, and naming
-/// the partition only where the source declared it.
-fn cursor_missing(stream: &StreamName, partition: &Partition) -> Error {
-    let which = if *partition.id() == PartitionId::whole() {
-        String::new()
+/// A read of `mode`, as a refusal names it.
+pub(crate) fn read_named(mode: ReadMode) -> &'static str {
+    match mode {
+        ReadMode::Full => "a full read",
+        ReadMode::Incremental => "an incremental read",
+        ReadMode::Cdc => "a change read",
+    }
+}
+
+/// The refusal of `stream`'s `partition` to a `read` that is not full, where the partition never
+/// ends and a read finished it on rows with no checkpoint after them: in the user's terms, saying
+/// only what state shows, with what the user can do, and naming the partition only where the
+/// source declared it.
+fn cursor_missing(stream: &StreamName, partition: &Partition, read: ReadMode) -> Error {
+    let finished = if *partition.id() == PartitionId::whole() {
+        "the stream".to_owned()
     } else {
-        format!(" of partition {}", partition.id())
+        format!("its partition {}", partition.id())
     };
     Error::config(format!(
-        "stream {stream}: its last full read{which} ended on rows with no checkpoint after them, \
-         so an incremental read has no position to resume from; keep reading the stream in full, \
-         or reset it with its tables so that incremental reads start from its beginning"
+        "stream {stream}: a read finished {finished} on rows with no checkpoint after them, and \
+         its source says it never ends, so {} has no position to resume it from; read the \
+         stream in full, or {RESET_REMEDY}",
+        read_named(read)
     ))
     .with_code(codes::CURSOR_MISSING)
     .with_stream(stream)

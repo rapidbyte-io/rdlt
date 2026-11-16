@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 use rdlt_connector::{
-    Cursor, Epoch, GenerationId, PartitionId, PartitionState, PipelineState, StateChange,
+    Cursor, Epoch, Fills, GenerationId, PartitionId, PartitionState, PipelineState, StateChange,
     StateEntry, StateKey, StreamName,
 };
 use std::collections::BTreeMap;
@@ -155,6 +155,7 @@ fn written(change: &Change) -> StateChange {
             StateEntry::Generation {
                 stream: stream(STREAMS[name]),
                 generation: GenerationId(generation),
+                fills: Fills::Table,
             }
             .to_record(),
         ),

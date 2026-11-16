@@ -24,7 +24,7 @@ pub use key::StateKey;
 pub use names::{NameConflict, NameMap};
 
 /// The state value format this crate writes and reads.
-const STATE_VERSION: u16 = 6;
+const STATE_VERSION: u16 = 7;
 
 /// One stored state record, opaque to the destination that keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +88,8 @@ pub enum StateEntry {
         stream: StreamName,
         /// The generation.
         generation: GenerationId,
+        /// Where the read's rows land as they commit.
+        fills: Fills,
     },
     /// A stream's recently completed full reads.
     Completed {
@@ -96,7 +98,7 @@ pub enum StateEntry {
         /// The generations of the completed reads, oldest first.
         generations: Vec<GenerationId>,
     },
-    /// A stream's last reset: a full read a session older than it began is over.
+    /// A stream's last reset, which records the stream where state holds nothing else of it.
     Reset {
         /// The stream.
         stream: StreamName,
@@ -155,6 +157,19 @@ pub enum Sequences {
     Engine,
     /// A change stream's source: its positions.
     Source,
+}
+
+/// Where a full read's rows land as they commit, which says what its positions describe.
+///
+/// A replace stream's read fills a generation hidden from readers until the read completes and
+/// swaps it in; any other stream's rows land in its table at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fills {
+    /// The stream's table.
+    Table,
+    /// The read's generation.
+    Generation,
 }
 
 /// How a table's root rows are identified, which says whether a merge may replace their
@@ -289,12 +304,14 @@ pub struct PipelineState {
     pub streams: BTreeMap<StreamName, StreamState>,
     /// Each table's schema and names.
     pub tables: BTreeMap<TablePath, TableState>,
-    /// The epoch of the session that last reset each stream reset: a full read a session older
-    /// than it began is over.
+    /// The epoch of the session that last reset each stream, which records the stream where state
+    /// holds nothing else of it.
     pub resets: BTreeMap<StreamName, Epoch>,
     /// The epoch of the session whose commit recorded each partition's position, by stream and
     /// partition.
     pub recorded_by: BTreeMap<(StreamName, PartitionId), Epoch>,
+    /// Where the rows of each stream's full read in progress land, by stream.
+    pub fills: BTreeMap<StreamName, Fills>,
 }
 
 impl PipelineState {

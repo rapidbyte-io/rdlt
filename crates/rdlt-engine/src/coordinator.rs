@@ -66,6 +66,9 @@ pub(crate) struct StreamRun {
     pub(crate) table: usize,
     /// The full read in progress; `None` for incremental reads.
     pub(crate) cycle: Option<Cycle>,
+    /// Whether state records a full read of the stream that filled its table, which this read,
+    /// not full, ends with the attempt's next commit.
+    pub(crate) ends_cycle: bool,
     /// Partitions still reading.
     pub(crate) remaining: usize,
     /// Whether any partition stopped before its end.

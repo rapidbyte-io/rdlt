@@ -39,16 +39,16 @@ generation.
   - These refusals, and `reset_unreplayable`, come before the destination opens, fencing
     nothing. `stream_not_found` can only come after: the pipeline's state is read by opening the
     destination, which fences its older sessions as any reset does.
-  - A full read a run began before the stream was reset is over: a retry of that run, which the
-    reset fenced, starts a new read in a generation of its own rather than resuming the one it
-    remembered, whose rows were the stream's before the reset. The run keeps each read's
-    generation with the epoch of the stream's last reset when it began.
+  - A full read a run began before the stream was reset is over: the reset deleted its record, so
+    a retry of that run, which the reset fenced, starts a new read, in a generation of its own as
+    every new read is (ADR 0004), rather than resuming the one it remembered, whose rows were the
+    stream's before the reset.
   - A connector that panics fails the reset as an internal error, as it fails an attempt.
 - **The reset marker.** The reset commit puts `StateKey::Reset(stream)`, the epoch of its session.
   Opening the reset's session fences every older session, so a run still loading fails its next
   commit, and nothing it read before the reset lands after it; a full read it began before the
-  reset is over, by the marker (above). Epochs are the destination's, ordered per pipeline: no
-  clocks.
+  reset is over (above). The marker records the stream, so a later reset of it is not refused
+  as `stream_not_found`. Epochs are the destination's, ordered per pipeline: no clocks.
 - **Drops ride the commit: `CommitMeta::drop_tables: Vec<DroppedTable { path, name }>`**, wire
   `CommitMeta.drop_tables = 8`, capability `drop_tables` (catalog field 12). A drop is not a
   `TableChange`: schema changes take effect at once in every destination, so a drop there and a

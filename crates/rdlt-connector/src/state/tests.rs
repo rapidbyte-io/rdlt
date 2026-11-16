@@ -4,7 +4,7 @@ use bytes::Bytes;
 use proptest::prelude::*;
 
 use super::{
-    Identity, NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange,
+    Fills, Identity, NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange,
     StateEntry, StateError, StateKey, StateRecord, StreamState, TableState, Writing,
 };
 use crate::cursor::Cursor;
@@ -36,6 +36,7 @@ fn sample_state() -> PipelineState {
         .partitions
         .insert(partition("p1"), PartitionState::Done);
     orders.generation = Some(GenerationId(2));
+    state.fills.insert(stream("orders"), Fills::Generation);
     for (id, number) in [("p0", 5), ("p1", 3)] {
         let position = (stream("orders"), partition(id));
         state.recorded_by.insert(position, Epoch(number));
@@ -83,6 +84,7 @@ fn records_of(state: &PipelineState) -> Vec<StateRecord> {
             entries.push(StateEntry::Generation {
                 stream: name.clone(),
                 generation,
+                fills: state.fills[name],
             });
         }
         if !stream.completed.is_empty() {
@@ -183,6 +185,16 @@ fn deleting_a_completed_marker_clears_it() {
         state.streams[&stream("orders")].generation,
         Some(GenerationId(2))
     );
+}
+
+#[test]
+fn deleting_a_full_read_in_progress_forgets_where_its_rows_land() {
+    let mut state = sample_state();
+    assert_eq!(state.fills[&stream("orders")], Fills::Generation);
+    let key = StateKey::Generation(stream("orders"));
+    state.apply(&StateChange::Delete(key.encode())).unwrap();
+    assert_eq!(state.streams[&stream("orders")].generation, None);
+    assert!(state.fills.is_empty());
 }
 
 #[test]
@@ -490,7 +502,7 @@ fn states() -> impl Strategy<Value = PipelineState> {
         (
             any::<u16>(),
             proptest::collection::btree_map("[a-z0-9]{1,4}", partition_states(), 0..3),
-            any::<Option<u64>>(),
+            proptest::option::of((any::<u64>(), any::<bool>())),
             proptest::collection::vec(any::<u64>(), 0..3),
         ),
         0..3,
@@ -501,32 +513,37 @@ fn states() -> impl Strategy<Value = PipelineState> {
         0..3,
     );
     (any::<u64>(), streams, resets)
-        .prop_map(|(epoch, streams, resets)| PipelineState {
-            epoch: Epoch(epoch),
-            streams: streams
-                .into_iter()
-                .map(|(name, (phase, partitions, generation, completed))| {
-                    let partitions = partitions
-                        .into_iter()
-                        .map(|(id, state)| (partition(&id), state))
-                        .collect();
-                    (
-                        stream(name),
-                        StreamState {
-                            phase,
-                            partitions,
-                            generation: generation.map(GenerationId),
-                            completed: completed.into_iter().map(GenerationId).collect(),
-                        },
-                    )
-                })
-                .collect(),
-            tables: std::collections::BTreeMap::default(),
-            resets: resets
-                .into_iter()
-                .map(|(name, epoch)| (stream(name), Epoch(epoch)))
-                .collect(),
-            recorded_by: std::collections::BTreeMap::new(),
+        .prop_map(|(epoch, streams, resets)| {
+            let mut state = PipelineState {
+                epoch: Epoch(epoch),
+                resets: resets
+                    .into_iter()
+                    .map(|(name, epoch)| (stream(name), Epoch(epoch)))
+                    .collect(),
+                ..PipelineState::default()
+            };
+            for (name, (phase, partitions, read, completed)) in streams {
+                let partitions = partitions
+                    .into_iter()
+                    .map(|(id, state)| (partition(&id), state))
+                    .collect();
+                if let Some((_, replaces)) = read {
+                    let fills = if replaces {
+                        Fills::Generation
+                    } else {
+                        Fills::Table
+                    };
+                    state.fills.insert(stream(name), fills);
+                }
+                let recorded = StreamState {
+                    phase,
+                    partitions,
+                    generation: read.map(|(generation, _)| GenerationId(generation)),
+                    completed: completed.into_iter().map(GenerationId).collect(),
+                };
+                state.streams.insert(stream(name), recorded);
+            }
+            state
         })
         .prop_flat_map(|state| (Just(state), tables(), any::<u64>()))
         .prop_map(|(mut state, tables, first)| {
@@ -1099,7 +1116,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"schema":["orders","lines"]}"#,
             concat!(
-                r#"{"v":6,"entry":{"schema":{"table":["orders","lines"],"version":3,"schema":"#,
+                r#"{"v":7,"entry":{"schema":{"table":["orders","lines"],"version":3,"schema":"#,
                 r#"{"fields":[[{"name":"id","nullable":false,"type":"int64"}],"#,
                 r#"[{"name":"address","nullable":true,"type":{"struct":1}},"#,
                 r#"{"name":"city","nullable":true,"type":"utf8"}],"#,
@@ -1110,7 +1127,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"names":["orders","lines"]}"#,
             concat!(
-                r#"{"v":6,"entry":{"names":{"table":["orders","lines"],"#,
+                r#"{"v":7,"entry":{"names":{"table":["orders","lines"],"#,
                 r#""physical":"orders__lines","names":[[{"source":["id"]},"id"],"#,
                 r#"[{"variant":{"column":["address","city"],"kind":"int64"}},"#,
                 r#""address__city__int"]]}}}"#,
@@ -1119,7 +1136,7 @@ fn a_table_s_records_are_this_json() {
         (
             r#"{"sequences":["orders","lines"]}"#,
             concat!(
-                r#"{"v":6,"entry":{"sequences":{"table":["orders","lines"],"#,
+                r#"{"v":7,"entry":{"sequences":{"table":["orders","lines"],"#,
                 r#""sequences":"source","history":true,"key":[["id"],["address","city"]],"#,
                 r#""change_time":["address","city"],"identity":"position"}}}"#,
             ),

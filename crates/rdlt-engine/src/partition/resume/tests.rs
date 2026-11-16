@@ -72,3 +72,16 @@ fn the_refusal_names_a_partition_only_where_the_source_declared_it() {
         "the partition of a stream that plans none is not"
     );
 }
+
+#[test]
+fn the_refusal_names_the_read_by_its_mode() {
+    let stream = StreamName::new("s").expect("a valid name");
+    let done = PartitionState::Done;
+    for (read, named) in [
+        (ReadMode::Incremental, "an incremental read"),
+        (ReadMode::Cdc, "a change read"),
+    ] {
+        let error = resumed(&stream, partition(true), Some(&done), read).expect_err("refused");
+        assert!(error.to_string().contains(named), "{read:?}: {error}");
+    }
+}

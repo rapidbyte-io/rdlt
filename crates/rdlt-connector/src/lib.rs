@@ -175,7 +175,7 @@ pub use source::{
 };
 pub use spec::{BoxFuture, ConnectContext, ConnectorSpec, Role};
 pub use state::{
-    Identity, NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange,
+    Fills, Identity, NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange,
     StateEntry, StateError, StateKey, StateRecord, StreamState, TableState,
 };
 pub use types::{
