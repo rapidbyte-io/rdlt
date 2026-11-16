@@ -77,8 +77,11 @@ def requirements(tmp_path: Path) -> Path:
         )
     (wheel,) = built
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    version = wheel.name.split("-")[1]
     path = tmp_path / "requirements.txt"
-    path.write_text(f"{exported}\nrdlt @ {wheel.as_uri()} --hash=sha256:{digest}\n")
+    path.write_text(
+        f"{exported}\n--find-links {wheel.parent}\nrdlt=={version} --hash=sha256:{digest}\n"
+    )
     return path
 
 

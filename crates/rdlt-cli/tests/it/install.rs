@@ -9,7 +9,7 @@ use crate::support::{Scratch, output_of};
 /// An interpreter at `path` that answers the facts query with `facts`, and says of any wheel that
 /// it is one connector's.
 fn fake_python(path: &Path, facts: &str) -> PathBuf {
-    let described = r#"{"name": "tickets", "uri": "file:///absent.whl", "sha256": "00", "entry_points": [["io.example.tickets", "tickets:Tickets"]], "requires": []}"#;
+    let described = r#"{"name": "tickets", "sha256": "00", "entry_points": [["io.example.tickets", "tickets:Tickets"]], "requires": []}"#;
     let script =
         format!("#!/bin/sh\nif [ \"$#\" = 5 ]; then echo '{described}'; else echo '{facts}'; fi\n");
     std::fs::write(path, script).expect("the script writes");
@@ -268,16 +268,15 @@ async fn a_source_a_hashed_wheel_needs_by_its_url_is_refused_for_its_hash_unbuil
     let marker = scratch.path().join("built");
     let source = made_source(&python, scratch.path(), &marker);
     let needs = format!("Requires-Dist: planted @ file://{}\\n", source.display());
-    let carrier = made_dependency(&python, scratch.path(), "carrier", &needs);
+    let found = scratch.path().join("found");
+    std::fs::create_dir(&found).unwrap();
+    let carrier = made_dependency(&python, &found, "carrier", &needs);
     let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
     made_wheel(&python, &wheel, "Requires-Dist: carrier\\n");
     let requirements = scratch.path().join("requirements.txt");
-    let line = format!(
-        "carrier @ file://{} --hash=sha256:{}",
-        carrier.display(),
-        sha256(&carrier)
-    );
-    std::fs::write(&requirements, format!("--no-index\n{line}\n")).unwrap();
+    let line = format!("carrier==0.1.0 --hash=sha256:{}", sha256(&carrier));
+    let text = format!("--no-index\n--find-links {}\n{line}\n", found.display());
+    std::fs::write(&requirements, text).unwrap();
     let mut install = install_command(&scratch);
     install
         .arg(&wheel)
@@ -313,6 +312,36 @@ async fn an_interpreter_named_by_a_relative_path_is_found_where_the_install_was_
     // It made the environments, and pip, which it did not make, is not there to run.
     assert_eq!(printed["error"]["code"], "pip_failed", "{printed}");
     assert!(made.exists(), "the interpreter named made no environment");
+}
+
+#[tokio::test]
+async fn an_interpreter_named_without_a_path_is_found_on_the_path() {
+    let scratch = Scratch::new();
+    let wheel = scratch.path().join("tickets-0.1.0-py3-none-any.whl");
+    std::fs::write(&wheel, "").unwrap();
+    // Found on the path alone: nothing of its name is where the install is asked.
+    let found = scratch.path().join("found");
+    std::fs::create_dir(&found).unwrap();
+    let made = scratch.path().join("made");
+    let making = format!("touch '{}'", made.display());
+    fake_python_making(&found.join("python3"), &making);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![found];
+    paths.extend(std::env::split_paths(&path));
+    let mut install = install_command(&scratch);
+    install
+        .arg(&wheel)
+        .arg("--python")
+        .arg("python3")
+        .env("PATH", std::env::join_paths(paths).unwrap());
+    let refused = output_of(&mut install).await;
+    let printed: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    // It made the environments, and pip, which it did not make, is not there to run.
+    assert_eq!(printed["error"]["code"], "pip_failed", "{printed}");
+    assert!(
+        made.exists(),
+        "the interpreter on the path made no environment"
+    );
 }
 
 #[tokio::test]

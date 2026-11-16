@@ -262,35 +262,50 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   asked for it. What pip and venv print reaches standard error a line at a time, each shown as
   connector text is, since it holds what a wheel and an index say.
 - **Nothing pip installs is built from its source.** A build backend is a package's own code,
-  run as whoever builds it. pip's `--only-binary=:all:` holds the packages it finds in an index
-  or a directory of links, but not one named by a URL, which pip builds whatever it is. So every
-  way a URL could reach pip is closed:
+  run as whoever builds it. pip's `--only-binary=:all:` holds the files it finds in an index or a
+  directory of links, which it judges by their names, but not a requirement it reads as a URL or
+  a path, which it builds whatever it is, and it reads a requirement's text as a path from its
+  working directory where that holds a `/`, and as an archive's name where it ends as one does.
+  So every way such a requirement could reach pip is closed:
+  - the operator's wheel is taken only where its file's name is a wheel's,
+    `{name}-{version}(-{build})?-{python}-{abi}-{platform}.whl`, the name and tags of ASCII
+    letters, digits, `.` and `_`, the name starting with no `.`, the version PEP 440's, since pip
+    reads any other as a source to build. Its copy is named to pip by its `file:` URL, which rdlt
+    writes from the copy's absolute path, with no `..` in it, quoting every byte but letters,
+    digits and `-._~`; the same check names it on pip's command line and in the requirements
+    file. That line is the one requirement holding a `/`: pip finds nothing of its text as a
+    path in the install's own directory, where it runs, and reads it as that URL;
   - the wheel's metadata, read as data, is refused where it needs a package by a URL (an `@`
-    before a requirement's markers), and what it needs comes from PyPI, whose packages pip refuses
-    where they need one by a URL;
+    before a requirement's markers), and what it needs comes from an index, whose packages pip
+    refuses where they need one by a URL;
   - a requirements file is read in rdlt's own grammar and written again as the file pip reads. A
-    line names a wheel by its version, `name[extras]==version`, or by a URL ending in `.whl`,
-    `name @ URL`, with its hash, `--hash=sha256:...` (or `sha384`, `sha512`), and markers where
-    it needs them; or it names where packages are found, `--index-url` (`-i`),
-    `--extra-index-url`, `--find-links` (`-f`) or `--no-index`, a relative path taken from the
-    file's directory. Lines join and comments end as pip has them. Anything else is refused,
-    naming its line (`requirements`): another file (`-r`, `-c`), an editable (`-e`),
-    `--no-binary`, `--only-binary`, `--trusted-host`, which would have pip trust a host without
-    checking its certificate, `--pre` and every other option, and `${...}`, since no variable is
-    expanded, an index's credentials coming from `.netrc`. The file holds printable ASCII, spaces
-    and tabs alone, its lines ending in `\n` or `\r\n`: pip breaks lines where Python's
-    `splitlines` does, at `\r`, `\x1c` and `U+2028` among others, so any other character is
-    refused, naming it, lest one line rdlt checked be two pip reads. Each part is read in its own
-    grammar: PEP 508's for names and extras, PEP 440's for versions, so none reads as a file's
-    name, RFC 3986's for URLs, a SHA-2 digest of its length in hex for hashes, and PEP 508's for
-    markers, a variable of the environment compared with a quoted value, joined by `and` and `or`
-    and nested in parentheses, a value holding letters, digits and `._+*,!~<>=-` alone and
-    starting with no `-`. The file pip reads is written from what was read, and each line is seen
-    to read as pip reads it before it is written: pip splits a requirement's line at its spaces,
-    taking every word from the first that starts with `-` for an option, so each of those must be
-    one of the line's hashes and no other word may start so; it splits an option's line as a
-    shell does, so it must split into the option and the value checked; and neither may hold a
-    `#` that starts a comment or a `${` it would expand;
+    line names a wheel by its version, `name[extras]==version`, with its hash,
+    `--hash=sha256:...` (or `sha384`, `sha512`), and markers where it needs them; or it names
+    where wheels are found, `--index-url` (`-i`), `--extra-index-url`, `--find-links` (`-f`) or
+    `--no-index`, a relative path taken from the file's directory. A wheel at a URL is named so,
+    by `--find-links` and its version: pip judges what it finds there as it judges an index's
+    files, and takes a source from neither, nor a wheel the file does not hash. A direct
+    reference, `name @ URL`, is refused. Lines join and comments end as pip has them. Anything
+    else is refused, naming its line (`requirements`): another file (`-r`, `-c`), an editable
+    (`-e`), `--no-binary`, `--only-binary`, `--trusted-host`, which would have pip trust a host
+    without checking its certificate, `--pre` and every other option, and `${...}`, since no
+    variable is expanded, an index's credentials coming from `.netrc`. The file holds printable
+    ASCII, spaces and tabs alone, its lines ending in `\n` or `\r\n`: pip breaks lines where
+    Python's `splitlines` does, at `\r`, `\x1c` and `U+2028` among others, so any other
+    character is refused, naming it, lest one line rdlt checked be two pip reads. Each part is
+    read in its own grammar: PEP 508's for names and extras, PEP 440's for versions, RFC 3986's
+    for an option's URL, a SHA-2 digest of its length in hex for hashes, and PEP 508's for
+    markers, a variable of the environment compared with a quoted value, joined by `and` and
+    `or` and nested in parentheses, a value holding letters, digits and `._+*,!~<>=-` alone and
+    starting with no `-`. The file pip reads is written from what was read. No requirement rdlt
+    writes but the wheel's own holds a `/` or a `\`, nor ends, as pip's `splitext` reads it with
+    a `.tar` before, in any case, in an archive's extension, so pip reads none as a path or an
+    archive; each requirement's line splits, at its spaces as pip splits it, into the
+    requirement and the hashes checked, no other word starting with `-`, and each option's line,
+    as a shell splits it, into the option and the value checked, neither holding a `#` that
+    starts a comment or a `${` pip would expand. A test sends every line rdlt's tests write, and
+    a few hundred drawn from its grammar, through pip's own parser and its reading of each
+    requirement, and holds it to what rdlt checked;
   - with a requirements file, pip installs only the packages it hashes, the wheel among them, and
     refuses, before it builds or installs anything, a dependency the file does not hash, one a
     package found there needs by a URL among them, so every package in the tree is one the
@@ -341,6 +356,11 @@ Rejected:
   refuse: pip's own grammar reads further files, expands variables and takes options that let it
   build from source, so a connector's own requirements file would be a way to run its code.
 - **Running pip in the sandbox.** Only Linux has one, and the install is the same on macOS.
+- **A wheel named in a requirements file by its URL**, a URL rdlt would check: pip reads such a
+  requirement's text as a path from its working directory, and decides a wheel by its own
+  reading of the URL's last segment, so a URL rdlt took could have pip build a source.
+  `--find-links` leaves the choice to pip's own judgement of what it finds, which takes no
+  source.
 - **Replacing a tree with two renames.** An install ended between them, by a signal or a crash,
   leaves no tree, and the next install would sweep away the old one.
 

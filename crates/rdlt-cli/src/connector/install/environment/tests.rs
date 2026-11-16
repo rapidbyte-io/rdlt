@@ -165,3 +165,21 @@ fn a_child_is_given_only_where_things_are_the_locale_and_how_an_index_is_reached
         assert!(!passed(OsStr::new(name)), "{name} is given");
     }
 }
+
+#[test]
+fn a_tree_whose_bin_cannot_be_listed_once_pip_ran_is_refused_as_io() {
+    let dir = tempfile::tempdir().unwrap();
+    let tree = dir.path().join("tree");
+    made(&tree);
+    let own = Own::of(&tree).unwrap();
+    // Its links can still be read, and its `pyvenv.cfg` looked for, but not its entries listed.
+    let bin = tree.join("bin");
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o311)).unwrap();
+    let kept = own.kept();
+    // The superuser lists it all the same.
+    let listed = std::fs::read_dir(&bin).is_ok();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if !listed {
+        assert_eq!(kept.unwrap_err().code(), "io");
+    }
+}
