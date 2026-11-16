@@ -49,7 +49,7 @@ use end::{checkpoint_missing, end_state};
 pub(crate) use job::{ChangeMode, PartitionJob};
 pub(crate) use latest::Latest;
 pub(crate) use progress::{CursorHold, Progress, Seal};
-pub(crate) use resume::resumed;
+pub(crate) use resume::{RESET_REMEDY, read_named, resumed};
 use retention::read_resetting;
 pub(crate) use slots::{Parts, Slots};
 use write::write_flushed;

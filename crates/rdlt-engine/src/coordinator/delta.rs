@@ -141,7 +141,7 @@ impl Coordinator {
     }
 
     /// The stream state changes of a commit that publishes `positions` and ends the cycles of
-    /// `completing`; the tables add their own.
+    /// `completing`, and the full reads incremental reads end; the tables add their own.
     pub(super) fn state_delta(
         &self,
         positions: &BTreeMap<usize, PartitionState>,
@@ -157,8 +157,13 @@ impl Coordinator {
                 let entry = StateEntry::Generation {
                     stream: stream.name.clone(),
                     generation: cycle.generation,
+                    fills: stream.write.fills(),
                 };
                 delta.push(StateChange::Put(entry.to_record()));
+            }
+            if stream.ends_cycle {
+                let key = StateKey::Generation(stream.name.clone());
+                delta.push(StateChange::Delete(key.encode()));
             }
         }
         for (partition, state) in positions {

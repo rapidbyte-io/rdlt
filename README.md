@@ -613,10 +613,19 @@ code.
 - A stream read in full and then incrementally resumes from the cursor its last full read ended
   on. Where that read ended on rows with no checkpoint after them, in a partition that never ends,
   no position resumes it, and the incremental read fails as `cursor_missing`. Keep reading it in
-  full, or reset it with its tables so that incremental reads start from its beginning:
+  full. Where its source ends each incremental read on a checkpoint, a reset with its tables also
+  mends it, so that incremental reads start from its beginning:
   `rdlt state reset <document> <stream> --tables`, `Pipeline::reset` with `ResetScope::Tables`,
-  or `pipeline.reset(stream, tables=True)` in Python. A source whose reads end on a checkpoint
-  never meets it ([ADR 0004](docs/adr/0004-engine-core.md)).
+  or `pipeline.reset(stream, tables=True)` in Python; for any other source the reset drops the
+  table and the next incremental read lands only the rows before its last checkpoint, or fails as
+  `checkpoint_missing` where it never checkpoints. A source whose reads end on a checkpoint never
+  meets it ([ADR 0004](docs/adr/0004-engine-core.md)).
+- A full read left part way is resumed by the next full read only where both fill the same place,
+  a `replace` read its hidden generation and any other the table; otherwise the next full read
+  starts again from the beginning. An incremental read resumes one that filled the table and ends
+  it, so a later full read reads every row again. One that was replacing the table holds its rows
+  where no incremental read can resume them, so the incremental read fails as `cursor_missing`
+  until a full read completes it, or the stream is reset with its tables.
 - A table belongs to the pipeline that created it. It keeps the merge key it was first merged by,
   and whether it keeps history and by which change time. rdlt refuses another pipeline's writes to
   it, and a stream that changes those. It also refuses a merge key whose new type no longer matches

@@ -19,8 +19,13 @@ impl PipelineState {
                 positions.insert(partition.clone(), state);
                 self.recorded_by.insert((stream, partition), epoch);
             }
-            StateEntry::Generation { stream, generation } => {
-                self.streams.entry(stream).or_default().generation = Some(generation);
+            StateEntry::Generation {
+                stream,
+                generation,
+                fills,
+            } => {
+                self.streams.entry(stream.clone()).or_default().generation = Some(generation);
+                self.fills.insert(stream, fills);
             }
             StateEntry::Completed {
                 stream,
@@ -77,6 +82,7 @@ impl PipelineState {
                 }
             }
             StateKey::Generation(stream) => {
+                self.fills.remove(stream);
                 if let Some(state) = self.streams.get_mut(stream) {
                     state.generation = None;
                 }

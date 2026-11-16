@@ -88,8 +88,9 @@ pub const COMMIT_POLICY_INVALID: Code = Code("commit_policy_invalid");
 /// zero, or a retry policy whose first delay is longer than its longest.
 pub const CONFIG_INVALID: Code = Code("config_invalid");
 
-/// The code of the error for a read that is not full of a partition that never ends, whose last
-/// read finished it on rows with no checkpoint after them: no cursor resumes it past them.
+/// The code of the error for a read that is not full where no position in the stream's table
+/// resumes it: a partition that never ends was finished on rows with no checkpoint after them, or
+/// a full read replacing the table is part way, its rows in a generation not yet swapped in.
 pub const CURSOR_MISSING: Code = Code("cursor_missing");
 
 /// The code of the error for a call into a connector that took longer than the engine's wait for

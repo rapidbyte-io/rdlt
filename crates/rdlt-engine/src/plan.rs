@@ -5,6 +5,7 @@ mod retention;
 mod tests;
 mod transforms;
 mod until;
+mod write;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -21,21 +22,7 @@ use crate::transform::TransformStep;
 
 pub use retention::RetentionLoss;
 pub use until::Until;
-
-/// How a stream's rows reach its table.
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WriteMode {
-    /// Insert every row.
-    Append,
-    /// Fill a hidden generation of the table and swap it in once the stream is fully read.
-    Replace,
-    /// Upsert by key: a row replaces the table's row with the same key.
-    Merge,
-    /// Keep every version of each key: a row that changes its key's data closes the
-    /// key's current version and becomes the current one.
-    History,
-}
+pub use write::WriteMode;
 
 /// What a change stream's deletes do to its merge or history table.
 #[non_exhaustive]

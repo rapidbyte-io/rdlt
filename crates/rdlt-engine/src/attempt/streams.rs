@@ -1,6 +1,7 @@
 //! Planning an attempt's streams: checking them against the catalog and the destination,
 //! preparing their tables, and choosing the partitions to read.
 
+mod prepare;
 mod reads;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,20 +12,19 @@ use rdlt_connector::{
     ReadMode, SchemaVersion, StreamSpec, TablePath, TableRef, TableSchema,
 };
 
+use self::prepare::prepare;
 use self::reads::{Partitioned, Read, Sourced, read, sourced};
 use super::check::{check_excluded, check_stream, check_transformed};
 use super::{Planned, RunContext, sequences, together};
 use crate::coordinator::{Cycle, Phases, StreamRun, Template};
-use crate::error::{Error, codes};
+use crate::error::{Error, ErrorKind, codes};
 use crate::limits::PLANS_AT_ONCE;
 use crate::naming::Naming;
-use crate::normalize::{self, Shape};
+use crate::normalize::Shape;
 use crate::partition::ChangeMode;
 use crate::plan::{DeleteMode, PipelinePlan, RetentionLoss, StreamPlan, WriteMode};
 use crate::policy::Nested;
-use crate::table::{
-    ChangeLayout, Incoming, LineageColumns, MetaNames, Model, Resolver, Settings, Tables,
-};
+use crate::table::{ChangeLayout, LineageColumns, MetaNames, Model, Resolver, Settings, Tables};
 use crate::transform::stage::{Stage, refused};
 
 /// What planning an attempt's streams needs besides the stream itself.
@@ -65,11 +65,7 @@ impl<'a> Planning<'a> {
         let plans = &plans[..accepted.len()];
         let reads: Vec<Read> = plans
             .iter()
-            .map(|plan| {
-                let name = plan.name();
-                let reset = self.state.resets.get(name).copied();
-                read(self.context, plan, self.state.streams.get(name), reset)
-            })
+            .map(|plan| read(self.context, plan, self.state))
             .collect();
         let context = self.context;
         let sourcing = plans
@@ -90,7 +86,8 @@ impl<'a> Planning<'a> {
     ///
     /// The table keeps its committed identifier and names; a new one gets a free identifier. A
     /// declared schema, without the columns the stream excludes, is resolved like a batch, so it
-    /// creates the table or changes it under the stream's policy before anything is read.
+    /// creates the table or changes it under the stream's policy before anything is read. A
+    /// stream whose read is refused as configured changes no table, as no retry mends it.
     async fn stream(
         &mut self,
         plan: &StreamPlan,
@@ -105,7 +102,12 @@ impl<'a> Planning<'a> {
             stage,
             declared,
         } = checked;
-        let generation = match (plan.write_mode(), &sourced.cycle) {
+        let Sourced {
+            cycle,
+            ends_cycle,
+            partitioned,
+        } = sourced;
+        let generation = match (plan.write_mode(), &cycle) {
             (WriteMode::Replace, Some(cycle)) => Some(cycle.generation),
             _ => None,
         };
@@ -120,29 +122,13 @@ impl<'a> Planning<'a> {
         };
         let sequences = sequences::to_record(plan, recorded, &key, spec.change_time(), lineage)?
             .map(|keying| (table.path.clone(), keying));
+        let partitioned = match partitioned {
+            Err(refused) if refused.kind() == ErrorKind::Config => return Err(refused),
+            partitioned => partitioned,
+        };
         let index = tables.add_normalized(resolver, &table, model, shape.clone())?;
-        let mut children = Vec::new();
-        if let Some(declared) = &declared {
-            let incoming = match &shape {
-                Some(shape) => {
-                    let made = normalize::declared::children(declared, shape)?;
-                    children = tables.declared_children(index, made)?;
-                    normalize::declared::root_columns(declared, shape)?
-                }
-                None => Incoming::declared(declared.clone()),
-            };
-            tables.fit(index, &incoming).await?;
-        }
-        tables.create_generation(index).await?;
-        tables.add_meta_columns(index).await?;
-        for (path, incoming) in children {
-            let child = tables.child(index, &path).await?;
-            tables.fit(child, &incoming).await?;
-        }
-        for child in tables.recorded_children(index) {
-            tables.child(index, &child).await?;
-        }
-        let (cycle, partitioned) = (sourced.cycle, sourced.partitioned?);
+        prepare(tables, index, declared.as_ref(), shape.as_ref()).await?;
+        let partitioned = partitioned?;
         let on_demand = spec.checkpointing() == Checkpointing::OnDemand;
         let partial_updates = self.capabilities.partial_updates;
         let follow = self.context.plan.until().follows();
@@ -150,7 +136,7 @@ impl<'a> Planning<'a> {
             plan,
             index,
             (on_demand, partial_updates, follow),
-            cycle,
+            (cycle, ends_cycle),
             partitioned,
             stage,
         );
@@ -260,7 +246,8 @@ pub(crate) fn checked<'a>(
 
 /// `plan`'s stream, its table at `index`, ready to load `partitioned` through `stage`,
 /// checkpointing on demand, changing unchanged columns and following its source as
-/// `(on_demand, partial_updates, follow)` say.
+/// `(on_demand, partial_updates, follow)` say, as the full read `cycle`, or ending the full read
+/// state records where `ends_cycle`.
 ///
 /// A change stream reads in phases, and an incremental stream of a following run tracks its
 /// partitions as one does, so it is planned again as it reads.
@@ -268,7 +255,7 @@ fn planned(
     plan: &StreamPlan,
     index: usize,
     (on_demand, partial_updates, follow): (bool, bool, bool),
-    cycle: Option<Cycle>,
+    (cycle, ends_cycle): (Option<Cycle>, bool),
     partitioned: Partitioned,
     stage: Option<Arc<Stage>>,
 ) -> Planned {
@@ -306,6 +293,7 @@ fn planned(
             write: plan.write_mode(),
             table: index,
             cycle,
+            ends_cycle,
             remaining: partitioned.partitions.len(),
             stopped: false,
             phases,

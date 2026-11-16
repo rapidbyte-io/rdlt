@@ -1,35 +1,37 @@
 //! How a partition's read ends: what lands of the rows after its last checkpoint, and whether a
 //! later run reads the partition again.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    ConnectContext, Emitter, Partition, PartitionId, ReadMode, ReadStream, Result, SourceConnector,
-    StreamName, StreamSpec, StreamState, Streams, source_factory,
+    ConnectContext, ConnectorError, ConnectorErrorKind, Emitter, Partition, PartitionId, ReadMode,
+    ReadStream, Result, SourceConnector, StreamName, StreamSpec, StreamState, Streams,
+    source_factory,
 };
 use rdlt_connector_reference::LogSource;
 use rdlt_engine::{
     EngineConfigBuilder, ErrorKind, PipelinePlan, ResetScope, RetryPolicy, RunOutcome, RunStatus,
-    StopMode, Until, WriteMode, codes,
+    Until, WriteMode, codes,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::support::hooked::{At, Hook, hooked};
 use crate::support::{
-    commit_every, engine, memory, pipeline, published_ids, published_json, stream, until,
+    commit_every, engine, memory, pipeline, published_ids, published_json, stream,
 };
 
 /// Where each read of the test's source started.
-static STARTS: LazyLock<Mutex<Vec<u64>>> = LazyLock::new(Mutex::default);
+pub(crate) static STARTS: LazyLock<Mutex<Vec<u64>>> = LazyLock::new(Mutex::default);
 
 /// How the source's streams are planned and read.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct Shape {
+pub(crate) struct Shape {
     /// The streams: `rows`, then `rows_1` and on.
     #[serde(default = "one")]
     streams: usize,
@@ -42,6 +44,10 @@ struct Shape {
     /// How many of a connection's plans of each stream name no partition before one names it.
     #[serde(default)]
     named_after: u64,
+    /// How many of a connection's first plans fail, as a retry may mend, before those counted by
+    /// `named_after`.
+    #[serde(default)]
+    failed_plans: u64,
     /// Whether each read waits to be stopped once it pushed its rows.
     #[serde(default)]
     hold: bool,
@@ -78,7 +84,7 @@ fn one() -> usize {
 }
 
 /// A source of streams read as its shape says.
-struct Ending {
+pub(crate) struct Ending {
     shape: Shape,
     /// How many plans the connection answered.
     plans: AtomicU64,
@@ -115,12 +121,20 @@ impl ReadStream<Ending> for Rows {
     type Cursor = u64;
 
     fn spec(&self) -> StreamSpec {
-        StreamSpec::new(StreamName::new(&self.0).expect("a name"))
-            .with_read_modes([ReadMode::Full, ReadMode::Incremental])
+        StreamSpec::new(StreamName::new(&self.0).expect("a name")).with_read_modes([
+            ReadMode::Full,
+            ReadMode::Incremental,
+            ReadMode::Cdc,
+        ])
     }
 
     async fn partitions(&self, source: &Ending, _: &StreamState) -> Result<Vec<Partition>> {
-        if source.plans.fetch_add(1, Ordering::Relaxed) < source.shape.named_after {
+        let planned = source.plans.fetch_add(1, Ordering::Relaxed);
+        if planned < source.shape.failed_plans {
+            let message = "the plan failed";
+            return Err(ConnectorError::new(ConnectorErrorKind::Transient, message));
+        }
+        if planned < source.shape.failed_plans + source.shape.named_after {
             return Ok(Vec::new());
         }
         let declared = || Partition::new(PartitionId::parse("p0").expect("an id"));
@@ -184,7 +198,7 @@ fn ids(range: std::ops::Range<u64>) -> Vec<Value> {
 }
 
 /// Runs `plan` once over the source `shape` describes, into `store`, with one attempt.
-async fn run(plan: PipelinePlan, shape: Value, store: &str) -> RunOutcome {
+pub(crate) async fn run(plan: PipelinePlan, shape: Value, store: &str) -> RunOutcome {
     run_by(commit_every(1_000), plan, shape, store).await
 }
 
@@ -204,7 +218,7 @@ async fn run_by(
         .await
 }
 
-fn reading(mode: ReadMode, write: WriteMode) -> PipelinePlan {
+pub(crate) fn reading(mode: ReadMode, write: WriteMode) -> PipelinePlan {
     pipeline("ending", [stream("rows").read(mode).write(write)])
 }
 
@@ -435,18 +449,25 @@ async fn runs(
 
 #[tokio::test(start_paused = true)]
 async fn a_never_ending_partition_a_full_read_ended_on_rows_is_refused_to_an_incremental_read() {
-    for planned in ["unsplit", "unbounded"] {
-        let store = format!("ending_full_then_incremental_{planned}");
+    // The full read checkpointed before its last rows, or never.
+    for (planned, checkpoints) in [
+        ("unsplit", "middle"),
+        ("unbounded", "middle"),
+        ("unsplit", "never"),
+        ("unbounded", "never"),
+    ] {
+        let case = format!("{planned} {checkpoints}");
+        let store = format!("ending_full_then_incremental_{planned}_{checkpoints}");
         STARTS.lock().clear();
         let full = || reading(ReadMode::Full, WriteMode::Append);
         let incremental = || reading(ReadMode::Incremental, WriteMode::Append);
-        let ended = runs(full, planned, &[(6, "middle")], &store).await;
+        let ended = runs(full, planned, &[(6, checkpoints)], &store).await;
         assert_eq!(ended[0].report.status, RunStatus::Succeeded, "{ended:?}");
         let refused = runs(incremental, planned, &[(9, "middle_and_end")], &store).await;
         assert_eq!(
             refused[0].report.status,
             RunStatus::Failed,
-            "{planned}: {refused:?}"
+            "{case}: {refused:?}"
         );
         let error = refused[0].error.as_ref().expect("the run failed");
         assert_eq!(error.code(), Some(codes::CURSOR_MISSING), "{error:?}");
@@ -457,7 +478,7 @@ async fn a_never_ending_partition_a_full_read_ended_on_rows_is_refused_to_an_inc
         );
         assert!(!error.is_retryable(), "{error:?}");
         // Neither skipped nor read again from its last checkpoint: nothing new lands, nothing twice.
-        assert_eq!(*STARTS.lock(), [0], "{planned}");
+        assert_eq!(*STARTS.lock(), [0], "{case}");
         assert_eq!(published_ids(&store, "rows"), (0..6).collect::<Vec<_>>());
         // A full read that ends on a checkpoint leaves the cursor an incremental read resumes from.
         let mended = runs(full, planned, &[(9, "middle_and_end")], &store).await;
@@ -465,10 +486,97 @@ async fn a_never_ending_partition_a_full_read_ended_on_rows_is_refused_to_an_inc
         for outcome in mended.iter().chain(&resumed) {
             assert_eq!(outcome.report.status, RunStatus::Succeeded, "{outcome:?}");
         }
-        assert_eq!(*STARTS.lock(), [0, 0, 9], "{planned}");
+        assert_eq!(*STARTS.lock(), [0, 0, 9], "{case}");
         let mut expected: Vec<i64> = (0..6).chain(0..12).collect();
         expected.sort_unstable();
-        assert_eq!(published_ids(&store, "rows"), expected, "{planned}");
+        assert_eq!(published_ids(&store, "rows"), expected, "{case}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_partition_a_read_finished_on_rows_is_refused_to_any_read_not_full_once_it_never_ends() {
+    // A full read finished a partition that never ends, or an incremental read one its source
+    // then said never ends.
+    for (first, finished, then) in [
+        (ReadMode::Full, "unbounded", ReadMode::Cdc),
+        (ReadMode::Incremental, "bounded", ReadMode::Incremental),
+        (ReadMode::Incremental, "bounded", ReadMode::Cdc),
+    ] {
+        let case = format!("{first:?} {finished} then {then:?}");
+        let store = format!("ending_refused_{first:?}_{finished}_{then:?}");
+        STARTS.lock().clear();
+        let reads = &[(6, "middle")];
+        let ended = runs(
+            || reading(first, WriteMode::Append),
+            finished,
+            reads,
+            &store,
+        )
+        .await;
+        assert_eq!(ended[0].report.status, RunStatus::Succeeded, "{ended:?}");
+        let reads = &[(9, "middle_and_end")];
+        let refused = runs(
+            || reading(then, WriteMode::Append),
+            "unbounded",
+            reads,
+            &store,
+        )
+        .await;
+        let error = refused[0].error.as_ref().expect("the run failed");
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ErrorKind::Config, Some(codes::CURSOR_MISSING)),
+            "{case}: {error:?}"
+        );
+        assert_eq!(*STARTS.lock(), [0], "{case}");
+        assert_eq!(published_ids(&store, "rows"), (0..6).collect::<Vec<_>>());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_refused_cursor_missing_changes_no_table_where_a_failed_plan_or_a_read_does() {
+    let store = "ending_refused_unchanged";
+    let shape = json!({ "rows": 6, "partition": "unsplit", "checkpoints": "middle" });
+    let ended = run(reading(ReadMode::Full, WriteMode::Append), shape, store).await;
+    assert_eq!(ended.report.status, RunStatus::Succeeded, "{ended:?}");
+    // A merge gives the table the full read appended to a column for its sequences.
+    let merged = |read| {
+        let merged = stream("rows").read(read).write(WriteMode::Merge);
+        pipeline("ending", [merged.key(["id"])])
+    };
+    // Refused, nothing changes; a plan its source failed to make, as a retry may mend, fails the
+    // attempt once the table is prepared, as the retry prepares it.
+    for (read, failed_plans, failed, changes) in [
+        (ReadMode::Incremental, 0, Some(codes::CURSOR_MISSING), false),
+        (ReadMode::Full, 1, None, true),
+    ] {
+        let case = format!("{read:?}, {failed_plans} failed plans");
+        let changed = Arc::new(AtomicBool::new(false));
+        let noted = Arc::clone(&changed);
+        let hook: Hook = Arc::new(move || {
+            noted.store(true, Ordering::SeqCst);
+            Box::pin(async {})
+        });
+        let shape = json!({
+            "rows": 9, "partition": "unsplit", "checkpoints": "middle_and_end",
+            "failed_plans": failed_plans,
+        });
+        let source = source_factory::<Ending>()
+            .connect(shape, ConnectContext::new())
+            .await
+            .expect("it connects");
+        let destination = hooked(memory(store).await, At::Schema, hook);
+        let outcome = engine(commit_every(1_000).retry(RetryPolicy::default().max_attempts(1)))
+            .run(merged(read), Arc::from(source), destination)
+            .await;
+        let error = outcome.error.as_ref();
+        assert_eq!(
+            error.and_then(rdlt_engine::Error::code),
+            failed,
+            "{case}: {outcome:?}"
+        );
+        assert_eq!(outcome.report.status, RunStatus::Failed, "{case}: {outcome:?}");
+        assert_eq!(changed.load(Ordering::SeqCst), changes, "{case}");
     }
 }
 
@@ -529,94 +637,53 @@ async fn a_never_ending_partition_a_full_read_finished_is_refused_when_planned_a
 }
 
 #[tokio::test(start_paused = true)]
-async fn an_incremental_read_after_a_full_cycle_stopped_part_way_resumes_from_its_last_commit() {
-    for write in [WriteMode::Append, WriteMode::Merge] {
-        let store = format!("ending_stopped_cycle_{write:?}");
+async fn a_stream_refused_cursor_missing_and_reset_with_its_tables_lands_what_its_source_seals() {
+    // The source as it was refused, which checkpointed before its last rows or never, and one
+    // mended to end each read on a checkpoint.
+    let lands_nothing: Vec<i64> = Vec::new();
+    for (refused_as, read_as, landed, failed) in [
+        ("middle", "middle_and_end", (0..9).collect(), None),
+        ("middle", "middle", (0..5).collect(), None),
+        (
+            "never",
+            "never",
+            lands_nothing,
+            Some(codes::CHECKPOINT_MISSING),
+        ),
+    ] {
+        let case = format!("{refused_as} then {read_as}");
+        let store = format!("ending_reset_after_full_{refused_as}_{read_as}");
         STARTS.lock().clear();
-        let plan = |read| {
-            let planned = stream("rows").read(read).write(write);
-            let keyed = if write == WriteMode::Merge {
-                planned.key(["id"])
-            } else {
-                planned
-            };
-            pipeline("ending", [keyed])
-        };
-        // The full read checkpoints after its first five rows, pushes the rest and waits to be
-        // stopped: the cycle's first commit lands, and the cycle is left part way.
-        let shape = json!({
-            "rows": 9, "partition": "unbounded", "checkpoints": "middle", "hold": true,
-        });
+        let full = || reading(ReadMode::Full, WriteMode::Append);
+        let incremental = || reading(ReadMode::Incremental, WriteMode::Append);
+        let ended = runs(full, "unsplit", &[(6, refused_as)], &store).await;
+        let refused = runs(incremental, "unsplit", &[(9, refused_as)], &store).await;
+        let error = refused[0].error.as_ref().expect("the run failed");
+        assert_eq!(
+            error.code(),
+            Some(codes::CURSOR_MISSING),
+            "{case}: {ended:?} {error:?}"
+        );
+        // The remedy the refusal names: the stream reset with its tables, then read incrementally.
+        let shape = json!({ "rows": 9, "partition": "unsplit", "checkpoints": read_as });
         let source = source_factory::<Ending>()
             .connect(shape, ConnectContext::new())
             .await
             .expect("it connects");
-        let engine = engine(commit_every(1).retry(RetryPolicy::default().max_attempts(1)));
-        let stopping = engine.run(
-            plan(ReadMode::Full),
-            Arc::from(source),
-            memory(&store).await,
-        );
-        let control = stopping.control();
-        let stop = async {
-            until(|| !published_ids(&store, "rows").is_empty()).await;
-            control.stop(StopMode::AfterCommit);
-        };
-        let (stopped, ()) = tokio::join!(stopping, stop);
-        assert_eq!(stopped.report.status, RunStatus::Stopped, "{stopped:?}");
-        assert_eq!(
-            published_ids(&store, "rows"),
-            (0..5).collect::<Vec<_>>(),
-            "{write:?}"
-        );
-        let shape = json!({ "rows": 9, "partition": "unbounded", "checkpoints": "middle_and_end" });
-        let resumed = run(plan(ReadMode::Incremental), shape, &store).await;
-        assert_eq!(resumed.report.status, RunStatus::Succeeded, "{resumed:?}");
-        assert_eq!(*STARTS.lock(), [0, 5], "{write:?}");
-        assert_eq!(
-            published_ids(&store, "rows"),
-            (0..9).collect::<Vec<_>>(),
-            "{write:?}"
-        );
+        let reset = engine(commit_every(1_000))
+            .reset(
+                "ending",
+                &["rows"],
+                ResetScope::Tables,
+                Arc::from(source),
+                memory(&store).await,
+            )
+            .await;
+        assert!(reset.is_ok(), "{case}: {reset:?}");
+        let resumed = runs(incremental, "unsplit", &[(9, read_as)], &store).await;
+        let code = resumed[0].error.as_ref().and_then(rdlt_engine::Error::code);
+        assert_eq!(code, failed, "{case}: {resumed:?}");
+        assert_eq!(*STARTS.lock(), [0, 0], "{case}");
+        assert_eq!(published_ids(&store, "rows"), landed, "{case}");
     }
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_stream_refused_cursor_missing_and_reset_with_its_tables_reads_each_row_once() {
-    let store = "ending_reset_after_full";
-    STARTS.lock().clear();
-    let full = || reading(ReadMode::Full, WriteMode::Append);
-    let incremental = || reading(ReadMode::Incremental, WriteMode::Append);
-    let ended = runs(full, "unsplit", &[(6, "middle")], store).await;
-    let refused = runs(incremental, "unsplit", &[(9, "middle_and_end")], store).await;
-    let error = refused[0].error.as_ref().expect("the run failed");
-    assert_eq!(
-        error.code(),
-        Some(codes::CURSOR_MISSING),
-        "{ended:?} {error:?}"
-    );
-    // The remedy the refusal names: the stream reset with its tables, then read incrementally.
-    let shape = json!({ "rows": 9, "partition": "unsplit", "checkpoints": "middle_and_end" });
-    let source = source_factory::<Ending>()
-        .connect(shape, ConnectContext::new())
-        .await
-        .expect("it connects");
-    let reset = engine(commit_every(1_000))
-        .reset(
-            "ending",
-            &["rows"],
-            ResetScope::Tables,
-            Arc::from(source),
-            memory(store).await,
-        )
-        .await;
-    assert!(reset.is_ok(), "{reset:?}");
-    let resumed = runs(incremental, "unsplit", &[(9, "middle_and_end")], store).await;
-    assert_eq!(
-        resumed[0].report.status,
-        RunStatus::Succeeded,
-        "{resumed:?}"
-    );
-    assert_eq!(*STARTS.lock(), [0, 0]);
-    assert_eq!(published_ids(store, "rows"), (0..9).collect::<Vec<_>>());
 }

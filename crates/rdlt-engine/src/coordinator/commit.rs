@@ -189,6 +189,7 @@ impl Coordinator {
                 cycle.recorded = true;
                 cycle.stale.clear();
             }
+            stream.ends_cycle = false;
         }
         for index in completing {
             if let Some(cycle) = &mut self.parts.streams[*index].cycle {

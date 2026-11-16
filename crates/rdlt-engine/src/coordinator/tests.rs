@@ -22,7 +22,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use parking_lot::Mutex;
 use rdlt_connector::{
     BoxFuture, Catalog, CommitKey, CommitMeta, ConnectorError, ConnectorErrorKind, Cursor,
-    DestinationSession, DestinationWriter, Epoch, GenerationId, PartitionId, PartitionSink,
+    DestinationSession, DestinationWriter, Epoch, Fills, GenerationId, PartitionId, PartitionSink,
     PartitionState, PipelineId, ReadRequest, Receipt, Result, SchemaVersion, SegmentId, Source,
     StateChange, StateEntry, StateKey, StreamName, StreamState, TableChange, TablePath, TableRef,
     TableSchema,
@@ -569,6 +569,7 @@ fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRu
         write,
         table: 0,
         cycle,
+        ends_cycle: false,
         remaining: partitions,
         stopped: false,
         phases: None,
@@ -1355,6 +1356,7 @@ async fn a_full_read_is_recorded_when_it_starts_and_completed_when_every_partiti
     let generation = StateEntry::Generation {
         stream: name(),
         generation: GenerationId(7),
+        fills: Fills::Generation,
     };
     assert_eq!(
         commits[0].state_delta.clone(),
@@ -1398,18 +1400,49 @@ async fn a_full_append_completes_without_swapping_a_generation() {
     ended(task).await.unwrap();
     let commits = harness.commits.lock();
     assert!(commits[0].finish_generations.is_empty());
+    let recorded = StateEntry::Generation {
+        stream: name(),
+        generation: GenerationId(4),
+        fills: Fills::Table,
+    };
     let completed = StateEntry::Completed {
         stream: name(),
         generations: vec![GenerationId(4)],
     };
-    assert!(
-        commits[0]
-            .state_delta
-            .contains(&StateChange::Put(completed.to_record()))
-    );
+    for entry in [recorded, completed] {
+        let put = StateChange::Put(entry.to_record());
+        assert!(commits[0].state_delta.contains(&put), "{entry:?}");
+    }
     assert_eq!(
         harness.log.lock().committed.streams[&name()].generations_swapped,
         0
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_incremental_read_ends_the_full_read_state_records_with_its_first_commit() {
+    let mut ending = stream(WriteMode::Append, None, 1);
+    ending.ends_cycle = true;
+    let mut setup = Setup::new(vec![ending], vec![partition("p0", false)]);
+    setup.policy = CommitPolicy::new(Some(Duration::from_secs(10)), None, None).unwrap();
+    let (task, harness) = setup.start().await;
+    harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
+    until(|| harness.commit_count() == 1).await;
+    harness.seal(0, 2, 1, PartitionState::Cursor(cursor(2)), None);
+    harness.end(0, false);
+    ended(task).await.unwrap();
+    let commits = harness.commits.lock();
+    let ends = StateChange::Delete(StateKey::Generation(name()).encode());
+    assert_eq!(
+        commits[0].state_delta.clone(),
+        [
+            ends.clone(),
+            position("p0", PartitionState::Cursor(cursor(1)))
+        ]
+    );
+    assert_eq!(
+        commits[1].state_delta.clone(),
+        [position("p0", PartitionState::Cursor(cursor(2)))]
     );
 }
 
