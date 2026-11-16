@@ -11,7 +11,7 @@ use rdlt_connector::{
 };
 use tracing::Instrument as _;
 
-use super::Coordinator;
+use super::{Coordinator, FullRead};
 use crate::crash::crash_point;
 use crate::env::Env;
 use crate::error::{Error, shown};
@@ -185,14 +185,17 @@ impl Coordinator {
             .checked_add(1)
             .expect("a session commits fewer than u64::MAX times");
         for stream in &mut self.parts.streams {
-            if let Some(cycle) = &mut stream.cycle {
-                cycle.recorded = true;
-                cycle.stale.clear();
+            match &mut stream.full {
+                FullRead::Reads(cycle) => {
+                    cycle.recorded = true;
+                    cycle.stale.clear();
+                }
+                FullRead::Ends => stream.full = FullRead::None,
+                FullRead::None => {}
             }
-            stream.ends_cycle = false;
         }
         for index in completing {
-            if let Some(cycle) = &mut self.parts.streams[*index].cycle {
+            if let Some(cycle) = self.parts.streams[*index].full.cycle_mut() {
                 cycle.finished = true;
             }
         }

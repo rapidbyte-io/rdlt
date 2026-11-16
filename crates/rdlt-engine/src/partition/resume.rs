@@ -5,12 +5,20 @@ use rdlt_connector::{Cursor, Partition, PartitionId, PartitionState, ReadMode, S
 
 use crate::error::{Error, codes};
 
-/// What a refusal of a read that has no position to resume from says a reset does: it helps
-/// only a source that ends each incremental read on a checkpoint, since an incremental read of a
+/// What a refusal of a `read` that has no position to resume from says a reset does: it helps
+/// only a source that ends each such read on a checkpoint, since a read that is not full of a
 /// partition that never ends lands only the rows before its last checkpoint.
-pub(crate) const RESET_REMEDY: &str = "reset it with its tables so that incremental reads start \
-                                       from its beginning, which lands every row only where its \
-                                       source ends each incremental read on a checkpoint";
+pub(crate) fn reset_remedy(read: ReadMode) -> String {
+    let reads = match read {
+        ReadMode::Full => "full reads",
+        ReadMode::Incremental => "incremental reads",
+        ReadMode::Cdc => "change reads",
+    };
+    format!(
+        "reset it with its tables so that {reads} start from its beginning, which lands every row \
+         only where its source ends each of them on a checkpoint"
+    )
+}
 
 /// Where `stream`'s planned `partition`, read as `read` says, is read from, given its committed
 /// `position`: its cursor, or its beginning where it has none; `None` for one a read finished.
@@ -59,8 +67,9 @@ fn cursor_missing(stream: &StreamName, partition: &Partition, read: ReadMode) ->
     Error::config(format!(
         "stream {stream}: a read finished {finished} on rows with no checkpoint after them, and \
          its source says it never ends, so {} has no position to resume it from; read the \
-         stream in full, or {RESET_REMEDY}",
-        read_named(read)
+         stream in full, or {}",
+        read_named(read),
+        reset_remedy(read)
     ))
     .with_code(codes::CURSOR_MISSING)
     .with_stream(stream)

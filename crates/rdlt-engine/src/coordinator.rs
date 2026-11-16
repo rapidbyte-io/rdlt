@@ -64,11 +64,8 @@ pub(crate) struct StreamRun {
     pub(crate) write: WriteMode,
     /// The index of the stream's table among the attempt's tables.
     pub(crate) table: usize,
-    /// The full read in progress; `None` for incremental reads.
-    pub(crate) cycle: Option<Cycle>,
-    /// Whether state records a full read of the stream that filled its table, which this read,
-    /// not full, ends with the attempt's next commit.
-    pub(crate) ends_cycle: bool,
+    /// The full read it is, or the one state records that it ends.
+    pub(crate) full: FullRead,
     /// Partitions still reading.
     pub(crate) remaining: usize,
     /// Whether any partition stopped before its end.
@@ -81,6 +78,36 @@ pub(crate) struct StreamRun {
     /// Every partition the stream's latest plan names: the done ones it leaves unread among
     /// them, whose markers stay under state pressure.
     pub(crate) named: BTreeSet<PartitionId>,
+}
+
+/// What a stream's read in an attempt has to do with a full read.
+#[derive(Debug)]
+pub(crate) enum FullRead {
+    /// Nothing: the read is not full, and state records no full read of the stream.
+    None,
+    /// The read is this full read.
+    Reads(Cycle),
+    /// The read is not full, and ends with the attempt's next commit the full read state records,
+    /// which filled the stream's table.
+    Ends,
+}
+
+impl FullRead {
+    /// The full read the read is, where it is one.
+    pub(crate) fn cycle(&self) -> Option<&Cycle> {
+        match self {
+            Self::Reads(cycle) => Some(cycle),
+            Self::None | Self::Ends => None,
+        }
+    }
+
+    /// The full read the read is, where it is one, to change.
+    fn cycle_mut(&mut self) -> Option<&mut Cycle> {
+        match self {
+            Self::Reads(cycle) => Some(cycle),
+            Self::None | Self::Ends => None,
+        }
+    }
 }
 
 /// A full read of a stream, from its first partition to its last; a replace stream fills the
@@ -107,7 +134,7 @@ impl StreamRun {
     fn completes(&self) -> bool {
         self.remaining == 0
             && !self.stopped
-            && self.cycle.as_ref().is_some_and(|cycle| !cycle.finished)
+            && self.full.cycle().is_some_and(|cycle| !cycle.finished)
     }
 }
 
