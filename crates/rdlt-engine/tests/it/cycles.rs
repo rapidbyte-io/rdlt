@@ -14,10 +14,11 @@ use crate::ends::{Ending, STARTS, run};
 use crate::support::hooked::{At, Hook, hooked};
 use crate::support::{commit_every, engine, memory, pipeline, published_ids, stream, until};
 
-/// `rows` read as `read` and written as `write`, merged by its id where it merges.
+/// `rows` read as `read` and written as `write`, matched by its id where it merges or keeps
+/// history.
 fn plan(read: ReadMode, write: WriteMode) -> PipelinePlan {
     let planned = stream("rows").read(read).write(write);
-    let planned = if write == WriteMode::Merge {
+    let planned = if matches!(write, WriteMode::Merge | WriteMode::History) {
         planned.key(["id"])
     } else {
         planned
@@ -68,12 +69,15 @@ async fn left_part_way(write: WriteMode, store: &str) {
 
 #[tokio::test(start_paused = true)]
 async fn a_full_read_resumes_a_cycle_left_part_way_only_where_both_fill_the_same_place() {
-    use WriteMode::{Append, Merge, Replace};
+    use WriteMode::{Append, History, Merge, Replace};
     // Both fill the table, or both a generation; otherwise the read starts a new cycle from the
     // beginning, whose rows alone the table then holds.
     for (began, then, starts) in [
         (Append, Append, [0, 5]),
         (Append, Merge, [0, 5]),
+        (Merge, Append, [0, 5]),
+        (Merge, Merge, [0, 5]),
+        (History, History, [0, 5]),
         (Replace, Replace, [0, 5]),
         (Append, Replace, [0, 0]),
         (Merge, Replace, [0, 0]),
@@ -98,7 +102,7 @@ async fn a_full_read_resumes_a_cycle_left_part_way_only_where_both_fill_the_same
 
 #[tokio::test(start_paused = true)]
 async fn an_incremental_read_resumes_a_cycle_left_part_way_in_its_table_and_ends_it() {
-    for write in [WriteMode::Append, WriteMode::Merge] {
+    for write in [WriteMode::Append, WriteMode::Merge, WriteMode::History] {
         let store = format!("cycle_ended_{write:?}");
         STARTS.lock().clear();
         left_part_way(write, &store).await;
@@ -164,6 +168,45 @@ async fn mend(mended: Mended, store: &str) {
     }
 }
 
+/// Runs `rows` in `store` read as `read` and written as `then`, which the replace cycle left part
+/// way there refuses, and checks that it changes no table and reads nothing.
+async fn refused(store: &str, read: ReadMode, then: WriteMode) {
+    let case = format!("{read:?} {then:?}");
+    let source = source_factory::<Ending>()
+        .connect(shape(9), ConnectContext::new())
+        .await
+        .expect("it connects");
+    let (hook, changed) = noting();
+    let destination = hooked(memory(store).await, At::Schema, hook);
+    let refused = engine(commit_every(1_000).retry(RetryPolicy::default().max_attempts(1)))
+        .run(plan(read, then), Arc::from(source), destination)
+        .await;
+    assert_eq!(refused.report.status, RunStatus::Failed, "{refused:?}");
+    let error = refused.error.as_ref().expect("the run failed");
+    assert_eq!(
+        (error.kind(), error.code(), error.is_retryable()),
+        (ErrorKind::Config, Some(codes::CURSOR_MISSING), false),
+        "{case}: {error:?}"
+    );
+    assert_eq!(
+        error.stream().map(ToString::to_string).as_deref(),
+        Some("rows")
+    );
+    // It says what state shows, and names the read by its mode.
+    let said = error.to_string();
+    let named = match read {
+        ReadMode::Cdc => "so a change read has no position in the table",
+        _ => "so an incremental read has no position in the table",
+    };
+    assert!(
+        said.contains("a full read replacing its table is part way") && said.contains(named),
+        "{case}: {said}"
+    );
+    assert!(!changed.load(Ordering::SeqCst), "{case}: a table changed");
+    assert_eq!(*STARTS.lock(), [0], "{case}: nothing is read");
+    assert_eq!(published_ids(store, "rows"), Vec::<i64>::new());
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_read_not_full_of_a_replace_cycle_left_part_way_is_refused_until_either_remedy() {
     // Completed, the cycle reads on from 5 and the incremental read from its end; reset, the
@@ -179,33 +222,8 @@ async fn a_read_not_full_of_a_replace_cycle_left_part_way_is_refused_until_eithe
         let store = format!("cycle_refused_{then:?}_{mended:?}");
         STARTS.lock().clear();
         left_part_way(WriteMode::Replace, &store).await;
-        let source = source_factory::<Ending>()
-            .connect(shape(9), ConnectContext::new())
-            .await
-            .expect("it connects");
-        let (hook, changed) = noting();
-        let destination = hooked(memory(&store).await, At::Schema, hook);
-        let refused = engine(commit_every(1_000).retry(RetryPolicy::default().max_attempts(1)))
-            .run(
-                plan(ReadMode::Incremental, then),
-                Arc::from(source),
-                destination,
-            )
-            .await;
-        assert_eq!(refused.report.status, RunStatus::Failed, "{refused:?}");
-        let error = refused.error.as_ref().expect("the run failed");
-        assert_eq!(
-            (error.kind(), error.code(), error.is_retryable()),
-            (ErrorKind::Config, Some(codes::CURSOR_MISSING), false),
-            "{case}: {error:?}"
-        );
-        assert_eq!(
-            error.stream().map(ToString::to_string).as_deref(),
-            Some("rows")
-        );
-        assert!(!changed.load(Ordering::SeqCst), "{case}: a table changed");
-        assert_eq!(*STARTS.lock(), [0], "{case}: nothing is read");
-        assert_eq!(published_ids(&store, "rows"), Vec::<i64>::new());
+        refused(&store, ReadMode::Incremental, then).await;
+        refused(&store, ReadMode::Cdc, WriteMode::Append).await;
         mend(mended, &store).await;
         let resumed = run(plan(ReadMode::Incremental, then), shape(12), &store).await;
         assert_eq!(resumed.report.status, RunStatus::Succeeded, "{resumed:?}");
@@ -216,6 +234,97 @@ async fn a_read_not_full_of_a_replace_cycle_left_part_way_is_refused_until_eithe
             "{case}"
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_change_read_resumes_a_cycle_left_part_way_in_its_table_and_ends_it() {
+    let store = "cycle_ended_by_changes";
+    STARTS.lock().clear();
+    left_part_way(WriteMode::Append, store).await;
+    // The change read pushes no row, and its checkpoint where it starts commits the cycle's end.
+    let restated = json!({ "rows": 9, "partition": "unbounded", "checkpoints": "restated" });
+    let ended = run(plan(ReadMode::Cdc, WriteMode::Append), restated, store).await;
+    assert_eq!(ended.report.status, RunStatus::Succeeded, "{ended:?}");
+    let full = run(plan(ReadMode::Full, WriteMode::Append), shape(9), store).await;
+    assert_eq!(full.report.status, RunStatus::Succeeded, "{full:?}");
+    assert_eq!(*STARTS.lock(), [0, 5, 0]);
+    let mut expected: Vec<i64> = (0..5).chain(0..9).collect();
+    expected.sort_unstable();
+    assert_eq!(published_ids(store, "rows"), expected);
+}
+
+/// The ids of both partitions of a pair, `p0`'s `0..rows` and `p1`'s a hundred past them.
+fn pair_ids(p0: std::ops::Range<i64>, p1: std::ops::Range<i64>) -> Vec<i64> {
+    let mut ids: Vec<i64> = p0.chain(p1.map(|id| id + 100)).collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// Where the reads of `rows` started, sorted, as the reads of a pair's partitions start in either
+/// order.
+fn starts() -> Vec<u64> {
+    let mut starts = STARTS.lock().clone();
+    starts.sort_unstable();
+    starts
+}
+
+/// A pair of partitions of nine rows each, checkpointed as `checkpoints` says, `p1`'s read held
+/// where `hold`.
+fn pair(checkpoints: &str, hold: bool) -> Value {
+    json!({ "rows": 9, "partition": "pair", "checkpoints": checkpoints, "hold": hold })
+}
+
+/// Reads a pair in full into `store`, appending, and stops the run once the read finished `p0`,
+/// which is done, and left `p1` at its checkpoint after five rows, all of it committed.
+async fn pair_left_part_way(store: &str) {
+    STARTS.lock().clear();
+    let source = source_factory::<Ending>()
+        .connect(pair("middle", true), ConnectContext::new())
+        .await
+        .expect("it connects");
+    let engine = engine(commit_every(1).retry(RetryPolicy::default().max_attempts(1)));
+    let appending = plan(ReadMode::Full, WriteMode::Append);
+    let stopping = engine.run(appending, Arc::from(source), memory(store).await);
+    let control = stopping.control();
+    let left = pair_ids(0..9, 0..5);
+    let stop = async {
+        until(|| published_ids(store, "rows") == left).await;
+        control.stop(StopMode::AfterCommit);
+    };
+    let (stopped, ()) = tokio::join!(stopping, stop);
+    assert_eq!(stopped.report.status, RunStatus::Stopped, "{stopped:?}");
+    assert_eq!(published_ids(store, "rows"), left);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_cycle_reads_every_partition_of_one_left_part_way_from_its_beginning() {
+    let store = "cycle_pair_replaced";
+    pair_left_part_way(store).await;
+    let replacing = plan(ReadMode::Full, WriteMode::Replace);
+    let swapped = run(replacing, pair("middle_and_end", false), store).await;
+    assert_eq!(swapped.report.status, RunStatus::Succeeded, "{swapped:?}");
+    assert_eq!(starts(), [0, 0, 0, 0]);
+    assert_eq!(published_ids(store, "rows"), pair_ids(0..9, 0..9));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_incremental_read_passes_a_done_partition_of_a_cycle_left_part_way_and_resumes_others() {
+    let store = "cycle_pair_resumed";
+    pair_left_part_way(store).await;
+    let resuming = plan(ReadMode::Incremental, WriteMode::Append);
+    let resumed = run(resuming, pair("middle_and_end", false), store).await;
+    assert_eq!(resumed.report.status, RunStatus::Succeeded, "{resumed:?}");
+    assert_eq!(starts(), [0, 0, 5]);
+    assert_eq!(published_ids(store, "rows"), pair_ids(0..9, 0..9));
+    // The incremental read ended the cycle, so a full read after it reads both again.
+    let again = plan(ReadMode::Full, WriteMode::Append);
+    let full = run(again, pair("middle_and_end", false), store).await;
+    assert_eq!(full.report.status, RunStatus::Succeeded, "{full:?}");
+    assert_eq!(starts(), [0, 0, 0, 0, 5]);
+    let mut twice = pair_ids(0..9, 0..9);
+    twice.extend(pair_ids(0..9, 0..9));
+    twice.sort_unstable();
+    assert_eq!(published_ids(store, "rows"), twice);
 }
 
 #[tokio::test(start_paused = true)]

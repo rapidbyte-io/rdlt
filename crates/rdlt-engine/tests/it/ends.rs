@@ -48,7 +48,8 @@ pub(crate) struct Shape {
     /// `named_after`.
     #[serde(default)]
     failed_plans: u64,
-    /// Whether each read waits to be stopped once it pushed its rows.
+    /// Whether each read of a partition that never ends waits to be stopped once it pushed its
+    /// rows.
     #[serde(default)]
     hold: bool,
 }
@@ -62,6 +63,9 @@ enum Planned {
     Bounded,
     /// One partition it declares unbounded.
     Unbounded,
+    /// Two partitions it declares: `p0` bounded, and `p1` unbounded, whose ids are a hundred past
+    /// `p0`'s.
+    Pair,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
@@ -75,6 +79,8 @@ enum Checkpoints {
     Thirds,
     /// Only before the first of them, where the read starts.
     Leading,
+    /// Only where the read starts, which pushes none of them.
+    Restated,
     /// Never.
     Never,
 }
@@ -137,40 +143,47 @@ impl ReadStream<Ending> for Rows {
         if planned < source.shape.failed_plans + source.shape.named_after {
             return Ok(Vec::new());
         }
-        let declared = || Partition::new(PartitionId::parse("p0").expect("an id"));
-        Ok(vec![match self.1 {
-            Planned::Unsplit => Partition::single(),
-            Planned::Bounded => declared(),
-            Planned::Unbounded => declared().unbounded(),
-        }])
+        let declared = |id| Partition::new(PartitionId::parse(id).expect("an id"));
+        Ok(match self.1 {
+            Planned::Unsplit => vec![Partition::single()],
+            Planned::Bounded => vec![declared("p0")],
+            Planned::Unbounded => vec![declared("p0").unbounded()],
+            Planned::Pair => vec![declared("p0"), declared("p1").unbounded()],
+        })
     }
 
     async fn read(
         &self,
         source: &Ending,
-        _: &Partition,
+        partition: &Partition,
         next: u64,
         out: &mut Emitter<u64>,
     ) -> Result<()> {
         STARTS.lock().push(next);
         let held = source.shape.rows;
+        let offset = if partition.id().as_str() == "p1" {
+            100
+        } else {
+            0
+        };
         if next < held {
-            push(out, source.shape.checkpoints, next, held).await?;
+            push(out, source.shape.checkpoints, (next, held), offset).await?;
         }
         // A read asked to follow waits for more until it is stopped.
-        if out.follows() || source.shape.hold {
+        if out.follows() || (source.shape.hold && partition.is_unbounded()) {
             out.stopped().await;
         }
         Ok(())
     }
 }
 
-/// Pushes the rows `next..held`, checkpointed as `checkpoints` says.
+/// Pushes the rows `next..held`, their ids `offset` past their offsets, checkpointed as
+/// `checkpoints` says.
 async fn push(
     out: &mut Emitter<u64>,
     checkpoints: Checkpoints,
-    next: u64,
-    held: u64,
+    (next, held): (u64, u64),
+    offset: u64,
 ) -> Result<()> {
     let span = held - next;
     let marks = match checkpoints {
@@ -181,20 +194,21 @@ async fn push(
             out.checkpoint(&next).await?;
             Vec::new()
         }
+        Checkpoints::Restated => return out.checkpoint(&next).await,
         Checkpoints::Never => Vec::new(),
     };
     let mut from = next;
     for mark in marks {
-        out.rows(&ids(from..mark)).await?;
+        out.rows(&ids(from..mark, offset)).await?;
         out.checkpoint(&mark).await?;
         from = mark;
     }
-    out.rows(&ids(from..held)).await?;
+    out.rows(&ids(from..held, offset)).await?;
     Ok(())
 }
 
-fn ids(range: std::ops::Range<u64>) -> Vec<Value> {
-    range.map(|id| json!({ "id": id })).collect()
+fn ids(range: std::ops::Range<u64>, offset: u64) -> Vec<Value> {
+    range.map(|id| json!({ "id": id + offset })).collect()
 }
 
 /// Runs `plan` once over the source `shape` describes, into `store`, with one attempt.
@@ -575,7 +589,11 @@ async fn a_read_refused_cursor_missing_changes_no_table_where_a_failed_plan_or_a
             failed,
             "{case}: {outcome:?}"
         );
-        assert_eq!(outcome.report.status, RunStatus::Failed, "{case}: {outcome:?}");
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Failed,
+            "{case}: {outcome:?}"
+        );
         assert_eq!(changed.load(Ordering::SeqCst), changes, "{case}");
     }
 }
