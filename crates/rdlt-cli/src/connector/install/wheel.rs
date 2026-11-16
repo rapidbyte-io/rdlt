@@ -139,15 +139,6 @@ pub(super) async fn described(
         return Err(failed());
     }
     match serde_json::from_slice(&output.stdout).map_err(|_| failed())? {
-        // It reaches pip's command line and a requirements file's line: a name of anything else
-        // could be an option of pip's or a line of its own there.
-        Read::Wheel(wheel) if !distribution(&wheel.name) => Err(InstallError::Wheel {
-            path: named.to_owned(),
-            why: format!(
-                "its metadata names the distribution {:?}, which is no distribution's name",
-                wheel.name
-            ),
-        }),
         Read::Wheel(wheel) if wheel.requires.iter().any(|required| direct(required)) => {
             Err(InstallError::Wheel {
                 path: named.to_owned(),
@@ -174,8 +165,16 @@ pub(super) fn reference(name: &str, held: &Path, named: &Path) -> Result<String,
         path: named.to_owned(),
         why: why.to_owned(),
     };
+    // It reaches pip's command line and a requirements file's line: a name of anything else
+    // could be an option of pip's or a line of its own there.
+    if !distribution(name) {
+        let why = format!(
+            "its metadata names the distribution {name:?}, which is no distribution's name"
+        );
+        return Err(refused(&why));
+    }
     let file = held.file_name().and_then(|file| file.to_str());
-    if !held.is_absolute() || !file.is_some_and(file_name) || !distribution(name) {
+    if !held.is_absolute() || !file.is_some_and(file_name) {
         return Err(refused("its copy is named by no absolute path to a wheel"));
     }
     let mut uri = "file://".to_owned();
