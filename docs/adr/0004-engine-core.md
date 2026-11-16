@@ -140,7 +140,8 @@ a run reports and tells must show what it did without changing what it does.
     answers its plan with, comes before its table is prepared, as no retry mends either.
   - Without this a cycle begun in one mode and resumed in another loses rows: `replace` resumed as
     `append` or `merge` leaves the rows it committed in a generation nothing completes, and
-    `append` or `merge` resumed as `replace` swaps in a generation missing them.
+    `append` or `merge` resumed as `replace` swaps in a generation missing them. `specs/cycles.qnt`
+    models the rule (ADR 0052).
 - **Every commit is keyed and expects the key landed before it.** A commit's key is its
   session's epoch and its place among the session's commits, from 1, and it names `after`, the
   key it expects the destination to hold landed: the open's landed key for a session's first
