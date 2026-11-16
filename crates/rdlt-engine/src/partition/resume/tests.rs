@@ -77,11 +77,19 @@ fn the_refusal_names_a_partition_only_where_the_source_declared_it() {
 fn the_refusal_names_the_read_by_its_mode() {
     let stream = StreamName::new("s").expect("a valid name");
     let done = PartitionState::Done;
-    for (read, named) in [
-        (ReadMode::Incremental, "an incremental read"),
-        (ReadMode::Cdc, "a change read"),
+    for (read, named, remedied) in [
+        (
+            ReadMode::Incremental,
+            "an incremental read",
+            "incremental reads start",
+        ),
+        (ReadMode::Cdc, "a change read", "change reads start"),
     ] {
         let error = resumed(&stream, partition(true), Some(&done), read).expect_err("refused");
-        assert!(error.to_string().contains(named), "{read:?}: {error}");
+        let said = error.to_string();
+        assert!(
+            said.contains(named) && said.contains(remedied),
+            "{read:?}: {said}"
+        );
     }
 }

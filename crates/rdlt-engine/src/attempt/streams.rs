@@ -16,7 +16,7 @@ use self::prepare::prepare;
 use self::reads::{Partitioned, Read, Sourced, read, sourced};
 use super::check::{check_excluded, check_stream, check_transformed};
 use super::{Planned, RunContext, sequences, together};
-use crate::coordinator::{Cycle, Phases, StreamRun, Template};
+use crate::coordinator::{FullRead, Phases, StreamRun, Template};
 use crate::error::{Error, ErrorKind, codes};
 use crate::limits::PLANS_AT_ONCE;
 use crate::naming::Naming;
@@ -102,12 +102,8 @@ impl<'a> Planning<'a> {
             stage,
             declared,
         } = checked;
-        let Sourced {
-            cycle,
-            ends_cycle,
-            partitioned,
-        } = sourced;
-        let generation = match (plan.write_mode(), &cycle) {
+        let Sourced { full, partitioned } = sourced;
+        let generation = match (plan.write_mode(), full.cycle()) {
             (WriteMode::Replace, Some(cycle)) => Some(cycle.generation),
             _ => None,
         };
@@ -136,7 +132,7 @@ impl<'a> Planning<'a> {
             plan,
             index,
             (on_demand, partial_updates, follow),
-            (cycle, ends_cycle),
+            full,
             partitioned,
             stage,
         );
@@ -246,8 +242,7 @@ pub(crate) fn checked<'a>(
 
 /// `plan`'s stream, its table at `index`, ready to load `partitioned` through `stage`,
 /// checkpointing on demand, changing unchanged columns and following its source as
-/// `(on_demand, partial_updates, follow)` say, as the full read `cycle`, or ending the full read
-/// state records where `ends_cycle`.
+/// `(on_demand, partial_updates, follow)` say, doing what `full` says with a full read.
 ///
 /// A change stream reads in phases, and an incremental stream of a following run tracks its
 /// partitions as one does, so it is planned again as it reads.
@@ -255,7 +250,7 @@ fn planned(
     plan: &StreamPlan,
     index: usize,
     (on_demand, partial_updates, follow): (bool, bool, bool),
-    (cycle, ends_cycle): (Option<Cycle>, bool),
+    full: FullRead,
     partitioned: Partitioned,
     stage: Option<Arc<Stage>>,
 ) -> Planned {
@@ -292,8 +287,7 @@ fn planned(
             name: plan.name().clone(),
             write: plan.write_mode(),
             table: index,
-            cycle,
-            ends_cycle,
+            full,
             remaining: partitioned.partitions.len(),
             stopped: false,
             phases,

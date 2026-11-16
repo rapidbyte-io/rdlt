@@ -9,7 +9,7 @@ use rdlt_connector::{
 };
 
 use super::waiting::Standing;
-use super::{Coordinator, KEPT_COMPLETIONS};
+use super::{Coordinator, FullRead, KEPT_COMPLETIONS};
 use crate::partition::CursorHold;
 use crate::plan::WriteMode;
 use crate::report::{ColumnDiscards, StreamReport};
@@ -149,7 +149,7 @@ impl Coordinator {
     ) -> Vec<StateChange> {
         let mut delta = Vec::new();
         for stream in &self.parts.streams {
-            if let Some(cycle) = stream.cycle.as_ref().filter(|cycle| !cycle.recorded) {
+            if let Some(cycle) = stream.full.cycle().filter(|cycle| !cycle.recorded) {
                 for partition in &cycle.stale {
                     let key = StateKey::Partition(stream.name.clone(), partition.clone());
                     delta.push(StateChange::Delete(key.encode()));
@@ -161,7 +161,7 @@ impl Coordinator {
                 };
                 delta.push(StateChange::Put(entry.to_record()));
             }
-            if stream.ends_cycle {
+            if matches!(stream.full, FullRead::Ends) {
                 let key = StateKey::Generation(stream.name.clone());
                 delta.push(StateChange::Delete(key.encode()));
             }
@@ -171,7 +171,7 @@ impl Coordinator {
         }
         for index in completing {
             let stream = &self.parts.streams[*index];
-            let Some(cycle) = &stream.cycle else {
+            let Some(cycle) = stream.full.cycle() else {
                 continue;
             };
             let key = StateKey::Generation(stream.name.clone());
@@ -211,7 +211,7 @@ impl Coordinator {
             .map(|index| &self.parts.streams[*index])
             .filter(|stream| stream.write == WriteMode::Replace)
             .filter_map(|stream| {
-                let cycle = stream.cycle.as_ref()?;
+                let cycle = stream.full.cycle()?;
                 Some((stream.table, cycle.generation))
             })
             .flat_map(|(table, generation)| {

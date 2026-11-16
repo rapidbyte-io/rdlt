@@ -30,7 +30,7 @@ use rdlt_connector::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{Coordinator, CoordinatorParts, Cycle, PartitionRun, StreamRun};
+use super::{Coordinator, CoordinatorParts, Cycle, FullRead, PartitionRun, StreamRun};
 use crate::config::{CommitPolicy, RetryPolicy};
 use crate::env::SystemEnv;
 use crate::error::{Error, ErrorKind, Origin, codes};
@@ -568,8 +568,7 @@ fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRu
         name: name(),
         write,
         table: 0,
-        cycle,
-        ends_cycle: false,
+        full: cycle.map_or(FullRead::None, FullRead::Reads),
         remaining: partitions,
         stopped: false,
         phases: None,
@@ -1422,7 +1421,7 @@ async fn a_full_append_completes_without_swapping_a_generation() {
 #[tokio::test(start_paused = true)]
 async fn an_incremental_read_ends_the_full_read_state_records_with_its_first_commit() {
     let mut ending = stream(WriteMode::Append, None, 1);
-    ending.ends_cycle = true;
+    ending.full = FullRead::Ends;
     let mut setup = Setup::new(vec![ending], vec![partition("p0", false)]);
     setup.policy = CommitPolicy::new(Some(Duration::from_secs(10)), None, None).unwrap();
     let (task, harness) = setup.start().await;

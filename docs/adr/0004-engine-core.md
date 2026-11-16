@@ -102,10 +102,10 @@ a run reports and tells must show what it did without changing what it does.
   says it never ends, which a source that changes a partition's kind meets too. It names the
   stream, the partition where the source declared it, and the read by its mode. A full read that
   ends on a checkpoint mends it, and the stream can go on being read in full; a reset with its
-  tables mends it only for a source that ends each incremental read on a checkpoint, since an
-  incremental read of such a partition lands only the rows before its last checkpoint, and fails
-  `checkpoint_missing` where the source never checkpoints. The error orders the two that way. A
-  source whose full reads end on a checkpoint never meets it.
+  tables mends it only for a source that ends each read that is not full on a checkpoint, since
+  such a read of the partition lands only the rows before its last checkpoint, and an incremental
+  one fails `checkpoint_missing` where the source never checkpoints. The error orders the two that
+  way. A source whose full reads end on a checkpoint never meets it.
 - **Full reads are cycles.** A `full` read records its generation, and where its rows land, when it
   first commits and deletes the previous cycle's partition entries; its last commit records it as
   `completed`. Each run remembers the cycle it started or resumed per stream, and state keeps the
@@ -113,13 +113,15 @@ a run reports and tells must show what it did without changing what it does.
   response, a failed acknowledgement) does not read the stream again, even when another run
   completed a cycle in between. Without this, `full` + `append` would append a second copy. A new
   cycle draws a generation of its own, never one a run remembers, so no generation holds the rows
-  of a cycle that is over. `TableRef` carries the generation `replace` writes fill, and the
-  contract has `StateKey::Completed`.
+  of a cycle that is over; an attempt of a `replace` stream that fails before its first commit
+  leaves the generation it created hidden, as a cycle a changed plan ends does (below).
+  `TableRef` carries the generation `replace` writes fill, and the contract has
+  `StateKey::Completed`.
 - **A cycle's positions are where it fills.** A `replace` cycle's rows land in its generation,
   hidden until the cycle completes and swaps it in, and any other cycle's in the stream's table, so
   the positions of a cycle in progress describe that place alone, and those of the copy the table
-  held went with the cycle's first commit. State records which place with the cycle (`Fills`), and a run whose
-  plan changed since the cycle began treats it as follows.
+  held went with the cycle's first commit. State records which place with the cycle (`Fills`), and
+  a run whose plan changed since the cycle began treats it as follows.
   - A full read resumes the cycle, whichever run started it, only where it fills the same place.
     Otherwise it starts a new cycle from the beginning, whose first commit records it and deletes
     the old cycle's positions. What the old cycle put in the table stays there; its generation
@@ -135,9 +137,10 @@ a run reports and tells must show what it did without changing what it does.
     generation nothing completes, and reading from the beginning would land the rows of the copy
     the table holds again. It names the stream and the read by its mode. Completing the full read,
     replacing the table, mends it, as does a reset with its tables for a source that ends each
-    incremental read on a checkpoint.
+    such read on a checkpoint.
   - A stream whose read is refused changes no table: the refusal, or a Config error its source
-    answers its plan with, comes before its table is prepared, as no retry mends either.
+    answers its plan with, comes before its table is prepared, as each is a Config error, which
+    only the operator mends.
   - Without this a cycle begun in one mode and resumed in another loses rows: `replace` resumed as
     `append` or `merge` leaves the rows it committed in a generation nothing completes, and
     `append` or `merge` resumed as `replace` swaps in a generation missing them. `specs/cycles.qnt`

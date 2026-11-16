@@ -8,19 +8,18 @@ use rdlt_connector::{
 };
 
 use crate::attempt::RunContext;
-use crate::coordinator::{Begun, Cycle, plan_of};
+use crate::coordinator::{Begun, Cycle, FullRead, plan_of};
 use crate::error::{Error, ErrorKind, codes};
-use crate::partition::{RESET_REMEDY, read_named, resumed};
+use crate::partition::{read_named, reset_remedy, resumed};
 use crate::plan::StreamPlan;
 
 /// How an attempt reads a stream.
 pub(super) enum Read {
-    /// From its committed partitions, ending with its first commit the full read state records,
-    /// where it records one.
-    Incremental {
-        state: StreamState,
-        ends_cycle: bool,
-    },
+    /// From its committed partitions.
+    Incremental(StreamState),
+    /// From the committed partitions of the full read state records, which filled the table and
+    /// which the read ends with its first commit.
+    Ending(StreamState),
     /// As one full read, planned from the given state.
     Cycle(Cycle, StreamState),
     /// Not at all: this run already completed the stream's full read.
@@ -47,10 +46,8 @@ pub(super) fn read(context: &RunContext, plan: &StreamPlan, state: &PipelineStat
     if plan.read_mode() != ReadMode::Full {
         return match recorded {
             Some((_, Fills::Generation)) => Read::Refused(unfinished(plan)),
-            Some((_, Fills::Table)) | None => Read::Incremental {
-                ends_cycle: recorded.is_some(),
-                state: committed,
-            },
+            Some((_, Fills::Table)) => Read::Ending(committed),
+            None => Read::Incremental(committed),
         };
     }
     let mut cycles = context.cycles.lock();
@@ -85,16 +82,17 @@ pub(super) fn read(context: &RunContext, plan: &StreamPlan, state: &PipelineStat
 }
 
 /// The refusal of a read that is not full of `plan`'s stream, whose full read in progress fills a
-/// generation not yet swapped in: its positions say nothing of the table, whose own its first
-/// commit deleted, so neither resuming from them nor reading from the beginning lands each row
-/// once.
+/// generation not yet swapped in: its positions say nothing of the table, whose own positions went
+/// with the read's first commit, so neither resuming from them nor reading from the beginning
+/// lands each row once.
 fn unfinished(plan: &StreamPlan) -> Error {
     let name = plan.name();
     Error::config(format!(
         "stream {name}: a full read replacing its table is part way, its rows in a generation not \
          yet swapped in, so {} has no position in the table to resume from; read the stream in \
-         full, replacing its table, to complete it, or {RESET_REMEDY}",
-        read_named(plan.read_mode())
+         full, replacing its table, to complete it, or {}",
+        read_named(plan.read_mode()),
+        reset_remedy(plan.read_mode())
     ))
     .with_code(codes::CURSOR_MISSING)
     .with_stream(name)
@@ -118,10 +116,8 @@ pub(super) struct Partitioned {
 
 /// A stream's read, and the partitions its source planned for it.
 pub(super) struct Sourced {
-    /// The full read it is, where it is one.
-    pub(super) cycle: Option<Cycle>,
-    /// Whether it ends, with its first commit, the full read state records.
-    pub(super) ends_cycle: bool,
+    /// The full read it is, or the one state records that it ends.
+    pub(super) full: FullRead,
     /// The partitions to read, or why they cannot be planned.
     pub(super) partitioned: Result<Partitioned, Error>,
 }
@@ -129,28 +125,17 @@ pub(super) struct Sourced {
 /// The partitions the source plans for `plan`'s stream, read as `read` says; none for a read
 /// already completed, and a refused read's refusal.
 pub(super) async fn sourced(context: &RunContext, plan: &StreamPlan, read: Read) -> Sourced {
-    match read {
-        Read::Incremental { state, ends_cycle } => Sourced {
-            cycle: None,
-            ends_cycle,
-            partitioned: partitions(context, plan, &state).await,
-        },
-        Read::Cycle(cycle, state) => Sourced {
-            partitioned: partitions(context, plan, &state).await,
-            cycle: Some(cycle),
-            ends_cycle: false,
-        },
-        Read::Completed => Sourced {
-            cycle: None,
-            ends_cycle: false,
-            partitioned: Ok(Partitioned::default()),
-        },
-        Read::Refused(error) => Sourced {
-            cycle: None,
-            ends_cycle: false,
-            partitioned: Err(error),
-        },
-    }
+    let (full, partitioned) = match read {
+        Read::Incremental(state) => (FullRead::None, partitions(context, plan, &state).await),
+        Read::Ending(state) => (FullRead::Ends, partitions(context, plan, &state).await),
+        Read::Cycle(cycle, state) => {
+            let partitioned = partitions(context, plan, &state).await;
+            (FullRead::Reads(cycle), partitioned)
+        }
+        Read::Completed => (FullRead::None, Ok(Partitioned::default())),
+        Read::Refused(error) => (FullRead::None, Err(error)),
+    };
+    Sourced { full, partitioned }
 }
 
 /// The partitions of `plan`'s stream still to read, with their committed cursors; a plan
