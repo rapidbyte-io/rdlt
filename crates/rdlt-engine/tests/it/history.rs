@@ -220,14 +220,17 @@ async fn a_history_keeps_each_version_once_through_lost_and_failed_commits_and_l
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_full_read_kept_as_history_versions_only_the_rows_that_changed_between_runs() {
+async fn a_full_read_kept_as_history_versions_the_rows_that_changed_and_keeps_those_it_no_longer_reads()
+ {
     let keyed = |rows| BatchStream::new("events", rows).primary_key(&["id"]);
+    // The third run no longer reads key 1, whose current version stays.
     let runs = [
         vec![batch(vec![("id", ints(&[1, 2])), ("v", text(&["a", "b"]))])],
         vec![batch(vec![
             ("id", ints(&[1, 2, 3])),
             ("v", text(&["a", "c", "d"])),
         ])],
+        vec![batch(vec![("id", ints(&[2, 3])), ("v", text(&["c", "d"]))])],
     ];
     for rows in runs {
         let outcome = engine(commit_every(10))

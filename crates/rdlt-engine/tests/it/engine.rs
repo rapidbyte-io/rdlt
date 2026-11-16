@@ -150,13 +150,17 @@ async fn a_stopped_replace_keeps_its_rows_hidden_and_resumes_into_the_same_gener
     );
     let mut done = ScriptStream::new("orders", 2, 40, 5);
     done.idle = false;
-    let (_, source) = Script::new(vec![done])
+    let (resumed, source) = Script::new(vec![done])
         .connect("stopped_replace_done")
         .await;
-    let outcome = engine
+    let second = engine
         .run(plan, source, memory("stopped_replace").await)
         .await;
-    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    assert_eq!(second.report.status, RunStatus::Succeeded);
+    // Into the same generation: only the rows the first run did not commit are read.
+    let left = 80 - outcome.report.rows;
+    assert_eq!(second.report.rows, left);
+    assert_eq!(resumed.pushed.load(Ordering::SeqCst), left);
     assert_eq!(published_ids("stopped_replace", "orders"), ids(2, 40));
 }
 
