@@ -107,8 +107,9 @@ def test_a_hinted_decimal_column_does_not_read_a_decimal_s_text() -> None:
 
 def test_a_pandas_timestamp_lands_as_its_isoformat() -> None:
     pd = pytest.importorskip("pandas")
-    table = landed("timestamp", {"at": pd.Timestamp("2026-01-01 00:00:00.000000001")})
-    assert table["at"].to_pylist() == ["2026-01-01T00:00:00.000000001"]
+    stamp = pd.Timestamp("2026-01-01 00:00:00.000000001")
+    table = landed("timestamp", {"at": stamp})
+    assert table["at"].to_pylist() == [stamp.isoformat()]
 
 
 def test_a_pandas_frame_yielded_as_it_is_lands_its_missing_values_as_nulls_in_its_types() -> None:
@@ -121,7 +122,11 @@ def test_a_pandas_frame_yielded_as_it_is_lands_its_missing_values_as_nulls_in_it
         }
     )
     table = landed("frame", frame)
-    assert [types(table)[name] for name in "fti"] == [pa.float64(), pa.timestamp("ns"), pa.int64()]
+    # The frame's own Arrow types, whose time unit is the installed pandas's to choose.
+    exported = types(pa.Table.from_pandas(frame))
+    assert [types(table)[name] for name in "fti"] == [exported[name] for name in "fti"]
+    assert [types(table)[name] for name in "fi"] == [pa.float64(), pa.int64()]
+    assert pa.types.is_timestamp(types(table)["t"])
     assert [table[name].null_count for name in "fti"] == [1, 1, 1]
 
 
