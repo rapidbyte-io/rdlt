@@ -220,8 +220,8 @@ module cycles_protocol {
 
   // ---- Tests
 
-  /// Begins as the engine began before it recorded where a cycle's rows land: a full read resumes
-  /// any recorded cycle, and a read that is not full resumes any position and ends nothing.
+  /// Begins as a rule that records no place with a cycle would: a full read resumes any recorded
+  /// cycle, and a read that is not full resumes any position and ends nothing.
   action beginAnyway(full: bool, replace: bool): bool = all {
     not(running),
     full or not(replace),
