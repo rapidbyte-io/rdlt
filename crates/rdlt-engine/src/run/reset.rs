@@ -45,7 +45,7 @@ impl Engine {
     ///
     /// Opening the destination fences every session of the pipeline opened before, so a run
     /// still loading fails its next commit and, retried, reads the streams from their beginning;
-    /// the commit marks each stream with the reset's epoch, so a full read such a run began
+    /// the commit deletes each stream's full read in progress, so a full read such a run began
     /// before it ends rather than resuming. A stream the pipeline recorded nothing of is refused as
     /// `stream_not_found`, and one whose source cannot read again as `reset_unreplayable`; one
     /// reset before is not, so a reset retried is harmless.
@@ -100,7 +100,7 @@ impl Engine {
         } = destination.open(&context).await.map_err(|error| {
             Error::connector(Side::Destination, "opening the destination", error)
         })?;
-        let reset = cleared(&state, &naming, streams, scope, epoch);
+        let reset = cleared(&state, &naming, streams, scope);
         let after = landed.map(|landed| landed.key);
         let committed = match reset {
             Ok(cleared) => self.commit(&mut *session, (epoch, after), cleared).await,
@@ -181,8 +181,7 @@ struct Cleared {
     drop_tables: Vec<DroppedTable>,
 }
 
-/// What resetting `streams` as `scope` says changes of `records`, in a session opened at
-/// `epoch`.
+/// What resetting `streams` as `scope` says changes of `records`.
 ///
 /// A reset is how a pipeline recovers, so recorded names do not hold it back: what it resets is
 /// forgotten whatever its names, and a table is dropped only under a name `naming` admits as a
@@ -192,7 +191,6 @@ fn cleared(
     naming: &Naming,
     streams: &[StreamName],
     scope: ResetScope,
-    epoch: Epoch,
 ) -> Result<Cleared, Error> {
     let state = PipelineState::from_records(records).map_err(|error| {
         Error::new(
@@ -236,7 +234,6 @@ fn cleared(
         }
         let marker = StateEntry::Reset {
             stream: stream.clone(),
-            epoch,
         };
         cleared
             .state_delta
@@ -254,7 +251,7 @@ fn cleared(
 /// `stream_not_found` for a stream state records nothing of; `stream_ambiguous` for one another
 /// recorded stream displays as.
 fn recorded(state: &PipelineState, stream: &StreamName) -> Result<(), Error> {
-    let mut known = state.streams.keys().chain(state.resets.keys());
+    let mut known = state.streams.keys().chain(&state.resets);
     if !known.clone().any(|known| known == stream) {
         return Err(Error::config(format!(
             "stream {stream}: the pipeline recorded nothing of it"

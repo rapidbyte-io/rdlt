@@ -10,7 +10,7 @@ use crate::output::{Failure, shown};
 
 /// The hints by the code the engine or the host gave a failure; a hint never recommends
 /// weakening a default without saying what that costs.
-const HINTS: [(&str, &str); 6] = [
+const HINTS: [(&str, &str); 7] = [
     (
         "connector_not_found",
         "`rdlt connectors` lists the binaries the host finds; a connector is an executable \
@@ -18,9 +18,9 @@ const HINTS: [(&str, &str); 6] = [
     ),
     (
         "cursor_missing",
-        "keep reading it in full; where its source ends each incremental read on a checkpoint, \
-         `rdlt state reset <document> <stream> --tables` drops the stream's tables for the next \
-         run to load again from its beginning",
+        "keep reading it in full; where its source ends each read that is not full on a \
+         checkpoint, `rdlt state reset <document> <stream> --tables` drops the stream's tables \
+         for the next run to load again from its beginning",
     ),
     (
         "grant_outside",
@@ -40,6 +40,12 @@ const HINTS: [(&str, &str); 6] = [
     (
         "sandbox_unsupported",
         "this platform has no sandbox; --trust-binaries runs connectors with your own access",
+    ),
+    (
+        "state_invalid",
+        "rdlt cannot read this pipeline's state at the destination, nor reset it: delete the \
+         pipeline's state and its streams' tables there with the destination's own tools, and \
+         the next run loads every stream again from its beginning",
     ),
 ];
 

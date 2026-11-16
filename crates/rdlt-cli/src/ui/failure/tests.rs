@@ -120,6 +120,7 @@ fn hints_are_given_only_for_their_codes_and_say_what_a_weakened_default_costs() 
         "sandbox_missing",
         "sandbox_unavailable",
         "sandbox_unsupported",
+        "state_invalid",
     ] {
         assert!(with(code).is_some(), "{code}");
     }

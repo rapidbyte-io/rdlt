@@ -98,12 +98,10 @@ pub enum StateEntry {
         /// The generations of the completed reads, oldest first.
         generations: Vec<GenerationId>,
     },
-    /// A stream's last reset, which records the stream where state holds nothing else of it.
+    /// A stream a reset marks, which records the stream where state holds nothing else of it.
     Reset {
         /// The stream.
         stream: StreamName,
-        /// The epoch of the session that reset it.
-        epoch: Epoch,
     },
     /// A table's schema.
     Schema {
@@ -304,9 +302,8 @@ pub struct PipelineState {
     pub streams: BTreeMap<StreamName, StreamState>,
     /// Each table's schema and names.
     pub tables: BTreeMap<TablePath, TableState>,
-    /// The epoch of the session that last reset each stream, which records the stream where state
-    /// holds nothing else of it.
-    pub resets: BTreeMap<StreamName, Epoch>,
+    /// The streams a reset marks, which records each where state holds nothing else of it.
+    pub resets: BTreeSet<StreamName>,
     /// The epoch of the session whose commit recorded each partition's position, by stream and
     /// partition.
     pub recorded_by: BTreeMap<(StreamName, PartitionId), Epoch>,

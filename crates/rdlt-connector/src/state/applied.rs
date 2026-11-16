@@ -33,8 +33,8 @@ impl PipelineState {
             } => {
                 self.streams.entry(stream).or_default().completed = generations;
             }
-            StateEntry::Reset { stream, epoch } => {
-                self.resets.insert(stream, epoch);
+            StateEntry::Reset { stream } => {
+                self.resets.insert(stream);
             }
             StateEntry::Schema {
                 table,

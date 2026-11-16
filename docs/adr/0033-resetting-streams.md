@@ -44,7 +44,7 @@ generation.
     every new read is (ADR 0004), rather than resuming the one it remembered, whose rows were the
     stream's before the reset.
   - A connector that panics fails the reset as an internal error, as it fails an attempt.
-- **The reset marker.** The reset commit puts `StateKey::Reset(stream)`, the epoch of its session.
+- **The reset marker.** The reset commit puts `StateKey::Reset(stream)`, which names the stream.
   Opening the reset's session fences every older session, so a run still loading fails its next
   commit, and nothing it read before the reset lands after it; a full read it began before the
   reset is over (above). The marker records the stream, so a later reset of it is not refused

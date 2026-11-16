@@ -40,7 +40,7 @@ one run to the next, puts both at risk:
 - **Persisted forms are versioned and strict.** Every persisted struct refuses a field it does not
   know, and no field defaults. A member that may hold nothing is written as `null` and required on
   read too: a record lacking it is refused, not read as holding nothing. State records are of
-  format 6; the files destination's manifests and catalog versions carry a format, 2, and the
+  format 7; the files destination's manifests and catalog versions carry a format, 2, and the
   merge key a SQL destination's staged segment records a format, 1, each checked on read. A record
   of another format is refused, as `state_invalid`, `manifest_invalid`, `catalog_invalid` or an
   internal error for a staged key: no reader of another format is kept, so a stream or table name
@@ -135,7 +135,10 @@ Rejected:
 - A document nested to the limit loads and opens again; one nested deeper is refused where it
   arrives. The wire carries schemas nested to the limit in frames too.
 - State and files catalogs of another format are refused and must be cleared; a reset reads
-  the state it resets, so it cannot clear state it cannot read.
+  the state it resets, so it cannot clear state it cannot read. An operator deletes the
+  pipeline's state and its streams' tables at the destination with the destination's own tools,
+  as the command line's hint for `state_invalid` says, and the next run loads every stream again
+  from its beginning.
 - A stream whose table would pass the schema columns stops at its change, typed, until its table
   is reset or its policy discards new columns; more memory raises the limit.
 - A normalized stream with more array paths than its child table limit stops, typed; at the least
