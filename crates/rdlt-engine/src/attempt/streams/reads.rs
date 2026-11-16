@@ -116,7 +116,7 @@ pub(super) struct Partitioned {
 
 /// A stream's read, and the partitions its source planned for it.
 pub(super) struct Sourced {
-    /// The full read it is, or the one state records that it ends.
+    /// What it does with a full read: none, the full read it is, or ending what state records.
     pub(super) full: FullRead,
     /// The partitions to read, or why they cannot be planned.
     pub(super) partitioned: Result<Partitioned, Error>,

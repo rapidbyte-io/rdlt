@@ -64,7 +64,7 @@ pub(crate) struct StreamRun {
     pub(crate) write: WriteMode,
     /// The index of the stream's table among the attempt's tables.
     pub(crate) table: usize,
-    /// The full read it is, or the one state records that it ends.
+    /// What it does with a full read: none, the full read it is, or ending what state records.
     pub(crate) full: FullRead,
     /// Partitions still reading.
     pub(crate) remaining: usize,
