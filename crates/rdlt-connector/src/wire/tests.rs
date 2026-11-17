@@ -37,6 +37,15 @@ where
     T::try_from(W::decode(bytes.as_slice()).expect("the bytes just encoded decode"))
 }
 
+/// `error` encoded to protobuf bytes, decoded, and received back with nothing to scrub.
+fn crossed_error(error: &ConnectorError) -> Result<ConnectorError, Invalid> {
+    let bytes = prost::Message::encode_to_vec(&v1::Error::from(error));
+    let decoded = <v1::Error as prost::Message>::decode(bytes.as_slice());
+    ConnectorError::from_wire(decoded.expect("the bytes just encoded decode"), &|text| {
+        text
+    })
+}
+
 fn name() -> impl Strategy<Value = String> {
     "[a-z]{1,6}"
 }
@@ -460,7 +469,7 @@ proptest! {
         if let Some(code) = code {
             error = error.with_code(code);
         }
-        let back = crossed::<_, v1::Error>(&error)?;
+        let back = crossed_error(&error)?;
         // Its text arrives as a host shows it.
         prop_assert_eq!(carried(&back), carried(&error.received(&|text| text)));
     }
@@ -779,7 +788,7 @@ fn an_error_naming_no_limit_this_end_knows_is_decoded_without_one() {
                 actual: 2,
             }),
         };
-        let decoded = ConnectorError::try_from(error).unwrap();
+        let decoded = ConnectorError::from_wire(error, &|text| text).unwrap();
         assert_eq!(decoded.kind(), ConnectorErrorKind::Internal);
         assert_eq!(decoded.code(), Some("limit_exceeded"), "{name}");
         assert_eq!(decoded.limit(), None, "{name}");
@@ -849,7 +858,7 @@ fn every_limit_either_end_refuses_by_keeps_its_name_across_the_wire() {
         };
         let error = ConnectorError::from(refusal);
         assert_eq!(error.code(), Some("limit_exceeded"));
-        let back = crossed::<_, v1::Error>(&error).unwrap();
+        let back = crossed_error(&error).unwrap();
         assert_eq!(back.limit(), Some(LimitExceeded::from(refusal)), "{limit}");
         assert_eq!(back.limit().map(|limit| limit.name), Some(limit.name()));
     }
@@ -860,7 +869,7 @@ fn an_error_crosses_a_grpc_status_whole() {
     let error = ConnectorError::new(ConnectorErrorKind::RateLimited, "slow down")
         .with_code("api.throttled")
         .with_retry_after(Some(Duration::from_secs(3)));
-    let back = super::error(&super::status(&error));
+    let back = super::error(&super::status(&error), &|text| text);
     assert_eq!(carried(&back), carried(&error));
 }
 
@@ -875,7 +884,7 @@ fn a_status_without_an_error_is_a_transient_or_internal_transport_failure() {
         Code::Cancelled,
         Code::Unknown,
     ] {
-        let error = super::error(&Status::new(code, "the stream broke"));
+        let error = super::error(&Status::new(code, "the stream broke"), &|text| text);
         assert_eq!(
             (error.kind(), error.code()),
             (ConnectorErrorKind::Transient, Some(super::TRANSPORT)),
@@ -883,7 +892,7 @@ fn a_status_without_an_error_is_a_transient_or_internal_transport_failure() {
         );
     }
     for code in [Code::Internal, Code::PermissionDenied, Code::Unimplemented] {
-        let error = super::error(&Status::new(code, "the peer is not rdlt"));
+        let error = super::error(&Status::new(code, "the peer is not rdlt"), &|text| text);
         assert_eq!(error.kind(), ConnectorErrorKind::Internal, "{code:?}");
     }
 }
@@ -920,7 +929,7 @@ fn a_long_message_crosses_a_status_cut_to_the_control_string_limit() {
     let status = super::status(&error);
     // The status's own message is short, so its trailers fit every client's header limit.
     assert!(status.message().len() <= 1024, "{}", status.message().len());
-    let back = super::error(&status);
+    let back = super::error(&status, &|text| text);
     assert_eq!(
         (back.kind(), back.code()),
         (ConnectorErrorKind::Auth, Some("denied"))
@@ -964,10 +973,15 @@ fn a_connectors_error_text_is_shown_and_bounded_where_the_wire_delivers_it() {
         retry_after: None,
         limit: None,
     };
-    let decoded = ConnectorError::try_from(sent.clone()).expect("it decodes");
+    let decoded = ConnectorError::from_wire(sent.clone(), &|text| text).expect("it decodes");
     let details = sent.encode_to_vec().into();
-    let carried = super::error(&Status::with_details(Code::Unknown, hostile, details));
-    let transport = super::error(&Status::new(Code::Unknown, hostile.repeat(4096)));
+    let carried = super::error(
+        &Status::with_details(Code::Unknown, hostile, details),
+        &|text| text,
+    );
+    let transport = super::error(&Status::new(Code::Unknown, hostile.repeat(4096)), &|text| {
+        text
+    });
     for error in [decoded, carried, transport] {
         let (message, code) = (error.to_string(), error.code().expect("a code").to_owned());
         assert!(plain(&message) && plain(&code), "{message:?} {code:?}");
@@ -1258,7 +1272,7 @@ fn a_connector_error_code_outside_the_grammar_or_the_host_s_is_replaced() {
             retry_after: None,
             limit: None,
         };
-        let error = ConnectorError::try_from(sent).expect("it decodes");
+        let error = ConnectorError::from_wire(sent, &|text| text).expect("it decodes");
         error.code().map(str::to_owned)
     };
     for kept in ["pg.permission_denied", "retention_lost", "a-b", "x"] {
@@ -1278,6 +1292,33 @@ fn a_connector_error_code_outside_the_grammar_or_the_host_s_is_replaced() {
     assert_eq!(
         super::HOST_CODES,
         ["connector_lost", "deadline_exceeded", "tls", "transport"]
+    );
+}
+
+#[test]
+fn an_error_from_the_wire_is_scrubbed_as_it_was_said_and_only_then_shown() {
+    use rdlt_wire::prost::Message as _;
+    use rdlt_wire::tonic::{Code, Status};
+    // Shown first, the run of spaces would be one, and the secret said escaped not found.
+    let secret = r#"pass  \"word\""#;
+    let scrubbed = |text: String| text.replace(secret, "***");
+    let said = format!("it said \"{secret}\"  \u{1b}[2J");
+    let sent = v1::Error {
+        kind: v1::ErrorKind::Auth as i32,
+        message: said.clone(),
+        code: None,
+        retry_after: None,
+        limit: None,
+    };
+    let decoded = ConnectorError::from_wire(sent.clone(), &scrubbed).expect("it decodes");
+    assert_eq!(decoded.to_string(), r#"it said "***" \u{1b}[2J"#);
+    let details = sent.encode_to_vec().into();
+    let carried = super::error(&Status::with_details(Code::Unknown, "", details), &scrubbed);
+    assert_eq!(carried.to_string(), decoded.to_string());
+    let transport = super::error(&Status::new(Code::Unavailable, said), &scrubbed);
+    assert!(
+        transport.to_string().contains(r#"it said "***""#),
+        "{transport}"
     );
 }
 

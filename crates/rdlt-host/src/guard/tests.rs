@@ -19,7 +19,8 @@ fn an_error_is_kept_without_the_secrets_its_connector_was_sent_in_any_of_its_tex
     let kept = received(&raised, &redactions);
     assert_eq!(kept.kind(), ConnectorErrorKind::Transient);
     assert_eq!(kept.to_string(), "connecting with ***");
-    assert_eq!(kept.code(), Some("pg.***"));
+    // A code is withheld whole: scrubbed, it would name another.
+    assert_eq!(kept.code(), Some(rdlt_connector::wire::INVALID_CODE));
     let cause = kept
         .source()
         .expect("the cause is kept, as text")
@@ -35,6 +36,30 @@ fn an_error_is_kept_without_the_secrets_its_connector_was_sent_in_any_of_its_tex
             .downcast_ref::<Driver>()
             .is_none()
     );
+}
+
+#[test]
+fn a_code_is_kept_whole_or_withheld_whole_and_never_rewritten() {
+    use rdlt_connector::wire::{HOST_CODES, INVALID_CODE};
+    use rdlt_connector::{POSITION_UNSENT, RETENTION_LOST, SCHEMA_CONFLICT};
+    let redactions = Redactions::new();
+    // Values no secret, which occur in codes: a user, a schema, a flag, a separator.
+    for value in ["connector", "schema", "on", "lost", "_", "pg"] {
+        redactions.add(value);
+    }
+    let codes = [RETENTION_LOST, POSITION_UNSENT, SCHEMA_CONFLICT];
+    for code in codes.into_iter().chain(HOST_CODES.iter().copied()) {
+        let raised =
+            ConnectorError::new(ConnectorErrorKind::Transient, "it failed").with_code(code);
+        assert_eq!(received(&raised, &redactions).code(), Some(code));
+    }
+    // A code of the connector's own that holds one says nothing of it.
+    for code in ["pg.refused", "auth_failed"] {
+        let raised = ConnectorError::new(ConnectorErrorKind::Auth, "it failed").with_code(code);
+        assert_eq!(received(&raised, &redactions).code(), Some(INVALID_CODE));
+    }
+    let raised = ConnectorError::new(ConnectorErrorKind::Auth, "it failed").with_code("denied");
+    assert_eq!(received(&raised, &redactions).code(), Some("denied"));
 }
 
 /// A destination whose session says, as it closes, the secret it was sent.

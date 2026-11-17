@@ -122,7 +122,7 @@ async fn a_closed_session_refuses_later_calls() {
         change: Some(v1::TableChange::from(&create)),
     };
     let status = client.rpc.apply_schema(request).await.unwrap_err();
-    assert_eq!(carried(&status).code(), Some("no_session"));
+    assert_eq!(carried(&status, &|text| text).code(), Some("no_session"));
 }
 
 #[tokio::test]
@@ -202,9 +202,11 @@ async fn a_failed_write_answers_with_its_error_and_ends_the_write() {
             error = Some(refused);
         }
     }
-    let error =
-        rdlt_connector::ConnectorError::try_from(error.expect("the write answers its error"))
-            .unwrap();
+    let error = rdlt_connector::ConnectorError::from_wire(
+        error.expect("the write answers its error"),
+        &|text| text,
+    )
+    .unwrap();
     assert_eq!(error.to_string(), "the write was refused");
 }
 
@@ -497,7 +499,7 @@ async fn a_connection_holds_a_few_sessions_open_and_a_further_closes_its_oldest(
             .rpc
             .close(v1::CloseRequest { session: *session })
             .await;
-        let refused = carried(&refused.expect_err("the session is closed"));
+        let refused = carried(&refused.expect_err("the session is closed"), &|text| text);
         assert_eq!(refused.code(), Some("no_session"), "{session}");
     }
     for session in open {

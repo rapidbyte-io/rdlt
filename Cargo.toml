@@ -86,6 +86,7 @@ strsim = "0.11.1" # the nearest known key to an unknown one in a document's erro
 syn = { version = "2", features = ["full"] } # parsing impl blocks in rdlt-connector-macros
 getrandom = "0.4.3" # the operating system random source behind SystemEnv, and the names of the reference connectors' temporary files
 memchr = "2.8.3" # finding the lines of JSON pushes
+aho-corasick = "1.1.5" # one pass over a text finds every form of every secret a connector was sent
 futures-util = { version = "0.3.34", default-features = false, features = [
   "std",
 ] } # joining the simulation's hostile and broken hosts' calls, and a request stream of one frame

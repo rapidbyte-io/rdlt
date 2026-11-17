@@ -134,7 +134,14 @@ async fn a_text_is_rewritten_only_where_a_reference_or_a_doubled_literal_changes
     ] {
         let pieces = pieces(text).expect("well formed");
         let resolved = super::reference::resolved(&pieces, ".", &vault, &redactions).await;
-        let resolved = resolved.map(|resolved| resolved.expect("it resolves").as_str().to_owned());
+        let resolved = resolved.map(|resolved| resolved.expect("it resolves"));
+        // Written where it fits whole from the start: a buffer that grew would leave a copy.
+        let room = resolved.as_ref().map(|text| (text.capacity(), text.len()));
+        assert!(
+            room.is_none_or(|(capacity, length)| capacity == length),
+            "{text}"
+        );
+        let resolved = resolved.map(|resolved| resolved.as_str().to_owned());
         assert_eq!(resolved.as_deref(), sent, "{text}");
     }
 }
@@ -306,12 +313,14 @@ fn redactions_replace_every_secret_whole_and_show_none() {
     // A secret that is written otherwise in JSON, by `Debug` or once shown has those forms.
     let quoted = Redactions::new();
     quoted.add("a\"b\u{1b}  c");
-    assert_eq!(format!("{quoted:?}"), "Redactions(4)");
+    assert_eq!(format!("{quoted:?}"), "Redactions(6)");
     for said in [
         "a\"b\u{1b}  c",
         r#"a\"b\u001b  c"#,
         r#"a\"b\u{1b}  c"#,
         r#"a"b\u{1b} c"#,
+        r#"a\"b\u001b c"#,
+        r#"a\"b\u{1b} c"#,
     ] {
         assert_eq!(quoted.scrubbed(format!("<{said}>")), "<***>", "{said}");
     }
@@ -460,6 +469,10 @@ proptest! {
         for secret in &secrets {
             redactions.add(secret);
         }
+        // A name, never cut, holds a secret where scrubbing it would change it.
+        if !text.contains(CUT) && !text.contains(super::DROPPED) {
+            prop_assert_eq!(redactions.holds(&text), redactions.scrubbed(text.clone()) != text);
+        }
         let scrubbed = redactions.scrubbed_end(text.clone(), dropped);
         if scrubbed != super::redact::WITHHELD {
             let marked = if dropped { format!("{}{scrubbed}", super::DROPPED) } else { scrubbed };
@@ -481,6 +494,33 @@ proptest! {
                 }
             }
         }
+    }
+
+    /// A secret said as it is, or as JSON or `{:?}` writes it, within any text is found in that
+    /// text, whether or not the text was shown before it is scrubbed.
+    #[test]
+    fn a_secret_said_in_any_form_is_found_shown_or_not(
+        secret in "[ab*' \"\\\\\n\u{1b}]{1,6}".prop_filter("a character besides the mask's", |secret| {
+            super::redact::maskable(secret)
+        }),
+        form in 0..3_usize,
+        before in "[a \"*]{0,3}",
+        after in "[a \"*]{0,3}",
+        show in any::<bool>(),
+    ) {
+        use rdlt_connector::text::shown;
+        let json = serde_json::to_string(&secret).expect("a text serializes");
+        let debug = format!("{secret:?}");
+        let said = match form {
+            0 => secret.as_str(),
+            1 => &json[1..json.len() - 1],
+            _ => &debug[1..debug.len() - 1],
+        };
+        let text = format!("{before}{said}{after}");
+        let text = if show { shown(&text, usize::MAX) } else { text };
+        let redactions = Redactions::new();
+        redactions.add(&secret);
+        prop_assert!(redactions.holds(&text), "{secret:?} said as {said:?} in {text:?}");
     }
 }
 
@@ -932,6 +972,28 @@ fn the_part_of_a_secret_left_where_a_beginning_was_dropped_is_scrubbed_too() {
 }
 
 #[test]
+fn the_part_of_a_secret_at_a_cut_is_found_where_the_text_repeats_its_start() {
+    use rdlt_connector::text::CUT;
+    let redactions = Redactions::new();
+    for secret in ["aabX1234", "4321Xbaa"] {
+        redactions.add(secret);
+    }
+    // Before the mark `aaab` ends with `aab`, the start of the first, though `aaa` is not one.
+    assert_eq!(
+        redactions.scrubbed(format!("<aaab{CUT}")),
+        format!("<a***{CUT}")
+    );
+    // After the mark `baaa` starts with `baa`, the end of the second, though `aaa` is not one.
+    assert_eq!(redactions.scrubbed_end("baaa>".to_owned(), true), "***a>");
+    // `aaba` ends with `a` alone of the first: `aab` matched, then broken, leaves no `aa`.
+    assert_eq!(
+        redactions.scrubbed(format!("<aaba{CUT}")),
+        format!("<aab***{CUT}")
+    );
+    assert_eq!(redactions.scrubbed_end("abaa>".to_owned(), true), "***baa>");
+}
+
+#[test]
 fn a_secret_and_the_part_of_one_at_a_cut_that_overlap_are_hidden_whole() {
     use rdlt_connector::text::CUT;
     let redactions = Redactions::new();
@@ -964,6 +1026,94 @@ fn the_document_a_connector_is_sent_is_written_in_a_buffer_that_never_grows() {
         let json = super::written(&document).expect("written");
         assert_eq!(json.capacity(), json.len(), "{secret:?}");
     }
+}
+
+/// Each run of three or more letters and digits in `secret`: what is left of it where any is.
+fn fragments(secret: &str) -> Vec<&str> {
+    let runs = secret.split(|c: char| !c.is_alphanumeric());
+    runs.filter(|run| run.chars().count() >= 3).collect()
+}
+
+/// Secrets each holding a run of spaces beside a character JSON and `{:?}` escape, an
+/// apostrophe, or a mark that combines with the character before it.
+const ESCAPED: [&str; 5] = [
+    "k3y  \"zq9w\"",
+    "x7q\\p4th  \u{1b}v8n",
+    "{\n  \"type\": \"svc_9q\",\n  \"private_key\": \"-----BEGIN KEY-----\\nMIIEvQ8z\\n\"\n}",
+    "it's\u{301}\u{1b}\"r4q",
+    "n0t\u{200b}  'h3re'\u{7f}",
+];
+
+#[test]
+fn a_secret_said_escaped_is_scrubbed_whether_or_not_it_was_shown_first() {
+    use rdlt_connector::limits::MAX_ERROR_TEXT_BYTES;
+    use rdlt_connector::text::shown;
+    for secret in ESCAPED {
+        let redactions = Redactions::new();
+        redactions.add(secret);
+        let json = serde_json::to_string(secret).expect("a text serializes");
+        let pretty = serde_json::to_string_pretty(&json!({ "k": secret })).expect("serializes");
+        let debug = format!("{:?}", json!({ "k": secret }));
+        for said in [
+            secret.to_owned(),
+            json,
+            pretty,
+            debug,
+            format!("{secret:?}"),
+        ] {
+            let said = format!("it said {said} and stopped");
+            for text in [said.clone(), shown(&said, MAX_ERROR_TEXT_BYTES)] {
+                let scrubbed = redactions.scrubbed(text.clone());
+                for fragment in fragments(secret) {
+                    assert!(
+                        !scrubbed.contains(fragment),
+                        "{fragment:?} of {secret:?} in {scrubbed:?} from {text:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn checking_many_names_and_scrubbing_many_cuts_takes_one_pass_whatever_the_forms() {
+    use rdlt_connector::text::CUT;
+    // A key of a thousand indented, quoted lines, each found on its own in six forms.
+    let lines: Vec<String> = (0..1024)
+        .map(|line| format!("  \"line-{line:04}\": \"{:052x}\",", line * 7919))
+        .collect();
+    let key = format!("{{\n{}\n}}", lines.join("\n"));
+    let redactions = Redactions::new();
+    redactions.add(&key);
+    // Names, half of them holding the mark of a dropped beginning, which a name never is.
+    let names: Vec<String> = (0..400_000)
+        .map(|name| match name % 2 {
+            0 => format!("column_{name}"),
+            _ => format!("{}column_{name}", super::DROPPED),
+        })
+        .collect();
+    let planted = format!("<{}>", lines[512]);
+    let held = names
+        .iter()
+        .chain([&planted])
+        .filter(|name| redactions.holds(name))
+        .count();
+    assert_eq!(held, 1);
+    // A text of nothing but the start of a line before each mark of a cut.
+    let start = &lines[7][..12];
+    let said = format!("{start}{CUT}").repeat(4096 / (start.len() + CUT.len()));
+    let scrubbed = redactions.scrubbed(said);
+    assert!(!scrubbed.contains("line-"), "{scrubbed}");
+    assert!(scrubbed.starts_with(&format!("***{CUT}")), "{scrubbed}");
+    // And of nothing but the end of a line after each mark of a dropped beginning.
+    let end = &lines[7][lines[7].len() - 20..];
+    let said = format!("{}{end}", super::DROPPED).repeat(4096 / (end.len() + 6));
+    let scrubbed = redactions.scrubbed(said);
+    assert!(!scrubbed.contains("\","), "{scrubbed}");
+    assert!(
+        scrubbed.starts_with(&format!("{}***", super::DROPPED)),
+        "{scrubbed}"
+    );
 }
 
 /// A store that reads secrets from `directory`, as a store of files does.

@@ -138,7 +138,7 @@ pub(crate) async fn spoken<IO>(
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
-    let handshaken = Connection::handshake(io, role, *options)
+    let handshaken = Connection::handshake(io, role, *options, Redactions::new())
         .await
         .map_err(|source| gate.refused(source))?;
     gate.admit(handshaken.spec())?;
@@ -158,8 +158,9 @@ impl Supervisor {
         let admit = |spec: &v1::ConnectorSpec| gate.admit(spec).map_err(Spawned::Refused);
         let redactions = Redactions::new();
         let running = begin(&start, role, &configured, options, &admit, &redactions).await?;
-        let checked = crate::remote::contract_spec(running.connection.spec())
-            .map_err(|error| Spawned::Refused(gate.refused(error)))?;
+        let checked = crate::remote::contract_spec(running.connection.spec()).map_err(|error| {
+            Spawned::Refused(gate.refused(crate::guard::received(&error, &redactions)))
+        })?;
         Ok(Self {
             start,
             role,
@@ -235,9 +236,8 @@ impl Supervisor {
         let changed = ConnectorError::config(format!(
             "the connector started again serves `{id}` {version}, not `{}` {} as it was placed",
             checked.id, checked.version
-        ))
-        .with_code("connector_changed");
-        crate::guard::received(&changed, &self.redactions)
+        ));
+        crate::guard::received(&changed, &self.redactions).with_code(CONNECTOR_CHANGED)
     }
 
     /// The capabilities the live destination declares.
@@ -312,7 +312,7 @@ impl Spawned {
             }
             Self::Refused(refused) => {
                 ConnectorError::config("the connector started again is not the connector placed")
-                    .with_code("connector_changed")
+                    .with_code(CONNECTOR_CHANGED)
                     .with_source(refused)
             }
         }
@@ -321,6 +321,10 @@ impl Spawned {
 
 /// The code of the error a TLS handshake with a connector fails with.
 pub const TLS: &str = "tls";
+
+/// The code of the error a connector started again fails with where it is not the connector
+/// placed.
+const CONNECTOR_CHANGED: &str = "connector_changed";
 
 /// Checks the spec a connector handshook with, before it sees its configuration.
 type Admit<'a> = dyn Fn(&v1::ConnectorSpec) -> Result<(), Spawned> + Sync + 'a;
@@ -376,7 +380,7 @@ where
 {
     let scrubbed =
         |error: ConnectorError| Spawned::Connect(error.received(&|text| redactions.scrubbed(text)));
-    let handshaken = Connection::handshake(io, role, *options)
+    let handshaken = Connection::handshake(io, role, *options, redactions.clone())
         .await
         .map_err(scrubbed)?;
     admit(handshaken.spec())?;

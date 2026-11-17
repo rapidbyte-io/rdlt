@@ -17,14 +17,18 @@ fn a_secret_is_found_in_each_of_its_forms() {
 
 #[test]
 fn the_forms_are_the_escapes_and_encodings_a_text_may_hold() {
-    let found = forms("a\"z \u{1}");
+    let found = forms("a\"z  \u{1}'");
     for form in [
-        "a\"z \u{1}",
-        "a\\\"z \\u0001",
-        "a\\\"z \\u{1}",
-        "61227a2001",
-        "61227A2001",
-        "a%22z%20%01",
+        "a\"z  \u{1}'",
+        // As JSON and `{:?}` write it, and each as a host shows it.
+        "a\\\"z  \\u0001'",
+        "a\\\"z  \\u{1}'",
+        "a\"z \\u{1}'",
+        "a\\\"z \\u0001'",
+        "a\\\"z \\u{1}'",
+        "61227a20200127",
+        "61227A20200127",
+        "a%22z%20%20%01%27",
     ] {
         assert!(found.contains(&form.to_owned()), "{form} in {found:?}");
     }

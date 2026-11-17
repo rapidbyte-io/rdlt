@@ -94,7 +94,7 @@ impl ReadBackProbe<'_> {
             let frames = client
                 .read_published(request)
                 .await
-                .map_err(|status| error(&status))?;
+                .map_err(|status| error(&status, &|text| text))?;
             decoded(frames, self.target.limits()).await
         }
     }
@@ -129,7 +129,11 @@ async fn decoded(mut frames: Incoming<v1::ReadFrame>, limits: Limits) -> Result<
     use v1::read_frame::Frame;
     let mut decoder = Decoder::new(limits);
     let (mut batches, mut bytes, mut rows) = (Vec::new(), 0_usize, 0_usize);
-    while let Some(received) = frames.arrived().await.map_err(|status| error(&status))? {
+    while let Some(received) = frames
+        .arrived()
+        .await
+        .map_err(|status| error(&status, &|text| text))?
+    {
         match received.message.frame {
             Some(Frame::Schema(schema)) => {
                 decoder

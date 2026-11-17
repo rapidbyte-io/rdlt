@@ -1,7 +1,7 @@
 use rdlt_certify::{Clause, ClauseResult, Outcome, Report, Verdict};
 
 use super::session::within;
-use super::{Require, Watch, bound, code, ran, redactions, verdict, whole_report};
+use super::{Require, Watch, bound, code, json_document, ran, redactions, verdict, whole_report};
 use crate::Exit;
 use crate::output::Mode;
 use crate::ui::Ui;
@@ -312,4 +312,48 @@ fn a_secret_wider_than_a_line_is_scrubbed_before_the_line_is_wrapped() {
     let printed = redactions().scrubbed(whole_report(&report, role, &ui));
     assert!(printed.contains("/nonexistent/***/store.db"), "{printed}");
     assert!(!holds_part_of_the_secret(&printed), "{printed}");
+}
+
+/// What `--json` prints is scrubbed before JSON escapes it: a reason shows a secret's control
+/// characters as escapes, whose backslashes JSON would escape again into a form no scrub knows.
+#[test]
+fn a_secret_in_a_report_is_scrubbed_before_json_escapes_it() {
+    let secret = "j5on\u{1b}\"k7q";
+    redactions().add(secret);
+    let clause = Clause {
+        id: "D-OPEN",
+        statement: "a statement",
+        unless: "",
+    };
+    let said = format!("the store said {secret}");
+    let report = Report {
+        connector: "io.example.json".to_owned(),
+        results: vec![ClauseResult {
+            clause,
+            outcome: Outcome::Failed(said.as_str().into()),
+            note: None,
+        }],
+    };
+    let printed = json_document(&[report], Verdict::Failed);
+    assert!(printed.contains("the store said ***"), "{printed}");
+    assert!(
+        !printed.contains("j5on") && !printed.contains("k7q"),
+        "{printed}"
+    );
+}
+
+/// What `--json` prints scrubs no word of its own and no punctuation: values that occur in an
+/// outcome's word and in JSON's syntax leave the document whole.
+#[test]
+fn a_secret_like_a_word_or_punctuation_of_the_report_leaves_it_whole() {
+    for value in ["pass", "\",\"", "verdict"] {
+        redactions().add(value);
+    }
+    let printed = json_document(&[report(&[Outcome::Passed])], Verdict::Passed);
+    let document: serde_json::Value = serde_json::from_str(&printed).expect("it parses");
+    assert_eq!(document["verdict"], "passed", "{printed}");
+    assert_eq!(
+        document["reports"][0]["clauses"][0]["outcome"], "passed",
+        "{printed}"
+    );
 }

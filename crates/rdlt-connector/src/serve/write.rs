@@ -116,7 +116,7 @@ async fn receive(
         let frame = match frame {
             Ok(Some(frame)) => Ok(frame),
             Ok(None) => return,
-            Err(status) => Err(error(&status)),
+            Err(status) => Err(error(&status, &|text| text)),
         };
         let Ok(slot) = received.reserve().await else {
             return;

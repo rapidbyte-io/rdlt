@@ -58,7 +58,7 @@ async fn standing(client: &mut Client, stream: &str, partition: &str) -> Option<
 /// Asserts `report` was refused as a position its host was neither sent nor read from.
 fn unheard(report: Result<tonic::Response<v1::CommittedResponse>, tonic::Status>, what: &str) {
     let refused = report.expect_err(what);
-    let error = carried(&refused);
+    let error = carried(&refused, &|text| text);
     assert_eq!(error.code(), Some("position_unsent"), "{what}: {error}");
     assert_eq!(
         error.kind(),
@@ -128,7 +128,7 @@ async fn refused_and_unheard(mut client: Client, partition: &str, forged: v1::Cu
     let before = standing(&mut client, "orders", partition).await;
     // The source refuses the read before it sends anything.
     let read = read_from(&mut client, "orders", partition, Some(forged.clone())).await;
-    let refused = carried(&read.expect_err(&what));
+    let refused = carried(&read.expect_err(&what), &|text| text);
     assert_eq!(
         refused.kind(),
         ConnectorErrorKind::Data,
@@ -262,7 +262,9 @@ async fn a_start_a_growing_log_has_yet_to_reach_is_tried_again_and_its_host_not_
     let forged = cursor(r#"{"next":1000000}"#);
     let before = standing(&mut client, "orders", "p0").await;
     let read = read_from(&mut client, "orders", "p0", Some(forged.clone())).await;
-    let refused = carried(&read.expect_err("the start is ahead of the log"));
+    let refused = carried(&read.expect_err("the start is ahead of the log"), &|text| {
+        text
+    });
     assert_eq!(refused.kind(), ConnectorErrorKind::Transient, "{refused}");
     assert_eq!(refused.code(), Some("cursor_ahead"), "{refused}");
     let report = client.rpc.committed(committed("orders", "p0", forged));

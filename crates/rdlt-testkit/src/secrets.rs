@@ -6,21 +6,27 @@ use base64::Engine as _;
 use base64::engine::GeneralPurpose;
 use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
 
-/// Each form `secret` could leak in: as it is; JSON-escaped, as Rust's `Debug` writes it and as
-/// a host shows connector text; in lower- and upper-case hex; percent-encoded; and in base64,
-/// standard and URL-safe, at each of the three offsets it can start at within an encoded text.
+/// Each form `secret` could leak in: as it is, as JSON and Rust's `{:?}` write it, and each of
+/// those as a host shows connector text; in lower- and upper-case hex; percent-encoded; and in
+/// base64, standard and URL-safe, at each of the three offsets it can start at within an
+/// encoded text.
 #[must_use]
 pub fn forms(secret: &str) -> Vec<String> {
-    let escaped = serde_json::to_string(secret).expect("a string serializes");
+    let unquoted = |quoted: String| quoted[1..quoted.len() - 1].to_owned();
+    let json = unquoted(serde_json::to_string(secret).expect("a string serializes"));
+    let debug = unquoted(format!("{secret:?}"));
     let hex = secret.bytes().fold(String::new(), |mut text, byte| {
         write!(text, "{byte:02x}").expect("a string takes what is written");
         text
     });
+    let shown = |form: &str| rdlt_connector::text::shown(form, usize::MAX);
     let mut forms = vec![
+        shown(secret),
+        shown(&json),
+        shown(&debug),
         secret.to_owned(),
-        escaped.trim_matches('"').to_owned(),
-        secret.escape_debug().collect(),
-        rdlt_connector::text::shown(secret, usize::MAX),
+        json,
+        debug,
         hex.to_ascii_uppercase(),
         hex,
         percent_encoded(secret),

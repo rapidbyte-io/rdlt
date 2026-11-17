@@ -487,11 +487,7 @@ pub trait DestinationFactory: Send + Sync {
                 crate::error::ConnectorErrorKind::Unsupported,
                 "this destination cannot read back what it published",
             )
-            .with_code(PUBLISHED_CODE))
+            .with_code(crate::error::PUBLISHED_CODE))
         })
     }
 }
-
-/// The code of the error a destination that cannot read back what it published refuses to.
-#[cfg(any(feature = "serve", feature = "certify"))]
-pub(crate) const PUBLISHED_CODE: &str = "published";

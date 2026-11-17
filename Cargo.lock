@@ -3956,6 +3956,7 @@ dependencies = [
 name = "rdlt-host"
 version = "0.0.0"
 dependencies = [
+ "aho-corasick",
  "arrow-array",
  "arrow-schema",
  "base64 0.22.1",

@@ -214,7 +214,7 @@ pub(crate) fn configure_request(config: &str) -> v1::ConfigureRequest {
 
 /// The error a status carries.
 fn error(status: &Status) -> ConnectorError {
-    rdlt_connector::wire::error(status)
+    rdlt_connector::wire::error(status, &|text| text)
 }
 
 /// The refusal `result` is, when it is one with `code`; `what` names the call.

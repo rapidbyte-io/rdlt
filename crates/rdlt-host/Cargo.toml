@@ -12,6 +12,7 @@ repository.workspace = true
 sim = []
 
 [dependencies]
+aho-corasick.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
 base64.workspace = true

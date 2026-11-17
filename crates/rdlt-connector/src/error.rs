@@ -1,11 +1,24 @@
 //! The error type every connector returns.
 
+#[cfg_attr(
+    not(feature = "wire"),
+    expect(
+        unreachable_pub,
+        reason = "the codes are public through `wire`, which this build leaves out"
+    )
+)]
+pub(crate) mod codes;
 #[cfg(test)]
 mod tests;
 
 use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::Duration;
+
+use codes::{
+    CONFIGURE_REPEATED, HOST_CODES, INVALID_CODE, INVALID_MESSAGE, MALFORMED_FRAME,
+    PROTOCOL_VERSION, TRANSPORT, UNENCODABLE_BATCH, UNSENDABLE_TYPE,
+};
 
 /// A connector result.
 pub type Result<T, E = ConnectorError> = std::result::Result<T, E>;
@@ -38,6 +51,39 @@ pub const COLUMN_MISSING: &str = "column_missing";
 /// The code of the `Fenced` error a commit fails with where it expects another commit landed
 /// than the last that did, as a copy a later commit overtook does: it publishes nothing.
 pub const COMMIT_STALE: &str = "commit_stale";
+
+/// The code of the error a destination that cannot read back what it published refuses to.
+pub(crate) const PUBLISHED_CODE: &str = "published";
+
+/// Every code the protocol publishes besides [`HOST_CODES`]: each says nothing of what a
+/// connector was sent, and a host keeps it as it is.
+const PUBLISHED_CODES: &[&str] = &[
+    RETENTION_LOST,
+    CURSOR_UNISSUED,
+    DEADLINE_EXCEEDED,
+    SCHEMA_CONFLICT,
+    TABLE_OWNED,
+    COLUMN_MISSING,
+    COMMIT_STALE,
+    INVALID_CODE,
+    INVALID_MESSAGE,
+    PROTOCOL_VERSION,
+    CONFIGURE_REPEATED,
+    TRANSPORT,
+    MALFORMED_FRAME,
+    UNSENDABLE_TYPE,
+    UNENCODABLE_BATCH,
+    PUBLISHED_CODE,
+    crate::source::POSITION_UNSENT,
+    crate::source::ACKNOWLEDGED_CODE,
+    rdlt_wire::limits::LIMIT_EXCEEDED,
+    rdlt_wire::limits::LIMIT_BELOW_MINIMUM,
+];
+
+/// Whether the protocol publishes `code`, which a host then keeps as it is.
+pub(crate) fn published(code: &str) -> bool {
+    HOST_CODES.contains(&code) || PUBLISHED_CODES.contains(&code)
+}
 
 /// What kind of failure a [`ConnectorError`] reports; the engine decides retries from it.
 #[non_exhaustive]
@@ -220,8 +266,10 @@ impl ConnectorError {
     }
 
     /// This error as a host keeps one a connector raised, in process or over the wire: its
-    /// kind, wait and limit, with its code, its message and each of its causes passed through
-    /// `scrubbed` and then [shown](crate::text::shown) within their limits.
+    /// kind, wait and limit, its message and each of its causes passed through `scrubbed` and
+    /// then [shown](crate::text::shown) within their limits, and its code whole or not at all:
+    /// one the protocol publishes as it is, and another `scrubbed` would change as
+    /// [`INVALID_CODE`].
     ///
     /// At most [`MAX_ERROR_CAUSES`](crate::limits::MAX_ERROR_CAUSES) causes are kept, as text:
     /// the errors they were are not.
@@ -242,11 +290,11 @@ impl ConnectorError {
             .into_iter()
             .rev()
             .fold(None, |source, text| Some(Box::new(Cause { text, source })));
+        // A code is a name the engine branches on: rewritten, it would name another.
         let code = self.code.as_deref().map(|code| {
-            Arc::from(crate::text::shown(
-                scrubbed(code.to_owned()),
-                MAX_ERROR_CODE_BYTES,
-            ))
+            let kept = published(code) || scrubbed(code.to_owned()) == code;
+            let code = if kept { code } else { INVALID_CODE };
+            Arc::from(crate::text::shown(code, MAX_ERROR_CODE_BYTES))
         });
         Self {
             kind: self.kind,

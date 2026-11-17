@@ -21,8 +21,9 @@ use crate::secrets::{Redactions, named_catalog, named_plan};
 #[cfg(test)]
 mod tests;
 
-/// `error` as the host keeps it: nothing `redactions` holds is in its message, its code or
-/// any of its causes, which are text from here on.
+/// `error` as the host keeps it: nothing `redactions` holds is in its message or any of its
+/// causes, which are text from here on, and its code is kept whole or withheld as
+/// `invalid_code`.
 pub(crate) fn received(error: &ConnectorError, redactions: &Redactions) -> ConnectorError {
     error.received(&|text| redactions.scrubbed(text))
 }

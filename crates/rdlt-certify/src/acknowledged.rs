@@ -39,7 +39,7 @@ impl AckProbe {
             .rpc
             .read_acknowledged(asked)
             .await
-            .map_err(|status| error(&status))?
+            .map_err(|status| error(&status, &|text| text))?
             .into_inner();
         answer
             .cursor

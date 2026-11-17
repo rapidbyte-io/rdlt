@@ -15,8 +15,9 @@ use rdlt_wire::plane::Answers;
 use rdlt_wire::tonic::Status;
 
 use super::handshake::unsupported;
-use crate::destination::{Destination, DestinationFactory, PUBLISHED_CODE};
+use crate::destination::{Destination, DestinationFactory};
 use crate::error::ConnectorError;
+use crate::error::PUBLISHED_CODE;
 use crate::source::{ACKNOWLEDGED_CODE, Source, SourceFactory};
 use crate::spec::ConnectContext;
 use crate::wire::{status, v1};

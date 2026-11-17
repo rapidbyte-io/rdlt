@@ -199,9 +199,11 @@ given. A host enforces that only where it closes each of these:
 - **Connector text is shown and bounded where the host receives it.** One function,
   `rdlt_connector::text::shown`, escapes every character a terminal obeys or a reader cannot
   see, makes a run of spaces one, and cuts at a limit with a mark; showing twice changes
-  nothing. It is applied to an error's message, code and causes as the wire delivers them,
-  to last words, to output lines, to an engine report's texts, and to every reason of a
-  certification report, whose plain form, `Display` and JSON are the same text.
+  nothing. It is applied to an error's message and causes as the wire delivers them, once the
+  end that receives them has scrubbed them of what it sent the connector, and to its code,
+  kept whole or withheld as `invalid_code`; to last words, to output lines, to an engine
+  report's texts, and to every reason of a certification report, whose plain form, `Display`
+  and JSON are the same text.
 - **A configuration is secret material, and its secrets are references.**
   - `Secret<T>` is not `Clone` (`duplicate` copies on purpose), is wiped when dropped, and
     compares text and bytes in constant time. A configuration error names the field, the
@@ -231,24 +233,33 @@ given. A host enforces that only where it closes each of these:
     connector's own configuration; nothing else of the host's.
   - Every resolved value is kept in the `Redactions` of the placement, every start's
     together, and replaced by `***` in its errors, its last words and its output, as it is
-    written and as JSON, `Debug` and `shown` write it, and where a text was cut within it: a
+    written, as JSON and `{:?}` write it, and as `shown` writes each of those, so it is found
+    in a text whether or not the text was shown first, and where a text was cut within it: a
     connector may say a value it was sent at an earlier start. A `***` may complete a value,
     or the part of one at a cut, with what is around it, so a text is scrubbed in steps, each
     finding every value in it and every part at a cut in the text as it is and replacing them,
     those that overlap with one `***`, until a step finds nothing: a value found within the part
     of another at a cut, such as a line of it, leaves nothing of that part. A text needs another
     step only for each `***` that completes a value, and a chain of them is made, not said by
-    chance; at most 4 steps are taken, so scrubbing is bounded by 4 passes over the text, and a
-    text the fourth step still changes is replaced whole by
+    chance. A step finds every form of every value in one pass of one automaton
+    (Aho-Corasick's, the `aho-corasick` crate's) over the text, however many forms there are,
+    and, in a text that holds a mark of a cut, the part of a form at every mark in one more
+    pass for each form, however many marks there are; a connector, which chooses the text,
+    chooses no multiplier. At most 4 steps are taken, so scrubbing is bounded by 4 such steps,
+    and a text the fourth step still changes is replaced whole by
     `[withheld: it could not be scrubbed]` rather than said with part of a value in it. A value
     of nothing but `*` and whitespace, which `***` would hold, is refused as it resolves
-    (`secret_unredactable`). A call's error carries the last words of the process the call
+    (`secret_unredactable`). A code is a name the engine branches on, and scrubbed it would
+    name another: one the protocol publishes, the host's among them, says nothing of a value
+    and is kept as it is, and any other a value is found in is replaced whole by
+    `invalid_code`. A call's error carries the last words of the process the call
     went to. An in-process connector's errors are flattened to text and scrubbed the same way,
     and so is the message of its panic, which unwinds on to whatever catches it; the panic hook,
     which runs first, sees it as it was raised. A name is shown as it is in reports, events,
     metrics, spans and table names, and scrubbing it would rename what it names, so a catalog or
     partition plan in which a stream's, a namespace's, a column's or a partition's name contains
-    a resolved value is refused as a configuration error, in process and out of it alike. Its
+    a resolved value, found by one pass of the automaton over each name, is refused as a
+    configuration error, in process and out of it alike. Its
     code, `named_by_secret`, is the host's: the error's cause is a `HostRefusal`, which the host
     gives and a connector's own causes, kept only as text, never are.
   - `rdlt certify` reads a configuration from a file or standard input, never the command
@@ -278,7 +289,15 @@ Rejected:
 - **A private copy of the binary to execute.** It breaks a binary that finds its files beside
   itself, and costs a copy for every spawn. An open file is the same guarantee.
 - **Scrubbing every text value of a configuration.** A path or a host name in an error is
-  what an operator needs to read. What is scrubbed is what was referred to as a secret.
+  what an operator needs to read. What is scrubbed is what was referred to as a secret, and a
+  value given as `${env:..}` is a secret even when it is no secret: one that is not, such as a
+  schema's name, is written in the configuration as it is, or every text holding it is
+  scrubbed and every name holding it refused.
+- **Reading a file secret through a directory the host cannot check.** `${file:..}` reads
+  only beneath directories the host's user alone may write, through no link, so it cannot
+  read a secret mount whose directory is root's, as Docker's `/run/secrets` is, or whose
+  entries are links, as Kubernetes' `..data` are; `allow_env` reaches what those platforms
+  also set as variables, and an embedder's resolver reads such a mount as it judges.
 - **Escaping the backslash in shown text.** Shown text would then change when shown again,
   and every boundary would have to know whether another had been there.
 
@@ -315,7 +334,13 @@ Rejected:
   - a secret a connector transforms before it says it, and an in-process connector's panic
     as the process's panic hook sees it, before the host does;
   - a name the check does not see: a field name that first appears in a read's batches, as a
-    schema drifts, and a timestamp's time-zone text;
-  - the buffers of the transport a configuration is sent through, which are not wiped.
+    schema drifts, a timestamp's time-zone text, and a name in the state a destination answers
+    an open with, which the engine quotes in its own errors. The engine wrote that state, and
+    only a destination that misbehaves puts another name there, one that holds the value
+    already; refusing such a state would refuse every later open of a pipeline whose names hold
+    a value by chance, which the run that named them showed already;
+  - the buffers of the transport a configuration is sent through, the automaton that finds a
+    value in a text, which holds the values' bytes, and the forms of a value built to find it,
+    each shown in a buffer that grows: none of them is wiped.
 - A reference with a requirement its placement cannot honour is refused before anything runs. A
   connector finds nothing at a number the host holds a descriptor at.

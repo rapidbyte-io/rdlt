@@ -21,6 +21,10 @@ use super::RemoteWriter;
 use crate::remote::checked::Checked;
 use crate::remote::clients::Clients;
 use crate::remote::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options};
+use crate::secrets::Redactions;
+
+/// What each writer's connector was sent: no answer of its shows it.
+const SENT: &str = "pg-key  \"q7z\"";
 
 /// A table writer over no connector: what it sends queues in `frames`, which holds one frame, and
 /// its answers are what `acks` sends.
@@ -41,6 +45,8 @@ fn fixture(credit: u64) -> Fixture {
     };
     let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
     let checked = Checked::new(channel, options.limits);
+    let redactions = Redactions::new();
+    redactions.add(SENT);
     let connection = Arc::new(Connection {
         client: Clients::new(&checked, &options.limits),
         spec: v1::ConnectorSpec::default(),
@@ -48,6 +54,7 @@ fn fixture(credit: u64) -> Fixture {
         options,
         lost: CancellationToken::new(),
         spent: CancellationToken::new(),
+        redactions,
     });
     let (acks, answers) = mpsc::channel(8);
     let most = options.limits.largest();
@@ -183,7 +190,7 @@ async fn a_write_its_connector_ended_fails_with_its_error_and_spends_no_credit()
     drop(frames);
     let refused = v1::Error {
         kind: v1::ErrorKind::Data as i32,
-        message: "the table is gone".to_owned(),
+        message: format!("the table is gone: {SENT:?}"),
         code: Some("table_gone".to_owned()),
         ..v1::Error::default()
     };
@@ -203,6 +210,8 @@ async fn a_write_its_connector_ended_fails_with_its_error_and_spends_no_credit()
         (error.kind(), error.code()),
         (ConnectorErrorKind::Data, Some("table_gone"))
     );
+    // Scrubbed of what the connector was sent as it is received, before it is shown.
+    assert_eq!(error.to_string(), "the table is gone: \"***\"");
     assert_eq!(
         writer.credit.credit(),
         1,

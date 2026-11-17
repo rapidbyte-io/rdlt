@@ -4,22 +4,9 @@ use super::types::{duration, std_duration};
 use super::{Invalid, v1};
 use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
 
-/// The code an error a connector sent goes by when the code it chose is not one it may use.
-pub const INVALID_CODE: &str = "invalid_code";
-
-/// The code of the error for a message the protocol does not allow where it came, from a
-/// connector or a host.
-pub const INVALID_MESSAGE: &str = "invalid_message";
-
-/// The code of the error for a handshake at a major version of the protocol the other end does
-/// not speak.
-pub const PROTOCOL_VERSION: &str = "protocol_version";
-
-/// The code of the error for a configuration of a connection already configured.
-pub const CONFIGURE_REPEATED: &str = "configure_repeated";
-
-/// The codes a host gives its own findings about a connection, which no connector may claim.
-pub const HOST_CODES: &[&str] = &["connector_lost", "deadline_exceeded", "tls", "transport"];
+pub use crate::error::codes::{
+    CONFIGURE_REPEATED, HOST_CODES, INVALID_CODE, INVALID_MESSAGE, PROTOCOL_VERSION,
+};
 
 /// `code` where a connector may use it: lower-case letters, digits, `_`, `.` and `-`, within
 /// [`MAX_ERROR_CODE_BYTES`](crate::limits::MAX_ERROR_CODE_BYTES), and none of [`HOST_CODES`];
@@ -83,10 +70,18 @@ impl From<&ConnectorError> for v1::Error {
     }
 }
 
-impl TryFrom<v1::Error> for ConnectorError {
-    type Error = Invalid;
-
-    fn try_from(error: v1::Error) -> Result<Self, Invalid> {
+impl ConnectorError {
+    /// The error a connector sent as `error`, as its host keeps it: with its texts passed
+    /// through `scrubbed` before they are shown and bounded, as [`received`](Self::received)
+    /// keeps an error.
+    ///
+    /// # Errors
+    ///
+    /// [`Invalid`] for a wait no duration holds.
+    pub fn from_wire(
+        error: v1::Error,
+        scrubbed: &dyn Fn(String) -> String,
+    ) -> Result<Self, Invalid> {
         let limit = error.limit.and_then(|limit| {
             // A name no limit has, a connector's own among them, carries no limit across.
             let named = rdlt_wire::Limit::named(&limit.name)?;
@@ -102,7 +97,7 @@ impl TryFrom<v1::Error> for ConnectorError {
         if let Some(code) = error.code {
             decoded = decoded.with_code(admitted(code));
         }
-        // Text a connector chose: shown and bounded where it is received.
-        Ok(decoded.received(&|text| text))
+        // Text a connector chose: scrubbed, then shown and bounded, where it is received.
+        Ok(decoded.received(scrubbed))
     }
 }

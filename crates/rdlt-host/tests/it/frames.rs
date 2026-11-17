@@ -192,7 +192,8 @@ async fn a_served_connector_refuses_a_hosts_frame_no_limit_bounds_as_a_whole() {
                 error = Some(refused);
             }
         }
-        let error = ConnectorError::try_from(error.expect("the write answers its error"));
+        let error =
+            ConnectorError::from_wire(error.expect("the write answers its error"), &|text| text);
         let error = error.expect("a connector error");
         assert_eq!(refusal(&error), (Some(code), limit), "{error}");
     }
