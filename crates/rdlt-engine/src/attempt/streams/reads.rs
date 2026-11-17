@@ -31,14 +31,14 @@ pub(super) enum Read {
 /// How an attempt reads `plan`, given the pipeline's committed `state`.
 ///
 /// A full read state records holds positions in the place it fills: the stream's table, or the
-/// generation a replace stream swaps in once the read completes. A full read resumes it,
-/// whichever run started it, where it fills the same place. Otherwise, or without one, it starts
-/// a new read from the beginning, whose first commit deletes the previous read's partition
-/// entries, unless this run already completed a full read of the stream. A new read draws a
-/// generation of its own, never one this run remembers, which may hold the rows of a read that
-/// is over: a reset's, or one a changed plan ended. A read that is not full resumes the positions
-/// of a full read that filled the table and ends it, and is refused where the full read fills a
-/// generation.
+/// generation a replace stream swaps in once the read completes. A run that already completed a
+/// full read of the stream reads it no more, whatever full read state records since. Otherwise a
+/// full read resumes the full read state records, whichever run started it, where it fills the
+/// same place, and else starts a new read from the beginning, whose first commit deletes the
+/// previous read's partition entries. A new read draws a generation of its own, never one this
+/// run remembers, which may hold the rows of a read that is over: a reset's, or one a changed
+/// plan ended. A read that is not full resumes the positions of a full read that filled the table
+/// and ends it, and is refused where the full read fills a generation.
 pub(super) fn read(context: &RunContext, plan: &StreamPlan, state: &PipelineState) -> Read {
     let name = plan.name();
     let committed = state.streams.get(name).cloned().unwrap_or_default();
@@ -51,6 +51,12 @@ pub(super) fn read(context: &RunContext, plan: &StreamPlan, state: &PipelineStat
         };
     }
     let mut cycles = context.cycles.lock();
+    if cycles
+        .get(name)
+        .is_some_and(|generation| committed.completed.contains(generation))
+    {
+        return Read::Completed;
+    }
     let fills = plan.write_mode().fills();
     if let Some((generation, _)) = recorded.filter(|(_, filled)| *filled == fills) {
         cycles.insert(name.clone(), generation);
@@ -62,12 +68,6 @@ pub(super) fn read(context: &RunContext, plan: &StreamPlan, state: &PipelineStat
             completed: committed.completed.clone(),
         };
         return Read::Cycle(cycle, committed);
-    }
-    if cycles
-        .get(name)
-        .is_some_and(|generation| committed.completed.contains(generation))
-    {
-        return Read::Completed;
     }
     let generation = GenerationId(context.env.random());
     cycles.insert(name.clone(), generation);

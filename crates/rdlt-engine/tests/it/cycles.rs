@@ -11,8 +11,11 @@ use rdlt_engine::{
 use serde_json::{Value, json};
 
 use crate::ends::{Ending, STARTS, run};
+use crate::support::faults::{Failure, Fault, failing_commits};
 use crate::support::hooked::{At, Hook, hooked};
-use crate::support::{commit_every, engine, memory, pipeline, published_ids, stream, until};
+use crate::support::{
+    commit_every, engine, memory, pipeline, published_ids, retrying, stream, until,
+};
 
 /// `rows` read as `read` and written as `write`, matched by its id where it merges or keeps
 /// history.
@@ -371,4 +374,43 @@ async fn a_reset_ends_a_replace_cycle_and_the_table_keeps_its_rows_until_another
     );
     assert_eq!(*STARTS.lock(), [0, 0, 0, 5]);
     assert_eq!(published_ids(store, "rows"), (0..9).collect::<Vec<_>>());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_run_that_completed_its_full_read_reads_the_stream_no_more_whatever_full_read_follows() {
+    let store = "cycle_completed_then_another";
+    STARTS.lock().clear();
+    // The run's full read completes in its one commit, whose answer is lost after another run of
+    // the pipeline has begun a full read of its own and left it part way.
+    let other = store.to_owned();
+    let hook: Hook = Arc::new(move || {
+        let other = other.clone();
+        Box::pin(async move { left_part_way(WriteMode::Append, &other).await })
+    });
+    let lost = Arc::new(|tried: usize, _: &rdlt_connector::CommitMeta| {
+        if tried == 1 {
+            Fault::After(Failure::Host(rdlt_host::CONNECTOR_LOST))
+        } else {
+            Fault::None
+        }
+    });
+    let destination = failing_commits(hooked(memory(store).await, At::Landed, hook), lost);
+    let source = source_factory::<Ending>()
+        .connect(shape(9), ConnectContext::new())
+        .await
+        .expect("it connects");
+    let outcome = engine(retrying(2))
+        .run(
+            plan(ReadMode::Full, WriteMode::Append),
+            Arc::from(source),
+            destination,
+        )
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Succeeded, "{outcome:?}");
+    assert_eq!(outcome.report.attempted, 2, "{outcome:?}");
+    // Its retry reads nothing: the other run's full read waits, part way, for a run of its own.
+    assert_eq!(*STARTS.lock(), [0, 0]);
+    let mut expected: Vec<i64> = (0..9).chain(0..5).collect();
+    expected.sort_unstable();
+    assert_eq!(published_ids(store, "rows"), expected);
 }
