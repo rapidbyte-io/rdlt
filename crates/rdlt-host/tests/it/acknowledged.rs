@@ -210,7 +210,7 @@ async fn a_host_acknowledges_only_the_checkpoints_its_reads_were_sent() {
             panic!("{what} was acknowledged");
         };
         // Transient: a host that reads again is sent checkpoints it can report.
-        let error = carried(&refused);
+        let error = carried(&refused, &|text| text);
         let (kind, code) = (error.kind(), error.code());
         assert_eq!(kind, ConnectorErrorKind::Transient, "{what}: {error}");
         assert_eq!(code, Some("position_unsent"), "{what}: {error}");
@@ -258,7 +258,10 @@ async fn a_host_acknowledges_only_the_checkpoints_its_reads_were_sent() {
     let mut blank = committed("accounts", "changes", checkpoint.clone());
     blank.cursors[0].cursor = None;
     let unreadable = rpc.committed(blank).await.expect_err("refused");
-    assert_eq!(carried(&unreadable).code(), Some("invalid_message"));
+    assert_eq!(
+        carried(&unreadable, &|text| text).code(),
+        Some("invalid_message")
+    );
     // Every checkpoint the read was sent is acknowledged, more than once too.
     for cursor in sent.iter().chain(&sent) {
         let told = rpc.committed(committed("accounts", "changes", cursor.clone()));
@@ -307,7 +310,7 @@ async fn a_host_that_dials_again_acknowledges_what_it_was_sent_and_a_connector_s
         .rpc
         .committed(committed("orders", "changes", sent[1].clone()));
     let refused = unknown.await.expect_err("the report is refused");
-    let error = carried(&refused);
+    let error = carried(&refused, &|text| text);
     assert_eq!(error.kind(), ConnectorErrorKind::Transient, "{error}");
     assert_eq!(error.code(), Some("position_unsent"), "{error}");
     // A host that reads on from a position has said everything before it is committed: the
@@ -334,7 +337,7 @@ async fn a_host_that_dials_again_acknowledges_what_it_was_sent_and_a_connector_s
         let elsewhere = fresh
             .rpc
             .committed(committed(stream, partition, last.clone()));
-        let refused = carried(&elsewhere.await.expect_err("refused"));
+        let refused = carried(&elsewhere.await.expect_err("refused"), &|text| text);
         assert_eq!(
             refused.code(),
             Some("position_unsent"),
@@ -347,7 +350,7 @@ async fn a_host_that_dials_again_acknowledges_what_it_was_sent_and_a_connector_s
         bytes: br#"{"next":18446744073709551615,"done":true}"#.to_vec().into(),
     };
     let forged = fresh.rpc.committed(committed("orders", "changes", beyond));
-    let refused = carried(&forged.await.expect_err("refused"));
+    let refused = carried(&forged.await.expect_err("refused"), &|text| text);
     assert_eq!(refused.code(), Some("position_unsent"));
     assert_eq!(refused.kind(), ConnectorErrorKind::Transient);
 }
@@ -400,7 +403,7 @@ async fn asking_a_source_the_handshake_did_not_accept_is_refused_as_unsupported(
             .read_acknowledged(asked())
             .await
             .expect_err("asking is refused");
-        let error = carried(&refused);
+        let error = carried(&refused, &|text| text);
         assert_eq!(error.kind(), ConnectorErrorKind::Unsupported, "{error}");
         assert_eq!(error.code(), Some("acknowledged"), "{error}");
     }

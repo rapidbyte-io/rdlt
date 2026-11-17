@@ -10,7 +10,9 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::MemorySource;
 use rdlt_host::remote::Client;
-use rdlt_host::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options, RemoteSource};
+use rdlt_host::{
+    CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options, Redactions, RemoteSource,
+};
 use rdlt_testkit::fake::{Fake, Fault, socket};
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 use tokio_stream::wrappers::ReceiverStream;
@@ -76,7 +78,7 @@ async fn a_host_of_another_major_version_is_refused_at_the_handshake() {
             .handshake(handshake(major, v1::Role::Source))
             .await
             .unwrap_err();
-        let error = carried(&status);
+        let error = carried(&status, &|text| text);
         assert_eq!(
             (error.kind(), error.code()),
             (ConnectorErrorKind::Unsupported, Some("protocol_version")),
@@ -109,7 +111,7 @@ async fn a_host_that_sets_no_dictionary_limit_is_refused_at_the_handshake() {
             })
             .await
             .unwrap_err();
-        let error = carried(&status);
+        let error = carried(&status, &|text| text);
         assert_eq!(error.code(), Some("limit_below_minimum"), "{error}");
         assert!(error.to_string().contains("dictionary bytes"), "{error}");
     }
@@ -132,7 +134,7 @@ async fn a_connector_that_says_no_dictionary_limit_is_refused_at_the_handshake()
 async fn a_call_before_the_handshake_is_refused() {
     let mut client = plane_client(served(memory())).await;
     let status = client.rpc.check(v1::CheckRequest {}).await.unwrap_err();
-    assert_eq!(carried(&status).code(), Some("no_handshake"));
+    assert_eq!(carried(&status, &|text| text).code(), Some("no_handshake"));
 }
 
 #[tokio::test]
@@ -531,7 +533,7 @@ async fn a_call_for_the_other_role_is_refused() {
         pipeline: "p".to_owned(),
     };
     let status = client.rpc.open(open).await.unwrap_err();
-    assert_eq!(carried(&status).code(), Some("role"));
+    assert_eq!(carried(&status, &|text| text).code(), Some("role"));
 }
 
 #[tokio::test]
@@ -543,28 +545,37 @@ async fn a_second_handshake_or_configuration_is_refused_before_it_connects() {
         .handshake(handshake(PROTOCOL_MAJOR, v1::Role::Source))
         .await
         .unwrap_err();
-    assert_eq!(carried(&status).code(), Some("handshake_repeated"));
+    assert_eq!(
+        carried(&status, &|text| text).code(),
+        Some("handshake_repeated")
+    );
     // Refused as repeated before its configuration is read, let alone a second connector made.
     let status = client
         .rpc
         .configure(configure("not JSON"))
         .await
         .unwrap_err();
-    assert_eq!(carried(&status).code(), Some("configure_repeated"));
+    assert_eq!(
+        carried(&status, &|text| text).code(),
+        Some("configure_repeated")
+    );
 }
 
 #[tokio::test]
 async fn a_configuration_before_the_handshake_and_a_call_before_the_configuration_are_refused() {
     let mut client = plane_client(served(memory())).await;
     let status = client.rpc.configure(configure("{}")).await.unwrap_err();
-    assert_eq!(carried(&status).code(), Some("no_handshake"));
+    assert_eq!(carried(&status, &|text| text).code(), Some("no_handshake"));
     client
         .rpc
         .handshake(handshake(PROTOCOL_MAJOR, v1::Role::Source))
         .await
         .expect("the handshake succeeds");
     let status = client.rpc.check(v1::CheckRequest {}).await.unwrap_err();
-    assert_eq!(carried(&status).code(), Some("not_configured"));
+    assert_eq!(
+        carried(&status, &|text| text).code(),
+        Some("not_configured")
+    );
 }
 
 #[tokio::test]
@@ -576,7 +587,10 @@ async fn a_message_that_does_not_decode_is_refused() {
         state: None,
     };
     let status = client.rpc.plan(plan).await.unwrap_err();
-    assert_eq!(carried(&status).code(), Some("invalid_message"));
+    assert_eq!(
+        carried(&status, &|text| text).code(),
+        Some("invalid_message")
+    );
 }
 
 #[tokio::test]
@@ -588,9 +602,10 @@ async fn a_connection_dropped_before_its_connector_is_configured_is_cut() {
         connector,
         Limits::default(),
     ));
-    let handshaken = Connection::handshake(host, Role::Source, Options::default())
-        .await
-        .expect("the handshake passes");
+    let handshaken =
+        Connection::handshake(host, Role::Source, Options::default(), Redactions::new())
+            .await
+            .expect("the handshake passes");
     drop(handshaken);
     // However its end of the connection ends, it ends.
     drop(
@@ -668,14 +683,15 @@ async fn a_handshake_answer_the_host_did_not_agree_to_is_refused() {
     ];
     for (answer, code) in answers {
         let io = socket(Fake(Fault::Handshakes(answer)));
-        let refused = Connection::handshake(io, Role::Source, Options::default())
-            .await
-            .expect_err("the handshake is refused");
+        let refused =
+            Connection::handshake(io, Role::Source, Options::default(), Redactions::new())
+                .await
+                .expect_err("the handshake is refused");
         assert_eq!(refused.code(), Some(code), "{refused}");
     }
     let agreed = |_: &mut v1::HandshakeResponse| {};
     let io = socket(Fake(Fault::Handshakes(agreed)));
-    Connection::handshake(io, Role::Source, Options::default())
+    Connection::handshake(io, Role::Source, Options::default(), Redactions::new())
         .await
         .expect("the handshake agrees");
 }
@@ -695,14 +711,14 @@ async fn a_configuration_schema_beyond_its_limit_is_refused_at_the_handshake() {
         answer.spec.as_mut().unwrap().config_schema_json = schema(MAX_CONFIG_SCHEMA_BYTES);
     };
     let io = socket(Fake(Fault::Handshakes(at)));
-    Connection::handshake(io, Role::Source, Options::default())
+    Connection::handshake(io, Role::Source, Options::default(), Redactions::new())
         .await
         .expect("a schema at its limit is taken");
     let beyond: fn(&mut v1::HandshakeResponse) = |answer| {
         answer.spec.as_mut().unwrap().config_schema_json = schema(MAX_CONFIG_SCHEMA_BYTES + 1);
     };
     let io = socket(Fake(Fault::Handshakes(beyond)));
-    let refused = Connection::handshake(io, Role::Source, Options::default())
+    let refused = Connection::handshake(io, Role::Source, Options::default(), Redactions::new())
         .await
         .expect_err("a schema beyond its limit is refused");
     assert_eq!(refused.code(), Some("limit_exceeded"), "{refused}");

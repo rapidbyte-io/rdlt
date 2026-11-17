@@ -102,7 +102,8 @@ async fn raw_write(
             _ => {}
         }
     }
-    let error = error.map(|error| ConnectorError::try_from(error).expect("a connector error"));
+    let error = error
+        .map(|error| ConnectorError::from_wire(error, &|text| text).expect("a connector error"));
     (error, flushes)
 }
 

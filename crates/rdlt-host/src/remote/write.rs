@@ -106,7 +106,7 @@ impl RemoteWriter {
         let message = match answer {
             Ok(Ok(Some(ack))) => ack.ack,
             Ok(Ok(None)) => return Err(out_of_turn("the end of the write")),
-            Ok(Err(status)) => return Err(rdlt_connector::wire::error(&status)),
+            Ok(Err(status)) => return Err(self.connection.status_error(&status)),
             Err(_) => {
                 return Err(exceeded(
                     "an answer to a write",
@@ -115,7 +115,9 @@ impl RemoteWriter {
             }
         };
         match message {
-            Some(v1::write_ack::Ack::Error(error)) => Err(ConnectorError::try_from(error)
+            Some(v1::write_ack::Ack::Error(error)) => Err(self
+                .connection
+                .error(error)
                 .unwrap_or_else(|error| super::source::invalid(&error))),
             Some(ack) => Ok(ack),
             None => Err(out_of_turn("an empty answer")),

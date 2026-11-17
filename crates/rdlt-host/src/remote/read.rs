@@ -72,7 +72,7 @@ pub(super) async fn run(
                         ConnectorErrorKind::Transient,
                         "the connector ended the read without saying it was done",
                     ).with_code(super::CONNECTOR_LOST)),
-                    Err(status) => return Err(rdlt_connector::wire::error(&status)),
+                    Err(status) => return Err(connection.status_error(&status)),
                 };
                 // Decoded: its charge goes before its event waits for room in the budget.
                 frames.release();

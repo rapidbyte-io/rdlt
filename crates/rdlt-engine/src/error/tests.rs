@@ -155,7 +155,7 @@ fn only_a_rate_limit_keeps_the_wait_it_asks_for() {
             }),
             limit: None,
         };
-        let error = ConnectorError::try_from(wire).unwrap();
+        let error = ConnectorError::from_wire(wire, &|text| text).unwrap();
         Error::connector(Side::Source, "reading", error).retry_after()
     };
     assert_eq!(

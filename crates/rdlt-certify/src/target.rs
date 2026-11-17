@@ -274,7 +274,7 @@ impl Target {
         let deadline = self.options.deadlines.connect;
         match tokio::time::timeout(deadline, call).await {
             Ok(Ok(answer)) => Ok(answer.into_inner()),
-            Ok(Err(status)) => Err(rdlt_connector::wire::error(&status)),
+            Ok(Err(status)) => Err(rdlt_connector::wire::error(&status, &|text| text)),
             Err(_) => {
                 let message = format!("{what} took longer than its deadline of {deadline:?}");
                 Err(ConnectorError::new(ConnectorErrorKind::Transient, message)

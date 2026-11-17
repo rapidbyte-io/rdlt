@@ -77,7 +77,7 @@ impl Writing {
                 Ok(Some(v1::WriteAck {
                     ack: Some(v1::write_ack::Ack::Error(refusal)),
                 })) => {
-                    return ConnectorError::try_from(refusal).map_err(|invalid| {
+                    return ConnectorError::from_wire(refusal, &|text| text).map_err(|invalid| {
                         Violation::from(format!("the write's error is malformed: {invalid}"))
                     });
                 }

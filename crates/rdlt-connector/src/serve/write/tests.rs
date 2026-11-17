@@ -448,7 +448,7 @@ async fn a_writer_s_panic_tells_its_host_neither_its_message_nor_its_task() {
     assert_eq!(status.code(), Code::Internal);
     for told in [
         status.message().to_owned(),
-        crate::wire::error(status).to_string(),
+        crate::wire::error(status, &|text| text).to_string(),
     ] {
         assert!(
             !told.contains("4417") && !told.contains("task"),

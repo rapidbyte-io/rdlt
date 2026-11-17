@@ -4,6 +4,7 @@ use rdlt_connector::{ConnectorErrorKind, Role};
 use tokio::io::{AsyncReadExt as _, DuplexStream};
 
 use super::{Connection, DEADLINE_EXCEEDED, Deadlines, Options, client};
+use crate::secrets::Redactions;
 
 /// Options whose connect deadline is 20 ms.
 fn connecting() -> Options {
@@ -34,7 +35,8 @@ async fn a_handshake_its_peer_never_answers_fails_by_the_connect_deadline_and_le
     // connection is set up and only the handshake's answer never comes.
     for room in [1, 1 << 16] {
         let (host, mut peer) = tokio::io::duplex(room);
-        let handshaking = Connection::handshake(host, Role::Source, connecting());
+        let handshaking =
+            Connection::handshake(host, Role::Source, connecting(), Redactions::new());
         let error = tokio::time::timeout(Duration::from_millis(200), handshaking)
             .await
             .expect("the connect deadline ends the handshake")

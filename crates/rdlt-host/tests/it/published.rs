@@ -114,7 +114,7 @@ async fn a_read_back_the_handshake_did_not_accept_is_refused_as_unsupported() {
             .read_published(table())
             .await
             .expect_err("the read-back is refused");
-        let error = carried(&refused);
+        let error = carried(&refused, &|text| text);
         assert_eq!(error.kind(), ConnectorErrorKind::Unsupported, "{error}");
         assert_eq!(error.code(), Some("published"), "{error}");
     }
@@ -337,7 +337,7 @@ async fn a_read_back_that_fails_ends_with_its_error_after_the_rows_it_read() {
                 other => panic!("{other:?}"),
             },
             Ok(None) => panic!("the read-back ended without its error"),
-            Err(status) => break carried(&status),
+            Err(status) => break carried(&status, &|text| text),
         }
     };
     assert_eq!(batches, 3);
@@ -362,7 +362,7 @@ async fn a_row_read_back_beyond_its_hosts_frames_ends_the_read_back_as_exceeding
                 "a row beyond the host's frames was sent"
             ),
             Ok(None) => panic!("the read-back ended without its error"),
-            Err(status) => break carried(&status),
+            Err(status) => break carried(&status, &|text| text),
         }
     };
     assert!(refused.limit().is_some(), "{refused}");

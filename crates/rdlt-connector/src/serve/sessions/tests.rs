@@ -27,7 +27,7 @@ async fn holding(sessions: &Sessions, count: u64, live: &Arc<AtomicUsize>) {
 async fn is_closed(sessions: &Sessions, id: u64) -> bool {
     match sessions.session(id).await {
         Ok(_) => false,
-        Err(refused) => error(&refused).code() == Some("no_session"),
+        Err(refused) => error(&refused, &|text| text).code() == Some("no_session"),
     }
 }
 

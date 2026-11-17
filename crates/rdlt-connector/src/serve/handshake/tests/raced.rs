@@ -270,7 +270,7 @@ fn configuring(
 /// The codes the connected connector's check and its probe fail with: each the name of the
 /// configuration that connected it.
 async fn answers(service: &Service, role: v1::Role) -> [Option<String>; 2] {
-    let code = |status: &Status| error(status).code().map(str::to_owned);
+    let code = |status: &Status| error(status, &|text| text).code().map(str::to_owned);
     let checked = service
         .check(Request::new(v1::CheckRequest {}))
         .await

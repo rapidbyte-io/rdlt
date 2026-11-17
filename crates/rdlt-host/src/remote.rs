@@ -31,6 +31,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Endpoint;
 
+use crate::secrets::Redactions;
+
 pub use clients::Client;
 use clients::Clients;
 pub use destination::RemoteDestination;
@@ -133,6 +135,8 @@ pub struct Connection {
     /// Cancelled once the connection takes no new calls: the connector was lost, or is stopping
     /// and finishes the calls in flight.
     spent: CancellationToken,
+    /// What the connector was sent that none of its errors shows.
+    redactions: Redactions,
 }
 
 impl Drop for Connection {
@@ -158,7 +162,7 @@ impl Connection {
     where
         IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        Self::handshake(io, role, options)
+        Self::handshake(io, role, options, Redactions::new())
             .await?
             .configure(config)
             .await
@@ -166,6 +170,9 @@ impl Connection {
 
     /// Handshakes over `io` with a connector served on its other end, as `role`: its answer says
     /// who the connector is, which the host checks before configuring it.
+    ///
+    /// Each error the connector sends on the connection is scrubbed of what `redactions` holds
+    /// before it is shown.
     ///
     /// # Errors
     ///
@@ -177,6 +184,7 @@ impl Connection {
         io: IO,
         role: Role,
         options: Options,
+        redactions: Redactions,
     ) -> Result<Handshaken, ConnectorError>
     where
         IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
@@ -207,7 +215,9 @@ impl Connection {
             let client = Clients::new(&channel, &options.limits);
             let mut rpc = client.handshake.clone();
             let answer = rpc.handshake(request).await;
-            let response = answer.map_err(|status| status_error(&status))?.into_inner();
+            let scrubbed = |text| redactions.scrubbed(text);
+            let response = answer.map_err(|status| status_error(&status, &scrubbed))?;
+            let response = response.into_inner();
             Ok::<_, ConnectorError>((client, response))
         };
         let (client, response) = tokio::time::timeout(deadline, handshaking)
@@ -225,6 +235,7 @@ impl Connection {
             options,
             lost,
             spent,
+            redactions,
         })
     }
 
@@ -247,6 +258,16 @@ impl Connection {
         self.spent.is_cancelled()
     }
 
+    /// The error `status` carries, scrubbed of what the connector was sent before it is shown.
+    pub(crate) fn status_error(&self, status: &tonic::Status) -> ConnectorError {
+        status_error(status, &|text| self.redactions.scrubbed(text))
+    }
+
+    /// The error the connector sent as `error`, scrubbed of what it was sent before it is shown.
+    pub(crate) fn error(&self, error: v1::Error) -> Result<ConnectorError, Invalid> {
+        ConnectorError::from_wire(error, &|text| self.redactions.scrubbed(text))
+    }
+
     /// Runs `call`, a call of the protocol named `what`, within `deadline`, failing once the
     /// connector is lost.
     async fn call<T>(
@@ -258,7 +279,7 @@ impl Connection {
         tokio::select! {
             biased;
             () = self.lost.cancelled() => Err(lost_error()),
-            answer = within(deadline, what, call) => answer,
+            answer = within(deadline, what, call, &self.redactions) => answer,
         }
     }
 }
@@ -275,6 +296,7 @@ pub struct Handshaken {
     options: Options,
     lost: CancellationToken,
     spent: CancellationToken,
+    redactions: Redactions,
 }
 
 impl Handshaken {
@@ -313,10 +335,12 @@ impl Handshaken {
         // The configuration's answer carries a destination's identifier rules, which at their
         // limits outgrow any other control message: it is decoded as the handshake's is.
         let mut client = self.client.handshake.clone();
+        let configuring = client.configure(request);
+        let configuring = within(deadline, "the configuration", configuring, &self.redactions);
         let configured = tokio::select! {
             biased;
             () = self.lost.cancelled() => return Err(lost_error()),
-            answer = within(deadline, "the configuration", client.configure(request)) => answer?,
+            answer = configuring => answer?,
         };
         let spec = configured.spec.unwrap_or_default();
         agreed::spec_within(&spec)?;
@@ -345,6 +369,7 @@ impl Handshaken {
             options: self.options,
             lost: self.lost.clone(),
             spent: self.spent.clone(),
+            redactions: self.redactions.clone(),
         }))
     }
 }
@@ -441,15 +466,17 @@ fn lost_because(message: String) -> ConnectorError {
     ConnectorError::new(ConnectorErrorKind::Transient, message).with_code(CONNECTOR_LOST)
 }
 
-/// Runs `call` within `deadline`: its answer, or the error it or the deadline failed with.
+/// Runs `call` within `deadline`: its answer, or the error it or the deadline failed with, the
+/// connector's scrubbed of what `redactions` holds.
 async fn within<T>(
     deadline: Duration,
     what: &str,
     call: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+    redactions: &Redactions,
 ) -> Result<T, ConnectorError> {
     match tokio::time::timeout(deadline, call).await {
         Ok(Ok(response)) => Ok(response.into_inner()),
-        Ok(Err(status)) => Err(status_error(&status)),
+        Ok(Err(status)) => Err(status_error(&status, &|text| redactions.scrubbed(text))),
         Err(_) => Err(exceeded(what, deadline)),
     }
 }

@@ -8,8 +8,7 @@ use rdlt_wire::tonic::{Code, Status};
 use super::v1;
 use crate::error::{ConnectorError, ConnectorErrorKind};
 
-/// The code a transport failure with no error in its details goes by.
-pub const TRANSPORT: &str = "transport";
+pub use crate::error::codes::{MALFORMED_FRAME, TRANSPORT, UNENCODABLE_BATCH, UNSENDABLE_TYPE};
 
 /// `error` as a gRPC status carrying it whole, its message cut to the control string limit.
 pub fn status(error: &ConnectorError) -> Status {
@@ -40,13 +39,14 @@ fn cut(text: &mut String, bytes: u64) {
     text.truncate(end);
 }
 
-/// The error `status` carries; one without an error in its details is a failure of the transport,
-/// transient where retrying may help.
-pub fn error(status: &Status) -> ConnectorError {
+/// The error `status` carries, its texts passed through `scrubbed` before they are shown; one
+/// without an error in its details is a failure of the transport, transient where retrying may
+/// help.
+pub fn error(status: &Status, scrubbed: &dyn Fn(String) -> String) -> ConnectorError {
     let carried = v1::Error::decode(status.details())
         .ok()
         .filter(|_| !status.details().is_empty())
-        .and_then(|error| ConnectorError::try_from(error).ok());
+        .and_then(|error| ConnectorError::from_wire(error, scrubbed).ok());
     if let Some(error) = carried {
         return error;
     }
@@ -66,17 +66,8 @@ pub fn error(status: &Status) -> ConnectorError {
     );
     ConnectorError::new(kind, message)
         .with_code(TRANSPORT)
-        .received(&|text| text)
+        .received(scrubbed)
 }
-
-/// The code of an error for a frame the other end sent malformed.
-pub const MALFORMED_FRAME: &str = "malformed_frame";
-
-/// The code of an error for a batch of a type the protocol cannot carry.
-pub const UNSENDABLE_TYPE: &str = "unsendable_type";
-
-/// The code of an error for a batch its own sender could not encode.
-pub const UNENCODABLE_BATCH: &str = "unencodable_batch";
 
 /// What the codec refused, as the connector error the end that met it reports: a limit's
 /// refusal, a batch its sender cannot send or encode, or a frame malformed by a faulty peer,

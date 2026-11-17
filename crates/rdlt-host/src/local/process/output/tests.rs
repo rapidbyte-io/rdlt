@@ -563,22 +563,24 @@ fn secret() -> impl Strategy<Value = String> {
 }
 
 /// What a connector may say a secret as: the secret and each of its lines of at least eight
-/// characters other than whitespace, each as written, as JSON writes it, as Rust's `Debug`
-/// writes it, and as it is shown.
+/// characters other than whitespace, each as written, as JSON and Rust's `{:?}` write it, and
+/// each of those as it is shown.
 fn said_as(secret: &str) -> Vec<String> {
     let long = |line: &&str| line.chars().filter(|c| !c.is_whitespace()).count() >= 8;
+    let unquoted = |quoted: String| quoted[1..quoted.len() - 1].to_owned();
+    let shown = |form: &str| rdlt_connector::text::shown(form, usize::MAX);
     std::iter::once(secret)
         .chain(secret.lines().filter(long))
         .flat_map(|value| {
-            let json = serde_json::to_string(value).expect("text encodes");
+            let json = unquoted(serde_json::to_string(value).expect("text encodes"));
+            let debug = unquoted(format!("{value:?}"));
             [
+                shown(value),
+                shown(&json),
+                shown(&debug),
                 value.to_owned(),
-                json.strip_prefix('"')
-                    .and_then(|inner| inner.strip_suffix('"'))
-                    .expect("JSON quotes a string")
-                    .to_owned(),
-                value.escape_debug().collect(),
-                rdlt_connector::text::shown(value, usize::MAX),
+                json,
+                debug,
             ]
         })
         .collect()

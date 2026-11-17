@@ -2,8 +2,8 @@ use std::error::Error as _;
 use std::time::Duration;
 
 use super::{
-    ConnectorError, ConnectorErrorKind, HostRefusal, LimitExceeded, RETENTION_LOST, ResultExt,
-    TABLE_OWNED,
+    ConnectorError, ConnectorErrorKind, HostRefusal, INVALID_CODE, LimitExceeded, RETENTION_LOST,
+    ResultExt, TABLE_OWNED,
 };
 
 #[test]
@@ -209,7 +209,26 @@ fn what_a_host_scrubs_is_gone_from_the_message_the_code_and_every_cause_before_a
     for text in texts.into_iter().chain(causes(&received)) {
         assert!(!text.contains("hun"), "{text}");
     }
-    assert_eq!(received.code(), Some("***"));
+    assert_eq!(received.code(), Some(INVALID_CODE));
+}
+
+#[test]
+fn a_code_a_host_received_is_kept_whole_or_withheld_whole() {
+    use super::{HOST_CODES, PUBLISHED_CODES};
+    // Values sent that occur in codes, which scrubbing a code would make another.
+    let scrubbed = |text: String| text.replace("lost", "***").replace('_', "***");
+    for &code in PUBLISHED_CODES.iter().chain(HOST_CODES) {
+        let raised = ConnectorError::config("failed").with_code(code);
+        assert_eq!(raised.received(&scrubbed).code(), Some(code));
+    }
+    for (code, kept) in [
+        ("pg.lost", INVALID_CODE),
+        ("auth_failed", INVALID_CODE),
+        ("pg.denied", "pg.denied"),
+    ] {
+        let raised = ConnectorError::config("failed").with_code(code);
+        assert_eq!(raised.received(&scrubbed).code(), Some(kept), "{code}");
+    }
 }
 
 #[test]
@@ -222,4 +241,55 @@ fn a_host_s_refusal_is_found_where_it_gave_one_and_never_where_a_connector_did()
     assert_eq!(HostRefusal::of(&refused.received(&|text| text)), None);
     let coded = ConnectorError::config("refused").with_code("named_by_secret");
     assert_eq!(HostRefusal::of(&coded), None);
+}
+
+#[test]
+fn every_code_the_protocol_defines_is_one_a_host_keeps_as_it_is() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut defined = Vec::new();
+    for root in [manifest.join("src"), manifest.join("../rdlt-wire/src")] {
+        codes_beneath(&root, &mut defined);
+    }
+    assert!(defined.len() >= 20, "too few codes found: {defined:?}");
+    for code in &defined {
+        assert!(super::published(code), "{code} is not published");
+    }
+}
+
+/// Adds to `codes` the text of each constant of a `&str`, public within the crate or beyond,
+/// beneath `directory` whose documentation, above any attributes, starts "The code".
+fn codes_beneath(directory: &std::path::Path, codes: &mut Vec<String>) {
+    for entry in std::fs::read_dir(directory).expect("the sources list") {
+        let path = entry.expect("an entry").path();
+        if path.is_dir() {
+            codes_beneath(&path, codes);
+            continue;
+        }
+        if path.extension().is_none_or(|extension| extension != "rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("a source reads");
+        let lines: Vec<&str> = source.lines().map(str::trim).collect();
+        for (at, line) in lines.iter().enumerate() {
+            let defined = ["pub const ", "pub(crate) const "]
+                .iter()
+                .find_map(|public| line.strip_prefix(public));
+            let Some(defined) = defined else {
+                continue;
+            };
+            let Some((_, text)) = defined.split_once(": &str = \"") else {
+                continue;
+            };
+            let above = lines[..at].iter().rev();
+            let documented = above
+                .skip_while(|line| line.starts_with("#["))
+                .take_while(|line| line.starts_with("///"));
+            if documented
+                .last()
+                .is_some_and(|first| first.starts_with("/// The code"))
+            {
+                codes.push(text.trim_end_matches("\";").to_owned());
+            }
+        }
+    }
 }

@@ -1,8 +1,8 @@
-use rdlt_connector::ConnectorErrorKind;
+use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 
-use super::Spawned;
+use super::{Spawned, Words};
 use crate::remote::CONNECTOR_LOST;
-use crate::secrets::{SecretError, SecretFault, SecretKind};
+use crate::secrets::{Redactions, SecretError, SecretFault, SecretKind};
 
 #[test]
 fn a_configuration_that_cannot_be_sent_again_says_neither_more_nor_less_than_its_cause() {
@@ -73,3 +73,20 @@ fn a_secret_store_that_fails_as_a_connector_starts_again_may_be_tried_again() {
     assert_eq!(error.kind(), ConnectorErrorKind::Config);
 }
 
+#[tokio::test]
+async fn the_hosts_own_code_is_kept_whatever_a_connector_was_sent() {
+    let redactions = Redactions::new();
+    for value in ["lost", "connector", "_"] {
+        redactions.add(value);
+    }
+    let words = Words {
+        redactions,
+        witness: None,
+    };
+    let lost = ConnectorError::new(ConnectorErrorKind::Transient, "the connector was lost")
+        .with_code(CONNECTOR_LOST);
+    let explained = words.explain::<()>(Err(lost)).await;
+    let explained = explained.expect_err("it failed");
+    assert_eq!(explained.code(), Some(CONNECTOR_LOST));
+    assert_eq!(explained.to_string(), "the *** was ***");
+}

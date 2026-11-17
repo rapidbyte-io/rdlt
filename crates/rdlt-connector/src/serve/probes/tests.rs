@@ -85,7 +85,7 @@ async fn a_build_without_the_probes_answers_both_calls_as_unsupported() {
         panic!("a table was read back");
     };
     assert_eq!(read_back.code(), Code::Unimplemented);
-    let refused = error(&read_back);
+    let refused = error(&read_back, &|text| text);
     assert_eq!(refused.kind(), ConnectorErrorKind::Unsupported);
     assert_eq!(refused.code(), Some("published"));
     let asked = v1::ReadAcknowledgedRequest {
@@ -98,7 +98,7 @@ async fn a_build_without_the_probes_answers_both_calls_as_unsupported() {
     let standing = probes.read_acknowledged(asked).await;
     let standing = standing.expect_err("the source told where it stands");
     assert_eq!(standing.code(), Code::Unimplemented);
-    let refused = error(&standing);
+    let refused = error(&standing, &|text| text);
     assert_eq!(refused.kind(), ConnectorErrorKind::Unsupported);
     assert_eq!(refused.code(), Some("acknowledged"));
 }

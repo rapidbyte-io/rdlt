@@ -35,7 +35,7 @@ fuzz_target!(|input: (u8, Vec<u8>)| {
         5 => check::<Receipt, v1::Receipt>(&bytes),
         6 => {
             let Ok(error) = v1::Error::decode(bytes.as_slice()) else { return };
-            let _ = ConnectorError::try_from(error);
+            let _ = ConnectorError::from_wire(error, &|text| text);
         }
         7 => drop(v1::ReadControl::decode(bytes.as_slice())),
         8 => drop(v1::ReadFrame::decode(bytes.as_slice())),

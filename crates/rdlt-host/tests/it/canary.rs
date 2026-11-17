@@ -18,20 +18,32 @@ use rdlt_host::{
 use crate::process::{local, scripted};
 use crate::support::connectors::Echo;
 
-/// What every secret holds, and nothing else the tests write does.
-const CANARY: &str = "CANARY";
-
-/// The secrets, each named and each of a kind of text a scrub could miss.
+/// The secrets, each named and each of a kind of text a scrub could miss: none is within
+/// another, and each holds runs of letters and digits that nothing else the tests write holds.
 fn secrets() -> BTreeMap<&'static str, &'static str> {
     BTreeMap::from([
-        ("plain", "CANARY-plain-0123456789"),
-        ("quoted", "CANARY\"quoted\\by\"JSON"),
-        ("spaced", "CANARY  with   spaces"),
-        ("control", "CANARY\twith\u{1b}[2Jcontrols\r\n"),
-        ("wide", "CANARY-päss-名-🦀"),
-        ("short", "CANARY"),
-        ("trailing", "CANARY-trailing-5c1f \t"),
+        ("plain", "K7pl41n-q0r9z8v"),
+        ("quoted", "Q3\"qu0t3d\\byJ5zN\""),
+        ("spaced", "S5  w1th   sp4c3s"),
+        ("control", "C2\tw1zh\u{1b}[2Jk0ntr0ls\r\n"),
+        ("wide", "W9-pä55-名字-🦀"),
+        ("short", "J-q8z"),
+        ("trailing", "T1-tr41l1ng-5x1q \t"),
+        // An indented key, whose lines hold runs of spaces beside what JSON escapes.
+        (
+            "indented",
+            "{\n  \"k3y\": \"Ix4  \\\"v4lu3\\\"\",\n  \"pr1v\": \"-----BEG1N-----\\nMIIEvQ8z\\n\"\n}",
+        ),
     ])
+}
+
+/// Each run of three or more letters and digits of a secret: what is left of it, whatever of
+/// it was scrubbed.
+fn fragments() -> Vec<&'static str> {
+    let runs = secrets()
+        .into_values()
+        .flat_map(|secret| secret.split(|c: char| !c.is_alphanumeric()));
+    runs.filter(|run| run.chars().count() >= 3).collect()
 }
 
 /// Resolves `${secret:name}` to the secret of that name.
@@ -62,6 +74,8 @@ fn everywhere() -> serde_json::Value {
         "pair": "${secret:plain}${secret:short}",
         "list": ["${secret:spaced}", { "inner": "${secret:control}" }, 7, null],
         "deep": { "deeper": { "deepest": "key=${secret:wide};" } },
+        "credentials": "${secret:indented}",
+        "padded": "${secret:trailing}",
     })
 }
 
@@ -147,15 +161,32 @@ fn logging<T>(test: impl Future<Output = T>) -> (T, Logged) {
     (ran, logged)
 }
 
-/// Fails unless `text`, which is `what`, holds none of the secrets, and shows that one was
+/// Fails unless `text`, which is `what`, holds nothing of the secrets, and shows that one was
 /// scrubbed where `scrubbed` says some were said.
 #[track_caller]
 pub(crate) fn clean(what: &str, text: &str, scrubbed: bool) {
-    assert!(!text.contains(CANARY), "{what} holds a secret: {text}");
+    let left: Vec<&str> = fragments()
+        .into_iter()
+        .filter(|fragment| text.contains(fragment))
+        .collect();
+    assert!(left.is_empty(), "{what} holds {left:?} of a secret: {text}");
     assert!(
         !scrubbed || text.contains("***"),
         "{what} says nothing: {text}"
     );
+}
+
+#[test]
+fn the_oracle_finds_what_is_left_of_a_secret_scrubbed_in_part() {
+    for (name, secret) in secrets() {
+        let rest = secret
+            .char_indices()
+            .nth(1)
+            .map_or("", |(at, _)| &secret[at..]);
+        let planted = format!("it said ***{rest}");
+        let checked = std::panic::catch_unwind(|| clean("a planted leak", &planted, true));
+        assert!(checked.is_err(), "{name}: {planted:?} passes the oracle");
+    }
 }
 
 /// Every byte of every file beneath `dir`, as text.
@@ -262,7 +293,8 @@ async fn no_secret_an_in_process_connector_says_back_is_in_its_errors() {
         .await
         .expect_err("its check says it");
     clean("the check's error", &texts(&error), true);
-    assert!(error.code().is_some_and(|code| !code.contains(CANARY)));
+    // Its code, which holds them, is withheld whole.
+    assert_eq!(error.code(), Some(rdlt_connector::wire::INVALID_CODE));
     // A connect that fails says it too, in the provider's error.
     let refusing = serde_json::json!({ "said": everywhere(), "refuses": true });
     let refused = registry

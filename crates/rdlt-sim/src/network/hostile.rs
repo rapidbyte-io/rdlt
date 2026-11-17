@@ -215,7 +215,7 @@ async fn answer<T>(
         Err(_) => None,
         Ok(Ok(answer)) => Some(Ok(answer.into_inner())),
         Ok(Err(status)) => {
-            let error = rdlt_connector::wire::error(&status);
+            let error = rdlt_connector::wire::error(&status, &|text| text);
             (error.code() != Some(TRANSPORT)).then_some(Err(error))
         }
     }

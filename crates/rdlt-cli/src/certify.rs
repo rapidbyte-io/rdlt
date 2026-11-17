@@ -115,7 +115,7 @@ pub(crate) fn certify(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) 
         Err(Ended(exit, message)) => {
             let message = redactions().scrubbed(message);
             if mode == Mode::Json {
-                print(&failure_json(exit, &message), ui).ok();
+                print_json(&failure_json(exit, &message), ui).ok();
             } else if ui.rich_failures() {
                 ui.last_words(ui::certify_failure(&message, ui));
             } else {
@@ -168,14 +168,7 @@ fn run(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) -> Result<Exit,
     let reports = ending(certified, stopped, heard)?;
     let verdict = verdict(&reports);
     if mode == Mode::Json {
-        let passed = verdict == Verdict::Passed;
-        let reports: Vec<_> = reports.iter().map(json).collect();
-        let document = serde_json::json!({
-            "verdict": verdict.as_str(),
-            "passed": passed,
-            "reports": reports,
-        });
-        print(&format!("{document}\n"), ui)?;
+        print_json(&json_document(&reports, verdict), ui)?;
     }
     if !reports.iter().any(ran) {
         // Told on standard error: JSON's one value, the reports, is written and says it already.
@@ -184,6 +177,41 @@ fn run(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) -> Result<Exit,
         return Ok(Exit::Findings);
     }
     Ok(code(verdict, args.require, &reports))
+}
+
+/// The document `--json` prints of `reports` and their `verdict`, each text a connector can have
+/// put in it scrubbed of the configuration's secrets before JSON escapes it, which would make a
+/// form no scrub knows.
+fn json_document(reports: &[Report], verdict: Verdict) -> String {
+    let passed = verdict == Verdict::Passed;
+    let mut reports: Vec<_> = reports.iter().map(json).collect();
+    for report in &mut reports {
+        scrub_texts(report);
+    }
+    let document = serde_json::json!({
+        "verdict": verdict.as_str(),
+        "passed": passed,
+        "reports": reports,
+    });
+    format!("{document}\n")
+}
+
+/// Scrubs the texts of `report`, one report as JSON, that hold what a connector said: its
+/// connector's name, and each clause's reason and note; its words for outcomes and the clauses'
+/// own statements are left whole.
+fn scrub_texts(report: &mut serde_json::Value) {
+    let scrub = |field: Option<&mut serde_json::Value>| {
+        if let Some(serde_json::Value::String(text)) = field {
+            *text = redactions().scrubbed(std::mem::take(text));
+        }
+    };
+    scrub(report.get_mut("connector"));
+    if let Some(serde_json::Value::Array(clauses)) = report.get_mut("clauses") {
+        for clause in clauses {
+            scrub(clause.get_mut("reason"));
+            scrub(clause.get_mut("note"));
+        }
+    }
 }
 
 /// When the certification's bound passes, when it has one: whoever asks for a bound gets one, so
@@ -572,11 +600,16 @@ fn local(args: &CertifyArgs, host: &HostArgs) -> Result<Local, Ended> {
 /// ends quietly, a terminal that stopped reading is left within its bound, and any other failure
 /// is an I/O error.
 fn print(text: &str, ui: &Ui) -> Result<(), Ended> {
-    let text = redactions().scrubbed(text.to_owned());
+    print_json(&redactions().scrubbed(text.to_owned()), ui)
+}
+
+/// Prints `document`, JSON whose texts were scrubbed before it was encoded, as `print` prints: a
+/// scrub of the whole could take its punctuation or a word for an outcome for a secret.
+fn print_json(document: &str, ui: &Ui) -> Result<(), Ended> {
     if ui.rich_results() {
-        printed(written_within(Std::Out, text))
+        printed(written_within(Std::Out, document.to_owned()))
     } else {
-        printed(write_stdout(&text))
+        printed(write_stdout(document))
     }
 }
 

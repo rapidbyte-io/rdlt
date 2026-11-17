@@ -145,7 +145,11 @@ anything runs; none is ignored.
   `${secret:name}`, and reaches only what the operator lists: the variables `allow_env` and
   `allow_env_prefix` name, files beneath the private directories `allow_files` names, reached
   through no link and no directory another user may write, and the named secrets of the
-  `secret_store` the operator gives. By default no reference resolves.
+  `secret_store` the operator gives. By default no reference resolves. A value given as
+  `${env:..}` is a secret even when it is none, scrubbed from every text and refused in every
+  name: write a value that is no secret in the configuration as it is. `${file:..}` cannot read
+  a secret mount in a directory it cannot check, as Docker's root-owned `/run/secrets` or
+  Kubernetes' linked `..data`; `allow_env` or an embedder's resolver reaches those.
 - References are resolved when the configuration is sent to a connector whose identity the
   host has checked: its id and version, and its binary's digest or its certificate's name. A
   connector receives only its own configuration.
@@ -153,8 +157,14 @@ anything runs; none is ignored.
   logged output, whichever start of it said it, in the message of an in-process connector's
   panic, which unwinds on with it replaced, in an engine's report of them, and in
   `rdlt certify`'s reports, and so is each line of a secret that holds line ends and at least 8
-  characters other than whitespace, wherever it is found. It is not written to state by the
-  engine. A literal value in a configuration is not a secret and is not scrubbed.
+  characters other than whitespace, wherever it is found: as it is, as JSON and Rust's `{:?}`
+  write it, and as the host shows each of those, so it is found whether or not a text was shown
+  before it was scrubbed; a connector's error is scrubbed as it is received, before it is
+  shown. It is not written to state by the engine. A literal value in a configuration is not a
+  secret and is not scrubbed.
+- A code is never scrubbed, since the engine branches on codes and a code scrubbed would name
+  another: one the protocol publishes is kept as it is, and any other a resolved secret is found
+  in is replaced whole by `invalid_code`.
 - A name is never scrubbed, since that would rename what it names. The names in a source's
   catalog and partition plans are checked instead: where a stream's, a namespace's, a column's
   or a partition's name contains a resolved secret, which every report, event, metric, span and
@@ -163,7 +173,9 @@ anything runs; none is ignored.
   out of it alike.
 - A text is scrubbed until nothing of a secret is left in it: where a `***` completes a secret,
   or the part of one at a cut, with what is around it, that is replaced too. It is scrubbed in
-  at most 4 steps, each a pass over the text, the last finding nothing; a text that 4 steps do
+  at most 4 steps, the last finding nothing, each one pass of one automaton over the text
+  however many secrets there are, and, where the text was cut, one more pass for each form of
+  a secret however many cuts there are; a text that 4 steps do
   not scrub is replaced whole by `[withheld: it could not be scrubbed]`. A resolved secret of
   nothing but `*` and whitespace, which `***` would hold, is refused as it resolves
   (`secret_unredactable`), and no line of a secret, or part of one at a cut, of nothing but
@@ -193,10 +205,13 @@ Not guaranteed:
   mount beneath one, is not seen; what is mounted within a grant is the operator's.
 - **A secret a connector transforms** before it prints it; the process's panic hook, which
   sees an in-process connector's panic, its message as it was raised, before the host scrubs
-  it; and the memory of the transport a configuration crosses.
+  it; the memory of the transport a configuration crosses; the automaton that finds a secret
+  in a text, which holds the secrets' bytes and is not wiped; and the forms of a secret built
+  to find it, each shown in a buffer that grows and leaves unwiped copies.
 - **Names the check does not see**: a field name that first appears in a read's batches, as a
-  schema drifts, which reaches `SchemaChanged` events and the destination's columns; and a
-  timestamp's time-zone text.
+  schema drifts, which reaches `SchemaChanged` events and the destination's columns; a
+  timestamp's time-zone text; and a name in the state a destination answers an open with,
+  which the engine wrote there and which only a destination that misbehaves changes.
 - **macOS local placement**, beyond the checks on the binary: no sandbox and no digest.
 
 ADR 0043 records these.
