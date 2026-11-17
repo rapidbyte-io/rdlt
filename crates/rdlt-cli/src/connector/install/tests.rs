@@ -807,17 +807,40 @@ fn run_by_the_tree(tree: &Path, routes: &[Route], marker: &dyn Fn(&str) -> PathB
 /// why it imports none, and the interpreter's path.
 const FOUND: &str = "import json, os, sys\n\
                      try:\n\
-                     \x20   found = os.path.realpath(__import__(sys.argv[1]).__file__)\n\
+                     \x20   found = {'file': os.path.realpath(__import__(sys.argv[1]).__file__)}\n\
                      except Exception as error:\n\
-                     \x20   found = repr(error)\n\
-                     print(json.dumps({'found': found, 'path': sys.path}))\n";
+                     \x20   found = {'error': repr(error)}\n\
+                     print(json.dumps({**found, 'path': sys.path}))\n";
 
-/// Whether the interpreter of the tree at `tree` runs `route`, writing `marker(route.name)`.
+/// What an interpreter answered of a module: the file it imports it from, every link resolved, or
+/// why it imports none; and its path.
+struct Answered {
+    found: Result<PathBuf, String>,
+    path: Vec<String>,
+}
+
+/// Whether a route passes its control, and why not otherwise.
 ///
-/// For a route whose module a base installation may have first, it may instead import a module of
-/// that name that lies outside the tree, which hides what was planted from every interpreter of
-/// that base. Why neither holds, otherwise, with where the interpreter found the module and its
-/// path.
+/// It passes when it `ran`, writing its marker, or when the tree's interpreter, asked of the module
+/// a base may have first, `answered` a file outside the tree at `tree`, which hides what was
+/// planted from every interpreter of that base.
+fn control(ran: bool, answered: Option<&Answered>, tree: &Path) -> Result<(), String> {
+    let outside = |file: &Path| file.is_absolute() && !file.starts_with(tree);
+    match answered {
+        _ if ran => Ok(()),
+        Some(Answered {
+            found: Ok(file), ..
+        }) if outside(file) => Ok(()),
+        Some(Answered { found, path }) => Err(format!(
+            "the tree's interpreter does not run it, and no module of the base's shadows it: \
+             found {found:?} on the path {path:?}"
+        )),
+        None => Err("the tree's interpreter does not run it".to_owned()),
+    }
+}
+
+/// Whether the interpreter of the tree at `tree` runs `route`, writing `marker(route.name)`, or
+/// passes its [`control`] otherwise, as that interpreter answers.
 fn run_or_shadowed(
     tree: &Path,
     route: &Route,
@@ -829,91 +852,74 @@ fn run_or_shadowed(
         .args(route.running)
         .output()
         .unwrap();
-    if marker(route.name).exists() {
-        return Ok(());
-    }
-    let ran = format!("the tree's interpreter does not run it: {started:?}");
-    let Some(module) = route.shadowed else {
-        return Err(ran);
-    };
-    let found = std::process::Command::new(&python)
-        .args(["-I", "-c", FOUND, module])
-        .output()
-        .unwrap();
-    let said: serde_json::Value = serde_json::from_slice(&found.stdout)
-        .map_err(|_| format!("{ran}; asking where it finds {module}: {found:?}"))?;
+    let ran = marker(route.name).exists();
+    let answered = route.shadowed.filter(|_| !ran).map(|module| {
+        let asked = std::process::Command::new(&python)
+            .args(["-I", "-c", FOUND, module])
+            .output()
+            .unwrap();
+        let said: serde_json::Value = serde_json::from_slice(&asked.stdout)
+            .unwrap_or_else(|_| panic!("asking where it finds {module}: {asked:?}"));
+        let found = match said["file"].as_str() {
+            Some(file) => Ok(PathBuf::from(file)),
+            None => Err(said["error"].to_string()),
+        };
+        let path = said["path"].as_array().into_iter().flatten();
+        let path = path.map(ToString::to_string).collect();
+        Answered { found, path }
+    });
     let inside = std::fs::canonicalize(tree).unwrap();
-    let file = said["found"].as_str().map(Path::new);
-    if file.is_some_and(|file| file.is_absolute() && !file.starts_with(&inside)) {
-        Ok(())
-    } else {
-        Err(format!(
-            "{ran}, and no module of the base's shadows it: {said}"
-        ))
-    }
-}
-
-/// A tree at `tree` whose interpreter is `python`, its path starting with `first` and its own
-/// directory `site`, which holds `planted` as `sitecustomize.py` where there is one; the
-/// interpreter imports `sitecustomize` as `site` would, first found first.
-fn tree_with_base(tree: &Path, python: &Path, first: &[&Path], planted: Option<&str>) {
-    let site = tree.join("site");
-    std::fs::create_dir_all(tree.join("bin")).unwrap();
-    std::fs::create_dir_all(&site).unwrap();
-    if let Some(planted) = planted {
-        std::fs::write(site.join("sitecustomize.py"), planted).unwrap();
-    }
-    let mut path: Vec<String> = first
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect();
-    path.push(site.display().to_string());
-    let script = format!(
-        "#!/bin/sh\nshift 2\nFIRST='{}' exec '{}' -I -S -c 'import os, sys\n\
-         sys.path[:0] = os.environ[\"FIRST\"].split(\":\")\n\
-         try:\n    import sitecustomize\nexcept ImportError:\n    pass\n\
-         script = sys.argv[1]\nsys.argv = [\"-c\"] + sys.argv[2:]\n\
-         exec(compile(script, \"<string>\", \"exec\"))' \"$@\"\n",
-        path.join(":"),
-        python.display()
-    );
-    std::fs::write(tree.join("bin/python"), script).unwrap();
-    std::fs::set_permissions(
-        tree.join("bin/python"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    control(ran, answered.as_ref(), &inside).map_err(|why| format!("{why}; ran: {started:?}"))
 }
 
 #[test]
 fn a_route_that_did_not_run_passes_its_control_only_where_the_base_shadows_its_module() {
-    let Some(python) = system_python() else {
-        return;
+    let tree = Path::new("/connectors/rdlt-connector-tickets");
+    let path = vec!["/usr/lib/python3.12".to_owned()];
+    let answered = |found: Result<&str, &str>| Answered {
+        found: found.map(PathBuf::from).map_err(str::to_owned),
+        path: path.clone(),
     };
-    let (_dir, dir) = resolved();
-    let marker = |name: &str| dir.join(format!("ran-{name}"));
-    let routes = routes(&marker);
-    let route = routes
-        .iter()
-        .find(|route| route.name == "sitecustomize")
-        .unwrap();
-    let writes = route.files[0].1.as_str();
-    // A base whose own `sitecustomize`, which writes nothing, comes before the tree's.
-    let base = dir.join("base");
-    std::fs::create_dir(&base).unwrap();
-    std::fs::write(base.join("sitecustomize.py"), "").unwrap();
-    for (case, first, planted, passes) in [
-        ("shadowed", vec![base.as_path()], Some(writes), true),
-        ("run", vec![], Some(writes), true),
-        ("planted, writing nothing", vec![], Some(""), false),
-        ("none to import", vec![], None, false),
+    let planted =
+        "/connectors/rdlt-connector-tickets/lib/python3.12/site-packages/sitecustomize.py";
+    for (case, ran, answer, passes) in [
+        (
+            "shadowed",
+            false,
+            Some(answered(Ok("/usr/lib/python3.12/sitecustomize.py"))),
+            true,
+        ),
+        ("run", true, None, true),
+        (
+            "run, a base's first",
+            true,
+            Some(answered(Ok("/etc/python3.12/sitecustomize.py"))),
+            true,
+        ),
+        (
+            "planted, writing nothing",
+            false,
+            Some(answered(Ok(planted))),
+            false,
+        ),
+        (
+            "none to import",
+            false,
+            Some(answered(Err("ModuleNotFoundError()"))),
+            false,
+        ),
+        (
+            "found by no absolute path",
+            false,
+            Some(answered(Ok("sitecustomize.py"))),
+            false,
+        ),
+        ("not run, none asked", false, None, false),
     ] {
-        let tree = dir.join(case);
-        tree_with_base(&tree, &python, &first, planted);
-        let checked = run_or_shadowed(&tree, route, &marker);
+        let checked = control(ran, answer.as_ref(), tree);
         assert_eq!(checked.is_ok(), passes, "{case}: {checked:?}");
-        if let Err(why) = checked {
-            assert!(why.contains("\"path\""), "{case}: {why}");
+        if let (Err(why), Some(_)) = (&checked, &answer) {
+            assert!(why.contains("/usr/lib/python3.12"), "{case}: {why}");
         }
     }
 }
