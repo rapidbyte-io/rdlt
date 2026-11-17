@@ -150,7 +150,7 @@ async fn child_tables_recorded_by_earlier_runs_count_before_a_declared_array_new
     let settings = SchemaSettings::default()
         .nested(Nested::normalize())
         .policy(SchemaPolicy::Evolve);
-    let plan = || pipeline(store, [stream("events").schema(settings.clone())]);
+    let plan = || pipeline(store, [stream("events").schema(settings)]);
     let first = BatchStream::json("events", &[r#"{"id":1,"a":[1],"b":[2]}"#])
         .declared(declared(&["a", "b"]));
     let source = batches(store, vec![first]).await;
