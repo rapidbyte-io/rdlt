@@ -3,6 +3,13 @@ all-features = true
 
 [advisories]
 yanked = "deny"
+# Unmaintained crates that Arrow, DataFusion and object_store depend on, with no maintained
+# release to move to until they move.
+ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "chrono: Arrow's temporal kernels use it, and rdlt's exact temporal conversions keep Arrow's version" },
+  { id = "RUSTSEC-2026-0555", reason = "chrono-tz: Arrow's time zones use it" },
+  { id = "RUSTSEC-2026-0542", reason = "humantime: object_store uses it, through DataFusion" },
+]
 
 [licenses]
 allow = [
