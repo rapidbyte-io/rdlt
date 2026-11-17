@@ -377,6 +377,49 @@ async fn a_reset_ends_a_replace_cycle_and_the_table_keeps_its_rows_until_another
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_attempt_s_first_commit_ends_a_cycle_whichever_stream_s_rows_it_carries() {
+    let store = "cycle_ended_by_another_stream";
+    STARTS.lock().clear();
+    // The full read of `rows` commits all nine rows, checkpointed at its end, and is stopped before
+    // it completes.
+    let both = |hold| {
+        json!({
+            "streams": 2, "rows": 9, "partition": "unbounded", "checkpoints": "middle_and_end",
+            "hold": hold,
+        })
+    };
+    let source = source_factory::<Ending>()
+        .connect(both(true), ConnectContext::new())
+        .await
+        .expect("it connects");
+    let engine_once = engine(commit_every(1).retry(RetryPolicy::default().max_attempts(1)));
+    let full = pipeline("ending", [stream("rows").read(ReadMode::Full)]);
+    let stopping = engine_once.run(full, Arc::from(source), memory(store).await);
+    let control = stopping.control();
+    let every: Vec<i64> = (0..9).collect();
+    let stop = async {
+        until(|| published_ids(store, "rows") == every).await;
+        control.stop(StopMode::AfterCommit);
+    };
+    let (stopped, ()) = tokio::join!(stopping, stop);
+    assert_eq!(stopped.report.status, RunStatus::Stopped, "{stopped:?}");
+    // Read incrementally beside `rows_1`, `rows` has no row past its cursor, so the attempt's
+    // commits carry `rows_1`'s rows alone.
+    let incremental = |name| stream(name).read(ReadMode::Incremental);
+    let beside = pipeline("ending", [incremental("rows"), incremental("rows_1")]);
+    let ended = run(beside, both(false), store).await;
+    assert_eq!(ended.report.status, RunStatus::Succeeded, "{ended:?}");
+    assert_eq!(published_ids(store, "rows_1"), every);
+    // The cycle ended, so a full read of `rows` reads it from its beginning again.
+    let again = pipeline("ending", [stream("rows").read(ReadMode::Full)]);
+    let full = run(again, both(false), store).await;
+    assert_eq!(full.report.status, RunStatus::Succeeded, "{full:?}");
+    assert_eq!(starts(), [0, 0, 0, 9]);
+    let twice: Vec<i64> = (0..9).flat_map(|id| [id, id]).collect();
+    assert_eq!(published_ids(store, "rows"), twice);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_run_that_completed_its_full_read_reads_the_stream_no_more_whatever_full_read_follows() {
     let store = "cycle_completed_then_another";
     STARTS.lock().clear();
