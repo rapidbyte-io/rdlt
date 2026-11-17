@@ -6,14 +6,14 @@
 // plan names that no read holds starts from its cursor, where the destination holds it, a bounded
 // one that ended on a checkpoint included, so a table is polled. A read of a bounded partition may
 // instead end on rows after its last checkpoint, which its end seals: its commit records the
-// partition done, the destination holding those rows and no cursor past them, only the one of its
-// last checkpoint before them, so a plan passes it over while its source says it ends, and refuses
-// the run, ending its reads, once its source says it never ends, since reading it from that
-// checkpoint would hold those rows twice and passing it over would miss every row it gains.
-// Partitions appear and disappear between plans, and change from bounded to unbounded and back, a
-// read keeping the kind its partition had when it started; a read of an unbounded partition may end
-// on its own, the rows after its last checkpoint read again by the next; rows arrive as the run
-// reads; the run may crash, and the next plans from what was committed.
+// partition done, with no cursor past those rows; a read started anyway would start from its last
+// checkpoint before them, so a plan passes it over while its source says it ends, and refuses the
+// run, ending its reads, once its source says it never ends, since reading it from that checkpoint
+// would hold those rows twice and passing it over would miss every row it gains. Partitions appear
+// and disappear between plans, and change from bounded to unbounded and back, a read keeping the
+// kind its partition had when it started; a read of an unbounded partition may end on its own, the
+// rows after its last checkpoint read again by the next; rows arrive as the run reads; the run may
+// crash, and the next plans from what was committed.
 //
 // quint main: replan replan_rows2
 // quint steps: --step simulated --max-steps 60
@@ -59,8 +59,8 @@ module replan_protocol {
   var reads: Set[Read]
   /// Where the destination holds each partition: every row below it is held.
   var committed: str -> int
-  /// The cursor of each partition's last checkpoint the destination holds, where a read of it
-  /// resumes: where it holds the partition, but for a done one, whose rows past it are held.
+  /// Where a read of each partition starts: its last checkpoint, where the destination holds it,
+  /// but for a done one, which the destination holds past that checkpoint, with no cursor.
   var cursor: str -> int
   /// How often the destination holds each row of each partition.
   var rows: str -> (int -> int)

@@ -45,10 +45,10 @@ generation.
     stream's before the reset.
   - A connector that panics fails the reset as an internal error, as it fails an attempt.
 - **The reset marker.** The reset commit puts `StateKey::Reset(stream)`, which names the stream.
-  Opening the reset's session fences every older session, so a run still loading fails its next
-  commit, and nothing it read before the reset lands after it; a full read it began before the
-  reset is over (above). The marker records the stream, so a later reset of it is not refused
-  as `stream_not_found`. Epochs are the destination's, ordered per pipeline: no clocks.
+  Opening the reset's session fences every older session, by epochs the destination orders per
+  pipeline, with no clocks, so a run still loading fails its next commit, and nothing it read
+  before the reset lands after it; a full read it began before the reset is over (above). The
+  marker records the stream, so a later reset of it is not refused as `stream_not_found`.
 - **Drops ride the commit: `CommitMeta::drop_tables: Vec<DroppedTable { path, name }>`**, wire
   `CommitMeta.drop_tables = 8`, capability `drop_tables` (catalog field 12). A drop is not a
   `TableChange`: schema changes take effect at once in every destination, so a drop there and a
