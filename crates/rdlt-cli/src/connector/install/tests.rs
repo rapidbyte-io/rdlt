@@ -689,13 +689,15 @@ async fn nothing_pip_would_build_from_its_source_is_installed() {
 }
 
 /// A way a wheel's files could run as its installer: its name, the files that plant it, how an
-/// interpreter of the tree that holds them runs them, and the refusal an install answers it with,
-/// where it is refused.
+/// interpreter of the tree that holds them runs them, the module it plants where a base
+/// installation may have one of its own that comes first, and the refusal an install answers it
+/// with, where it is refused.
 #[derive(Debug)]
 struct Route {
     name: &'static str,
     files: Vec<(String, String)>,
     running: &'static [&'static str],
+    shadowed: Option<&'static str>,
     refused: Option<&'static str>,
 }
 
@@ -715,12 +717,15 @@ fn routes(marker: &dyn Fn(&str) -> PathBuf) -> Vec<Route> {
             name: "pth",
             files: vec![file("tickets-startup.pth", writes("pth"))],
             running: &["-I", "-c", "pass"],
+            shadowed: None,
             refused: None,
         },
         Route {
             name: "sitecustomize",
             files: vec![file("sitecustomize.py", writes("sitecustomize"))],
             running: &["-I", "-c", "pass"],
+            // Debian's and Ubuntu's Python carry one in their standard library.
+            shadowed: Some("sitecustomize"),
             refused: None,
         },
         // A package of pip's name, over the environment's own pip where it has one.
@@ -731,6 +736,7 @@ fn routes(marker: &dyn Fn(&str) -> PathBuf) -> Vec<Route> {
                 file("pip/__main__.py", writes("pip")),
             ],
             running: &["-I", "-m", "pip"],
+            shadowed: None,
             refused: None,
         },
         // A module pip's own code imports where it finds one.
@@ -738,6 +744,7 @@ fn routes(marker: &dyn Fn(&str) -> PathBuf) -> Vec<Route> {
             name: "attr",
             files: vec![file("attr.py", writes("attr"))],
             running: &["-I", "-c", "import attr"],
+            shadowed: None,
             refused: None,
         },
     ]
@@ -758,6 +765,7 @@ fn refused(marker: &dyn Fn(&str) -> PathBuf) -> Vec<Route> {
                 format!("#!/bin/sh\ntouch '{}'\n", marker("interpreter").display()),
             )],
             running: &["-I", "-c", "pass"],
+            shadowed: None,
             refused: Some("replaces_environment"),
         },
         // A path for the interpreter beside it.
@@ -768,6 +776,7 @@ fn refused(marker: &dyn Fn(&str) -> PathBuf) -> Vec<Route> {
                 "/elsewhere\n".to_owned(),
             )],
             running: &[],
+            shadowed: None,
             refused: Some("replaces_environment"),
         },
         // A configuration beside the interpreter, which it reads before the tree's.
@@ -778,6 +787,7 @@ fn refused(marker: &dyn Fn(&str) -> PathBuf) -> Vec<Route> {
                 "home = /elsewhere\n".to_owned(),
             )],
             running: &[],
+            shadowed: None,
             refused: Some("replaces_environment"),
         },
     ]
@@ -787,16 +797,124 @@ fn refused(marker: &dyn Fn(&str) -> PathBuf) -> Vec<Route> {
 /// not: what each planted is in place.
 fn run_by_the_tree(tree: &Path, routes: &[Route], marker: &dyn Fn(&str) -> PathBuf) {
     for route in routes {
-        std::fs::remove_file(marker(route.name)).ok();
-        let started = std::process::Command::new(tree.join("bin/python"))
-            .args(route.running)
-            .output()
-            .unwrap();
-        assert!(
-            marker(route.name).exists(),
-            "{}: the tree's interpreter does not run it: {started:?}",
-            route.name
-        );
+        if let Err(why) = run_or_shadowed(tree, route, marker) {
+            panic!("{}: {why}", route.name);
+        }
+    }
+}
+
+/// What the tree's interpreter imports for `module`: the file it is in, every link resolved, or
+/// why it imports none, and the interpreter's path.
+const FOUND: &str = "import json, os, sys\n\
+                     try:\n\
+                     \x20   found = os.path.realpath(__import__(sys.argv[1]).__file__)\n\
+                     except Exception as error:\n\
+                     \x20   found = repr(error)\n\
+                     print(json.dumps({'found': found, 'path': sys.path}))\n";
+
+/// Whether the interpreter of the tree at `tree` runs `route`, writing `marker(route.name)`.
+///
+/// For a route whose module a base installation may have first, it may instead import a module of
+/// that name that lies outside the tree, which hides what was planted from every interpreter of
+/// that base. Why neither holds, otherwise, with where the interpreter found the module and its
+/// path.
+fn run_or_shadowed(
+    tree: &Path,
+    route: &Route,
+    marker: &dyn Fn(&str) -> PathBuf,
+) -> Result<(), String> {
+    std::fs::remove_file(marker(route.name)).ok();
+    let python = tree.join("bin/python");
+    let started = std::process::Command::new(&python)
+        .args(route.running)
+        .output()
+        .unwrap();
+    if marker(route.name).exists() {
+        return Ok(());
+    }
+    let ran = format!("the tree's interpreter does not run it: {started:?}");
+    let Some(module) = route.shadowed else {
+        return Err(ran);
+    };
+    let found = std::process::Command::new(&python)
+        .args(["-I", "-c", FOUND, module])
+        .output()
+        .unwrap();
+    let said: serde_json::Value = serde_json::from_slice(&found.stdout)
+        .map_err(|_| format!("{ran}; asking where it finds {module}: {found:?}"))?;
+    let inside = std::fs::canonicalize(tree).unwrap();
+    let file = said["found"].as_str().map(Path::new);
+    if file.is_some_and(|file| file.is_absolute() && !file.starts_with(&inside)) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{ran}, and no module of the base's shadows it: {said}"
+        ))
+    }
+}
+
+/// A tree at `tree` whose interpreter is `python`, its path starting with `first` and its own
+/// directory `site`, which holds `planted` as `sitecustomize.py` where there is one; the
+/// interpreter imports `sitecustomize` as `site` would, first found first.
+fn tree_with_base(tree: &Path, python: &Path, first: &[&Path], planted: Option<&str>) {
+    let site = tree.join("site");
+    std::fs::create_dir_all(tree.join("bin")).unwrap();
+    std::fs::create_dir_all(&site).unwrap();
+    if let Some(planted) = planted {
+        std::fs::write(site.join("sitecustomize.py"), planted).unwrap();
+    }
+    let mut path: Vec<String> = first
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    path.push(site.display().to_string());
+    let script = format!(
+        "#!/bin/sh\nshift 2\nFIRST='{}' exec '{}' -I -S -c 'import os, sys\n\
+         sys.path[:0] = os.environ[\"FIRST\"].split(\":\")\n\
+         try:\n    import sitecustomize\nexcept ImportError:\n    pass\n\
+         script = sys.argv[1]\nsys.argv = [\"-c\"] + sys.argv[2:]\n\
+         exec(compile(script, \"<string>\", \"exec\"))' \"$@\"\n",
+        path.join(":"),
+        python.display()
+    );
+    std::fs::write(tree.join("bin/python"), script).unwrap();
+    std::fs::set_permissions(
+        tree.join("bin/python"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_route_that_did_not_run_passes_its_control_only_where_the_base_shadows_its_module() {
+    let Some(python) = system_python() else {
+        return;
+    };
+    let (_dir, dir) = resolved();
+    let marker = |name: &str| dir.join(format!("ran-{name}"));
+    let routes = routes(&marker);
+    let route = routes
+        .iter()
+        .find(|route| route.name == "sitecustomize")
+        .unwrap();
+    let writes = route.files[0].1.as_str();
+    // A base whose own `sitecustomize`, which writes nothing, comes before the tree's.
+    let base = dir.join("base");
+    std::fs::create_dir(&base).unwrap();
+    std::fs::write(base.join("sitecustomize.py"), "").unwrap();
+    for (case, first, planted, passes) in [
+        ("shadowed", vec![base.as_path()], Some(writes), true),
+        ("run", vec![], Some(writes), true),
+        ("planted, writing nothing", vec![], Some(""), false),
+        ("none to import", vec![], None, false),
+    ] {
+        let tree = dir.join(case);
+        tree_with_base(&tree, &python, &first, planted);
+        let checked = run_or_shadowed(&tree, route, &marker);
+        assert_eq!(checked.is_ok(), passes, "{case}: {checked:?}");
+        if let Err(why) = checked {
+            assert!(why.contains("\"path\""), "{case}: {why}");
+        }
     }
 }
 

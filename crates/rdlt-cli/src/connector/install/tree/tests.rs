@@ -204,31 +204,46 @@ fn an_old_tree_that_cannot_be_removed_is_left_once_the_new_one_is_in_place() {
 #[test]
 fn a_tree_being_replaced_is_there_throughout() {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     let connectors = tempfile::tempdir().unwrap();
     let tree = connectors.path().join("rdlt-connector-tickets");
     std::fs::create_dir(&tree).unwrap();
-    let done = Arc::new(AtomicBool::new(false));
+    let (done, round) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(0)),
+    );
     let watching = {
-        let (tree, done) = (tree.clone(), Arc::clone(&done));
+        let (tree, done, round) = (tree.clone(), Arc::clone(&done), Arc::clone(&round));
         std::thread::spawn(move || {
-            let mut missing = 0_u64;
+            // Each lookup that failed: the round it failed in, and its error.
+            let mut missing = Vec::new();
             while !done.load(Ordering::Relaxed) {
-                missing += u64::from(tree.symlink_metadata().is_err());
+                if let Err(error) = tree.symlink_metadata() {
+                    missing.push((round.load(Ordering::Relaxed), error.raw_os_error()));
+                }
             }
             missing
         })
     };
-    for round in 0..200 {
-        replaced(staged(connectors.path(), &round.to_string()), &tree).unwrap();
+    for replacing in 0..200 {
+        round.store(replacing, Ordering::Relaxed);
+        replaced(staged(connectors.path(), &replacing.to_string()), &tree).unwrap();
     }
     done.store(true, Ordering::Relaxed);
-    assert_eq!(
-        watching.join().unwrap(),
-        0,
-        "the tree was missing while it was replaced"
-    );
+    let missing = watching.join().unwrap();
+    if cfg!(target_os = "macos") {
+        // macOS's exchange, as its `rename(2)`, may show a lookup that races it no name for an
+        // instant, and never another error.
+        let no_name = Some(rustix::io::Errno::NOENT.raw_os_error());
+        let named = missing.iter().all(|(_, errno)| *errno == no_name);
+        assert!(
+            named,
+            "a lookup failed otherwise than finding no name: {missing:?}"
+        );
+    } else {
+        assert_eq!(missing, [], "the tree was missing while it was replaced");
+    }
     assert!(tree.join("199").is_file(), "the last tree is in place");
 }
 
