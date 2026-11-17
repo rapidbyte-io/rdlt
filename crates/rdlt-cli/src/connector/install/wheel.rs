@@ -199,10 +199,11 @@ pub(super) fn reference(name: &str, held: &Path, named: &Path) -> Result<String,
 
 /// Whether `file` is a wheel's file name as pip reads one:
 /// `{name}-{version}(-{build})?-{python}-{abi}-{platform}.whl`, the name and the tags of ASCII
-/// letters, digits, `.` and `_`, the name starting with no `.`, the build with a digit, and the
-/// version PEP 440's.
+/// letters, digits, `.` and `_`, the name starting with no `.`, the build with a digit, the
+/// version PEP 440's, and the extension pip reads, a `.tar` before it taken in, `.whl`.
 pub(super) fn file_name(file: &str) -> bool {
-    let Some(stem) = file.strip_suffix(".whl") else {
+    let whl = super::extension::extension(file) == ".whl";
+    let Some(stem) = file.strip_suffix(".whl").filter(|_| whl) else {
         return false;
     };
     let tagged = |part: &str| {

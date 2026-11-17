@@ -379,28 +379,11 @@ fn hashed(options: &[&str]) -> Result<Vec<String>, Refused> {
     Ok(hashes)
 }
 
-/// Whether pip reads `text` as an archive's name: its extension, as pip's `splitext` takes it, a
-/// `.tar` before it included, is an archive's, in any case.
+/// Whether pip reads `text` as an archive's name: its extension, as pip reads it, a `.tar` before
+/// it taken in, is an archive's, in any case.
 fn archive(text: &str) -> bool {
-    let (base, extension) = split_extension(text);
-    let extension = if base.to_ascii_lowercase().ends_with(".tar") {
-        &text[base.len() - ".tar".len()..]
-    } else {
-        extension
-    };
-    ARCHIVES.contains(&extension.to_ascii_lowercase().as_str())
-}
-
-/// `path` split before its extension as Python's `posixpath.splitext` splits it: at the last `.`
-/// of its last segment, unless only dots come before it there.
-fn split_extension(path: &str) -> (&str, &str) {
-    let segment = path.rfind('/').map_or(0, |slash| slash + 1);
-    match path.rfind('.') {
-        Some(dot) if dot >= segment && path[segment..dot].bytes().any(|byte| byte != b'.') => {
-            path.split_at(dot)
-        }
-        _ => (path, ""),
-    }
+    let extension = super::extension::extension(text).to_ascii_lowercase();
+    ARCHIVES.contains(&extension.as_str())
 }
 
 /// Whether `byte` may be part of a URL, as RFC 3986 has it.

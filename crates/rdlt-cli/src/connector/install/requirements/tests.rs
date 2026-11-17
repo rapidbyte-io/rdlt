@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::{Line, Refused, archive, checked, parsed, wheel_line};
-use crate::connector::install::tests::system_python;
-use crate::connector::install::wheel::reference;
+use crate::connector::install::tests::{NO_WHEELS, WHEELS, system_python};
+use crate::connector::install::wheel::{file_name, reference};
 
 /// A digest, as a hash names one.
 const HEX: &str = "8f4ab0e8ea1d1e1ad4c8b0e5f2b7f9d9a3a8c1d4e7f6a5b4c3d2e1f0a9b8c7d6";
@@ -546,32 +546,15 @@ fn read_by_pip(lines: &[String]) -> Option<Vec<serde_json::Value>> {
     Some(said)
 }
 
-#[test]
-fn pip_itself_reads_every_line_rdlt_writes_as_rdlt_checked_it() {
-    let mut read = Vec::new();
-    for (text, directory) in taken() {
-        read.extend(parsed(&text, Path::new(directory)).unwrap());
-    }
-    read.extend(parsed(&generated(), Path::new("/requirements")).unwrap());
-    let mut lines: Vec<String> = read.iter().map(Line::written).collect();
-    // The wheel's own line, its copy's path holding what a URL must quote.
-    let held = PathBuf::from("/tmp/a b/zo\u{eb}%/tickets-0.1.0+local.1-py3-none-any.whl");
-    let named = Path::new("/operator/tickets-0.1.0+local.1-py3-none-any.whl");
-    let referenced = reference("tickets", &held, named).unwrap();
-    lines.push(wheel_line(&referenced, HEX, named).unwrap());
-    let Some(said) = read_by_pip(&lines) else {
-        return;
-    };
-    for ((read, line), said) in read.iter().zip(&lines).zip(&said) {
-        read_alike(read, line, said);
-    }
-    let (line, said) = (lines.last().unwrap(), said.last().unwrap());
+/// What pip reads of the wheel's line, the copy at `held` of the distribution `name` named by
+/// `referenced`, where pip reads it as that wheel's URL.
+fn read_as_the_wheel(name: &str, held: &Path, referenced: &str) -> serde_json::Value {
     let uri = referenced.split_once(" @ ").unwrap().1;
-    let expected = serde_json::json!({
+    serde_json::json!({
         "args": referenced,
         "options": [format!("--hash=sha256:{HEX}")],
         "requirements": [{
-            "name": "tickets",
+            "name": name,
             "extras": [],
             "specifier": "",
             "url": uri,
@@ -586,6 +569,40 @@ fn pip_itself_reads_every_line_rdlt_writes_as_rdlt_checked_it() {
         "no_index": false,
         "no_binary": [],
         "only_binary": [],
-    });
-    assert_eq!(*said, expected, "{line:?}");
+    })
+}
+
+#[test]
+fn pip_itself_reads_every_line_rdlt_writes_as_rdlt_checked_it() {
+    let mut read = Vec::new();
+    for (text, directory) in taken() {
+        read.extend(parsed(&text, Path::new(directory)).unwrap());
+    }
+    read.extend(parsed(&generated(), Path::new("/requirements")).unwrap());
+    let mut lines: Vec<String> = read.iter().map(Line::written).collect();
+    // The wheel's own line, for every file name taken, its copy's path holding what a URL must
+    // quote.
+    let mut wheels = Vec::new();
+    for file in WHEELS
+        .iter()
+        .chain(&NO_WHEELS)
+        .filter(|file| file_name(file))
+    {
+        let name = file.split('-').next().unwrap();
+        let held = Path::new("/tmp/a b/zo\u{eb}%").join(file);
+        let named = Path::new("/operator").join(file);
+        let referenced = reference(name, &held, &named).unwrap();
+        lines.push(wheel_line(&referenced, HEX, &named).unwrap());
+        wheels.push((name, held, referenced));
+    }
+    let Some(said) = read_by_pip(&lines) else {
+        return;
+    };
+    for ((read, line), said) in read.iter().zip(&lines).zip(&said) {
+        read_alike(read, line, said);
+    }
+    let read_wheels = lines[read.len()..].iter().zip(&said[read.len()..]);
+    for ((name, held, referenced), (line, said)) in wheels.iter().zip(read_wheels) {
+        assert_eq!(*said, read_as_the_wheel(name, held, referenced), "{line:?}");
+    }
 }
