@@ -230,17 +230,20 @@ fn characters(text: &str) -> Result<&str, (usize, Refused)> {
 }
 
 /// The lines of `text` as pip reads them, each with the number of its first line: a line ending in
-/// `\` joined with the next, unless it is a comment, comments dropped, and blank lines left out.
+/// `\`, unless it is a comment, joined to the next with nothing between and every `\` at either of
+/// its ends dropped, comments dropped, and blank lines left out.
 fn logical(text: &str) -> Vec<(usize, String)> {
     let (mut lines, mut joined, mut first) = (Vec::new(), String::new(), None);
     for (index, line) in text.lines().enumerate() {
         let comment = line.trim_start().starts_with('#');
-        if let Some(head) = line.strip_suffix('\\').filter(|_| !comment) {
+        if line.ends_with('\\') && !comment {
             first.get_or_insert(index + 1);
-            joined.push_str(head);
+            joined.push_str(line.trim_matches('\\'));
             continue;
         }
-        joined.push(' ');
+        if comment {
+            joined.push(' ');
+        }
         joined.push_str(line);
         let number = first.take().unwrap_or(index + 1);
         let kept = uncommented(&std::mem::take(&mut joined)).trim().to_owned();

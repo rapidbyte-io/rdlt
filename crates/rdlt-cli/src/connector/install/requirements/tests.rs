@@ -196,6 +196,20 @@ fn a_line_continued_at_the_end_of_the_file_is_taken() {
     assert_eq!(lines, [format!("wheel==1.0 --hash=sha256:{HEX}")]);
 }
 
+#[test]
+fn a_continued_line_joins_the_next_with_nothing_between_as_pip_joins_it() {
+    let (head, tail) = HEX.split_at(32);
+    let continued = format!(
+        "--index-url https://mirror.example/sim\\\nple\n\
+         wheel==1.0 --hash=sha256:{head}\\\\\n\\{tail}\\\n# a comment\n"
+    );
+    let flat =
+        format!("--index-url https://mirror.example/simple\nwheel==1.0 --hash=sha256:{HEX}\n");
+    let joined = checked(&continued, Path::new("/operator"));
+    assert!(joined.is_ok(), "{joined:?}");
+    assert_eq!(joined, checked(&flat, Path::new("/operator")));
+}
+
 /// The characters Python's `str.splitlines`, which pip reads a requirements file with, ends a line
 /// at, but for `\n`.
 const BREAKS: [char; 9] = [
