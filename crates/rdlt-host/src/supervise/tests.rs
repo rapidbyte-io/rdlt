@@ -2,7 +2,7 @@ use rdlt_connector::ConnectorErrorKind;
 
 use super::Spawned;
 use crate::remote::CONNECTOR_LOST;
-use crate::secrets::SecretError;
+use crate::secrets::{SecretError, SecretFault, SecretKind};
 
 #[test]
 fn a_configuration_that_cannot_be_sent_again_says_neither_more_nor_less_than_its_cause() {
@@ -30,3 +30,46 @@ fn a_respawn_that_does_not_start_in_time_is_lost_and_may_be_tried_again() {
     assert_eq!(error.code(), Some(CONNECTOR_LOST));
     assert!(error.is_retryable());
 }
+
+#[test]
+fn a_secret_store_that_fails_as_a_connector_starts_again_may_be_tried_again() {
+    let unresolved = |source| SecretError::Unresolved {
+        field: "password".to_owned(),
+        kind: SecretKind::Named,
+        source,
+    };
+    let failing = [
+        SecretFault::Io(std::io::Error::other("too many open files")),
+        SecretFault::Failed(Box::new(std::io::Error::other("unavailable"))),
+    ];
+    for fault in failing {
+        let error = Spawned::Secret(unresolved(fault)).into_error();
+        assert_eq!(error.kind(), ConnectorErrorKind::Transient, "{error:?}");
+        assert_eq!(error.code(), Some("secret_unresolved"));
+    }
+    // What the store answers of the secret itself is the configuration's to mend.
+    let answered = [
+        SecretFault::Missing,
+        SecretFault::Unsupported,
+        SecretFault::NotText,
+        SecretFault::TooLong { limit: 1 },
+        SecretFault::Relative,
+        SecretFault::NotRegular,
+        SecretFault::Shared {
+            owner: 0,
+            mode: 0o644,
+        },
+    ];
+    for fault in answered {
+        let error = Spawned::Secret(unresolved(fault)).into_error();
+        assert_eq!(error.kind(), ConnectorErrorKind::Config, "{error:?}");
+        assert!(!error.is_retryable());
+    }
+    let refused = SecretError::Refused {
+        field: "password".to_owned(),
+        kind: SecretKind::Env,
+    };
+    let error = Spawned::Secret(refused).into_error();
+    assert_eq!(error.kind(), ConnectorErrorKind::Config);
+}
+
