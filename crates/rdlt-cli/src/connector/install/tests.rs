@@ -154,6 +154,7 @@ async fn what_is_no_wheel_file_is_refused_before_any_interpreter_runs() {
         ".tickets-0.1.0-py3-none-any.whl",
         "tickets-0.1.0-py3-none-any.WHL",
         "tickets-0.1.0.tar.gz",
+        "tickets-0.1.0-py3-none-any.tar.whl",
     ];
     for name in misnamed {
         std::fs::write(dir.path().join(name), "").unwrap();
@@ -289,6 +290,42 @@ const TICKETS: &str = "[rdlt.connectors]\nio.example.tickets = tickets:Tickets\n
 fn tickets(dir: &Path, python: &Path, requires: &[&str]) -> PathBuf {
     wheel(dir, python, "tickets", requires, TICKETS, &[])
 }
+
+/// File names of wheels, each a wheel's as pip reads it.
+pub(super) const WHEELS: [&str; 6] = [
+    "tickets-0.1.0-py3-none-any.whl",
+    "rdlt-0.0.0-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "Rdlt_Connector.Tickets-1!2.0.post1+local.7-1build-cp311.cp312-abi3-macosx_11_0_arm64.whl",
+    "torch-2.0.0+cu118-cp311-cp311-linux_x86_64.whl",
+    // A `.tar` that ends no stem before `.whl`.
+    "tickets-0.1.0-py3.tar-none-any.whl",
+    "tickets-0.1.0+x.tar-py3-none-any.whl",
+];
+
+/// File names that are no wheel's as pip reads them, whatever their last characters.
+pub(super) const NO_WHEELS: [&str; 20] = [
+    ".whl",
+    "..whl",
+    "...whl",
+    "x.whl",
+    "tickets-0.1.0.whl",
+    "tickets-0.1.0-py3-none.whl",
+    "tickets-0.1.0-x-y-py3-none-any.whl",
+    "tickets-0.1.0-py3-none-any.WHL",
+    "tickets-0.1.0-py3-none-any.whl.zip",
+    "tickets-0.1.0-py3-none-any.tar.gz",
+    ".tickets-0.1.0-py3-none-any.whl",
+    "tic kets-0.1.0-py3-none-any.whl",
+    "tickets-0.1.0.tar.gz-py3-none-any.whl",
+    "tickets-1.0/x-py3-none-any.whl",
+    "tickets-0.1.0-build-py3-none-any.whl",
+    "tickets-0.1.0--none-any.whl",
+    "tickets-0.1.0-py3-n%41ne-any.whl",
+    // pip takes the `.tar` before `.whl` into the extension, in any case.
+    "tickets-0.1.0-py3-none-any.tar.whl",
+    "tickets-0.1.0-py3-none-x.TAR.whl",
+    "tickets-0.1.0-1-py3-none-any.Tar.whl",
+];
 
 /// An interpreter the sandbox shows: the system's, where it is 3.11 or later with `venv`; none
 /// elsewhere, unless `RDLT_REQUIRE_SYSTEM_PYTHON` says one must be here.

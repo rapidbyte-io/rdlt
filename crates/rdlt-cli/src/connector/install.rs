@@ -12,6 +12,7 @@
 //! is then read as data alone.
 
 mod environment;
+mod extension;
 mod requirements;
 #[cfg(test)]
 mod tests;

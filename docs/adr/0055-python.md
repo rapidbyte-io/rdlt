@@ -269,12 +269,13 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   So every way such a requirement could reach pip is closed:
   - the operator's wheel is taken only where its file's name is a wheel's,
     `{name}-{version}(-{build})?-{python}-{abi}-{platform}.whl`, the name and tags of ASCII
-    letters, digits, `.` and `_`, the name starting with no `.`, the version PEP 440's, since pip
-    reads any other as a source to build. Its copy is named to pip by its `file:` URL, which rdlt
-    writes from the copy's absolute path, with no `..` in it, quoting every byte but letters,
-    digits and `-._~`; the same check names it on pip's command line and in the requirements
-    file. That line is the one requirement holding a `/`: pip finds nothing of its text as a
-    path in the install's own directory, where it runs, and reads it as that URL;
+    letters, digits, `.` and `_`, the name starting with no `.`, the version PEP 440's, and its
+    extension, as pip's `splitext` reads it with a `.tar` before taken in, in any case, `.whl`,
+    since pip reads any other as a source to build. Its copy is named to pip by its `file:` URL,
+    which rdlt writes from the copy's absolute path, with no `..` in it, quoting every byte but
+    letters, digits and `-._~`; the same check names it on pip's command line and in the
+    requirements file. No other requirement holds a `/`: pip finds nothing of its text as a path
+    in the install's own directory, where it runs, and reads it as that URL;
   - the wheel's metadata, read as data, is refused where it needs a package by a URL (an `@`
     before a requirement's markers), and what it needs comes from an index, whose packages pip
     refuses where they need one by a URL;
