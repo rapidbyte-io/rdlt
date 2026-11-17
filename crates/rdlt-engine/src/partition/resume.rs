@@ -5,9 +5,9 @@ use rdlt_connector::{Cursor, Partition, PartitionId, PartitionState, ReadMode, S
 
 use crate::error::{Error, codes};
 
-/// What a refusal of a `read` that has no position to resume from says a reset does: it helps
-/// only a source that ends each such read on a checkpoint, since a read that is not full of a
-/// partition that never ends lands only the rows before its last checkpoint.
+/// What a refusal of a `read` that has no position to resume from says a reset does: each such
+/// read then lands the rows before its last checkpoint and leaves those after it to the next, so
+/// every row lands only where its source ends each of them on a checkpoint.
 pub(crate) fn reset_remedy(read: ReadMode) -> String {
     let reads = match read {
         ReadMode::Full => "full reads",

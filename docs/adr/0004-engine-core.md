@@ -113,9 +113,9 @@ a run reports and tells must show what it did without changing what it does.
   `completed`. Each run remembers the cycle it started or resumed per stream, and state keeps the
   stream's sixteen most recently completed cycles, so a retry after a landed final commit (a lost
   response, a failed acknowledgement) does not read the stream again, even when another run
-  completed a cycle in between. Without this, `full` + `append` would append a second copy. A new
-  cycle draws a generation of its own, never one a run remembers, so no generation holds the rows
-  of a cycle that is over; an attempt of a `replace` stream that fails before its first commit
+  completed or began a cycle in between. Without this, `full` + `append` would append a second copy.
+  A new cycle draws a generation of its own, never one a run remembers, so no generation holds the
+  rows of a cycle that is over; an attempt of a `replace` stream that fails before its first commit
   leaves the generation it created hidden, as a cycle a changed plan ends does (below).
   `TableRef` carries the generation `replace` writes fill, and the contract has
   `StateKey::Completed`.
