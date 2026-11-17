@@ -8,7 +8,7 @@ mod resolve;
 #[cfg(test)]
 mod tests;
 
-use std::fmt;
+use std::{fmt, mem};
 
 use zeroize::{Zeroize as _, Zeroizing};
 
@@ -89,51 +89,74 @@ impl Config {
         let mut document: serde_json::Value =
             serde_json::from_str(&self.json).map_err(|_| SecretError::NotJson)?;
         let wiping = Wiping(&mut document);
-        self.resolve(&mut *wiping.0, secrets, redactions).await
+        resolution(&mut *wiping.0, secrets, redactions).await
     }
+}
 
-    async fn resolve(
-        &self,
-        document: &mut serde_json::Value,
-        secrets: &dyn SecretResolver,
-        redactions: &Redactions,
-    ) -> Result<Zeroizing<String>, SecretError> {
-        let mut texts = Vec::new();
-        reference::texts(document, &mut String::new(), &mut texts);
-        let (mut references, mut grown) = (0_usize, 0_usize);
-        for (field, text) in texts {
-            let pieces = reference::pieces(text).map_err(|fault| SecretError::Reference {
-                field: field.clone(),
-                fault,
-            })?;
-            references = references.saturating_add(reference::count(&pieces));
-            if references > SECRET_REFERENCES {
-                return Err(SecretError::TooMany {
-                    limit: SECRET_REFERENCES,
-                });
-            }
-            let resolving = reference::resolved(&pieces, text, &field, secrets, redactions);
-            let Some(resolved) = resolving.await else {
-                continue;
-            };
-            let resolved = resolved?;
-            grown = grown.saturating_add(resolved.len());
-            text.zeroize();
-            text.push_str(&resolved);
-        }
-        // Room for the whole document at once: a buffer that grows leaves copies behind.
-        let room = self.json.len().saturating_add(grown.saturating_mul(2));
-        let mut json = Zeroizing::new(Vec::with_capacity(room));
-        serde_json::to_writer(&mut *json, document).map_err(|_| SecretError::NotJson)?;
-        if count(json.len()) > CONFIG_BYTES {
-            return Err(SecretError::TooLarge {
-                limit: CONFIG_BYTES,
+/// `document` with each reference in it replaced by what `secrets` resolves it to, and each
+/// resolved value added to `redactions`, as the JSON a connector is sent.
+async fn resolution(
+    document: &mut serde_json::Value,
+    secrets: &dyn SecretResolver,
+    redactions: &Redactions,
+) -> Result<Zeroizing<String>, SecretError> {
+    let mut texts = Vec::new();
+    reference::texts(document, &mut String::new(), &mut texts);
+    let mut references = 0_usize;
+    for (field, text) in texts {
+        let pieces = reference::pieces(text).map_err(|fault| SecretError::Reference {
+            field: field.clone(),
+            fault,
+        })?;
+        references = references.saturating_add(reference::count(&pieces));
+        if references > SECRET_REFERENCES {
+            return Err(SecretError::TooMany {
+                limit: SECRET_REFERENCES,
             });
         }
-        let text = std::str::from_utf8(&json).map_err(|_| SecretError::NotJson)?;
-        let mut sent = Zeroizing::new(String::with_capacity(text.len()));
-        sent.push_str(text);
-        Ok(sent)
+        let resolving = reference::resolved(&pieces, &field, secrets, redactions);
+        let Some(resolved) = resolving.await else {
+            continue;
+        };
+        let resolved = resolved?;
+        text.zeroize();
+        text.push_str(&resolved);
+    }
+    let mut json = written(document)?;
+    // The text takes the buffer whole: nothing is copied.
+    String::from_utf8(mem::take(&mut *json))
+        .map(Zeroizing::new)
+        .map_err(|unread| {
+            drop(Zeroizing::new(unread.into_bytes()));
+            SecretError::NotJson
+        })
+}
+
+/// `document` as JSON, in a buffer made as large as it is: one that grows leaves copies behind.
+fn written(document: &serde_json::Value) -> Result<Zeroizing<Vec<u8>>, SecretError> {
+    let mut counted = Counted(0);
+    serde_json::to_writer(&mut counted, document).map_err(|_| SecretError::NotJson)?;
+    if count(counted.0) > CONFIG_BYTES {
+        return Err(SecretError::TooLarge {
+            limit: CONFIG_BYTES,
+        });
+    }
+    let mut json = Zeroizing::new(Vec::with_capacity(counted.0));
+    serde_json::to_writer(&mut *json, document).map_err(|_| SecretError::NotJson)?;
+    Ok(json)
+}
+
+/// What counts the bytes written to it, and keeps none.
+struct Counted(usize);
+
+impl std::io::Write for Counted {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
