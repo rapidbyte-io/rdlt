@@ -250,9 +250,10 @@ A formal layer is added to the layers of its class, never in place of one.
   commit takes what it sealed; a read of an unbounded partition may end on its own, the rows after
   its last checkpoint read again by the next; a partition named again resumes where it was
   committed; a bounded one that ended on a checkpoint is read again once its end commits, and one a
-  read finished on rows after its last checkpoint is done (ADR 0004), the destination holding those
-  rows and its cursor, where a read of it resumes, left at that checkpoint: plans pass it over while
-  the source says it ends, and refuse the run, ending its reads, once the source says it never ends;
+  read finished on rows after its last checkpoint is done (ADR 0004): its commit records it done,
+  with no cursor past those rows, and a read started anyway would start from that checkpoint, which
+  the model keeps apart from where the destination holds the partition; plans pass it over while the
+  source says it ends, and refuse the run, ending its reads, once the source says it never ends;
   rows arrive as the run reads, and the run may crash. No partition is lost or doubled: no row is
   skipped or held twice (`NoPartitionLostOrDoubled`: one read of a partition at most, each read's
   next segment starting where the destination holds the partition, every row below a position held

@@ -140,10 +140,10 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     /// again by its next read, so an incremental read of it ends at a checkpoint to land its
     /// last rows. A full read that finishes one leaves no cursor past what it sealed, so a read
     /// of the stream that is not full then fails as the engine's `cursor_missing`, until a full
-    /// read of it ends at a checkpoint; it can go on being read in full meanwhile. A reset with
-    /// its tables mends it only for a source that ends each incremental read on a checkpoint,
-    /// since an incremental read of such a partition lands only the rows before its last one. A
-    /// stream read both ways ends its full reads at a checkpoint too. A read the engine asks to
+    /// read of it ends at a checkpoint; it can go on being read in full meanwhile. After a reset
+    /// with its tables, every row lands only where the source ends each read that is not full on
+    /// a checkpoint, since such a read of the partition lands only the rows before its last
+    /// checkpoint. A stream read both ways ends its full reads at a checkpoint too. A read the engine asks to
     /// follow ([`Emitter::follows`]) keeps its cursor. An on-demand stream answers a barrier
     /// pending before its last push with a checkpoint before that push.
     fn read(

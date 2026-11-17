@@ -101,11 +101,13 @@ a run reports and tells must show what it did without changing what it does.
   rows with no checkpoint after them, whether it checkpointed before them or never, and the source
   says it never ends, which a source that changes a partition's kind meets too. It names the
   stream, the partition where the source declared it, and the read by its mode. A full read that
-  ends on a checkpoint mends it, and the stream can go on being read in full; a reset with its
-  tables mends it only for a source that ends each read that is not full on a checkpoint, since
-  such a read of the partition lands only the rows before its last checkpoint, and an incremental
-  one fails `checkpoint_missing` where the source never checkpoints. The error orders the two that
-  way. A source whose full reads end on a checkpoint never meets it.
+  ends on a checkpoint mends it, and the stream can go on being read in full. A reset with its
+  tables mends it for a source that checkpoints: each read that is not full then lands the rows
+  before its last checkpoint and leaves those after it to the next, so every row lands only where
+  the source ends each such read on a checkpoint, and an incremental read fails
+  `checkpoint_missing` where the source never checkpoints. The error orders the two that way. A
+  source whose reads that finish a partition end on a checkpoint never meets it: a full read's,
+  and any read's of a partition its source said ends.
 - **Full reads are cycles.** A `full` read records its generation, and where its rows land, when it
   first commits and deletes the previous cycle's partition entries; its last commit records it as
   `completed`. Each run remembers the cycle it started or resumed per stream, and state keeps the
@@ -136,8 +138,8 @@ a run reports and tells must show what it did without changing what it does.
     `cursor_missing`: resuming from the cycle's positions would leave the rows before them in a
     generation nothing completes, and reading from the beginning would land the rows of the copy
     the table holds again. It names the stream and the read by its mode. Completing the full read,
-    replacing the table, mends it, as does a reset with its tables for a source that ends each
-    such read on a checkpoint.
+    replacing the table, mends it, as does a reset with its tables for a source that checkpoints,
+    as above.
   - A stream whose read is refused changes no table: the refusal, or a Config error its source
     answers its plan with, comes before its table is prepared, as each is a Config error, which
     only the operator mends.
