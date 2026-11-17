@@ -8,7 +8,8 @@ use crate::table::{Incoming, Tables};
 
 /// Changes the stream's table at `index` at the destination for its `declared` schema, normalized
 /// as `shape` says: fitted to it, its generation created, its meta columns added, and its child
-/// tables, declared and recorded, fitted and opened.
+/// tables, recorded and declared, opened and fitted; the recorded ones first, so they count
+/// toward the limit a declared one new to the table is admitted under.
 pub(super) async fn prepare(
     tables: &Tables,
     index: usize,
@@ -29,12 +30,12 @@ pub(super) async fn prepare(
     }
     tables.create_generation(index).await?;
     tables.add_meta_columns(index).await?;
+    for child in tables.recorded_children(index) {
+        tables.child(index, &child).await?;
+    }
     for (path, incoming) in children {
         let child = tables.child(index, &path).await?;
         tables.fit(child, &incoming).await?;
-    }
-    for child in tables.recorded_children(index) {
-        tables.child(index, &child).await?;
     }
     Ok(())
 }

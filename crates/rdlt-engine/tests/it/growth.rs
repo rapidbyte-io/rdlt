@@ -1,9 +1,10 @@
 //! What tables may grow to across pushes and runs: their columns, nested fields counted, and the
 //! child tables a normalized stream adds.
 
+use rdlt_connector::{Field, LogicalType, TableSchema};
 use rdlt_engine::{
-    Code, EngineConfig, ErrorKind, GrowthLimits, Nested, RunOutcome, RunStatus, SchemaSettings,
-    codes,
+    Code, EngineConfig, ErrorKind, GrowthLimits, Nested, RunOutcome, RunStatus, SchemaPolicy,
+    SchemaSettings, codes,
 };
 use serde_json::{Map, Value, json};
 
@@ -133,6 +134,41 @@ async fn child_tables_recorded_by_earlier_runs_count_toward_the_limit() {
         Nested::normalize(),
     )
     .await;
+    refused(&outcome, codes::CHILD_TABLES_EXCEEDED);
+}
+
+#[tokio::test(start_paused = true)]
+async fn child_tables_recorded_by_earlier_runs_count_before_a_declared_array_new_to_the_table() {
+    let store = "growth_declared_children";
+    let limited = || commit_every(1000).growth(GrowthLimits::new(2, 128).expect("a valid limit"));
+    let list = || LogicalType::List(Box::new(Field::new("item", LogicalType::Int64, true)));
+    let declared = |arrays: &[&str]| {
+        let mut fields = vec![Field::new("id", LogicalType::Int64, false)];
+        fields.extend(arrays.iter().map(|array| Field::new(*array, list(), true)));
+        TableSchema::new(fields).expect("a valid schema")
+    };
+    let settings = SchemaSettings::default()
+        .nested(Nested::normalize())
+        .policy(SchemaPolicy::Evolve);
+    let plan = || pipeline(store, [stream("events").schema(settings.clone())]);
+    let first = BatchStream::json("events", &[r#"{"id":1,"a":[1],"b":[2]}"#])
+        .declared(declared(&["a", "b"]));
+    let source = batches(store, vec![first]).await;
+    let outcome = engine(limited())
+        .run(plan(), source, memory(store).await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    // The declared schema now names an array new to the table, and not the two it holds.
+    let second = BatchStream::json("events", &[r#"{"id":2,"c":[3]}"#]).declared(declared(&["c"]));
+    let source = batches(store, vec![second]).await;
+    let outcome = engine(limited())
+        .run(plan(), source, memory(store).await)
+        .await;
     refused(&outcome, codes::CHILD_TABLES_EXCEEDED);
 }
 
