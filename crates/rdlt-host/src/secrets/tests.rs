@@ -687,6 +687,36 @@ async fn a_file_reference_reaches_only_what_lies_beneath_a_listed_directory_thro
     assert!(matches!(fault, SecretFault::Shared { .. }), "{fault:?}");
 }
 
+#[tokio::test]
+async fn a_file_secret_is_reached_through_no_directory_another_user_may_write() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let listed = root.path().join("listed");
+    let shared = listed.join("tenants").join("shared");
+    std::fs::create_dir_all(&shared).expect("directories");
+    let token = file(&shared, "token", b"t-123", 0o600);
+    for directory in [&listed, &listed.join("tenants"), &shared] {
+        std::fs::set_permissions(directory, PermissionsExt::from_mode(0o755)).expect("its mode");
+    }
+    let files = FileSecrets::within([&listed]);
+    let found = resolve(&files, SecretKind::File, &token).await;
+    assert_eq!(
+        found.expect("every directory on the way is private"),
+        "t-123"
+    );
+    // Another user who may write a directory on the way may swap what lies beneath it.
+    for (directory, mode) in [(&shared, 0o777), (&listed.join("tenants"), 0o775)] {
+        std::fs::set_permissions(directory, PermissionsExt::from_mode(mode)).expect("its mode");
+        let fault = resolve(&files, SecretKind::File, &token).await;
+        let fault = fault.expect_err("a directory on the way is shared");
+        assert!(
+            matches!(fault, SecretFault::Shared { mode: found, .. } if found == mode),
+            "{}: {fault:?}",
+            directory.display()
+        );
+        std::fs::set_permissions(directory, PermissionsExt::from_mode(0o755)).expect("its mode");
+    }
+}
+
 /// A file in `directory` holding `text`, with `mode`.
 fn file(directory: &std::path::Path, name: &str, text: &[u8], mode: u32) -> String {
     let path = directory.join(name);

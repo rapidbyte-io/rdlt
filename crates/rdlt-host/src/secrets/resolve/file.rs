@@ -1,5 +1,5 @@
 //! Secrets in files: private files beneath the directories the operator lists, reached one
-//! name at a time, following no link.
+//! name at a time, following no link, through directories none but this user may write.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -12,9 +12,10 @@ use super::{SecretFault, SecretKind, SecretReference, SecretResolver, admit};
 use crate::limits::SECRET_BYTES;
 
 /// Resolves `${file:/absolute/path}` to the text of a file beneath one of the directories its
-/// operator lists, each this user's alone to write: a regular file, reached from the directory
-/// one name at a time through no link, that neither its group nor others may read or write,
-/// of [`SECRET_BYTES`] at most; one line end at its end is not the secret's.
+/// operator lists: a regular file, reached from the directory one name at a time through no
+/// link and through directories each this user's alone to write, the listed one among them,
+/// that neither its group nor others may read or write, of [`SECRET_BYTES`] at most; one line
+/// end at its end is not the secret's.
 #[derive(Clone, Debug)]
 pub(crate) struct FileSecrets {
     directories: Vec<PathBuf>,
@@ -103,9 +104,11 @@ fn read_private(
     let Some((last, through)) = names.split_last() else {
         return Err(SecretFault::Refused);
     };
+    // Another user who may write a directory on the way may swap what lies beneath it.
     for name in through {
         let opened = rustix::fs::openat(&at, *name, listing.union(OFlags::NOFOLLOW), Mode::empty());
         at = File::from(opened.map_err(opening)?);
+        private(&at, false)?;
     }
     // No link followed at the name, no waiting on a pipe, nothing kept across an exec.
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;

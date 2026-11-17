@@ -143,8 +143,9 @@ anything runs; none is ignored.
 - **Whoever writes a pipeline's configuration is not trusted with the host's secrets.** A
   configuration value may refer to a secret, `${env:NAME}`, `${file:/absolute/path}` or
   `${secret:name}`, and reaches only what the operator lists: the variables `allow_env` and
-  `allow_env_prefix` name, files beneath the private directories `allow_files` names, and the
-  named secrets of the `secret_store` the operator gives. By default no reference resolves.
+  `allow_env_prefix` name, files beneath the private directories `allow_files` names, reached
+  through no link and no directory another user may write, and the named secrets of the
+  `secret_store` the operator gives. By default no reference resolves.
 - References are resolved when the configuration is sent to a connector whose identity the
   host has checked: its id and version, and its binary's digest or its certificate's name. A
   connector receives only its own configuration.
