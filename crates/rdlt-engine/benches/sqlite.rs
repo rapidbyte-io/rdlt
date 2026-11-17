@@ -4,7 +4,8 @@
 //! lands, and a million rows merged by key into a million, a tenth of them updates.
 //!
 //! Each append prints the time its last run's commits took, phase by phase. The database's files
-//! are `loaded.db` and SQLite's beside it, so a run's syncs tell apart by path.
+//! are `loaded.db` and SQLite's beside it, so a run's syncs tell apart by path. A debug build, which
+//! the smoke run of every bench builds, loads a tenth of the rows.
 
 #![forbid(unsafe_code)]
 
@@ -28,8 +29,11 @@ const APPEND_BATCH: NonZeroU64 = NonZeroU64::new(10_000).expect("not zero");
 const MERGE_BATCH: NonZeroU64 = NonZeroU64::new(50_000).expect("not zero");
 /// Rows between commits of the appends that commit as they go.
 const COMMIT_ROWS: NonZeroU64 = NonZeroU64::new(10_000).expect("not zero");
+/// How many times fewer rows a debug build loads: the smoke run of every bench builds in debug,
+/// where a million rows take minutes, and runs every path as it does in release, in less.
+const SHRINK: u64 = if cfg!(debug_assertions) { 10 } else { 1 };
 /// Rows of the merge, and of the table it merges into.
-const MERGED: u64 = 1_000_000;
+const MERGED: u64 = 1_000_000 / SHRINK;
 
 /// Whether an append's source can read its rows again, or cannot.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,11 +45,11 @@ enum Source {
 /// The appends: rows, the rows between commits or none for one commit at the end, and whether
 /// their source can read them again.
 const APPENDS: [(u64, Option<NonZeroU64>, Source); 5] = [
-    (1_000_000, None, Source::Replayable),
-    (200_000, Some(COMMIT_ROWS), Source::Replayable),
-    (500_000, Some(COMMIT_ROWS), Source::Replayable),
-    (1_000_000, Some(COMMIT_ROWS), Source::Replayable),
-    (1_000_000, Some(COMMIT_ROWS), Source::Unreplayable),
+    (1_000_000 / SHRINK, None, Source::Replayable),
+    (200_000 / SHRINK, Some(COMMIT_ROWS), Source::Replayable),
+    (500_000 / SHRINK, Some(COMMIT_ROWS), Source::Replayable),
+    (1_000_000 / SHRINK, Some(COMMIT_ROWS), Source::Replayable),
+    (1_000_000 / SHRINK, Some(COMMIT_ROWS), Source::Unreplayable),
 ];
 
 /// A database of its own in a directory of its own beside the build, which the destination
