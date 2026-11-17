@@ -48,23 +48,24 @@ impl SecretReference {
 
 /// A piece of a text value: text as it is, or a reference to resolve.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Piece {
-    Text(String),
+pub(super) enum Piece<'a> {
+    /// Text of the value, borrowed: a copy would be left unwiped.
+    Text(&'a str),
     Reference(SecretReference),
 }
 
 /// The pieces of `text`: each `${kind:name}` a reference, each `$${` a literal `${`.
-pub(super) fn pieces(text: &str) -> Result<Vec<Piece>, ReferenceFault> {
-    let (mut pieces, mut literal, mut rest) = (Vec::new(), String::new(), text);
+pub(super) fn pieces(text: &str) -> Result<Vec<Piece<'_>>, ReferenceFault> {
+    let (mut pieces, mut rest) = (Vec::new(), text);
     while let Some(at) = rest.find("${") {
         let after = &rest[at + 2..];
         if rest[..at].ends_with('$') {
-            literal.push_str(&rest[..at - 1]);
-            literal.push_str("${");
-            rest = after;
+            // `$${` is `${`: the text to its first `$`, and on from its brace.
+            literal(&mut pieces, &rest[..at]);
+            rest = &rest[at + 1..];
             continue;
         }
-        literal.push_str(&rest[..at]);
+        literal(&mut pieces, &rest[..at]);
         let end = after.find('}').ok_or(ReferenceFault::Unclosed)?;
         let (kind, name) = after[..end].split_once(':').ok_or(ReferenceFault::Kind)?;
         let kind = match kind {
@@ -78,65 +79,70 @@ pub(super) fn pieces(text: &str) -> Result<Vec<Piece>, ReferenceFault> {
         if unusable {
             return Err(ReferenceFault::Name);
         }
-        if !literal.is_empty() {
-            pieces.push(Piece::Text(std::mem::take(&mut literal)));
-        }
         let name = name.to_owned();
         pieces.push(Piece::Reference(SecretReference { kind, name }));
         rest = &after[end + 1..];
     }
-    literal.push_str(rest);
-    if !literal.is_empty() {
-        pieces.push(Piece::Text(literal));
-    }
+    literal(&mut pieces, rest);
     Ok(pieces)
 }
 
+/// Adds `text` to `pieces`, unless it is empty.
+fn literal<'a>(pieces: &mut Vec<Piece<'a>>, text: &'a str) {
+    if !text.is_empty() {
+        pieces.push(Piece::Text(text));
+    }
+}
+
 /// How many of `pieces` are references.
-pub(super) fn count(pieces: &[Piece]) -> usize {
-    let reference = |piece: &&Piece| matches!(piece, Piece::Reference(_));
+pub(super) fn count(pieces: &[Piece<'_>]) -> usize {
+    let reference = |piece: &&Piece<'_>| matches!(piece, Piece::Reference(_));
     pieces.iter().filter(reference).count()
 }
 
-/// The text `pieces` of `original`, in `field`, make once `secrets` has resolved each
-/// reference, every resolved value added to `redactions`; `None` for a text that stays as it
-/// is.
+/// The text `pieces`, in `field`, make once `secrets` has resolved each reference, every
+/// resolved value added to `redactions`; `None` for a text that stays as it is.
 pub(super) async fn resolved(
-    pieces: &[Piece],
-    original: &str,
+    pieces: &[Piece<'_>],
     field: &str,
     secrets: &dyn SecretResolver,
     redactions: &Redactions,
 ) -> Option<Result<Zeroizing<String>, SecretError>> {
-    if count(pieces) == 0 {
-        return match pieces {
-            [Piece::Text(text)] if text != original => Some(Ok(Zeroizing::new(text.clone()))),
-            _ => None,
-        };
+    // A text with no reference is one piece as it is, or none; a literal `${` makes more.
+    if count(pieces) == 0 && pieces.len() < 2 {
+        return None;
     }
-    let mut values = Vec::with_capacity(pieces.len());
+    let mut secrets_sent = Vec::with_capacity(count(pieces));
+    for piece in pieces {
+        let Piece::Reference(reference) = piece else {
+            continue;
+        };
+        let secret = match secrets.resolve(reference).await {
+            Ok(secret) => secret,
+            Err(fault) => return Some(Err(unresolved(field, reference.kind, fault))),
+        };
+        let value = secret.expose();
+        if !value.is_empty() && !maskable(value) {
+            let (field, kind) = (field.to_owned(), reference.kind);
+            return Some(Err(SecretError::Unredactable { field, kind }));
+        }
+        redactions.add(value);
+        secrets_sent.push(secret);
+    }
+    let length = |piece: &Piece<'_>| match piece {
+        Piece::Text(text) => text.len(),
+        Piece::Reference(_) => 0,
+    };
+    let resolved = secrets_sent.iter().map(|secret| secret.expose().len());
+    let length = pieces.iter().map(length).sum::<usize>() + resolved.sum::<usize>();
+    // Room for the whole text at once: a buffer that grows leaves copies behind.
+    let mut text = Zeroizing::new(String::with_capacity(length));
+    let mut values = secrets_sent.iter().map(|secret| secret.expose().as_str());
     for piece in pieces {
         match piece {
-            Piece::Text(text) => values.push(Zeroizing::new(text.clone())),
-            Piece::Reference(reference) => {
-                let secret = match secrets.resolve(reference).await {
-                    Ok(secret) => secret,
-                    Err(fault) => return Some(Err(unresolved(field, reference.kind, fault))),
-                };
-                let value = secret.expose();
-                if !value.is_empty() && !maskable(value) {
-                    let (field, kind) = (field.to_owned(), reference.kind);
-                    return Some(Err(SecretError::Unredactable { field, kind }));
-                }
-                redactions.add(value);
-                values.push(Zeroizing::new(value.clone()));
-            }
+            Piece::Text(literal) => text.push_str(literal),
+            Piece::Reference(_) => text.push_str(values.next().unwrap_or_default()),
         }
-    }
-    let length = values.iter().map(|value| value.len()).sum();
-    let mut text = Zeroizing::new(String::with_capacity(length));
-    for value in &values {
-        text.push_str(value);
     }
     Some(Ok(text))
 }

@@ -133,7 +133,7 @@ async fn a_text_is_rewritten_only_where_a_reference_or_a_doubled_literal_changes
         ("key ${secret:api-key}, $${", Some("key k-12345, ${")),
     ] {
         let pieces = pieces(text).expect("well formed");
-        let resolved = super::reference::resolved(&pieces, text, ".", &vault, &redactions).await;
+        let resolved = super::reference::resolved(&pieces, ".", &vault, &redactions).await;
         let resolved = resolved.map(|resolved| resolved.expect("it resolves").as_str().to_owned());
         assert_eq!(resolved.as_deref(), sent, "{text}");
     }
@@ -147,7 +147,7 @@ fn a_text_splits_into_its_literal_pieces_and_its_references() {
             name: name.to_owned(),
         })
     };
-    let text = |text: &str| Piece::Text(text.to_owned());
+    let text = Piece::Text;
     assert_eq!(pieces(""), Ok(vec![]));
     assert_eq!(pieces("plain $ { }"), Ok(vec![text("plain $ { }")]));
     assert_eq!(
@@ -160,8 +160,9 @@ fn a_text_splits_into_its_literal_pieces_and_its_references() {
             reference(SecretKind::Named, "f:g"),
         ])
     );
-    assert_eq!(pieces("$${env:B}"), Ok(vec![text("${env:B}")]));
-    assert_eq!(pieces("$$${env:B}"), Ok(vec![text("$${env:B}")]));
+    // A literal `${` is the text to its first `$`, and on from its brace.
+    assert_eq!(pieces("$${env:B}"), Ok(vec![text("$"), text("{env:B}")]));
+    assert_eq!(pieces("$$${env:B}"), Ok(vec![text("$$"), text("{env:B}")]));
     let longest = "n".repeat(SECRET_NAME_BYTES);
     assert!(pieces(&format!("${{env:{longest}}}")).is_ok());
     for (malformed, fault) in [
@@ -920,6 +921,18 @@ fn a_secret_and_the_part_of_one_at_a_cut_that_overlap_are_hidden_whole() {
     ];
     for (said, scrubbed) in cases {
         assert_eq!(redactions.scrubbed(said.clone()), scrubbed, "{said}");
+    }
+}
+
+#[test]
+fn the_document_a_connector_is_sent_is_written_in_a_buffer_that_never_grows() {
+    // JSON writes a control character in six bytes, and a number as it reads, not as written.
+    let original = r#"{"a":"${secret:it}","n":1e9}"#;
+    for secret in ["\u{1}".repeat(512), "\"\\".repeat(256), "plain".to_owned()] {
+        let mut document: serde_json::Value = serde_json::from_str(original).expect("JSON");
+        document["a"] = json!(secret);
+        let json = super::written(&document).expect("written");
+        assert_eq!(json.capacity(), json.len(), "{secret:?}");
     }
 }
 
