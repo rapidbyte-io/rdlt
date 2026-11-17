@@ -143,8 +143,8 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     /// read of it ends at a checkpoint; it can go on being read in full meanwhile. After a reset
     /// with its tables, every row lands only where the source ends each read that is not full on
     /// a checkpoint, since such a read of the partition lands only the rows before its last
-    /// checkpoint. A stream read both ways ends its full reads at a checkpoint too. A read the engine asks to
-    /// follow ([`Emitter::follows`]) keeps its cursor. An on-demand stream answers a barrier
+    /// checkpoint. A stream read both ways ends its full reads at a checkpoint too. A read the
+    /// engine asks to follow ([`Emitter::follows`]) keeps its cursor. An on-demand stream answers a barrier
     /// pending before its last push with a checkpoint before that push.
     fn read(
         &self,
