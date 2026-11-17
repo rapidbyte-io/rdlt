@@ -220,10 +220,11 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   script directory reaches it. The tree holds the connector's packages and no pip. It is made
   beside the connectors, one install at a time under a lock that also lets the next sweep what a
   killed one left, held until what the install made beside the tree is removed, and exchanged
-  with the tree it replaces in one step, so one of the two is in place throughout; a file system
-  that cannot exchange two names is found before anything is made. Its write is taken away from
-  group and others, it records its connector's id, and an install replaces only a tree that
-  records its own (`name_taken` otherwise). The host
+  with the tree it replaces in one step, so one of the two is in place throughout, though on
+  macOS a lookup that races the exchange may find no name for an instant, as one that races
+  `rename(2)` may there; a file system that cannot exchange two names is found before anything is
+  made. Its write is taken away from group and others, it records its connector's id, and an
+  install replaces only a tree that records its own (`name_taken` otherwise). The host
   hashes the launcher, whose first line names the interpreter, and holds the interpreter by its
   path, as any script's; the installed packages are the operator's files, as a native binary's
   shared libraries are. The environment's interpreter is a link to its base installation, which a
