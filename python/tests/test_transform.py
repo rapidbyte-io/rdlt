@@ -81,6 +81,19 @@ def test_a_transform_and_a_filter_reshape_and_select_a_stream(
     ]
 
 
+def test_a_sql_step_reshapes_and_selects_a_stream(tmp_path: Path, connectors: Path) -> None:
+    query = "SELECT id, amount * 100 AS cents FROM input WHERE amount > 6"
+    rdlt.pipeline(
+        "queried",
+        source=orders,
+        destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("orders", transform=[{"sql": query}])],
+    ).build(host(tmp_path, connectors)).run()
+    assert selected(tmp_path, 'SELECT id, cents FROM "orders" ORDER BY id') == [
+        (n, n * 150.0) for n in range(5, 10)
+    ]
+
+
 def marked(batch: pa.RecordBatch) -> pa.RecordBatch:
     return batch.append_column("marked", pa.array([1] * batch.num_rows, pa.int64()))
 
