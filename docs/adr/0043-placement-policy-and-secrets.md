@@ -219,7 +219,8 @@ given. A host enforces that only where it closes each of these:
     control. `Secrets::new()` therefore resolves nothing. The operator gives each resolver,
     scoped: `Secrets::allow_env` the variables listed, or `allow_env_prefix` those under a
     non-empty prefix; `allow_files` the private directories listed, beneath which a
-    file is reached one name at a time through no link, `..` refused; and for `${secret:..}`
+    file is reached one name at a time through no link, and through no directory another user
+    may write, `..` refused; and for `${secret:..}`
     a store of named secrets (`Secrets::secret_store`; `EnvSecrets::named("RDLT_SECRET_")` reads
     `RDLT_SECRET_<NAME>`). A reference outside them is refused (`secret_refused`), naming the
     field, never the reference. An author reaches what the operator listed, and the
