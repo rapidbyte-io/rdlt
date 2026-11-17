@@ -43,9 +43,11 @@ const HINTS: [(&str, &str); 7] = [
     ),
     (
         "state_invalid",
-        "rdlt cannot read this pipeline's state at the destination, nor reset it: delete the \
-         pipeline's state and its streams' tables there with the destination's own tools, and \
-         the next run loads every stream again from its beginning",
+        "`rdlt state reset <document> <stream> --tables` clears what state records of the \
+         stream and drops its tables, for the next run to load it again from its beginning; \
+         where rdlt cannot read the state at all, as state of another format, neither can a \
+         reset: delete the pipeline's state and its streams' tables with the destination's own \
+         tools",
     ),
 ];
 

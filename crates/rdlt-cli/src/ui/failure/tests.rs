@@ -81,6 +81,40 @@ fn a_cause_the_message_holds_is_not_repeated() {
 }
 
 #[test]
+fn state_rdlt_reads_is_reset_and_only_state_it_cannot_read_is_deleted_by_hand() {
+    // A table's recorded type, which a reset clears, and state of another format, which no build
+    // reads.
+    for message in [
+        "stream events: table events: state records column tags as list<items: int64>, its \
+         struct fields out of name order or a list's item not named item; reset the stream's \
+         tables to create it again",
+        "reading pipeline state: state value for `{\"epoch\"}` is format 6; this build reads \
+         format 7",
+    ] {
+        let mut invalid = report(
+            Origin::Engine,
+            ErrorKind::Destination,
+            Some("state_invalid"),
+        );
+        invalid.message = message.to_owned();
+        invalid.causes = Vec::new();
+        let given = hint(&invalid, false).expect("a hint for state_invalid");
+        assert!(
+            given.starts_with("`rdlt state reset <document> <stream> --tables` clears"),
+            "{given}"
+        );
+        let by_hand = given.find("delete").expect("deletion by hand is named");
+        let unreadable = given
+            .find("where rdlt cannot read the state at all")
+            .expect("only for state rdlt cannot read");
+        assert!(unreadable < by_hand, "{given}");
+        // The hint wraps at the width standard error reports, whatever the test runs with.
+        let text = rendered(invalid).replace("\n  ", " ");
+        assert!(text.contains(message) && text.contains(given), "{text}");
+    }
+}
+
+#[test]
 fn a_failure_of_the_command_line_s_own_is_one_line() {
     let text = failure(
         &Failure::usage("name a connector, or --document"),
