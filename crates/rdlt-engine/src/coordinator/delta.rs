@@ -8,8 +8,9 @@ use rdlt_connector::{
     StreamName, TablePath,
 };
 
+use super::cycle::KEPT_COMPLETIONS;
 use super::waiting::Standing;
-use super::{Coordinator, FullRead, KEPT_COMPLETIONS};
+use super::{Coordinator, FullRead};
 use crate::partition::CursorHold;
 use crate::plan::WriteMode;
 use crate::report::{ColumnDiscards, StreamReport};
