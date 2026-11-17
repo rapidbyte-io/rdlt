@@ -287,7 +287,7 @@ debug = false
 [profile.dev.package.sha2]
 opt-level = 3
 
-# SQLite's C is built optimised: the bench smoke run loads the SQLite bench's million rows through it.
+# SQLite's C is built optimised: the bench smoke run loads the SQLite bench's rows through it.
 [profile.dev.package.libsqlite3-sys]
 opt-level = 3
 
