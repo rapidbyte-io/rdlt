@@ -197,7 +197,7 @@ impl StateEntry {
             } => StateKey::Partition(stream.clone(), partition.clone()),
             Self::Generation { stream, .. } => StateKey::Generation(stream.clone()),
             Self::Completed { stream, .. } => StateKey::Completed(stream.clone()),
-            Self::Reset { stream, .. } => StateKey::Reset(stream.clone()),
+            Self::Reset { stream } => StateKey::Reset(stream.clone()),
             Self::Schema { table, .. } => StateKey::Schema(table.clone()),
             Self::Names { table, .. } => StateKey::Names(table.clone()),
             Self::Sequences { table, .. } => StateKey::Sequences(table.clone()),
