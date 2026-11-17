@@ -25,7 +25,7 @@ use crate::local::process::{Launch, Process, Unspawned};
 use crate::network::Dial;
 use crate::provider::{ConnectorRef, ProviderError, accepts};
 use crate::remote::{CONNECTOR_LOST, Connection, Options, RemoteDestination, exceeded};
-use crate::secrets::{Config, Redactions, SecretError, SecretResolver};
+use crate::secrets::{Config, Redactions, SecretError, SecretFault, SecretResolver};
 use rdlt_connector::wire::v1;
 
 use crate::limits::LAST_WORDS;
@@ -291,7 +291,22 @@ impl Spawned {
             }
             Self::Connect(error) => error,
             Self::Secret(error) => {
-                ConnectorError::config("the connector's configuration could not be prepared")
+                // A store that answers it failed may answer the next start, as one that does
+                // not answer may; what it answers of the secret is the configuration's to mend.
+                let failed = matches!(
+                    &error,
+                    SecretError::Unresolved {
+                        source: SecretFault::Io(_) | SecretFault::Failed(_),
+                        ..
+                    }
+                );
+                let kind = if failed {
+                    ConnectorErrorKind::Transient
+                } else {
+                    ConnectorErrorKind::Config
+                };
+                let message = "the connector's configuration could not be prepared";
+                ConnectorError::new(kind, message)
                     .with_code(error.code())
                     .with_source(error)
             }

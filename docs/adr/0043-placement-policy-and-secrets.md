@@ -212,7 +212,11 @@ given. A host enforces that only where it closes each of these:
     after the handshake showed the connector to be the one the reference names, and again at
     each respawn or redial, within the connect deadline. A resolver that has not answered by
     then fails the start with a transient `deadline_exceeded` error, which a later attempt may
-    mend; the document under resolution is wiped however its resolution ends.
+    mend; at a respawn or redial, so does one that answers it failed (`SecretFault::Failed`),
+    or a file that could not be read (`SecretFault::Io`), as a transient `secret_unresolved`,
+    while a secret missing, refused or unfit is the configuration's to mend and fails the
+    start as a configuration error. The document under resolution is wiped however its
+    resolution ends, and its texts are read where they lie, not copied.
   - **A configuration's author is not trusted with the host's secrets.** Whoever writes a
     pipeline's configuration may not be the operator, as in a service whose tenants write
     their pipelines, and a reference sends what it names to a connector the author may
