@@ -135,10 +135,11 @@ Rejected:
 - A document nested to the limit loads and opens again; one nested deeper is refused where it
   arrives. The wire carries schemas nested to the limit in frames too.
 - State and files catalogs of another format are refused and must be cleared; a reset reads
-  the state it resets, so it cannot clear state it cannot read. An operator deletes the
-  pipeline's state and its streams' tables at the destination with the destination's own tools,
-  as the command line's hint for `state_invalid` says, and the next run loads every stream again
-  from its beginning.
+  the state it resets, so it cannot clear state it cannot read. State it reads but refuses, as a
+  column recorded in a form no load writes, a reset with the stream's tables clears, and the next
+  run loads the stream again from its beginning; state no reset reads, as state of another format,
+  an operator deletes with the pipeline's tables using the destination's own tools. The command
+  line's hint for `state_invalid` says both, the reset first.
 - A stream whose table would pass the schema columns stops at its change, typed, until its table
   is reset or its policy discards new columns; more memory raises the limit.
 - A normalized stream with more array paths than its child table limit stops, typed; at the least
