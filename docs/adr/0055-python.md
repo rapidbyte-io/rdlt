@@ -25,15 +25,16 @@ rdlt's own tests are, reaches those handlers moments after its last call.
 ## Decision
 
 - **One wheel binds the facade.** `rdlt` is a mixed project: the extension `rdlt._native`
-  (`crates/rdlt-python`, PyO3) and the typed package `python/rdlt`, which is the public API: the
-  facade's words as keyword arguments, enums, frozen dataclasses for events, reports and
-  statuses, and `rdlt.Error` with one subclass per kind. The extension passes JSON text, and
-  Arrow through the C Data Interface; it holds no pipeline model of its own. A pipeline built in
-  code is written as the document a file would hold, so code and documents meet one validation
-  and one set of errors. The wheel is abi3, for CPython 3.11 and later, with a free-threaded
-  3.14 wheel beside it, since free-threaded CPython loads no abi3 wheel, for Linux
-  (manylinux_2_28, x86-64 and aarch64) and macOS (arm64 and x86-64). ADR 0048 records how the
-  release builds and publishes them.
+  (`crates/rdlt-python`, PyO3), which builds the facade with its `local`, `remote` and `sql`
+  features, so a document's SQL step runs from Python as from the command line, and the typed
+  package `python/rdlt`, which is the public API: the facade's words as keyword arguments, enums,
+  frozen dataclasses for events, reports and statuses, and `rdlt.Error` with one subclass per kind.
+  The extension passes JSON text, and Arrow through the C Data Interface; it holds no pipeline model
+  of its own. A pipeline built in code is written as the document a file would hold, so code and
+  documents meet one validation and one set of errors. The wheel is abi3, for CPython 3.11 and
+  later, with a free-threaded 3.14 wheel beside it, since free-threaded CPython loads no abi3 wheel,
+  for Linux (manylinux_2_28, x86-64 and aarch64) and macOS (arm64 and x86-64). ADR 0048 records how
+  the release builds and publishes them.
 - **Python code in process is the embedder's.** A stream function, a transform, a secret store
   and a connector class placed in process run in the embedding process, trusted as its own code is
   (ADR 0037); a document names a transform or a connector class only once its host registered
