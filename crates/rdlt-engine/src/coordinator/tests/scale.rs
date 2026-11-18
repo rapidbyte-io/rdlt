@@ -84,7 +84,27 @@ fn ids(count: usize) -> Vec<String> {
 /// A coordinator of one change stream read in phases, its partitions started by nothing, whose
 /// source plans as `plans` say, following its source where `follow`.
 async fn phased(plans: Vec<Vec<String>>, follow: bool) -> Coordinator {
+    tracking(&["orders"], plans, follow).await
+}
+
+/// A coordinator of change streams named `names`, each read in phases, their partitions started
+/// by nothing, whose source plans as `plans` say, stream by stream in each pass, following its
+/// source where `follow`.
+async fn tracking(names: &[&str], plans: Vec<Vec<String>>, follow: bool) -> Coordinator {
+    let streams = names.iter().map(|name| phased_stream(name)).collect();
+    let (mut coordinator, _) = Setup::new(streams, Vec::new()).coordinator().await;
+    coordinator.parts.launcher = Box::new(|_| Ok(()));
+    coordinator.parts.source = Arc::new(Planning {
+        plans: Mutex::new(plans),
+    });
+    coordinator.parts.follow = follow;
+    coordinator
+}
+
+/// A change stream named `name`, read in phases.
+fn phased_stream(name: &str) -> crate::coordinator::StreamRun {
     let mut changes = stream(WriteMode::Append, None, 0);
+    changes.name = StreamName::new(name).unwrap();
     changes.phases = Some(Phases {
         phase: 0,
         reading: BTreeMap::new(),
@@ -106,13 +126,7 @@ async fn phased(plans: Vec<Vec<String>>, follow: bool) -> Coordinator {
             stage: None,
         },
     });
-    let (mut coordinator, _) = Setup::new(vec![changes], Vec::new()).coordinator().await;
-    coordinator.parts.launcher = Box::new(|_| Ok(()));
-    coordinator.parts.source = Arc::new(Planning {
-        plans: Mutex::new(plans),
-    });
-    coordinator.parts.follow = follow;
-    coordinator
+    changes
 }
 
 /// `coordinator`, its stream begun in phase 1 with `MANY` partitions.
@@ -266,5 +280,35 @@ async fn a_partition_read_again_takes_its_place_and_a_new_one_a_retired_place() 
             ("c".to_owned(), 1),
         ],
         "`a` read again routes to its writer; `c` takes `b`'s retired place"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_partition_read_again_waits_for_no_seal_of_another_stream_s_partition_of_its_id() {
+    let plans = vec![vec!["p0".to_owned()]; 4];
+    let mut coordinator = tracking(&["orders", "returns"], plans, true).await;
+    let launched = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&launched);
+    coordinator.parts.launcher = Box::new(move |job| {
+        seen.lock().push((job.stream.to_string(), job.index));
+        Ok(())
+    });
+    coordinator.replan().await.unwrap();
+    // `returns`' p0 ends with nothing sealed, while `orders`' p0 reads on with a seal waiting.
+    coordinator.observe(Progress::Ended {
+        partition: 1,
+        stopped: false,
+    });
+    let state = PartitionState::Cursor(cursor(1));
+    coordinator.observe(Progress::Sealed(super::seal(0, 1, 1, state, None)));
+    coordinator.replan().await.unwrap();
+    let launched = launched.lock().clone();
+    assert_eq!(
+        launched,
+        [
+            ("orders".to_owned(), 0),
+            ("returns".to_owned(), 1),
+            ("returns".to_owned(), 1),
+        ]
     );
 }

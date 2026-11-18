@@ -77,15 +77,18 @@ impl Coordinator {
                 retired.push(id.clone());
             }
         }
+        let partitions = &self.parts.partitions;
         let unsettled: BTreeSet<&PartitionId> = phases
             .reading
             .iter()
-            .filter(|(_, index)| !self.parts.partitions[**index].ended)
+            .filter(|(_, index)| !partitions[**index].ended)
             .map(|(id, _)| id)
             .chain(
                 self.sealing
                     .iter()
-                    .map(|index| &self.parts.partitions[*index].id),
+                    .map(|index| &partitions[*index])
+                    .filter(|run| run.stream == stream)
+                    .map(|run| &run.id),
             )
             .collect();
         let name = &self.parts.streams[stream].name;
