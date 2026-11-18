@@ -29,6 +29,19 @@ impl Coordinator {
         self.within_places()
     }
 
+    /// Whether a re-plan commits first, under a policy with no interval: a read that ended, at its
+    /// end or at a plan's stop, has seals waiting, which nothing else takes before the rows or
+    /// bytes the policy allows, and its partition is read again, or its place given up, only once
+    /// they commit.
+    pub(super) fn ends_wait(&self) -> bool {
+        !self.stopping
+            && self.parts.policy.every().is_none()
+            && self
+                .sealing
+                .iter()
+                .any(|index| self.parts.partitions[*index].ended)
+    }
+
     /// Refuses the attempt where the followed unbounded reads its streams' plans name, running or
     /// waiting for a place, are more than the places: a read a plan stopped holds its place only
     /// until its stop ends it.

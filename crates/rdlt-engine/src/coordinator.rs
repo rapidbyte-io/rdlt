@@ -267,8 +267,12 @@ impl Coordinator {
                     self.parts.stop_reads.cancel();
                 }
                 // Planning again starts from the positions the last commit made durable: a
-                // partition whose end is not yet committed waits for a later plan.
+                // partition whose end is not yet committed waits for a later plan, unless the
+                // re-plan commits it first, as it does where the policy has no interval.
                 () = &mut replan => {
+                    if self.ends_wait() {
+                        timer = self.commit_now(Trigger::Replan).await?;
+                    }
                     self.replan().await?;
                     replan = self.replan_timer();
                 }

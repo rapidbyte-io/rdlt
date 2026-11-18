@@ -59,6 +59,9 @@ pub struct Commits {
     pub size: u64,
     /// Made due by checkpoints' cursors, waiting for room or holding half their share.
     pub cursors: u64,
+    /// Made due by a following run's re-plans, under a policy with no interval, for the ends of
+    /// reads that waited.
+    pub replan: u64,
     /// Of what was sealed once every partition reading had ended.
     pub end: u64,
     /// Tries of commits sent again in place, each after the destination answered the try before
@@ -98,6 +101,9 @@ pub enum Trigger {
     Size,
     /// Checkpoints' cursors, waiting for room or holding half their share.
     Cursors,
+    /// A following run's re-plan, under a policy with no interval, finding the ends of reads
+    /// waiting: their partitions are read again only once their ends commit.
+    Replan,
     /// The end of every partition reading: what was sealed once they all ended.
     End,
 }
@@ -226,6 +232,7 @@ impl Commits {
             Trigger::Interval => &mut self.interval,
             Trigger::Size => &mut self.size,
             Trigger::Cursors => &mut self.cursors,
+            Trigger::Replan => &mut self.replan,
             Trigger::End => &mut self.end,
         };
         *count = count.saturating_add(1);

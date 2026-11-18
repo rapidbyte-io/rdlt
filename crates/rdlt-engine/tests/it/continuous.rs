@@ -403,6 +403,69 @@ async fn a_following_run_reads_a_bounded_stream_again_as_it_grows() {
         counts.iter().all(|count| (8..=18).contains(count)),
         "{counts:?}"
     );
+    // The interval commits the ends: a re-plan commits none.
+    assert_eq!(outcome.report.counters.commits.replan, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_following_run_whose_policy_has_no_interval_reads_a_bounded_stream_again_as_it_grows() {
+    let source = log(
+        "polled_untimed",
+        json!({
+            "name": "events", "partitions": 2, "messages": 3, "per_second": 5, "bounded": true,
+        }),
+    )
+    .await;
+    let plan =
+        pipeline("polled_untimed", [incremental()]).with_until(Until::For(Duration::from_secs(3)));
+    // The rows the run reads stay far below the threshold, so no size makes a commit due.
+    let rows = CommitPolicy::new(None, Some(1_000), None).expect("a row threshold is valid");
+    let outcome = engine(following().commit(rows))
+        .run(plan, source, memory("polled_untimed").await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let counts = exactly_once("polled_untimed", "polled_untimed", 2).await;
+    assert!(
+        counts.iter().all(|count| (8..=18).contains(count)),
+        "{counts:?}"
+    );
+    // A commit at each plan takes the ends of both partitions, and one more ends the run.
+    let plans = 3_000 / 200;
+    let commits = outcome.report.counters.commits;
+    assert!(commits.replan > 0, "{commits:?}");
+    assert!(outcome.report.commits <= plans + 1, "{:?}", outcome.report);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_following_run_whose_interval_outlasts_it_reads_an_ended_partition_once() {
+    let source = log(
+        "polled_late",
+        json!({
+            "name": "events", "partitions": 2, "messages": 3, "per_second": 5, "bounded": true,
+        }),
+    )
+    .await;
+    let plan =
+        pipeline("polled_late", [incremental()]).with_until(Until::For(Duration::from_secs(3)));
+    // Each end waits for the interval, which no re-plan takes the place of.
+    let every =
+        CommitPolicy::new(Some(Duration::from_secs(10)), None, None).expect("an interval is valid");
+    let outcome = engine(following().commit(every))
+        .run(plan, source, memory("polled_late").await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(exactly_once("polled_late", "polled_late", 2).await, [3, 3]);
+    assert_eq!(outcome.report.counters.commits.replan, 0);
 }
 
 #[tokio::test(start_paused = true)]
