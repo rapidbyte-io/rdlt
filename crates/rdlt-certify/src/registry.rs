@@ -126,7 +126,8 @@ which no clause failed and one passed; the report, and its JSON `verdict` and `p
 incomplete all the same. A clause is unobserved when nothing reads back what a destination \
 published, when a source sends no checkpoint to resume or plan again from, when a read ends \
 within its first credit, when no kill reaches the connector, or when what a source sends is \
-more than certification holds: certify with a fixture that shows the behaviour.
+more than certification holds: certify with a fixture that shows the behaviour. It is unobserved \
+too when a source cannot read again a stream `K-SOURCE` loads.
 
 A kill clause that passed says beside its `pass`, and as `note` in JSON, what it passed on: \
 `killed`, a connection ended with a process a kill ended, or `cut`, kills cut the connection of \
@@ -209,7 +210,10 @@ process stopped: the report notes which was seen.
 - A kill clause loads in a mode the connector declares: a destination in the first of append, \
 merge and replace it writes, a source each stream in the first of incremental, full and change \
 reads it serves. A destination that keeps history alone leaves `K-DESTINATION` unobserved, and \
-one whose identifiers are shorter than the names `D-NAMES` writes leaves that unobserved.
+one whose identifiers are shorter than the names `D-NAMES` writes leaves that unobserved. A \
+source that cannot read again a stream it loads leaves `K-SOURCE` unobserved, before any load: \
+each load starts from no cursor, which such a source refuses once anything, `S-ACK` among them, \
+told it one.
 - A spawned connector leads a process group the certifier stops, then kills, when the \
 certification ends, is cut at its timeout, panics, or hears a signal. A member that left the \
 group is not reached, and neither is anything when the certifier is killed outright.

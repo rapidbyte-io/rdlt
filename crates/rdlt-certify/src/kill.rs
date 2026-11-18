@@ -150,7 +150,8 @@ pub(crate) enum Loaded {
     /// nothing it serves loads as the clause loads.
     Inapplicable(String),
     /// What the clause requires was not seen, for the stated reason: no kill reached the
-    /// connector, or nothing reads back what it published.
+    /// connector, nothing reads back what it published, or the source cannot read again a stream
+    /// the clause loads.
     Unobserved(String),
     /// No kill interrupted the load, for the stated reason: another draw of kill points may.
     Unseen(String),

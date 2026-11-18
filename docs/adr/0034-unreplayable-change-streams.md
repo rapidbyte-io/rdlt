@@ -30,7 +30,8 @@ snapshot and then its changes exactly once through crashes, failed commits and r
   dropped, and is refused as `full_read_unreplayable`.
 - **The reference change source can forget.** `replayable: false` makes it refuse, as transient,
   a read of its changes from before the position its slot was told, as a replication slot does. It
-  passes certification, `S-ACK` included.
+  passes the source clauses of certification, `S-ACK` included; `K-SOURCE`, whose loads start from
+  no cursor, is unobserved for it (ADR 0022).
 - **The simulation.** Every other incremental and change stream's source forgets what it was told,
   on every partition, and never serves it again, independently of the other drawn features. Racing
   runs give two readers to one such partition. The oracles check that every position a source was

@@ -209,6 +209,30 @@ async fn a_change_source_served_in_process_tells_where_it_stands_through_the_pro
 }
 
 #[tokio::test]
+async fn a_change_source_that_cannot_read_again_breaks_no_clause_through_the_protocol() {
+    let served = Served::new().with_source(acknowledging_source_factory::<ChangesSource>());
+    let target = Target::served(served).credit_watch(crate::BRIEF);
+    let config = json!({
+        "seed": 5,
+        "streams": [{
+            "name": "accounts", "keys": 9, "changes": 6, "batch_rows": 2, "replayable": false,
+        }],
+        "slot": "certified_forgetting_over_the_wire",
+    });
+    let report = certify_source(&target, config).await;
+    // `S-ACK` told its slot where the changes stand, which a load from no cursor is before.
+    assert_eq!(crate::unobserved(&report), ["K-SOURCE"], "{report}");
+    assert_eq!(report.outcome("S-ACK"), Some(&Outcome::Passed), "{report}");
+    let Some(Outcome::Unobserved(reason)) = report.outcome("K-SOURCE") else {
+        panic!("K-SOURCE was observed: {report}");
+    };
+    assert!(
+        reason.contains("stream accounts: its source cannot read it again"),
+        "{reason}"
+    );
+}
+
+#[tokio::test]
 async fn s_ack_does_not_apply_through_the_protocol_to_a_source_that_tells_nothing() {
     let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
         .credit_watch(crate::BRIEF);

@@ -56,6 +56,9 @@ async fn compared(
         let reason = "the source has no stream that is read in any mode";
         return Ok(Loaded::Inapplicable(reason.to_owned()));
     }
+    if let Some(reason) = unrepeatable(&catalog) {
+        return Ok(Loaded::Unobserved(reason));
+    }
     let name = format!("certify_{run:x}_k");
     let pipeline = PipelineId::parse(&name).map_err(Violation::of)?;
     let plan = PipelinePlan::new(pipeline, streams).map_err(Violation::of)?;
@@ -199,6 +202,23 @@ pub(super) fn planned(stream: &StreamSpec) -> Option<StreamPlan> {
     } else {
         None
     }
+}
+
+/// Why the clause cannot observe the source of `catalog`: a stream it loads that the source
+/// cannot read again; none where it can read every one.
+///
+/// Each load of the clause starts from no cursor, into a store of its own, and such a source
+/// refuses that read once anything told it a cursor: `S-ACK`, or the clause's first load.
+pub(super) fn unrepeatable(catalog: &Catalog) -> Option<String> {
+    let stream = catalog
+        .iter()
+        .filter(|stream| planned(stream).is_some())
+        .find(|stream| !stream.is_replayable())?;
+    Some(format!(
+        "stream {}: its source cannot read it again, and each load the clause compares starts \
+         from no cursor, which such a source refuses once told one",
+        stream.name()
+    ))
 }
 
 /// A memory destination writing to `store`, taking as much as a kill clause loads, and what

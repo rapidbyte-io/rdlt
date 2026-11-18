@@ -26,7 +26,11 @@ kill what it placed.
   points. The second load's tables must equal the first's, row for row, without the engine's
   `_rdlt_` columns. Each stream is read in the first of incremental, full and change reads it
   serves, and appended, replaced or merged as that read requires; a source with no stream read in
-  any mode is inapplicable (ADR 0050).
+  any mode is inapplicable (ADR 0050). A source that cannot read again a stream the clause loads
+  (`StreamSpec::with_replayable(false)`) leaves the clause unobserved, before any load: each load
+  starts from no cursor, into a store of its own, and such a source refuses that read once
+  anything told it a cursor, as `S-ACK` and the first load do (ADR 0034). One load alone would not
+  certify it either: with nothing to compare against, a resume that lost rows passes.
 - **`K-DESTINATION`**: 2,000 generated rows are written into the target destination, in the
   first of append, merge and replace it declares, while it is killed at scheduled points; the
   table read back through the probe must hold each row exactly once. It is unobserved when
@@ -90,5 +94,7 @@ kill what it placed.
 - A connector author learns from the binary whether the connector survives being killed. A
   source must hold enough data for a kill to land mid-read, or the clause is unobserved, and must
   read the same data both times, as a fixture does: `K-SOURCE` compares two loads.
+- A source that cannot read again certifies incomplete, `K-SOURCE` unobserved; the simulation,
+  whose sources forget what they were told, and the engine's crash tests check how it resumes.
 - A killed spawned connector writes no coverage profile, so its killed runs go unmeasured; the
   processes that start again are measured.
