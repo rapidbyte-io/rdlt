@@ -182,7 +182,14 @@ fn disrupted(expect: Expect, ended: &Ended) -> bool {
 
 /// Sets up a connection over `wire` as `call`'s role, with `options`, and makes `call` on it.
 async fn made(call: Call, wire: Wire, options: &Options) -> Ended {
-    let connected = Connection::connect(wire, call.role(), &serde_json::json!({}), *options).await;
+    let connected = Connection::connect(
+        wire,
+        call.role(),
+        &serde_json::json!({}),
+        *options,
+        rdlt_host::Redactions::new(),
+    )
+    .await;
     let connection = match connected {
         Ok(connection) => connection,
         Err(error) => return Ended::Refused(error),

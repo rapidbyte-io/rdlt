@@ -156,12 +156,12 @@ anything runs; none is ignored.
 - A resolved secret is replaced by `***` in that connector's errors, its last words and its
   logged output, whichever start of it said it, in the message of an in-process connector's
   panic, which unwinds on with it replaced, in an engine's report of them, and in
-  `rdlt certify`'s reports, and so is each line of a secret that holds line ends and at least 8
-  characters other than whitespace, wherever it is found: as it is, as JSON and Rust's `{:?}`
-  write it, and as the host shows each of those, so it is found whether or not a text was shown
-  before it was scrubbed; a connector's error is scrubbed as it is received, before it is
-  shown. It is not written to state by the engine. A literal value in a configuration is not a
-  secret and is not scrubbed.
+  `rdlt certify`'s reports and logs, and so is each line of a secret that holds line ends and at
+  least 8 characters other than whitespace, wherever it is found: as it is, as JSON and Rust's
+  `{:?}` write it, and as the host shows each of those, so it is found whether or not a text
+  was shown before it was scrubbed; a connector's error is scrubbed as it is received, before
+  it is shown. It is not written to state by the engine. A literal value in a configuration is
+  not a secret and is not scrubbed.
 - A code is never scrubbed, since the engine branches on codes and a code scrubbed would name
   another: one the protocol publishes is kept as it is, and any other a resolved secret is found
   in is replaced whole by `invalid_code`.

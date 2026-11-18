@@ -10,6 +10,7 @@ use rdlt_connector::{
     AcknowledgedReader, BoxFuture, ConnectorError, ConnectorErrorKind, Cursor, PartitionId, Result,
     Role, StreamName,
 };
+use rdlt_host::Redactions;
 use rdlt_host::remote::Client;
 use rdlt_wire::ACKNOWLEDGED;
 use tokio::sync::Mutex;
@@ -24,6 +25,8 @@ const TELLING_TIME: std::time::Duration = std::time::Duration::from_secs(30);
 /// What asks a source where it stands, over a connection of its own that never reads.
 pub(crate) struct AckProbe {
     client: Mutex<Client>,
+    /// What the source was sent, which nothing it answers is shown with.
+    redactions: Redactions,
 }
 
 impl AckProbe {
@@ -39,7 +42,7 @@ impl AckProbe {
             .rpc
             .read_acknowledged(asked)
             .await
-            .map_err(|status| error(&status, &|text| text))?
+            .map_err(|status| error(&status, &|text| self.redactions.scrubbed(text)))?
             .into_inner();
         answer
             .cursor
@@ -89,5 +92,6 @@ pub(crate) async fn probe(target: &Target, config: &str) -> Result<Option<AckPro
     target.opened(what, configuring).await?;
     Ok(Some(AckProbe {
         client: Mutex::new(client),
+        redactions: target.redactions.clone(),
     }))
 }

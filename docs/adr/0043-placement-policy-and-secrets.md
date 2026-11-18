@@ -263,8 +263,10 @@ given. A host enforces that only where it closes each of these:
     code, `named_by_secret`, is the host's: the error's cause is a `HostRefusal`, which the host
     gives and a connector's own causes, kept only as text, never are.
   - `rdlt certify` reads a configuration from a file or standard input, never the command
-    line, resolves the references `--allow-env` and `--allow-files` allow, scrubs what it
-    prints, and certifies a binary inside the sandbox, with the access `--readable`,
+    line, resolves the references `--allow-env` and `--allow-files` allow, scrubs what the
+    connector says, its errors and its output, of them before any of it is shown, as a host
+    does, and its report's texts before JSON escapes them, and certifies a binary inside the
+    sandbox, with the access `--readable`,
     `--writable` and `--network` give, unless told it is trusted with `--trust-binaries`.
 
 Rejected:

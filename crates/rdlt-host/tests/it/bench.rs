@@ -579,7 +579,14 @@ async fn connectors(
         (false, _) => in_process_source(&replay).await,
         (true, Transport::Socket) => {
             let io = served::served(Served::new().with_source(replay_factory()));
-            let connection = Connection::connect(io, Role::Source, &replay, *options).await;
+            let connection = Connection::connect(
+                io,
+                Role::Source,
+                &replay,
+                *options,
+                rdlt_host::Redactions::new(),
+            )
+            .await;
             Arc::new(RemoteSource::new(
                 connection.expect("the source handshakes"),
             ))
@@ -601,7 +608,14 @@ async fn connectors(
         (true, Transport::Socket) => {
             let io = served::served(Served::new().with_destination(sink_factory()));
             let config = Sinking::Ipc.config();
-            let connection = Connection::connect(io, Role::Destination, &config, *options).await;
+            let connection = Connection::connect(
+                io,
+                Role::Destination,
+                &config,
+                *options,
+                rdlt_host::Redactions::new(),
+            )
+            .await;
             let connection = connection.expect("the destination handshakes");
             Arc::new(RemoteDestination::new(connection).expect("the destination declares itself"))
         }

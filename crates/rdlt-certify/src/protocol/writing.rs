@@ -15,19 +15,22 @@ use rdlt_wire::tonic::Status;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::{Violation, error};
+use super::Violation;
+use crate::target::Target;
 
 /// A write of a one-column table, its schema sent, waiting for batches.
-pub(super) struct Writing {
+pub(super) struct Writing<'a> {
+    /// What the connector's answers are shown as.
+    target: &'a Target,
     frames: mpsc::Sender<v1::WriteFrame>,
     acks: Incoming<v1::WriteAck>,
 }
 
-impl Writing {
-    /// Opens a session on the connector `client` speaks to, creates a table of its own in it, and
-    /// starts writing the table, its schema sent.
-    pub(super) async fn start(client: &mut Client) -> Result<Self, Violation> {
-        let (session, table) = created(client).await?;
+impl<'a> Writing<'a> {
+    /// Opens a session on the connector `client` speaks to, of `target`, creates a table of its
+    /// own in it, and starts writing the table, its schema sent.
+    pub(super) async fn start(target: &'a Target, client: &mut Client) -> Result<Self, Violation> {
+        let (session, table) = created(target, client).await?;
         let (frames, receiver) = mpsc::channel(4);
         let start = v1::write_frame::Frame::Start(v1::WriteStart {
             session,
@@ -50,8 +53,14 @@ impl Writing {
         let acks = client
             .write(ReceiverStream::new(receiver))
             .await
-            .map_err(|status| Violation::from(format!("the write failed: {}", error(&status))))?;
-        Ok(Self { frames, acks })
+            .map_err(|status| {
+                Violation::from(format!("the write failed: {}", target.error(&status)))
+            })?;
+        Ok(Self {
+            target,
+            frames,
+            acks,
+        })
     }
 
     /// Sends `batch`, and a flush after it, and returns the error the write then fails with.
@@ -73,11 +82,11 @@ impl Writing {
         }
         loop {
             match self.acks.message().await {
-                Err(status) => return Ok(error(&status)),
+                Err(status) => return Ok(self.target.error(&status)),
                 Ok(Some(v1::WriteAck {
                     ack: Some(v1::write_ack::Ack::Error(refusal)),
                 })) => {
-                    return ConnectorError::from_wire(refusal, &|text| text).map_err(|invalid| {
+                    return self.target.decoded(refusal).map_err(|invalid| {
                         Violation::from(format!("the write's error is malformed: {invalid}"))
                     });
                 }
@@ -93,10 +102,12 @@ impl Writing {
     }
 }
 
-/// A session opened on the connector `client` speaks to, and a table of its own created in it.
-async fn created(client: &mut Client) -> Result<(u64, TableRef), Violation> {
-    let failed =
-        |what: &str, status: &Status| Violation::from(format!("{what} failed: {}", error(status)));
+/// A session opened on the connector `client` speaks to, of `target`, and a table of its own
+/// created in it.
+async fn created(target: &Target, client: &mut Client) -> Result<(u64, TableRef), Violation> {
+    let failed = |what: &str, status: &Status| {
+        Violation::from(format!("{what} failed: {}", target.error(status)))
+    };
     let run = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

@@ -1,16 +1,19 @@
 //! What a certification reaches: a connector served in this process, spawned from its binary, or
 //! listening at an endpoint.
 
+#[cfg(test)]
+mod tests;
+
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::serve::{Served, serve_connection};
-use rdlt_connector::wire::TRANSPORT;
+use rdlt_connector::wire::{Invalid, TRANSPORT, v1};
 use rdlt_connector::{BoxFuture, ConnectorError, ConnectorErrorKind, ConnectorId, Role};
 use rdlt_host::remote::{CONNECTOR_LOST, Client, DEADLINE_EXCEEDED, client};
-use rdlt_host::{Connection, ConnectorRef, Local, Options, Remote, Stream, Witness};
+use rdlt_host::{Connection, ConnectorRef, Local, Options, Redactions, Remote, Stream, Witness};
 use rdlt_wire::Limits;
 use rdlt_wire::tonic::{Response, Status};
 
@@ -30,6 +33,8 @@ pub struct Target {
     credit_watch: Option<Duration>,
     /// What the kill clauses run against, where not this target.
     killed: Option<Box<Target>>,
+    /// The secrets the connector was sent: nothing it says is shown with one in it.
+    pub(crate) redactions: Redactions,
 }
 
 enum Reach {
@@ -117,6 +122,7 @@ impl Target {
             kill_timeout: None,
             credit_watch: None,
             killed: None,
+            redactions: Redactions::new(),
         }
     }
 
@@ -124,6 +130,15 @@ impl Target {
     #[must_use]
     pub fn options(mut self, options: Options) -> Self {
         self.options = options;
+        self
+    }
+
+    /// Scrubs what the connector says, its errors and its output, of `redactions`, the secrets
+    /// its configuration was resolved with, before any of it is shown; a kill target keeps its
+    /// own.
+    #[must_use]
+    pub fn redactions(mut self, redactions: Redactions) -> Self {
+        self.redactions = redactions;
         self
     }
 
@@ -225,6 +240,8 @@ impl Target {
                     .map_err(|error| unreachable(&error))
             }
             Reach::Spawned { local, reference } => local
+                .clone()
+                .redactions(self.redactions.clone())
                 .wire(reference)
                 .await
                 .map(|wire| {
@@ -247,7 +264,8 @@ impl Target {
         config: &serde_json::Value,
     ) -> Result<Arc<Connection>, ConnectorError> {
         let (wire, witness) = self.witnessed().await?;
-        let connected = Connection::connect(wire, role, config, self.options).await;
+        let redactions = self.redactions.clone();
+        let connected = Connection::connect(wire, role, config, self.options, redactions).await;
         match (connected, witness) {
             // A spawned connector whose transport failed most likely ended: say what it said.
             (Err(error), Some(witness))
@@ -257,6 +275,17 @@ impl Target {
             }
             (connected, _) => connected,
         }
+    }
+
+    /// The error `status` carries, its texts scrubbed of what the connector was sent before they
+    /// are shown.
+    pub(crate) fn error(&self, status: &Status) -> ConnectorError {
+        rdlt_connector::wire::error(status, &|text| self.redactions.scrubbed(text))
+    }
+
+    /// The error the connector sent as `error`, scrubbed as [`error`](Self::error) scrubs.
+    pub(crate) fn decoded(&self, error: v1::Error) -> Result<ConnectorError, Invalid> {
+        ConnectorError::from_wire(error, &|text| self.redactions.scrubbed(text))
     }
 
     /// A fresh client of the protocol, with no handshake yet.
@@ -274,7 +303,7 @@ impl Target {
         let deadline = self.options.deadlines.connect;
         match tokio::time::timeout(deadline, call).await {
             Ok(Ok(answer)) => Ok(answer.into_inner()),
-            Ok(Err(status)) => Err(rdlt_connector::wire::error(&status, &|text| text)),
+            Ok(Err(status)) => Err(self.error(&status)),
             Err(_) => {
                 let message = format!("{what} took longer than its deadline of {deadline:?}");
                 Err(ConnectorError::new(ConnectorErrorKind::Transient, message)
@@ -318,7 +347,8 @@ impl Target {
                 let connect = Arc::clone(connect);
                 let provider = rdlt_host::Connect::new(move || connect())
                     .options(options)
-                    .kills(kills);
+                    .kills(kills)
+                    .redactions(self.redactions.clone());
                 (Box::new(provider), reference(None))
             }
             Reach::Spawned {
@@ -326,6 +356,7 @@ impl Target {
                 reference: spawned,
             } => {
                 let provider = local.clone().options(options).kills(kills);
+                let provider = provider.redactions(self.redactions.clone());
                 (Box::new(provider), reference(Some(spawned)))
             }
             Reach::Listening {
@@ -333,6 +364,7 @@ impl Target {
                 reference: listening,
             } => {
                 let provider = remote.clone().options(options).kills(kills);
+                let provider = provider.redactions(self.redactions.clone());
                 (Box::new(provider), reference(Some(listening)))
             }
         }

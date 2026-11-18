@@ -88,9 +88,15 @@ async fn write(link: Link, store: &str) -> Duration {
     let destination = Served::new().with_destination(destination_factory::<MemoryDestination>());
     let config = serde_json::json!({ "store": store });
     let io = link.to(served(destination));
-    let connection = Connection::connect(io, Role::Destination, &config, Options::default())
-        .await
-        .expect("the destination handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Destination,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the destination handshakes");
     let destination = RemoteDestination::new(connection).expect("its capabilities are declared");
     let mut opened = destination
         .open(&context())
@@ -118,9 +124,15 @@ async fn read(link: Link) -> Duration {
     let source = Served::new().with_source(source_factory::<Blobs>());
     let config = serde_json::json!({ "bytes": 1_000_000, "ahead": 7, "alike": true });
     let io = link.to(served(source));
-    let connection = Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     let source = RemoteSource::new(connection);
     let (sink, mut feed) = partition_channel(std::num::NonZeroUsize::new(4).expect("not zero"));
     let request = ReadRequest::new(

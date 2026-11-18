@@ -9,8 +9,7 @@ use rdlt_connector::wire::{PROTOCOL_VERSION, v1};
 use rdlt_wire::PROTOCOL_MAJOR;
 
 use super::{
-    Found, Violation, configure_request, error, handshaken, refused_with, request, unsupported,
-    wire_role,
+    Found, Violation, configure_request, handshaken, refused_with, request, unsupported, wire_role,
 };
 use crate::target::Target;
 
@@ -30,7 +29,7 @@ pub(super) async fn answered(target: &Target, role: Role, config: &str) -> Found
             .rpc
             .handshake(offered)
             .await
-            .map_err(|status| format!("the handshake failed: {}", error(&status)))?
+            .map_err(|status| format!("the handshake failed: {}", target.error(&status)))?
             .into_inner();
         let (Some(spec), Some(_)) = (&answer.spec, &answer.limits) else {
             return Err(Violation::from(
@@ -48,7 +47,7 @@ pub(super) async fn answered(target: &Target, role: Role, config: &str) -> Found
             .rpc
             .configure(configure_request(config))
             .await
-            .map_err(|status| format!("the configuration failed: {}", error(&status)))?
+            .map_err(|status| format!("the configuration failed: {}", target.error(&status)))?
             .into_inner()
             .spec
             .unwrap_or_default();
@@ -68,7 +67,10 @@ pub(super) async fn answered(target: &Target, role: Role, config: &str) -> Found
             let mut client = target.client().await.map_err(Violation::of)?;
             let other = client.rpc.handshake(request(role, major)).await;
             let what = format!("a handshake at major version {major}");
-            unsupported(&refused_with(other, PROTOCOL_VERSION, &what)?, &what)?;
+            unsupported(
+                &refused_with(target, other, PROTOCOL_VERSION, &what)?,
+                &what,
+            )?;
         }
         Ok(())
     };
@@ -89,11 +91,13 @@ pub(super) async fn ordered(target: &Target, role: Role, config: &str) -> Found 
     let checked = async {
         let mut early = target.client().await.map_err(Violation::of)?;
         refused_with(
+            target,
             early.rpc.check(v1::CheckRequest {}).await,
             "no_handshake",
             "a check before the handshake",
         )?;
         refused_with(
+            target,
             early.rpc.configure(configure_request(config)).await,
             "no_handshake",
             "a configuration before the handshake",
@@ -103,17 +107,23 @@ pub(super) async fn ordered(target: &Target, role: Role, config: &str) -> Found 
             .rpc
             .handshake(request(role, PROTOCOL_MAJOR))
             .await
-            .map_err(|status| format!("the handshake failed: {}", error(&status)))?;
+            .map_err(|status| format!("the handshake failed: {}", target.error(&status)))?;
         refused_with(
+            target,
             agreed.rpc.check(v1::CheckRequest {}).await,
             "not_configured",
             "a check before the configuration",
         )?;
         let (mut client, _) = handshaken(target, role, config).await?;
         let again = client.rpc.handshake(request(role, PROTOCOL_MAJOR)).await;
-        refused_with(again, "handshake_repeated", "a second handshake")?;
+        refused_with(target, again, "handshake_repeated", "a second handshake")?;
         let reconfigured = client.rpc.configure(configure_request(config)).await;
-        refused_with(reconfigured, "configure_repeated", "a second configuration")?;
+        refused_with(
+            target,
+            reconfigured,
+            "configure_repeated",
+            "a second configuration",
+        )?;
         Ok(())
     };
     checked.await.into()
@@ -137,7 +147,7 @@ pub(super) async fn roles(target: &Target, role: Role, config: &str) -> Found {
         let refused = client.rpc.handshake(request(other, PROTOCOL_MAJOR)).await;
         let what = "a handshake as an unserved role";
         unsupported(
-            &refused_with(refused, crate::connect::UNSERVED, what)?,
+            &refused_with(target, refused, crate::connect::UNSERVED, what)?,
             what,
         )?;
         Ok(Found::Kept)

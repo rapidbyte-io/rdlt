@@ -17,7 +17,7 @@ use std::time::Duration;
 use rdlt_connector::{ConnectorSpec, Role};
 
 use crate::kills::Kills;
-use crate::secrets::{Config, SecretResolver, Secrets};
+use crate::secrets::{Config, Redactions, SecretResolver, Secrets};
 use crate::supervise::{Configured, Gate, Spawned, Start, Supervisor};
 use binary::{Binary, Unfit};
 pub use bubblewrap::Bubblewrap;
@@ -65,6 +65,7 @@ pub struct Local {
     kills: Option<Kills>,
     told: Option<process::Told>,
     secrets: Arc<dyn SecretResolver>,
+    redactions: Option<Redactions>,
     #[cfg(feature = "sim")]
     played: Option<process::Play>,
 }
@@ -84,6 +85,7 @@ impl Local {
             kills: None,
             told: None,
             secrets: Arc::new(Secrets::new()),
+            redactions: None,
             #[cfg(feature = "sim")]
             played: None,
         }
@@ -191,6 +193,15 @@ impl Local {
     #[must_use]
     pub fn secrets(mut self, secrets: impl SecretResolver + 'static) -> Self {
         self.secrets = Arc::new(secrets);
+        self
+    }
+
+    /// Scrubs each connector's errors and output of `redactions` too, beside what its own
+    /// configuration resolves to, adding those values to them: for a caller that resolved the
+    /// configuration's secrets itself.
+    #[must_use]
+    pub fn redactions(mut self, redactions: Redactions) -> Self {
+        self.redactions = Some(redactions);
         self
     }
 
@@ -422,8 +433,8 @@ impl Local {
     pub async fn wire(&self, reference: &ConnectorRef) -> Result<Wire, ProviderError> {
         let launch = self.launch(reference).await?;
         let deadline = self.options.deadlines.connect;
-        let launched =
-            Process::launching(launch, crate::secrets::Redactions::new(), deadline).await;
+        let redactions = self.redactions.clone().unwrap_or_default();
+        let launched = Process::launching(launch, redactions, deadline).await;
         let (stream, process) = launched.map_err(|unspawned| {
             let (launch, unspawned) = *unspawned;
             refused(&launch, unspawned)
@@ -448,6 +459,7 @@ impl Local {
         let configured = Configured {
             config: Config::from(config),
             secrets: Arc::clone(&self.secrets),
+            redactions: self.redactions.clone(),
         };
         let supervisor =
             Supervisor::start(Start::Spawn(launch), role, configured, &self.options, &gate)

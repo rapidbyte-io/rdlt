@@ -148,7 +148,8 @@ impl Drop for Connection {
 
 impl Connection {
     /// Connects over `io` to a connector served on its other end, as `role`, with `config`,
-    /// whatever connector it is: [`Connection::handshake`] checks who it is first.
+    /// whatever connector it is, its errors scrubbed of `redactions`:
+    /// [`Connection::handshake`] checks who it is first.
     ///
     /// # Errors
     ///
@@ -158,11 +159,12 @@ impl Connection {
         role: Role,
         config: &serde_json::Value,
         options: Options,
+        redactions: Redactions,
     ) -> Result<Arc<Self>, ConnectorError>
     where
         IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
-        Self::handshake(io, role, options, Redactions::new())
+        Self::handshake(io, role, options, redactions)
             .await?
             .configure(config)
             .await

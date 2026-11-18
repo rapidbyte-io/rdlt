@@ -6,11 +6,11 @@ mod tests;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::testing::Probe;
-use rdlt_connector::wire::{error, frame_error, v1};
+use rdlt_connector::wire::{frame_error, v1};
 use rdlt_connector::{BoxFuture, ConnectorError, ConnectorErrorKind, Result, Role, TableRef};
 use rdlt_host::remote::Client;
 use rdlt_wire::plane::Incoming;
-use rdlt_wire::{Decoder, IpcFrame, Limits, PUBLISHED};
+use rdlt_wire::{Decoder, IpcFrame, PUBLISHED};
 
 use crate::limits::{PUBLISHED_BYTES, PUBLISHED_ROWS, READ_BACK_TIME};
 use crate::protocol::{configure_request, request};
@@ -94,8 +94,8 @@ impl ReadBackProbe<'_> {
             let frames = client
                 .read_published(request)
                 .await
-                .map_err(|status| error(&status, &|text| text))?;
-            decoded(frames, self.target.limits()).await
+                .map_err(|status| self.target.error(&status))?;
+            decoded(frames, self.target).await
         }
     }
 }
@@ -123,16 +123,16 @@ async fn handshaken(target: &Target, config: &str) -> Result<(Client, bool)> {
     Ok((client, accepted))
 }
 
-/// The batches `frames` carry, decoded within `limits`, [`PUBLISHED_BYTES`] and
-/// [`PUBLISHED_ROWS`], once the done frame ends them.
-async fn decoded(mut frames: Incoming<v1::ReadFrame>, limits: Limits) -> Result<Vec<RecordBatch>> {
+/// The batches `frames` carry, decoded within `target`'s limits, [`PUBLISHED_BYTES`] and
+/// [`PUBLISHED_ROWS`], once the done frame ends them; a failure shown as `target` shows it.
+async fn decoded(mut frames: Incoming<v1::ReadFrame>, target: &Target) -> Result<Vec<RecordBatch>> {
     use v1::read_frame::Frame;
-    let mut decoder = Decoder::new(limits);
+    let mut decoder = Decoder::new(target.limits());
     let (mut batches, mut bytes, mut rows) = (Vec::new(), 0_usize, 0_usize);
     while let Some(received) = frames
         .arrived()
         .await
-        .map_err(|status| error(&status, &|text| text))?
+        .map_err(|status| target.error(&status))?
     {
         match received.message.frame {
             Some(Frame::Schema(schema)) => {

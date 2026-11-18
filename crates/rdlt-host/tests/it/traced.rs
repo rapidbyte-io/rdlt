@@ -23,9 +23,15 @@ async fn the_host_sends_its_trace_and_serve_continues_it() {
     let _traced = tracing::subscriber::set_default(spans.clone());
     let io = piped(Served::new().with_source(source_factory::<MemorySource>()));
     let config = serde_json::json!({ "streams": {} });
-    let connection = Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("connected");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("connected");
     drop(connection);
     let calls = spans.named("rdlt.serve");
     assert!(!calls.is_empty(), "each served call opens a span");
@@ -47,9 +53,15 @@ async fn a_read_of_the_data_plane_carries_the_trace_too() {
     let _traced = tracing::subscriber::set_default(spans.clone());
     let io = piped(Served::new().with_source(source_factory::<MemorySource>()));
     let config = serde_json::json!({ "streams": { "rows": [{ "id": 1 }] } });
-    let connection = Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("connected");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("connected");
     let source = RemoteSource::new(connection);
     let (sink, _feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
     let request = ReadRequest::new(

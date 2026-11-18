@@ -101,9 +101,15 @@ impl ReadStream<Held> for HeldStream {
 /// The held source, served over a pipe, with `config`.
 async fn held(config: serde_json::Value) -> Arc<dyn Source> {
     let io = piped(Served::new().with_source(source_factory::<Held>()));
-    let connection = Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     Arc::new(RemoteSource::new(connection))
 }
 
@@ -111,9 +117,15 @@ async fn held(config: serde_json::Value) -> Arc<dyn Source> {
 async fn served_memory(store: &str) -> RemoteDestination {
     let io = piped(Served::new().with_destination(destination_factory::<MemoryDestination>()));
     let config = serde_json::json!({ "store": store });
-    let connection = Connection::connect(io, Role::Destination, &config, Options::default())
-        .await
-        .expect("the destination handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Destination,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the destination handshakes");
     RemoteDestination::new(connection).expect("the destination declares its capabilities")
 }
 

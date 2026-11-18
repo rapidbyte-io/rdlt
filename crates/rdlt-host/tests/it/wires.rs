@@ -63,6 +63,7 @@ async fn a_client_speaks_the_protocol_raw_over_a_listening_connectors_wire() {
         Role::Source,
         &serde_json::json!({}),
         Options::default(),
+        rdlt_host::Redactions::new(),
     )
     .await
     .expect("the connector handshakes");

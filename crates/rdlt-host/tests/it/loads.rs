@@ -48,6 +48,7 @@ async fn ticks(rows: Option<u64>, pace_ms: u64) -> RemoteSource {
         rdlt_connector::Role::Source,
         &config,
         Options::default(),
+        rdlt_host::Redactions::new(),
     )
     .await
     .expect("the source handshakes");

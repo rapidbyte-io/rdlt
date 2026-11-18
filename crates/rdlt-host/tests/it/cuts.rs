@@ -40,9 +40,15 @@ async fn ticks(options: &Options) -> RemoteSource {
 async fn tagged(tag: &str, options: &Options) -> RemoteSource {
     let io = served(Served::new().with_source(source_factory::<Ticks>()));
     let config = serde_json::json!({ "rows": ROWS, "flags": FLAGS, "tag": tag });
-    let connection = Connection::connect(io, Role::Source, &config, *options)
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        *options,
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     RemoteSource::new(connection)
 }
 
@@ -284,7 +290,13 @@ async fn a_checkpoint_asked_for_between_a_batchs_pieces_follows_its_last_piece()
     };
     let io = served(Served::new().with_source(source_factory::<Ticks>()));
     let config = serde_json::json!({ "rows": ROWS, "flags": FLAGS, "pace_ms": 1 });
-    let connection = Connection::connect(io, Role::Source, &config, options);
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        options,
+        rdlt_host::Redactions::new(),
+    );
     let source = RemoteSource::new(connection.await.expect("the source handshakes"));
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(1).expect("not zero"));
     let request = ReadRequest::new(

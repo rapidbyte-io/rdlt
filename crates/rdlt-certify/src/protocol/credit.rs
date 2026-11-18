@@ -39,7 +39,7 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
     }
     let checked = async {
         let (mut client, _) = handshaken(target, role, config).await?;
-        let Some((stream, partition)) = first_partition(&mut client).await? else {
+        let Some((stream, partition)) = first_partition(target, &mut client).await? else {
             return Ok(Found::Unobserved(
                 "the source has no partition to read".to_owned(),
             ));
@@ -63,12 +63,12 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
         let mut frames = client
             .read(ReceiverStream::new(receiver))
             .await
-            .map_err(|status| format!("the read failed: {}", super::error(&status)))?;
+            .map_err(|status| format!("the read failed: {}", target.error(&status)))?;
         // One frame may go while any credit remains, and spend it below zero.
         let first = frames
             .message()
             .await
-            .map_err(|status| failed(&status))?
+            .map_err(|status| failed(target, &status))?
             .ok_or(Violation::from("the read ended without a frame"))?;
         if matches!(first.frame, Some(v1::read_frame::Frame::Done(_))) {
             return Ok(Found::Unobserved(
@@ -78,7 +78,7 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
         // A frame spends its encoded size, as the host that grants credit counts it.
         let spent = u64::try_from(first.encoded_len()).unwrap_or(u64::MAX);
         let quiet = target.chosen_watch().unwrap_or(CREDIT_WATCH);
-        waits_then_resumes(&controls, &mut frames, regrants(spent), quiet).await?;
+        waits_then_resumes(target, &controls, &mut frames, regrants(spent), quiet).await?;
         Ok(Found::Kept)
     };
     checked.await.into()
@@ -110,6 +110,7 @@ fn regrants(spent: u64) -> [u64; REGRANTS] {
 
 /// Watches `frames` for `quiet`: a violation when the read, its credit spent, sends a frame.
 async fn stays_quiet(
+    target: &Target,
     frames: &mut Incoming<v1::ReadFrame>,
     quiet: Duration,
 ) -> Result<(), Violation> {
@@ -117,7 +118,7 @@ async fn stays_quiet(
         Ok(Ok(Some(_))) => Err(Violation::from(
             "the read sent a frame after its credit was spent",
         )),
-        Ok(Err(status)) => Err(failed(&status)),
+        Ok(Err(status)) => Err(failed(target, &status)),
         Ok(Ok(None)) => Err(Violation::from("the read ended without its done frame")),
         Err(_) => Ok(()),
     }
@@ -127,19 +128,20 @@ async fn stays_quiet(
 /// granted that does not restore its credit, each of `regrants` in turn, and goes on once granted
 /// more; then stops it, since the rest of the partition, however long, need not be read.
 async fn waits_then_resumes(
+    target: &Target,
     controls: &mpsc::Sender<v1::ReadControl>,
     frames: &mut Incoming<v1::ReadFrame>,
     regrants: [u64; REGRANTS],
     quiet: Duration,
 ) -> Result<(), Violation> {
-    stays_quiet(frames, quiet).await?;
+    stays_quiet(target, frames, quiet).await?;
     for bytes in regrants {
         send(
             controls,
             v1::read_control::Control::Credit(v1::Credit { bytes }),
         )
         .await?;
-        stays_quiet(frames, quiet).await?;
+        stays_quiet(target, frames, quiet).await?;
     }
     send(
         controls,
@@ -157,23 +159,24 @@ async fn waits_then_resumes(
                 .ok();
             Ok(())
         }
-        Err(status) => Err(failed(&status)),
+        Err(status) => Err(failed(target, &status)),
         Ok(None) => Err(Violation::from(
             "the read ended without its done frame once credit was granted",
         )),
     }
 }
 
-/// A violation for a read that failed with `status`.
-fn failed(status: &Status) -> Violation {
-    Violation::from(format!("the read failed: {}", super::error(status)))
+/// A violation for a read that failed with `status`, as `target` shows it.
+fn failed(target: &Target, status: &Status) -> Violation {
+    Violation::from(format!("the read failed: {}", target.error(status)))
 }
 
 /// The first partition of the source's first stream, as it plans them from the beginning.
 pub(super) async fn first_partition(
+    target: &Target,
     client: &mut Client,
 ) -> Result<Option<(v1::StreamName, String)>, Violation> {
-    let failed = |what: &str, status: &Status| format!("{what} failed: {}", super::error(status));
+    let failed = |what: &str, status: &Status| format!("{what} failed: {}", target.error(status));
     let catalog = client
         .rpc
         .discover(v1::DiscoverRequest {})

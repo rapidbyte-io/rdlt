@@ -127,9 +127,15 @@ async fn the_host_refuses_a_connectors_frame_no_limit_bounds_as_a_whole() {
     for (sent, code, limit) in REFUSED {
         let io = socket(Fake(Fault::Sends(sent)));
         let config = serde_json::json!({});
-        let connection = Connection::connect(io, Role::Source, &config, Options::default())
-            .await
-            .expect("the fake handshakes");
+        let connection = Connection::connect(
+            io,
+            Role::Source,
+            &config,
+            Options::default(),
+            rdlt_host::Redactions::new(),
+        )
+        .await
+        .expect("the fake handshakes");
         let (sink, mut feed) = partition_channel(std::num::NonZeroUsize::new(8).expect("not 0"));
         let drain = tokio::spawn(async move { while feed.recv().await.is_some() {} });
         let request = ReadRequest::new(
@@ -219,9 +225,15 @@ const FLAGS: usize = 64;
 async fn a_connector_cuts_a_batch_of_more_values_than_the_hosts_frame_may_hold() {
     let io = served(Served::new().with_source(rdlt_connector::source_factory::<Ticks>()));
     let config = serde_json::json!({ "rows": ROWS, "flags": FLAGS });
-    let connection = Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     let source = RemoteSource::new(connection);
     let (sink, mut feed) = partition_channel(std::num::NonZeroUsize::new(64).expect("not 0"));
     let request = ReadRequest::new(
@@ -260,9 +272,15 @@ async fn keeping(
     let keeping = Served::new().with_destination(Writes::factory(Writing::Keeps(kept)));
     let config = serde_json::json!({ "store": "frames_kept" });
     let io = served_within(keeping, limits);
-    let connection = Connection::connect(io, Role::Destination, &config, Options::default())
-        .await
-        .expect("the destination handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Destination,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the destination handshakes");
     let destination = RemoteDestination::new(connection).expect("its capabilities");
     let mut opened = destination
         .open(&context())
@@ -338,7 +356,13 @@ async fn rows_cut_to_both_ends_limits_load_once_each_and_in_order() {
         batch_values: MIN_BATCH_VALUES,
         ..Limits::default()
     };
-    let connection = Connection::connect(io, Role::Source, &config, within(few_values));
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        within(few_values),
+        rdlt_host::Redactions::new(),
+    );
     let source = RemoteSource::new(connection.await.expect("the source handshakes"));
     let few_rows = Limits {
         batch_rows: MIN_BATCH_ROWS,
@@ -347,7 +371,13 @@ async fn rows_cut_to_both_ends_limits_load_once_each_and_in_order() {
     let memory = rdlt_connector::destination_factory::<MemoryDestination>();
     let io = served_within(Served::new().with_destination(memory), few_rows);
     let config = serde_json::json!({ "store": "frames_cut" });
-    let connection = Connection::connect(io, Role::Destination, &config, Options::default());
+    let connection = Connection::connect(
+        io,
+        Role::Destination,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    );
     let connection = connection.await.expect("the destination handshakes");
     let destination = RemoteDestination::new(connection).expect("its capabilities");
     let stream = StreamName::new("ticks").expect("a valid stream name");

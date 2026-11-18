@@ -9,12 +9,12 @@ use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use rdlt_connector::prelude::*;
 use rdlt_connector::serve::Served;
 use rdlt_connector::{
-    CommitKey, ConnectContext, Destination as _, DestinationWriter, OpenContext, PipelineId,
-    ReadRequest, Role, SchemaVersion, SegmentId, Source as _, TablePath, TableRef,
-    destination_factory, partition_channel, source_factory,
+    CommitKey, CommitMeta, ConnectContext, Destination as _, DestinationWriter, OpenContext,
+    PipelineId, ReadRequest, Role, SchemaVersion, SegmentId, SegmentSet, Source as _, TablePath,
+    TableRef, destination_factory, partition_channel, source_factory,
 };
 use rdlt_connector_reference::MemoryDestination;
-use rdlt_host::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options};
+use rdlt_host::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options, Redactions};
 use rdlt_host::{RemoteDestination, RemoteSource};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::MIN_FRAME_BYTES;
@@ -117,7 +117,7 @@ impl ReadStream<Blobs> for BlobStream {
 
 async fn blobs(config: serde_json::Value, options: &Options) -> RemoteSource {
     let io = served(Served::new().with_source(source_factory::<Blobs>()));
-    let connection = Connection::connect(io, Role::Source, &config, *options)
+    let connection = Connection::connect(io, Role::Source, &config, *options, Redactions::new())
         .await
         .expect("the source handshakes");
     RemoteSource::new(connection)
@@ -207,9 +207,10 @@ pub(crate) async fn writer(
 ) -> Box<dyn DestinationWriter> {
     let io = served_within(served, limits);
     let config = serde_json::json!({ "store": store });
-    let connection = Connection::connect(io, Role::Destination, &config, *options)
-        .await
-        .expect("the destination handshakes");
+    let connection =
+        Connection::connect(io, Role::Destination, &config, *options, Redactions::new())
+            .await
+            .expect("the destination handshakes");
     let destination = RemoteDestination::new(connection).expect("its capabilities are declared");
     let context = OpenContext {
         pipeline: PipelineId::parse("flow").expect("a valid pipeline id"),
@@ -508,6 +509,7 @@ pub(crate) async fn trickled(
         Role::Destination,
         &serde_json::json!({}),
         *options,
+        Redactions::new(),
     )
     .await
     .expect("the fake connects");
@@ -586,7 +588,6 @@ fn framed() -> Limits {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn five_writers_of_frame_sized_batches_through_one_connection_are_all_taken() {
-    use rdlt_connector::{CommitMeta, SegmentSet};
     let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
     let io = served_within(served, framed());
     let options = Options {
@@ -594,9 +595,10 @@ async fn five_writers_of_frame_sized_batches_through_one_connection_are_all_take
         ..Options::default()
     };
     let config = serde_json::json!({ "store": "five_writers" });
-    let connection = Connection::connect(io, Role::Destination, &config, options)
-        .await
-        .expect("the destination handshakes");
+    let connection =
+        Connection::connect(io, Role::Destination, &config, options, Redactions::new())
+            .await
+            .expect("the destination handshakes");
     let destination = RemoteDestination::new(connection).expect("its capabilities are declared");
     let context = OpenContext {
         pipeline: PipelineId::parse("five").expect("a valid pipeline id"),
