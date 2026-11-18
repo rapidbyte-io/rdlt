@@ -196,12 +196,12 @@ async fn handshaken(
         .rpc
         .handshake(request(role, PROTOCOL_MAJOR))
         .await
-        .map_err(|status| format!("the handshake failed: {}", error(&status)))?;
+        .map_err(|status| format!("the handshake failed: {}", target.error(&status)))?;
     client
         .rpc
         .configure(configure_request(config))
         .await
-        .map_err(|status| format!("the configuration failed: {}", error(&status)))?;
+        .map_err(|status| format!("the configuration failed: {}", target.error(&status)))?;
     Ok((client, answer.into_inner()))
 }
 
@@ -212,13 +212,10 @@ pub(crate) fn configure_request(config: &str) -> v1::ConfigureRequest {
     }
 }
 
-/// The error a status carries.
-fn error(status: &Status) -> ConnectorError {
-    rdlt_connector::wire::error(status, &|text| text)
-}
-
-/// The refusal `result` is, when it is one with `code`; `what` names the call.
+/// The refusal `result` is, when it is one with `code`, as `target` shows it; `what` names the
+/// call.
 fn refused_with<T>(
+    target: &Target,
     result: Result<T, Status>,
     code: &str,
     what: &str,
@@ -228,7 +225,7 @@ fn refused_with<T>(
             "{what} was answered, not refused with `{code}`"
         ))),
         Err(status) => {
-            let error = error(&status);
+            let error = target.error(&status);
             if error.code() == Some(code) {
                 Ok(error)
             } else {

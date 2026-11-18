@@ -120,9 +120,15 @@ async fn a_host_that_sets_no_dictionary_limit_is_refused_at_the_handshake() {
 #[tokio::test]
 async fn a_connector_that_says_no_dictionary_limit_is_refused_at_the_handshake() {
     let io = socket(Fake(Fault::NoDictionaryLimit));
-    let refused = Connection::connect(io, Role::Source, &rows(1), Options::default())
-        .await
-        .expect_err("the handshake is refused");
+    let refused = Connection::connect(
+        io,
+        Role::Source,
+        &rows(1),
+        Options::default(),
+        Redactions::new(),
+    )
+    .await
+    .expect_err("the handshake is refused");
     assert_eq!(refused.code(), Some("limit_below_minimum"), "{refused}");
     assert!(
         refused.to_string().contains("dictionary bytes"),
@@ -145,6 +151,7 @@ async fn a_role_the_connector_does_not_serve_is_refused() {
         Role::Destination,
         &config,
         Options::default(),
+        Redactions::new(),
     )
     .await
     .unwrap_err();
@@ -157,10 +164,15 @@ async fn a_role_the_connector_does_not_serve_is_refused() {
 #[tokio::test]
 async fn a_connectors_error_crosses_the_wire_with_its_kind_code_and_message() {
     let io = served(Served::new().with_source(source_factory::<Denied>()));
-    let connection =
-        Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
-            .await
-            .unwrap();
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        Options::default(),
+        Redactions::new(),
+    )
+    .await
+    .unwrap();
     let error = RemoteSource::new(connection).check().await.unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
@@ -180,6 +192,7 @@ async fn a_configuration_beyond_the_connectors_limit_is_refused() {
         Role::Source,
         &rows(10),
         Options::default(),
+        Redactions::new(),
     )
     .await
     .unwrap_err();
@@ -213,9 +226,15 @@ async fn a_json_push_beyond_the_hosts_limit_is_refused() {
         },
         ..Options::default()
     };
-    let connection = Connection::connect(served(memory()), Role::Source, &rows(10), options)
-        .await
-        .unwrap();
+    let connection = Connection::connect(
+        served(memory()),
+        Role::Source,
+        &rows(10),
+        options,
+        Redactions::new(),
+    )
+    .await
+    .unwrap();
     let error = read_items(&RemoteSource::new(connection))
         .await
         .unwrap_err();
@@ -228,10 +247,15 @@ async fn a_json_push_beyond_the_hosts_limit_is_refused() {
 #[tokio::test]
 async fn a_malformed_frame_from_the_connector_is_refused_typed() {
     let io = socket(Fake(Fault::GarbageSchema));
-    let connection =
-        Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
-            .await
-            .unwrap();
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        Options::default(),
+        Redactions::new(),
+    )
+    .await
+    .unwrap();
     let error = read_items(&RemoteSource::new(connection))
         .await
         .unwrap_err();
@@ -244,10 +268,15 @@ async fn a_malformed_frame_from_the_connector_is_refused_typed() {
 #[tokio::test]
 async fn a_checkpoint_answering_a_barrier_never_asked_for_is_refused_typed() {
     let io = socket(Fake(Fault::AnswersAhead));
-    let connection =
-        Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
-            .await
-            .unwrap();
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        Options::default(),
+        Redactions::new(),
+    )
+    .await
+    .unwrap();
     let error = read_items(&RemoteSource::new(connection))
         .await
         .unwrap_err();
@@ -260,9 +289,15 @@ async fn a_checkpoint_answering_a_barrier_never_asked_for_is_refused_typed() {
 #[tokio::test]
 async fn a_connector_configured_as_another_than_it_handshook_as_is_refused() {
     let io = socket(Fake(Fault::Impostor));
-    let error = Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
-        .await
-        .unwrap_err();
+    let error = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        Options::default(),
+        Redactions::new(),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
         (ConnectorErrorKind::Internal, Some("invalid_message"))
@@ -276,9 +311,15 @@ async fn a_zero_heartbeat_interval_is_refused_before_connecting() {
         heartbeat: Duration::ZERO,
         ..Options::default()
     };
-    let error = Connection::connect(io, Role::Source, &serde_json::json!({}), options)
-        .await
-        .unwrap_err();
+    let error = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        options,
+        Redactions::new(),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
         (ConnectorErrorKind::Config, Some("options_invalid"))
@@ -288,9 +329,15 @@ async fn a_zero_heartbeat_interval_is_refused_before_connecting() {
 #[tokio::test]
 async fn a_connector_that_stops_answering_heartbeats_is_lost() {
     let io = socket(Fake(Fault::Silent));
-    let connection = Connection::connect(io, Role::Source, &serde_json::json!({}), quick())
-        .await
-        .unwrap();
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        quick(),
+        Redactions::new(),
+    )
+    .await
+    .unwrap();
     let check = RemoteSource::new(connection);
     let error = tokio::time::timeout(Duration::from_secs(5), check.check())
         .await
@@ -306,9 +353,15 @@ async fn a_connector_that_stops_answering_heartbeats_is_lost() {
 async fn a_connector_whose_heartbeat_does_not_open_is_lost() {
     for fault in [Fault::Unopened, Fault::RefusesHeartbeat] {
         let io = socket(Fake(fault));
-        let connection = Connection::connect(io, Role::Source, &serde_json::json!({}), quick())
-            .await
-            .unwrap();
+        let connection = Connection::connect(
+            io,
+            Role::Source,
+            &serde_json::json!({}),
+            quick(),
+            Redactions::new(),
+        )
+        .await
+        .unwrap();
         let check = RemoteSource::new(connection);
         let error = tokio::time::timeout(Duration::from_secs(5), check.check())
             .await
@@ -332,9 +385,15 @@ async fn a_connector_that_never_reads_its_heartbeats_is_lost() {
         ..Options::default()
     };
     let io = socket(Fake(Fault::Unread));
-    let connection = Connection::connect(io, Role::Source, &serde_json::json!({}), options)
-        .await
-        .unwrap();
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        options,
+        Redactions::new(),
+    )
+    .await
+    .unwrap();
     let check = RemoteSource::new(connection);
     let error = tokio::time::timeout(Duration::from_secs(5), check.check())
         .await
@@ -357,9 +416,10 @@ async fn a_call_beyond_its_deadline_fails_with_deadline_exceeded() {
     };
     let io = served(Served::new().with_destination(SlowCommits::factory(Duration::from_secs(2))));
     let config = serde_json::json!({ "store": "deadline" });
-    let connection = Connection::connect(io, Role::Destination, &config, options)
-        .await
-        .unwrap();
+    let connection =
+        Connection::connect(io, Role::Destination, &config, options, Redactions::new())
+            .await
+            .unwrap();
     let destination = rdlt_host::RemoteDestination::new(connection).unwrap();
     let context = OpenContext {
         pipeline: PipelineId::parse("deadline").unwrap(),
@@ -446,9 +506,10 @@ async fn slow_commit_within_deadline_succeeds() {
     let io =
         served(Served::new().with_destination(SlowCommits::factory(Duration::from_millis(1500))));
     let config = serde_json::json!({ "store": "slow_commit" });
-    let connection = Connection::connect(io, Role::Destination, &config, patient)
-        .await
-        .unwrap();
+    let connection =
+        Connection::connect(io, Role::Destination, &config, patient, Redactions::new())
+            .await
+            .unwrap();
     let destination = rdlt_host::RemoteDestination::new(connection).unwrap();
     let plan = rdlt_engine::PipelinePlan::new(
         PipelineId::parse("slow").unwrap(),
@@ -619,10 +680,15 @@ async fn a_connection_dropped_before_its_connector_is_configured_is_cut() {
 #[tokio::test]
 async fn status_details_that_do_not_decode_fail_the_call_rather_than_the_host() {
     let io = socket(Fake(Fault::GarbledDetails));
-    let connection =
-        Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
-            .await
-            .expect("the fake handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        Options::default(),
+        Redactions::new(),
+    )
+    .await
+    .expect("the fake handshakes");
     // The fake fails a discovery; its details do not decode, so it reads as a transport failure.
     let failed = tokio::spawn(async move { RemoteSource::new(connection).discover().await });
     let error = failed

@@ -98,6 +98,9 @@ pub(crate) struct Supervisor {
 pub(crate) struct Configured {
     pub(crate) config: Config,
     pub(crate) secrets: Arc<dyn SecretResolver>,
+    /// What every start's errors and output are scrubbed of besides what it resolves; none
+    /// gives the placement redactions of its own.
+    pub(crate) redactions: Option<Redactions>,
 }
 
 /// What a connector must be before it sees its configuration: the connector `reference` names,
@@ -156,7 +159,7 @@ impl Supervisor {
         gate: &Gate<'_>,
     ) -> Result<Self, Spawned> {
         let admit = |spec: &v1::ConnectorSpec| gate.admit(spec).map_err(Spawned::Refused);
-        let redactions = Redactions::new();
+        let redactions = configured.redactions.clone().unwrap_or_default();
         let running = begin(&start, role, &configured, options, &admit, &redactions).await?;
         let checked = crate::remote::contract_spec(running.connection.spec()).map_err(|error| {
             Spawned::Refused(gate.refused(crate::guard::received(&error, &redactions)))

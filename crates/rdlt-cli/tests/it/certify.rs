@@ -296,6 +296,65 @@ async fn a_connector_serving_one_role_is_certified_in_it_alone() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn nothing_a_certified_connector_says_shows_a_secret_its_configuration_resolved() {
+    let binary = example("serve_saying");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let secret = "s4id-by-the-c0nnector-9q";
+    let config = r#"{"said": "${env:RDLT_TEST_SAID}", "seed": 7, "streams": [{"name": "events", "rows": 5}]}"#;
+    let args = [
+        binary,
+        "--config-file",
+        "-",
+        "--allow-env",
+        "RDLT_TEST_SAID",
+        "--trust-binaries",
+        "--env",
+        "LLVM_PROFILE_FILE",
+        "--log-level",
+        "info",
+        "--require",
+        "partial",
+    ];
+    let output = certify_given(&args, config, &[("RDLT_TEST_SAID", secret)]).await;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // What it said on both its streams reached the log, as it connected for each clause.
+    assert!(stderr.contains("connecting with"), "{stderr}");
+    for text in [&stdout, &stderr] {
+        let found = rdlt_testkit::secrets::leaks(text, [secret]);
+        assert!(found.is_empty(), "{found:?} in {text}");
+    }
+}
+
+/// A secret like JSON's punctuation leaves what `--json` prints a document that parses: its texts
+/// are scrubbed before it is encoded, and the document is not scrubbed again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_secret_like_json_punctuation_leaves_the_printed_document_whole() {
+    let binary = example("serve_saying");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let config = r#"{"said": "${env:RDLT_TEST_SAID}", "seed": 7, "streams": [{"name": "events", "rows": 5}]}"#;
+    let args = [
+        binary,
+        "--config-file",
+        "-",
+        "--allow-env",
+        "RDLT_TEST_SAID",
+        "--trust-binaries",
+        "--env",
+        "LLVM_PROFILE_FILE",
+        "--require",
+        "partial",
+        "--output",
+        "json",
+    ];
+    let output = certify_given(&args, config, &[("RDLT_TEST_SAID", "\",\"")]).await;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|error| panic!("{error}: {stdout}"));
+    assert!(document["verdict"].is_string(), "{stdout}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_help_and_the_reports_read_as_they_did() {
     let help = certify(&["--help"]).await;
     insta::assert_snapshot!("help", String::from_utf8_lossy(&help.stdout));

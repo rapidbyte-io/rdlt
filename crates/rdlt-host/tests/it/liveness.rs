@@ -33,6 +33,7 @@ async fn a_connector_that_echoes_heartbeats_never_sent_is_lost() {
         Role::Source,
         &serde_json::json!({}),
         quick(),
+        rdlt_host::Redactions::new(),
     )
     .await
     .expect("the fake handshakes");
@@ -46,9 +47,15 @@ async fn a_connector_that_echoes_heartbeats_never_sent_is_lost() {
 async fn a_host_that_stalls_does_not_lose_a_live_connector() {
     let io = served(Served::new().with_source(source_factory::<MemorySource>()));
     let config = serde_json::json!({ "streams": {} });
-    let connection = Connection::connect(io, Role::Source, &config, quick())
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        quick(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     let source = RemoteSource::new(connection);
     // The heartbeat runs; then the whole runtime stalls, as a suspended process does, for many
     // heartbeats' worth.
@@ -87,9 +94,15 @@ async fn a_host_that_stalls_with_a_ping_unanswered_keeps_a_live_connector() {
     ));
     let host = tokio::net::UnixStream::from_std(host).expect("the socket registers");
     let config = serde_json::json!({ "streams": {} });
-    let connection = Connection::connect(host, Role::Source, &config, options)
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        host,
+        Role::Source,
+        &config,
+        options,
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     let source = RemoteSource::new(connection);
     // The heartbeat's stream opens before the stalls begin.
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -209,9 +222,15 @@ async fn across(
         missed: NonZeroU32::new(60).expect("not zero"),
         ..Options::default()
     };
-    let connection = Connection::connect(io, Role::Source, config, options)
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        config,
+        options,
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     (connection, partition)
 }
 

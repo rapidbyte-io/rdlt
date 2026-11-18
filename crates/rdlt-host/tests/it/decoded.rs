@@ -57,9 +57,15 @@ fn within(refused: &str, peak: usize, class: Class) {
 async fn source(method: &'static str, payload: Bytes) -> RemoteSource {
     let io = answering(Fault::Bloats(0), method, &payload);
     let config = serde_json::json!({});
-    let connection = Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("the fake handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the fake handshakes");
     RemoteSource::new(connection)
 }
 
@@ -119,9 +125,15 @@ async fn an_open_answering_empty_state_at_its_bytes_is_refused_within_its_bound(
         &entries([0x22, 0x00], limit),
     );
     let config = serde_json::json!({});
-    let connection = Connection::connect(io, Role::Destination, &config, Options::default())
-        .await
-        .expect("the fake handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Destination,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the fake handshakes");
     let destination = RemoteDestination::new(connection).expect("its capabilities are taken");
     let context = OpenContext {
         pipeline: PipelineId::parse("bloated").expect("a pipeline id"),

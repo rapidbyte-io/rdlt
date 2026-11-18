@@ -27,6 +27,7 @@ async fn a_cursor_beyond_the_sources_limit_is_refused_as_exceeding_it() {
         Role::Source,
         &config,
         Options::default(),
+        rdlt_host::Redactions::new(),
     )
     .await
     .expect("the source handshakes");
@@ -95,9 +96,15 @@ async fn a_connector_whose_limits_are_below_the_protocols_minimums_is_refused_at
     for (limits, name, minimum) in below_the_minimums() {
         let served = Served::new().with_source(source_factory::<MemorySource>());
         let io = served_within(served, limits);
-        let error = Connection::connect(io, Role::Source, &config, Options::default())
-            .await
-            .expect_err("the handshake is refused");
+        let error = Connection::connect(
+            io,
+            Role::Source,
+            &config,
+            Options::default(),
+            rdlt_host::Redactions::new(),
+        )
+        .await
+        .expect_err("the handshake is refused");
         assert_eq!(error.code(), Some("limit_below_minimum"), "{error}");
         assert_eq!(
             error
@@ -108,9 +115,15 @@ async fn a_connector_whose_limits_are_below_the_protocols_minimums_is_refused_at
     }
     let served = Served::new().with_source(source_factory::<MemorySource>());
     let io = served_within(served, at_the_minimums());
-    Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("limits at the minimums are admitted");
+    Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("limits at the minimums are admitted");
 }
 
 #[tokio::test]
@@ -123,9 +136,15 @@ async fn a_host_whose_limits_are_below_the_protocols_minimums_is_refused_at_the_
     for (limits, name, minimum) in below_the_minimums() {
         let served = Served::new().with_source(source_factory::<MemorySource>());
         let io = served_within(served, Limits::default());
-        let error = Connection::connect(io, Role::Source, &config, within(limits))
-            .await
-            .expect_err("the handshake is refused");
+        let error = Connection::connect(
+            io,
+            Role::Source,
+            &config,
+            within(limits),
+            rdlt_host::Redactions::new(),
+        )
+        .await
+        .expect_err("the handshake is refused");
         assert_eq!(error.code(), Some("limit_below_minimum"), "{error}");
         assert_eq!(
             error
@@ -136,9 +155,15 @@ async fn a_host_whose_limits_are_below_the_protocols_minimums_is_refused_at_the_
     }
     let served = Served::new().with_source(source_factory::<MemorySource>());
     let io = served_within(served, Limits::default());
-    Connection::connect(io, Role::Source, &config, within(at_the_minimums()))
-        .await
-        .expect("limits at the minimums are admitted");
+    Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        within(at_the_minimums()),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("limits at the minimums are admitted");
 }
 
 /// The fake source answering bloated, connected with `limits`.
@@ -150,9 +175,15 @@ async fn bloated(limits: Limits) -> RemoteSource {
     };
     // 64 KiB of entries on the wire, each of which decodes to tens of bytes.
     let io = socket(Fake(Fault::Bloats(32 * 1024)));
-    let connection = Connection::connect(io, Role::Source, &serde_json::json!({}), options)
-        .await
-        .expect("the fake handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        options,
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the fake handshakes");
     RemoteSource::new(connection)
 }
 
@@ -219,6 +250,7 @@ async fn a_state_key_beyond_the_control_string_limit_is_refused_where_it_is_rece
             Role::Destination,
             &serde_json::json!({}),
             Options::default(),
+            rdlt_host::Redactions::new(),
         )
         .await
         .expect("the fake connects");
@@ -254,6 +286,7 @@ async fn a_destination_s_identifier_rules_at_their_limits_are_configured() {
         Role::Destination,
         &serde_json::json!({}),
         Options::default(),
+        rdlt_host::Redactions::new(),
     )
     .await
     .expect("the destination configures");

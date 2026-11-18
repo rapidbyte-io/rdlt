@@ -75,9 +75,15 @@ pub(crate) async fn raw_channel(io: UnixStream) -> Channel {
 /// The memory source, served, with `config`.
 pub(crate) async fn memory_source(config: serde_json::Value, options: &Options) -> RemoteSource {
     let io = served(Served::new().with_source(source_factory::<MemorySource>()));
-    let connection = Connection::connect(io, Role::Source, &config, *options)
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        *options,
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     RemoteSource::new(connection)
 }
 
@@ -85,9 +91,15 @@ pub(crate) async fn memory_source(config: serde_json::Value, options: &Options) 
 pub(crate) async fn memory_destination(store: &str, options: &Options) -> RemoteDestination {
     let io = served(Served::new().with_destination(destination_factory::<MemoryDestination>()));
     let config = serde_json::json!({ "store": store });
-    let connection = Connection::connect(io, Role::Destination, &config, *options)
-        .await
-        .expect("the destination handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Destination,
+        &config,
+        *options,
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the destination handshakes");
     RemoteDestination::new(connection).expect("the destination declares its capabilities")
 }
 

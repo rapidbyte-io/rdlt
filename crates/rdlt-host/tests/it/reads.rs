@@ -17,9 +17,15 @@ use crate::support::{engine, memory_destination, served};
 /// The ticks source, served, with `config`.
 async fn ticks(config: serde_json::Value) -> RemoteSource {
     let io = served(Served::new().with_source(source_factory::<Ticks>()));
-    let connection = Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     RemoteSource::new(connection)
 }
 
@@ -199,9 +205,15 @@ async fn a_barrier_pending_when_a_read_starts_is_answered_across_the_wire() {
         "seed": 7,
         "streams": [{ "name": "events", "rows": 20, "partitions": 1, "batch_rows": 5 }],
     });
-    let connection = Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     let source = RemoteSource::new(connection);
     let stream = StreamName::new("events").expect("a valid stream name");
     let partition = source
@@ -228,10 +240,15 @@ async fn a_barrier_pending_when_a_read_starts_is_answered_across_the_wire() {
 async fn a_barrier_pending_when_a_read_starts_reaches_a_connector_that_knows_no_barrier_in_its_start()
  {
     let io = socket(Fake(Fault::Unstarted));
-    let connection =
-        Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
-            .await
-            .expect("the fake handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the fake handshakes");
     let source = RemoteSource::new(connection);
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
     // Raised before the read starts: a connector that reads no barrier in the start still gets it.
@@ -260,10 +277,15 @@ async fn a_barrier_pending_when_a_read_starts_reaches_a_connector_that_knows_no_
 #[tokio::test]
 async fn a_read_with_no_barrier_pending_asks_for_none() {
     let io = socket(Fake(Fault::Unstarted));
-    let connection =
-        Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
-            .await
-            .expect("the fake handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the fake handshakes");
     let source = RemoteSource::new(connection);
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
     let request = ReadRequest::new(
@@ -290,9 +312,15 @@ async fn unbounded_partitions_are_planned_as_such_across_the_wire() {
         "streams": [{ "name": "orders", "keys": 4, "snapshot_partitions": 2, "changes": 5 }],
     });
     let io = served(Served::new().with_source(source_factory::<ChangesSource>()));
-    let connection = Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     let source = RemoteSource::new(connection);
     let orders = StreamName::new("orders").expect("a valid stream name");
     let snapshot = source

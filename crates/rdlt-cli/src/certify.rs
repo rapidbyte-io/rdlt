@@ -144,7 +144,8 @@ fn run(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) -> Result<Exit,
     }
     let watch = args.credit_watch.map(credit_watch).transpose()?;
     let config = configured::config(args, host)?;
-    let target = target(args, host)?;
+    // Whatever the connector says, its output and its errors, is scrubbed before it is shown.
+    let target = target(args, host)?.redactions(redactions().clone());
     let target = match args.kill_seed {
         Some(seed) => target.kill_seed(seed),
         None => target,

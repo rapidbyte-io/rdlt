@@ -26,7 +26,7 @@ use crate::provider::{
     ConnectorRef, Honours, Isolation, Placed, Placement, Provider, ProviderError,
 };
 use crate::remote::Options;
-use crate::secrets::{Config, SecretResolver, Secrets};
+use crate::secrets::{Config, Redactions, SecretResolver, Secrets};
 use crate::supervise::{
     Configured, Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor,
 };
@@ -80,6 +80,7 @@ pub struct Remote {
     network: Arc<dyn Network>,
     options: Options,
     secrets: Arc<dyn SecretResolver>,
+    redactions: Option<Redactions>,
 }
 
 /// What remote placement honours of a reference: its endpoint, whose host is the name the
@@ -102,6 +103,7 @@ impl fmt::Debug for Remote {
             .field("network", &self.network)
             .field("options", &self.options)
             .field("secrets", &self.secrets)
+            .field("redactions", &self.redactions)
             .finish()
     }
 }
@@ -116,6 +118,7 @@ impl Remote {
             network: Arc::new(Tcp),
             options: Options::default(),
             secrets: Arc::new(Secrets::new()),
+            redactions: None,
         }
     }
 
@@ -123,6 +126,15 @@ impl Remote {
     #[must_use]
     pub fn secrets(mut self, secrets: impl SecretResolver + 'static) -> Self {
         self.secrets = Arc::new(secrets);
+        self
+    }
+
+    /// Scrubs each connector's errors and output of `redactions` too, beside what its own
+    /// configuration resolves to, adding those values to them: for a caller that resolved the
+    /// configuration's secrets itself.
+    #[must_use]
+    pub fn redactions(mut self, redactions: Redactions) -> Self {
+        self.redactions = Some(redactions);
         self
     }
 
@@ -167,6 +179,7 @@ impl Remote {
         let configured = Configured {
             config: Config::from(config),
             secrets: Arc::clone(&self.secrets),
+            redactions: self.redactions.clone(),
         };
         Supervisor::start(Start::Dial(dialing), role, configured, &self.options, &gate)
             .await

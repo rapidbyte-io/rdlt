@@ -18,7 +18,7 @@ pub(super) async fn echoed(target: &Target, role: Role, config: &str) -> Found {
         let expected: Vec<u64> = (1..=PINGS).collect();
         let sent = tokio_stream::iter(expected.clone().into_iter().map(|seq| v1::Ping { seq }));
         let failed =
-            |status: &Status| Violation(format!("the heartbeat failed: {}", super::error(status)));
+            |status: &Status| Violation(format!("the heartbeat failed: {}", target.error(status)));
         let mut pongs = client
             .rpc
             .heartbeat(sent)

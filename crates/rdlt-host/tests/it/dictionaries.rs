@@ -149,9 +149,15 @@ async fn reading(
 ) -> (tokio::task::JoinHandle<Result<()>>, PartitionFeed) {
     let io = served(Served::new().with_source(source_factory::<Keyed>()));
     let config = serde_json::json!({ "then": then });
-    let connection = Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     let source = RemoteSource::new(connection);
     let admission = Arc::new(Counting(Arc::clone(ledger)));
     let (sink, feed) =
@@ -394,9 +400,15 @@ async fn wide(store: &str, dictionary: usize, told: bool) -> rdlt_engine::RunOut
     };
     let io = served(Served::new().with_source(source_factory::<Wide>()));
     let wide = serde_json::json!({ "dictionary": dictionary });
-    let connection = Connection::connect(io, Role::Source, &wide, options)
-        .await
-        .expect("the source handshakes");
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &wide,
+        options,
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .expect("the source handshakes");
     let source = RemoteSource::new(connection);
     let destination = crate::support::memory_destination(store, &Options::default()).await;
     let cores = rdlt_engine::Cores::new(NonZeroUsize::new(8).expect("not zero"));

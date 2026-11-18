@@ -9,7 +9,7 @@ use crate::kills::Kills;
 use crate::network::Stream;
 use crate::provider::{ConnectorRef, Honours, Placed, Placement, Provider, ProviderError};
 use crate::remote::Options;
-use crate::secrets::{Config, SecretResolver, Secrets};
+use crate::secrets::{Config, Redactions, SecretResolver, Secrets};
 use crate::supervise::{
     Configured, Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor,
 };
@@ -27,6 +27,7 @@ pub struct Connect {
     open: Open,
     options: Options,
     secrets: Arc<dyn SecretResolver>,
+    redactions: Option<Redactions>,
 }
 
 impl std::fmt::Debug for Connect {
@@ -48,6 +49,7 @@ impl Connect {
             open: Arc::new(open),
             options: Options::default(),
             secrets: Arc::new(Secrets::new()),
+            redactions: None,
         }
     }
 
@@ -55,6 +57,15 @@ impl Connect {
     #[must_use]
     pub fn secrets(mut self, secrets: impl SecretResolver + 'static) -> Self {
         self.secrets = Arc::new(secrets);
+        self
+    }
+
+    /// Scrubs each connector's errors and output of `redactions` too, beside what its own
+    /// configuration resolves to, adding those values to them: for a caller that resolved the
+    /// configuration's secrets itself.
+    #[must_use]
+    pub fn redactions(mut self, redactions: Redactions) -> Self {
+        self.redactions = Some(redactions);
         self
     }
 
@@ -93,6 +104,7 @@ impl Connect {
         let configured = Configured {
             config: Config::from(config),
             secrets: Arc::clone(&self.secrets),
+            redactions: self.redactions.clone(),
         };
         let supervisor = Supervisor::start(start, role, configured, &self.options, &gate)
             .await

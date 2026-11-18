@@ -18,7 +18,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use super::credit::first_partition;
 use super::writing::Writing;
 use super::{
-    Found, Violation, configure_request, error, first_refusal, handshaken, refused_with, request,
+    Found, Violation, configure_request, first_refusal, handshaken, refused_with, request,
 };
 use crate::target::Target;
 
@@ -106,9 +106,10 @@ async fn configuration(
         .rpc
         .handshake(request(role, PROTOCOL_MAJOR))
         .await
-        .map_err(|status| format!("the handshake failed: {}", error(&status)))?;
+        .map_err(|status| format!("the handshake failed: {}", target.error(&status)))?;
     let refused = client.rpc.configure(configure_request(&padded)).await;
     refused_with(
+        target,
         refused,
         LIMIT_EXCEEDED,
         "a configuration beyond the configuration limit",
@@ -127,7 +128,7 @@ async fn cursor(
         return Ok(unexceeded("cursor", declared, host));
     };
     let (mut client, _) = handshaken(target, Role::Source, config).await?;
-    let Some((stream, partition)) = first_partition(&mut client).await? else {
+    let Some((stream, partition)) = first_partition(target, &mut client).await? else {
         return Ok(Limit::Unsent(
             "the source has no partition to read".to_owned(),
         ));
@@ -159,6 +160,7 @@ async fn cursor(
     let mut client = client.max_encoding_message_size(usize::MAX);
     let read = first_refusal(client.read(ReceiverStream::new(receiver)).await).await;
     refused_with(
+        target,
         read,
         LIMIT_EXCEEDED,
         "a read from a cursor beyond the cursor limit",
@@ -184,7 +186,10 @@ async fn frame(
         padding: Bytes::new(),
         data_body: Bytes::from(vec![0; over]),
     };
-    let refusal = Writing::start(&mut client).await?.refusal(batch).await?;
+    let refusal = Writing::start(target, &mut client)
+        .await?
+        .refusal(batch)
+        .await?;
     if refusal.code() == Some(LIMIT_EXCEEDED) {
         Ok(Limit::Kept)
     } else {

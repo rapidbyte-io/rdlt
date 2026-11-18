@@ -160,9 +160,15 @@ async fn the_hosts_writer_flushes_before_it_stages_more_than_the_destination_hol
         let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
         let io = served_within(served, limits());
         let config = serde_json::json!({ "store": store });
-        let connection = Connection::connect(io, Role::Destination, &config, Options::default())
-            .await
-            .expect("the destination handshakes");
+        let connection = Connection::connect(
+            io,
+            Role::Destination,
+            &config,
+            Options::default(),
+            rdlt_host::Redactions::new(),
+        )
+        .await
+        .expect("the destination handshakes");
         let destination =
             RemoteDestination::new(connection).expect("its capabilities are declared");
         let context = OpenContext {

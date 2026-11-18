@@ -220,6 +220,7 @@ async fn read(
         Role::Source,
         &serde_json::json!({}),
         *options,
+        rdlt_host::Redactions::new(),
     )
     .await
     .expect("the fake handshakes");
@@ -306,6 +307,7 @@ async fn a_read_the_engine_does_not_take_holds_at_most_its_stream_window_in_tran
         Role::Source,
         &serde_json::json!({}),
         options,
+        rdlt_host::Redactions::new(),
     )
     .await
     .expect("the fake handshakes");

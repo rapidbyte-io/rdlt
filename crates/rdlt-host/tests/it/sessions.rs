@@ -221,9 +221,15 @@ async fn a_writer_waits_once_its_credit_is_spent() {
         limits,
     );
     let config = serde_json::json!({ "store": "stalled" });
-    let connection = Connection::connect(io, Role::Destination, &config, Options::default())
-        .await
-        .unwrap();
+    let connection = Connection::connect(
+        io,
+        Role::Destination,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    )
+    .await
+    .unwrap();
     let destination = RemoteDestination::new(connection).unwrap();
     let mut opened = destination.open(&context()).await.unwrap();
     let mut writer = opened.session.writer(&table()).await.unwrap();
@@ -343,7 +349,13 @@ async fn served_until_shutdown_fails(kind: std::io::ErrorKind) -> Result<(), Ser
     let io = ShutdownFails(connector, kind);
     let serving = tokio::spawn(serve_connection(served, io, Limits::default()));
     let config = serde_json::json!({ "streams": { "items": [] } });
-    let connection = Connection::connect(host, Role::Source, &config, Options::default());
+    let connection = Connection::connect(
+        host,
+        Role::Source,
+        &config,
+        Options::default(),
+        rdlt_host::Redactions::new(),
+    );
     RemoteSource::new(connection.await.expect("the source handshakes"))
         .check()
         .await
@@ -376,9 +388,15 @@ async fn dropping_the_connection_ends_the_served_one() {
     let serving = tokio::spawn(serve_connection(served, connector, Limits::default()));
     let config = serde_json::json!({ "streams": { "items": [] } });
     let source = RemoteSource::new(
-        Connection::connect(host, Role::Source, &config, Options::default())
-            .await
-            .unwrap(),
+        Connection::connect(
+            host,
+            Role::Source,
+            &config,
+            Options::default(),
+            rdlt_host::Redactions::new(),
+        )
+        .await
+        .unwrap(),
     );
     source.check().await.unwrap();
     drop(source);
@@ -396,6 +414,7 @@ async fn a_schema_epoch_that_does_not_grow_is_refused() {
         Role::Source,
         &serde_json::json!({}),
         Options::default(),
+        rdlt_host::Redactions::new(),
     )
     .await
     .unwrap();
@@ -427,6 +446,7 @@ async fn read_of(fault: Fault, limits: Limits) -> Option<rdlt_connector::Connect
         Role::Source,
         &serde_json::json!({}),
         options,
+        rdlt_host::Redactions::new(),
     )
     .await
     .expect("the fake connects");
