@@ -33,23 +33,24 @@ impl Bench<'_> {
         // Each widening's rows in a segment of their own, after those the clause wrote before.
         let segments = (100..).map(SegmentId);
         let widenings = checked(self.destination.capabilities());
+        let column = self.names.column("v");
         for (place, ((from, to), segment)) in widenings.into_iter().zip(segments).enumerate() {
             let table = self.other_table(&format!("widened_{place}"));
             let create = TableChange::Create {
                 table: table.clone(),
-                schema: TableSchema::new(vec![Field::new("v", from.clone(), true)])
+                schema: TableSchema::new(vec![Field::new(Arc::clone(&column), from.clone(), true)])
                     .expect("the certification schema is valid"),
             };
             bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
             let values = edges(&from);
             let mut writer = bounded_call("table writer", opened.session.writer(&table)).await?;
-            let rows = RecordBatch::try_from_iter([("v", Arc::clone(&values))])
+            let rows = RecordBatch::try_from_iter([(&*column, Arc::clone(&values))])
                 .expect("the certification batch is valid");
             bounded_call("write", writer.write(segment, rows)).await?;
             bounded_call("flush", writer.flush()).await?;
             let widen = TableChange::Widen {
                 table: table.clone(),
-                column: "v".into(),
+                column: Arc::clone(&column),
                 from: from.clone(),
                 to: to.clone(),
             };
@@ -58,10 +59,12 @@ impl Bench<'_> {
             let mut expected = denotations(values.as_ref(), &to);
             let mut published = Vec::new();
             for batch in self.read(&table).await?.batches() {
-                let column = batch.stored("v").ok_or_else(|| {
-                    Violation::from("a published batch of a widened column has no `v` column")
+                let stored = batch.stored(&column).ok_or_else(|| {
+                    Violation::from(format_args!(
+                        "a published batch of a widened column has no `{column}` column"
+                    ))
                 })?;
-                published.extend(denotations(column.as_ref(), &to));
+                published.extend(denotations(stored.as_ref(), &to));
             }
             expected.sort();
             published.sort();

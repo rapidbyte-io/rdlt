@@ -2,7 +2,7 @@
 
 use tokio::task::JoinSet;
 
-use super::{Bench, commit, expect_rows, meta, rows};
+use super::{Bench, commit, expect_rows, meta};
 use crate::id::SegmentId;
 use crate::testing::Violation;
 
@@ -32,9 +32,10 @@ impl Bench<'_> {
         }
         let mut staging = JoinSet::new();
         for (segment, mut writer) in (1..).zip(writers) {
+            let rows = self.rows(segment);
             staging.spawn(async move {
                 writer
-                    .write(SegmentId(segment), rows(segment))
+                    .write(SegmentId(segment), rows)
                     .await
                     .map_err(|error| format!("write: {error}"))?;
                 writer

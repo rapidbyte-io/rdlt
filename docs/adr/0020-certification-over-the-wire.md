@@ -28,6 +28,13 @@ clauses are ADR 0022's.
   - A destination whose published data nothing can read is certified with the `Unprobed` probe:
     the eleven clauses that read what it published are unobserved (ADR 0050), and `D-CHECK`,
     `D-EPOCH` and `D-STATE` run. The binary certifies destinations so.
+  - The destination clauses send the identifiers the destination's rules make of their names,
+    within the rules as the engine's names are: each folded as the rules fold, a column's
+    lengthened with `_` until it is no reserved word, and a table's, where it is longer than the
+    rules allow, cut to `certify_` and as much of a digest of its name as fits. `D-NAMES` alone
+    writes names at the rules' edges. Where the rules reserve every form of a column's name, or a
+    prefix or word a table's name beginning `certify_` may start with, every clause that names a
+    table or column is unobserved: all but `D-CHECK` and `D-STATE`.
 - **The protocol's clauses** are checked by a client that speaks the protocol raw:
   - `P-HANDSHAKE`: the handshake answers the protocol's major version with the spec and limits,
     and refuses another as unsupported;

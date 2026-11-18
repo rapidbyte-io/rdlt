@@ -7,14 +7,15 @@ use arrow_array::types::Int64Type;
 use arrow_array::{ArrayRef, BinaryArray, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::DataType;
 
-use super::{Bench, commit, expect_rows, meta, rows};
+use super::{Bench, commit, expect_rows, meta};
 use crate::OpenedSession;
+use crate::change::SEQ_COLUMN;
 use crate::commit::CommitMeta;
 use crate::destination::{
     Destination, DestinationSession, DestinationWriter, MergeKey, TableChange, TableRef,
 };
 use crate::error::{ConnectorErrorKind, SCHEMA_CONFLICT};
-use crate::id::{GenerationId, SchemaVersion, SegmentId, TablePath};
+use crate::id::{GenerationId, SegmentId};
 use crate::schema::TableSchema;
 use crate::testing::reason::Listed;
 use crate::testing::{Violation, bounded, bounded_call};
@@ -23,14 +24,7 @@ use crate::types::{Field, LogicalType, TypeKind};
 impl Bench<'_> {
     /// Another table of this clause, called `suffix` after the clause's own.
     pub(super) fn other_table(&self, suffix: &str) -> TableRef {
-        let name = format!("{}_{suffix}", self.name());
-        TableRef {
-            path: TablePath::new([name.as_str()]).expect("table paths are valid"),
-            name: name.into(),
-            version: SchemaVersion(1),
-            generation: None,
-            merge: None,
-        }
+        self.table_called(&format!("{}_{suffix}", self.name()))
     }
 
     /// Stages a generation of the clause's table and one of a second table over two commits: rows
@@ -49,13 +43,13 @@ impl Bench<'_> {
         };
         let mut opened = self.staged(self.destination, &[1]).await?;
         let mut writer = bounded_call("table writer", opened.session.writer(&generation)).await?;
-        write(&mut writer, 2, rows(2)).await?;
-        write(&mut writer, 3, rows(3)).await?;
+        write(&mut writer, 2, self.rows(2)).await?;
+        write(&mut writer, 3, self.rows(3)).await?;
         self.writer_of(&mut opened.session, &other).await?;
         let mut other_writer = self
             .writer_of(&mut opened.session, &other_generation)
             .await?;
-        write(&mut other_writer, 2, rows(2)).await?;
+        write(&mut other_writer, 2, self.rows(2)).await?;
         commit(&mut opened, meta(&[1, 2], Vec::new())).await?;
         expect_rows(&self.published_rows().await?, &[1])?;
         expect_rows(&self.rows_of(&other).await?, &[])?;
@@ -89,15 +83,17 @@ impl Bench<'_> {
     /// Adds a column to the clause's table and commits rows that fill it.
     async fn add_column(&self, opened: &mut OpenedSession) -> Result<(), Violation> {
         let table = self.table();
+        let column = |name| self.names.column(name);
+        let extra = column("extra");
         let add = TableChange::AddColumn {
             table: table.clone(),
-            field: Field::new("extra", LogicalType::Int64, true),
+            field: Field::new(Arc::clone(&extra), LogicalType::Int64, true),
         };
         apply_twice(&mut opened.session, &add).await?;
         let mut writer = bounded_call("table writer", opened.session.writer(&table)).await?;
-        write(&mut writer, 2, with_extra(&rows(2))).await?;
+        write(&mut writer, 2, with_extra(&self.rows(2), &extra)).await?;
         commit(opened, meta(&[2], Vec::new())).await?;
-        let values = self.values(&table, "extra").await?;
+        let values = self.values(&table, &extra).await?;
         if values.iter().flatten().count() != 3 || values.len() != 6 {
             return Err(Violation::from(format_args!(
                 "after adding a column, published {}",
@@ -107,16 +103,16 @@ impl Bench<'_> {
         let create = TableChange::Create {
             table: table.clone(),
             schema: TableSchema::new(vec![
-                Field::new("id", LogicalType::Int64, false),
-                Field::new("name", LogicalType::Utf8, true),
-                Field::new("extra", LogicalType::Int64, true),
+                Field::new(column("id"), LogicalType::Int64, false),
+                Field::new(column("name"), LogicalType::Utf8, true),
+                Field::new(Arc::clone(&extra), LogicalType::Int64, true),
             ])
             .expect("the certification schema is valid"),
         };
         bounded_call("apply_schema again", opened.session.apply_schema(&create)).await?;
         let conflicting = TableChange::AddColumn {
             table,
-            field: Field::new("extra", LogicalType::Utf8, true),
+            field: Field::new(extra, LogicalType::Utf8, true),
         };
         match bounded("apply_schema", opened.session.apply_schema(&conflicting)).await? {
             Err(error)
@@ -138,27 +134,33 @@ impl Bench<'_> {
     /// Widens an Int32 column of another table to Int64 between two writes, and commits them.
     async fn widen_column(&self, opened: &mut OpenedSession) -> Result<(), Violation> {
         let table = self.other_table("widen");
+        let small = self.names.column("small");
         let create = TableChange::Create {
             table: table.clone(),
-            schema: TableSchema::new(vec![Field::new("small", LogicalType::Int32, true)])
-                .expect("the certification schema is valid"),
+            schema: TableSchema::new(vec![Field::new(
+                Arc::clone(&small),
+                LogicalType::Int32,
+                true,
+            )])
+            .expect("the certification schema is valid"),
         };
         bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
         let mut writer = bounded_call("table writer", opened.session.writer(&table)).await?;
-        let small =
-            RecordBatch::try_from_iter([("small", Arc::new(Int32Array::from(vec![7])) as _)])
-                .expect("the certification batch is valid");
-        write(&mut writer, 3, small).await?;
+        let batch = |values: ArrayRef| {
+            RecordBatch::try_from_iter([(&*small, values)])
+                .expect("the certification batch is valid")
+        };
+        write(&mut writer, 3, batch(Arc::new(Int32Array::from(vec![7])))).await?;
         let widen = TableChange::Widen {
             table: table.clone(),
-            column: "small".into(),
+            column: Arc::clone(&small),
             from: LogicalType::Int32,
             to: LogicalType::Int64,
         };
         apply_twice(&mut opened.session, &widen).await?;
         let narrower = TableChange::Widen {
             table: table.clone(),
-            column: "small".into(),
+            column: Arc::clone(&small),
             from: LogicalType::Int16,
             to: LogicalType::Int32,
         };
@@ -169,18 +171,11 @@ impl Bench<'_> {
             )
             .await?;
         }
-        let wide = RecordBatch::try_from_iter([(
-            "small",
-            Arc::new(Int64Array::from(vec![1_i64 << 40])) as _,
-        )])
-        .expect("the certification batch is valid");
+        let wide = batch(Arc::new(Int64Array::from(vec![1_i64 << 40])));
         write(&mut writer, 4, wide).await?;
-        let narrow =
-            RecordBatch::try_from_iter([("small", Arc::new(Int32Array::from(vec![3])) as _)])
-                .expect("the certification batch is valid");
-        write(&mut writer, 4, narrow).await?;
+        write(&mut writer, 4, batch(Arc::new(Int32Array::from(vec![3])))).await?;
         commit(opened, meta(&[3, 4], Vec::new())).await?;
-        let mut values = self.values(&table, "small").await?;
+        let mut values = self.values(&table, &small).await?;
         values.sort_unstable();
         if values == [Some(3), Some(7), Some(1 << 40)] {
             Ok(())
@@ -195,15 +190,20 @@ impl Bench<'_> {
     /// Commits keyed rows twice: the second commit replaces the first's row of a shared key, and
     /// of two rows of one key within a commit the greater sequence wins.
     pub(super) async fn merges_keep_the_newest_row(&self) -> Result<(), Violation> {
-        let (table, create) = merged(self.table());
+        let (table, create) = self.merged(self.table());
         let mut opened = self.open(self.destination).await?;
         bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
         let mut writer = bounded_call("table writer", opened.session.writer(&table)).await?;
-        write(&mut writer, 1, keyed(&[(1, "a", 1), (2, "b", 2)])).await?;
-        write(&mut writer, 2, keyed(&[(2, "late", 9), (3, "c", 3)])).await?;
+        write(&mut writer, 1, self.keyed(&[(1, "a", 1), (2, "b", 2)])).await?;
+        write(&mut writer, 2, self.keyed(&[(2, "late", 9), (3, "c", 3)])).await?;
         // Key 2's newest row comes first, and key 3's last: neither the first nor the last row
         // of a key is its newest, and only its sequence says which is.
-        write(&mut writer, 3, keyed(&[(2, "early", 4), (3, "newer", 8)])).await?;
+        write(
+            &mut writer,
+            3,
+            self.keyed(&[(2, "early", 4), (3, "newer", 8)]),
+        )
+        .await?;
         commit(&mut opened, meta(&[1], Vec::new())).await?;
         commit(&mut opened, meta(&[2, 3], Vec::new())).await?;
         let published = self.rows_of(&table).await?;
@@ -233,6 +233,53 @@ impl Bench<'_> {
             }
         }
         Ok(values)
+    }
+
+    /// `table` merging by `id`, the greatest sequence winning, and its creation with an `id`, a
+    /// `name` and the sequence.
+    pub(super) fn merged(&self, table: TableRef) -> (TableRef, TableChange) {
+        let column = |name| self.names.column(name);
+        let table = TableRef {
+            merge: Some(MergeKey {
+                columns: vec![column("id")],
+                seq: column(SEQ_COLUMN),
+                root: None,
+                changes: None,
+                history: None,
+            }),
+            ..table
+        };
+        let create = TableChange::Create {
+            table: table.clone(),
+            schema: TableSchema::new(vec![
+                Field::new(column("id"), LogicalType::Int64, false),
+                Field::new(column("name"), LogicalType::Utf8, true),
+                Field::new(column(SEQ_COLUMN), LogicalType::Binary, false),
+            ])
+            .expect("the certification schema is valid"),
+        };
+        (table, create)
+    }
+
+    /// Merge rows of `(id, name, sequence)`.
+    pub(super) fn keyed(&self, rows: &[(i64, &str, u8)]) -> RecordBatch {
+        let ids: Arc<Int64Array> = Arc::new(rows.iter().map(|row| row.0).collect());
+        let names: Arc<StringArray> = Arc::new(rows.iter().map(|row| Some(row.1)).collect());
+        let seqs: BinaryArray = rows
+            .iter()
+            .map(|row| {
+                let mut seq = [0_u8; 16];
+                seq[15] = row.2;
+                Some(seq.to_vec())
+            })
+            .collect();
+        let column = |name| self.names.column(name);
+        RecordBatch::try_from_iter([
+            (column("id"), ids as _),
+            (column("name"), names as _),
+            (column(SEQ_COLUMN), Arc::new(seqs) as _),
+        ])
+        .expect("the certification batch is valid")
     }
 }
 
@@ -281,37 +328,9 @@ pub(super) fn unobserved(destination: &dyn Destination, id: &str) -> Option<&'st
         .then_some("the destination's identifiers are shorter than the clause's names")
 }
 
-/// `table` merging by `id`, the greatest sequence winning, and its creation with an `id`, a
-/// `name` and the sequence.
-pub(super) fn merged(table: TableRef) -> (TableRef, TableChange) {
-    let table = TableRef {
-        merge: Some(MergeKey {
-            columns: vec!["id".into()],
-            seq: SEQ.into(),
-            root: None,
-            changes: None,
-            history: None,
-        }),
-        ..table
-    };
-    let create = TableChange::Create {
-        table: table.clone(),
-        schema: TableSchema::new(vec![
-            Field::new("id", LogicalType::Int64, false),
-            Field::new("name", LogicalType::Utf8, true),
-            Field::new(SEQ, LogicalType::Binary, false),
-        ])
-        .expect("the certification schema is valid"),
-    };
-    (table, create)
-}
-
 /// The generation the replace clause fills: beyond the signed range, as the engine's often are,
 /// so a destination that narrows ids is caught.
 pub(super) const GENERATION: GenerationId = GenerationId(18_000_000_000_000_000_000);
-
-/// The sequence column of the merge clause's table.
-const SEQ: &str = "_rdlt_seq";
 
 async fn write(
     writer: &mut Box<dyn DestinationWriter>,
@@ -332,8 +351,8 @@ async fn apply_twice(
 }
 
 /// `batch` with an Int64 column `extra` holding 1, 2, 3...
-fn with_extra(batch: &RecordBatch) -> RecordBatch {
-    let extra: Int64Array = (1..).take(batch.num_rows()).collect();
+fn with_extra(batch: &RecordBatch, extra: &str) -> RecordBatch {
+    let values: Int64Array = (1..).take(batch.num_rows()).collect();
     let schema = batch.schema();
     let mut columns: Vec<(&str, ArrayRef)> = schema
         .fields()
@@ -341,26 +360,6 @@ fn with_extra(batch: &RecordBatch) -> RecordBatch {
         .map(|field| field.name().as_str())
         .zip(batch.columns().iter().cloned())
         .collect();
-    columns.push(("extra", Arc::new(extra)));
+    columns.push((extra, Arc::new(values)));
     RecordBatch::try_from_iter(columns).expect("the certification batch is valid")
-}
-
-/// Merge rows of `(id, name, sequence)`.
-pub(super) fn keyed(rows: &[(i64, &str, u8)]) -> RecordBatch {
-    let ids: Arc<Int64Array> = Arc::new(rows.iter().map(|row| row.0).collect());
-    let names: Arc<StringArray> = Arc::new(rows.iter().map(|row| Some(row.1)).collect());
-    let seqs: BinaryArray = rows
-        .iter()
-        .map(|row| {
-            let mut seq = [0_u8; 16];
-            seq[15] = row.2;
-            Some(seq.to_vec())
-        })
-        .collect();
-    RecordBatch::try_from_iter([
-        ("id", ids as _),
-        ("name", names as _),
-        (SEQ, Arc::new(seqs) as _),
-    ])
-    .expect("the certification batch is valid")
 }

@@ -6,6 +6,7 @@ use arrow_array::{
     ArrayRef, BinaryArray, BooleanArray, Int8Array, Int64Array, RecordBatch, StringArray,
 };
 
+use super::super::identifiers::Identifiers;
 use crate::change::{ChangeOp, OP_COLUMN, SEQ_COLUMN};
 use crate::meta::{
     DELETED_AT_COLUMN, IS_CURRENT_COLUMN, ROW_HASH_COLUMN, VALID_FROM_COLUMN, VALID_TO_COLUMN,
@@ -128,8 +129,9 @@ impl Kind {
 }
 
 /// `rows` as a history stream writes them: the key, name and sequence, the deletion time where
-/// deletes are soft, the history columns, then a change stream's op.
-pub(super) fn written(rows: &[Row], kind: Kind) -> RecordBatch {
+/// deletes are soft, the history columns, then a change stream's op; each column as `names`
+/// names it.
+pub(super) fn written(names: &Identifiers, rows: &[Row], kind: Kind) -> RecordBatch {
     let seqs = rows.iter().map(|row| {
         let mut seq = [0_u8; 16];
         seq[15] = row.seq;
@@ -174,24 +176,32 @@ pub(super) fn written(rows: &[Row], kind: Kind) -> RecordBatch {
         let ops = Int8Array::from_iter_values(rows.iter().map(|row| row.op.code()));
         columns.push((OP_COLUMN, Arc::new(ops)));
     }
+    let columns = columns
+        .into_iter()
+        .map(|(name, column)| (names.column(name), column));
     RecordBatch::try_from_iter(columns).expect("the certification batch is valid")
 }
 
-/// The stored columns of a history table of `kind`.
-pub(super) fn stored(kind: Kind) -> TableSchema {
+/// The stored columns of a history table of `kind`, each as `names` names it.
+pub(super) fn stored(names: &Identifiers, kind: Kind) -> TableSchema {
+    let column = |name| names.column(name);
     let mut fields = vec![
-        Field::new("id", LogicalType::Int64, false),
-        Field::new("name", LogicalType::Utf8, true),
-        Field::new(SEQ_COLUMN, LogicalType::Binary, false),
+        Field::new(column("id"), LogicalType::Int64, false),
+        Field::new(column("name"), LogicalType::Utf8, true),
+        Field::new(column(SEQ_COLUMN), LogicalType::Binary, false),
     ];
     if kind.soft() {
-        fields.push(Field::new(DELETED_AT_COLUMN, LogicalType::Int64, true));
+        fields.push(Field::new(
+            column(DELETED_AT_COLUMN),
+            LogicalType::Int64,
+            true,
+        ));
     }
     fields.extend([
-        Field::new(VALID_FROM_COLUMN, LogicalType::Int64, false),
-        Field::new(VALID_TO_COLUMN, LogicalType::Int64, true),
-        Field::new(IS_CURRENT_COLUMN, LogicalType::Bool, false),
-        Field::new(ROW_HASH_COLUMN, LogicalType::Binary, true),
+        Field::new(column(VALID_FROM_COLUMN), LogicalType::Int64, false),
+        Field::new(column(VALID_TO_COLUMN), LogicalType::Int64, true),
+        Field::new(column(IS_CURRENT_COLUMN), LogicalType::Bool, false),
+        Field::new(column(ROW_HASH_COLUMN), LogicalType::Binary, true),
     ]);
     TableSchema::new(fields).expect("the certification schema is valid")
 }

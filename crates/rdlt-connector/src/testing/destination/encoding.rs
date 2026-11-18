@@ -35,7 +35,7 @@ impl Bench<'_> {
     /// `name` and `epoch` always, `at` where the destination stores timestamps.
     pub(super) async fn dictionaries_publish_their_values(&self) -> Result<(), Violation> {
         let types = &self.destination.capabilities().types;
-        let fields = fields(types.contains(&TypeKind::Timestamp));
+        let fields = self.fields(types.contains(&TypeKind::Timestamp));
         let mut opened = self.open(self.destination).await?;
         let table = self.table();
         let schema = TableSchema::new(fields.clone()).expect("the certification schema is valid");
@@ -75,20 +75,22 @@ impl Bench<'_> {
             )))
         }
     }
-}
 
-/// The table's fields: `id`, `name` and `epoch`, then `at` where the destination stores it.
-fn fields(timestamps: bool) -> Vec<Field> {
-    let mut fields = vec![
-        Field::new("id", LogicalType::Int64, false),
-        Field::new("name", LogicalType::Utf8, true),
-        Field::new("epoch", LogicalType::Int64, true),
-    ];
-    if timestamps {
-        let at = LogicalType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
-        fields.push(Field::new("at", at, true));
+    /// The table's fields: `id`, `name` and `epoch`, then `at` where the destination stores
+    /// it.
+    fn fields(&self, timestamps: bool) -> Vec<Field> {
+        let column = |name| self.names.column(name);
+        let mut fields = vec![
+            Field::new(column("id"), LogicalType::Int64, false),
+            Field::new(column("name"), LogicalType::Utf8, true),
+            Field::new(column("epoch"), LogicalType::Int64, true),
+        ];
+        if timestamps {
+            let at = LogicalType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+            fields.push(Field::new(column("at"), at, true));
+        }
+        fields
     }
-    fields
 }
 
 /// Three rows of `fields`: every column but `id` a dictionary of one value, null in the second.
@@ -96,9 +98,11 @@ fn encoded(fields: &[Field]) -> RecordBatch {
     let mut columns: Vec<ArrayRef> = vec![Arc::new(Int64Array::from(vec![1, 2, 3]))];
     let mut arrow_fields = vec![fields[0].to_arrow()];
     for field in &fields[1..] {
-        let values: ArrayRef = match field.name() {
-            "name" => Arc::new(StringArray::from(vec!["ann"])),
-            "at" => Arc::new(TimestampMicrosecondArray::from(vec![LOADED_AT]).with_timezone("UTC")),
+        let values: ArrayRef = match field.logical_type() {
+            LogicalType::Utf8 => Arc::new(StringArray::from(vec!["ann"])),
+            LogicalType::Timestamp(..) => {
+                Arc::new(TimestampMicrosecondArray::from(vec![LOADED_AT]).with_timezone("UTC"))
+            }
             _ => Arc::new(Int64Array::from(vec![LOAD_EPOCH])),
         };
         let keys = Int8Array::from(vec![Some(0), None, Some(0)]);
@@ -118,12 +122,12 @@ fn encoded(fields: &[Field]) -> RecordBatch {
 
 /// The rows `encoded` holds, as `rows` reads them back.
 fn expected(fields: &[Field]) -> Vec<Row> {
-    let has = |name: &str| fields.iter().any(|field| field.name() == name);
+    let timed = fields.get(3).is_some();
     let row = |id: i64, set: bool| {
         (
             id,
             set.then(|| "ann".to_owned()),
-            (set && has("at")).then_some(LOADED_AT),
+            (set && timed).then_some(LOADED_AT),
             set.then_some(LOAD_EPOCH),
         )
     };
@@ -132,18 +136,13 @@ fn expected(fields: &[Field]) -> Vec<Row> {
 
 /// The rows of a published `batch` of `fields`, whatever types the destination stores them as.
 fn rows(batch: Read<'_>, fields: &[Field]) -> Result<Vec<Row>, Violation> {
-    let column = |name: &str| -> Result<Option<ArrayRef>, Violation> {
-        let Some(field) = fields.iter().find(|field| field.name() == name) else {
-            return Ok(None);
-        };
-        batch
-            .nullable(name, &field.logical_type().to_arrow())
-            .map(Some)
-    };
-    let ids = batch.required("id", &DataType::Int64)?;
-    let names = batch.nullable("name", &DataType::Utf8)?;
-    let epochs = batch.nullable("epoch", &DataType::Int64)?;
-    let at = column("at")?;
+    let ids = batch.required(fields[0].name(), &DataType::Int64)?;
+    let names = batch.nullable(fields[1].name(), &DataType::Utf8)?;
+    let epochs = batch.nullable(fields[2].name(), &DataType::Int64)?;
+    let at = fields
+        .get(3)
+        .map(|at| batch.nullable(at.name(), &at.logical_type().to_arrow()))
+        .transpose()?;
     let (ids, names) = (ids.as_primitive::<Int64Type>(), names.as_string::<i32>());
     let epochs = epochs.as_primitive::<Int64Type>();
     let at = at

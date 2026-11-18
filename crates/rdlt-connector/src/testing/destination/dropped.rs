@@ -1,6 +1,6 @@
 //! `D-DROP`: a commit drops the tables it names, releasing them to any pipeline.
 
-use super::{Bench, commit, expect_rows, meta, rows, try_commit};
+use super::{Bench, commit, expect_rows, meta, try_commit};
 use crate::commit::DroppedTable;
 use crate::error::{ConnectorError, ConnectorErrorKind, TABLE_OWNED};
 use crate::id::{PipelineId, SegmentId};
@@ -32,7 +32,7 @@ impl Bench<'_> {
         let mut other = self.other().await?;
         let mut writer = self.writer(&mut other.session).await?;
         writer
-            .write(SegmentId(2), rows(2))
+            .write(SegmentId(2), self.rows(2))
             .await
             .map_err(|error| Violation::from(format!("another pipeline's write: {error}")))?;
         writer

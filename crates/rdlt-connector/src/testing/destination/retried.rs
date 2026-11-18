@@ -6,7 +6,7 @@
 
 use super::dropped::dropping_of;
 use super::evolving::GENERATION;
-use super::{Bench, commit, expect_rows, keyed, meta, rows};
+use super::{Bench, commit, expect_rows, keyed, meta};
 use crate::commit::{CommitMeta, DroppedTable, Receipt};
 use crate::destination::{DestinationWriter, OpenedSession, TableRef};
 use crate::error::{Result, TABLE_OWNED};
@@ -72,18 +72,18 @@ impl Bench<'_> {
         let owned = self.other_table("owned");
         let mut other = self.other().await?;
         let mut writer = self.writer_of(&mut other.session, &owned).await?;
-        stage(&mut writer, 1).await?;
+        self.stage(&mut writer, 1).await?;
         commit(&mut other, meta(&[1], Vec::new())).await?;
         let mut opened = self.open(self.destination).await?;
         let mut writer = self.writer_of(&mut opened.session, &base).await?;
-        stage(&mut writer, 2).await?;
+        self.stage(&mut writer, 2).await?;
         commit(&mut opened, meta(&[2], Vec::new())).await?;
         let generation = TableRef {
             generation: Some(GENERATION),
             ..base.clone()
         };
         let mut writer = bounded_call("table writer", opened.session.writer(&generation)).await?;
-        stage(&mut writer, 3).await?;
+        self.stage(&mut writer, 3).await?;
         let swapping = keyed(
             &opened,
             CommitMeta {
@@ -120,13 +120,18 @@ impl Bench<'_> {
         })?;
         expect_rows(&self.rows_of(&base).await?, &[3])
     }
-}
 
-/// Stages segment `segment`'s rows through `writer`, durably.
-async fn stage(writer: &mut Box<dyn DestinationWriter>, segment: u64) -> Result<(), Violation> {
-    bounded_call("write", writer.write(SegmentId(segment), rows(segment))).await?;
-    bounded_call("flush", writer.flush()).await?;
-    Ok(())
+    /// Stages segment `segment`'s rows through `writer`, durably.
+    async fn stage(
+        &self,
+        writer: &mut Box<dyn DestinationWriter>,
+        segment: u64,
+    ) -> Result<(), Violation> {
+        let rows = self.rows(segment);
+        bounded_call("write", writer.write(SegmentId(segment), rows)).await?;
+        bounded_call("flush", writer.flush()).await?;
+        Ok(())
+    }
 }
 
 /// The receipt `opened`'s session answers `meta` with, a commit `which`; it is the session's last

@@ -127,7 +127,8 @@ incomplete all the same. A clause is unobserved when nothing reads back what a d
 published, when a source sends no checkpoint to resume or plan again from, when a read ends \
 within its first credit, when no kill reaches the connector, or when what a source sends is \
 more than certification holds: certify with a fixture that shows the behaviour. It is unobserved \
-too when a source cannot read again a stream `K-SOURCE` loads.
+too when a source cannot read again a stream `K-SOURCE` loads, or when a destination's \
+identifier rules leave a table or column a clause names no identifier.
 
 A kill clause that passed says beside its `pass`, and as `note` in JSON, what it passed on: \
 `killed`, a connection ended with a process a kill ended, or `cut`, kills cut the connection of \
@@ -215,6 +216,11 @@ one whose identifiers are shorter than the names `D-NAMES` writes leaves that un
 source that cannot read again a stream it loads leaves `K-SOURCE` unobserved, before any load: \
 each load starts from no cursor, which such a source refuses once anything, `S-ACK` among them, \
 told it one.
+- The destination clauses name their tables and columns within the destination's identifier \
+rules, as the engine's names are: folded, lengthened with `_` past a reserved word, and a \
+table's name that is longer than the rules allow cut to `certify_` and a digest of it. Rules \
+that reserve every form of a column's name, or a prefix or word of `certify_`, leave every \
+clause that names one unobserved: all but `D-CHECK` and `D-STATE`.
 - A spawned connector leads a process group the certifier stops, then kills, when the \
 certification ends, is cut at its timeout, panics, or hears a signal. A member that left the \
 group is not reached, and neither is anything when the certifier is killed outright.

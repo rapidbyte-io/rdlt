@@ -180,3 +180,7 @@ pub(super) const PROBED: [&str; 18] = [
     "D-WRITERS",
     "D-FENCE",
 ];
+
+/// The clauses that name no table and no column, which a destination's identifier rules cannot
+/// leave unobserved.
+pub(super) const NAMELESS: [&str; 2] = ["D-CHECK", "D-STATE"];

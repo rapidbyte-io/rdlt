@@ -1,6 +1,6 @@
 //! `D-DISCARD`: what no commit of the latest session publishes is never published.
 
-use super::{Bench, STALE, commit, expect_rows, meta, rows, try_commit};
+use super::{Bench, STALE, commit, expect_rows, meta, try_commit};
 use crate::commit::CommitMeta;
 use crate::id::SegmentId;
 use crate::testing::Violation;
@@ -17,11 +17,11 @@ impl Bench<'_> {
         // A fenced worker may still be running; whether its write fails or is ignored is the
         // destination's choice, but it must never be published.
         // Other ids than the latest session's, so the stale rows are told from them.
-        drop(stale_writer.write(SegmentId(1), rows(STALE)).await);
+        drop(stale_writer.write(SegmentId(1), self.rows(STALE)).await);
         drop(stale_writer.flush().await);
         let mut writer = self.writer(&mut latest.session).await?;
         writer
-            .write(SegmentId(1), rows(1))
+            .write(SegmentId(1), self.rows(1))
             .await
             .map_err(|error| Violation::from(format!("write: {error}")))?;
         writer
@@ -42,7 +42,7 @@ impl Bench<'_> {
         let mut writer = self.writer(&mut opened.session).await?;
         for segment in [5, 6, 7] {
             writer
-                .write(SegmentId(segment), rows(segment))
+                .write(SegmentId(segment), self.rows(segment))
                 .await
                 .map_err(|error| Violation::from(format!("write: {error}")))?;
         }

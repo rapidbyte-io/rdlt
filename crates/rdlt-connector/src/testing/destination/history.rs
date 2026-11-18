@@ -27,14 +27,15 @@ use rows::{
 impl Bench<'_> {
     /// A history table of this clause, called `suffix` after its own, written as `kind` says.
     fn history_table(&self, suffix: &str, kind: Kind) -> TableRef {
+        let column = |name| self.names.column(name);
         let changes = match kind {
             Kind::Plain => None,
             Kind::Changes { soft } => Some(ChangeColumns {
-                op: OP_COLUMN.into(),
+                op: column(OP_COLUMN),
                 unchanged: None,
                 deletion: if soft {
                     Deletion::Soft {
-                        at: DELETED_AT_COLUMN.into(),
+                        at: column(DELETED_AT_COLUMN),
                     }
                 } else {
                     Deletion::Hard
@@ -43,15 +44,15 @@ impl Bench<'_> {
         };
         TableRef {
             merge: Some(MergeKey {
-                columns: vec!["id".into()],
-                seq: SEQ_COLUMN.into(),
+                columns: vec![column("id")],
+                seq: column(SEQ_COLUMN),
                 root: None,
                 changes,
                 history: Some(HistoryColumns {
-                    valid_from: VALID_FROM_COLUMN.into(),
-                    valid_to: VALID_TO_COLUMN.into(),
-                    is_current: IS_CURRENT_COLUMN.into(),
-                    row_hash: ROW_HASH_COLUMN.into(),
+                    valid_from: column(VALID_FROM_COLUMN),
+                    valid_to: column(VALID_TO_COLUMN),
+                    is_current: column(IS_CURRENT_COLUMN),
+                    row_hash: column(ROW_HASH_COLUMN),
                 }),
             }),
             ..self.other_table(suffix)
@@ -64,10 +65,10 @@ impl Bench<'_> {
         let table = self.history_table(suffix, Kind::Plain);
         let create = TableChange::Create {
             table: table.clone(),
-            schema: stored(Kind::Plain),
+            schema: stored(self.names, Kind::Plain),
         };
         let rows = [upsert(1, "a", 1, 10), upsert(2, "b", 2, 10)];
-        (table, create, written(&rows, Kind::Plain))
+        (table, create, written(self.names, &rows, Kind::Plain))
     }
 
     /// Commits each of `commits` in turn to a history table of `kind`, each in a session of its
@@ -84,11 +85,12 @@ impl Bench<'_> {
             let mut opened = self.open(self.destination).await?;
             let create = TableChange::Create {
                 table: table.clone(),
-                schema: stored(kind),
+                schema: stored(self.names, kind),
             };
             bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
             let mut writer = bounded_call("table writer", opened.session.writer(&table)).await?;
-            bounded_call("write", writer.write(SegmentId(1), written(rows, kind))).await?;
+            let batch = written(self.names, rows, kind);
+            bounded_call("write", writer.write(SegmentId(1), batch)).await?;
             bounded_call("flush", writer.flush()).await?;
             commit(&mut opened, meta(&[1], Vec::new())).await?;
             drop(writer);
@@ -104,15 +106,16 @@ impl Bench<'_> {
         let mut versions = Vec::with_capacity(published.rows());
         for batch in published.batches() {
             // A history's key, start, current flag and sequence hold no null.
-            let ids = batch.required("id", &DataType::Int64)?;
-            let names = batch.nullable("name", &DataType::Utf8)?;
-            let from = batch.required(VALID_FROM_COLUMN, &DataType::Int64)?;
-            let to = batch.nullable(VALID_TO_COLUMN, &DataType::Int64)?;
-            let current = batch.required(IS_CURRENT_COLUMN, &DataType::Boolean)?;
-            let seqs = batch.required(SEQ_COLUMN, &DataType::Binary)?;
-            let hashes = batch.nullable(ROW_HASH_COLUMN, &DataType::Binary)?;
+            let column = |name| self.names.column(name);
+            let ids = batch.required(&column("id"), &DataType::Int64)?;
+            let names = batch.nullable(&column("name"), &DataType::Utf8)?;
+            let from = batch.required(&column(VALID_FROM_COLUMN), &DataType::Int64)?;
+            let to = batch.nullable(&column(VALID_TO_COLUMN), &DataType::Int64)?;
+            let current = batch.required(&column(IS_CURRENT_COLUMN), &DataType::Boolean)?;
+            let seqs = batch.required(&column(SEQ_COLUMN), &DataType::Binary)?;
+            let hashes = batch.nullable(&column(ROW_HASH_COLUMN), &DataType::Binary)?;
             let (seqs, hashes) = (seqs.as_binary::<i32>(), hashes.as_binary::<i32>());
-            let at = batch.optional(DELETED_AT_COLUMN, &DataType::Int64)?;
+            let at = batch.optional(&column(DELETED_AT_COLUMN), &DataType::Int64)?;
             let at = at.as_ref().map(AsArray::as_primitive::<Int64Type>);
             let (ids, names) = (ids.as_primitive::<Int64Type>(), names.as_string::<i32>());
             let (from, to) = (

@@ -5,9 +5,9 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{Array, RecordBatch};
 
-use super::evolving::{GENERATION, keyed, merged};
-use super::rows::{Row, schema};
-use super::{Bench, Probe, commit, expect_rows, meta, rows, try_commit};
+use super::evolving::GENERATION;
+use super::rows::Row;
+use super::{Bench, Probe, commit, expect_rows, meta, try_commit};
 use crate::commit::CommitMeta;
 use crate::destination::{TableChange, TableRef};
 use crate::error::{COLUMN_MISSING, ConnectorErrorKind};
@@ -56,12 +56,12 @@ impl Bench<'_> {
     /// for each write mode the destination declares.
     pub(super) async fn segments_span_tables(&self) -> Result<(), Violation> {
         let mut opened = self.open(self.destination).await?;
-        let child = child_table(&self.table());
+        let child = self.child_table(&self.table());
         let mut parent_writer = self.writer(&mut opened.session).await?;
         let mut child_writer = self.writer_of(&mut opened.session, &child).await?;
         for writer in [&mut parent_writer, &mut child_writer] {
             writer
-                .write(SegmentId(1), rows(1))
+                .write(SegmentId(1), self.rows(1))
                 .await
                 .map_err(|error| Violation::from(format!("write: {error}")))?;
             writer
@@ -93,28 +93,28 @@ impl Bench<'_> {
         let modes = self.destination.capabilities().write_modes;
         let create = |table: &TableRef| TableChange::Create {
             table: table.clone(),
-            schema: schema(),
+            schema: self.schema(),
         };
         let mut droppings = Vec::new();
         if modes.append {
             let parent = self.other_table("dropped_append");
-            let child = child_table(&parent);
+            let child = self.child_table(&parent);
             let written = [&parent, &child].map(|table| Written {
                 create: create(table),
                 writer: table.clone(),
-                batch: rows(1),
+                batch: self.rows(1),
             });
             droppings.push(Dropping {
                 mode: "an append",
                 written: written.into(),
                 dropped: child.clone(),
                 finishing: Vec::new(),
-                read: vec![(parent, rows(1)), (child, rows(1))],
+                read: vec![(parent, self.rows(1)), (child, self.rows(1))],
             });
         }
         if modes.merge {
-            let (table, create) = merged(self.other_table("dropped_merge"));
-            let batch = keyed(&[(1, "a", 1), (2, "b", 2)]);
+            let (table, create) = self.merged(self.other_table("dropped_merge"));
+            let batch = self.keyed(&[(1, "a", 1), (2, "b", 2)]);
             droppings.push(dropping_one("a merge", table, create, batch));
         }
         if modes.history {
@@ -132,11 +132,11 @@ impl Bench<'_> {
                 written: vec![Written {
                     create: create(&table),
                     writer: generation,
-                    batch: rows(1),
+                    batch: self.rows(1),
                 }],
                 dropped: table.clone(),
                 finishing: vec![(table.path.clone(), GENERATION)],
-                read: vec![(table, rows(1))],
+                read: vec![(table, self.rows(1))],
             });
         }
         droppings
@@ -154,7 +154,8 @@ impl Bench<'_> {
             bounded_call("write", writer.write(SegmentId(1), written.batch.clone())).await?;
             bounded_call("flush", writer.flush()).await?;
         }
-        let dropped = self.probe.drop_column(&dropping.dropped, DROPPED);
+        let column = self.names.column(DROPPED);
+        let dropped = self.probe.drop_column(&dropping.dropped, &column);
         bounded("drop_column", dropped).await?.map_err(|error| {
             Violation::unobserved(format_args!("the probe dropped no column: {error}"))
         })?;
@@ -166,7 +167,7 @@ impl Bench<'_> {
             Ok(_) => {
                 for (table, batch) in &dropping.read {
                     let published = self.rows_of(table).await?;
-                    let staged = named(batch);
+                    let staged = self.named(batch);
                     if published != staged {
                         return Err(Violation::from(format_args!(
                             "table {} publishes {}, not the rows staged, {}",
@@ -200,17 +201,37 @@ impl Bench<'_> {
             ))),
         }
     }
-}
 
-/// A child of `parent`, as normalized nested data creates one.
-fn child_table(parent: &TableRef) -> TableRef {
-    let parent = &*parent.name;
-    TableRef {
-        path: TablePath::new([parent, "items"]).expect("table paths are valid"),
-        name: format!("{parent}__items").into(),
-        version: SchemaVersion(1),
-        generation: None,
-        merge: None,
+    /// A child of `parent`, a table of this clause, as normalized nested data creates one.
+    fn child_table(&self, parent: &TableRef) -> TableRef {
+        let parent: Vec<&str> = parent.path.segments().collect();
+        let name = format!("{}__items", parent.join("__"));
+        TableRef {
+            path: TablePath::new(parent.into_iter().chain(["items"]))
+                .expect("table paths are valid"),
+            name: self.names.table(&name),
+            version: SchemaVersion(1),
+            generation: None,
+            merge: None,
+        }
+    }
+
+    /// The `(id, name)` rows of `batch`, in order.
+    fn named(&self, batch: &RecordBatch) -> Vec<Row> {
+        let column = |name: &str| {
+            let name = self.names.column(name);
+            batch.column_by_name(&name).expect("staged rows are named")
+        };
+        let ids = column("id").as_primitive::<Int64Type>();
+        let names = column(DROPPED).as_string::<i32>();
+        let mut rows: Vec<Row> = (0..batch.num_rows())
+            .map(|row| {
+                let name = names.is_valid(row).then(|| names.value(row).to_owned());
+                (ids.value(row), name)
+            })
+            .collect();
+        rows.sort_unstable();
+        rows
     }
 }
 
@@ -232,19 +253,4 @@ fn dropping_one(
         finishing: Vec::new(),
         read: vec![(table, batch)],
     }
-}
-
-/// The `(id, name)` rows of `batch`, in order.
-fn named(batch: &RecordBatch) -> Vec<Row> {
-    let column = |name: &str| batch.column_by_name(name).expect("staged rows are named");
-    let ids = column("id").as_primitive::<Int64Type>();
-    let names = column(DROPPED).as_string::<i32>();
-    let mut rows: Vec<Row> = (0..batch.num_rows())
-        .map(|row| {
-            let name = names.is_valid(row).then(|| names.value(row).to_owned());
-            (ids.value(row), name)
-        })
-        .collect();
-    rows.sort_unstable();
-    rows
 }
