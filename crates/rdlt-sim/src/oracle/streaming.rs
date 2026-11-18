@@ -5,11 +5,11 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use rdlt_engine::{Report, Until};
+use rdlt_engine::{Report, RunStatus, Until};
 
-use super::churn::{self, CHANGES, NAMING};
+use super::churn::{self, CHANGES, NAMING, Swapping};
 use super::scenario::{Scenario, pick};
-use super::{DISRUPTED, Simulation};
+use super::{DISRUPTED, Simulation, stalls};
 use crate::reached::Reach;
 use crate::rng::SplitMix64;
 use crate::world::World;
@@ -43,8 +43,10 @@ impl Simulation {
             .churn
             .then(|| SplitMix64::new(self.seed.value() ^ NAMING ^ phase_salt));
         let world = std::sync::Arc::clone(&self.world);
+        let swapping = self.swapping.clone();
         if let Some(churning) = churning.as_mut() {
-            world.named.name(Some(churn::first(&world, churning)));
+            let first = churn::first(&world, &swapping, churning);
+            world.named.name(Some(first));
         }
         world.produce(Some(arrived(&world, phase, &mut rng)));
         for _ in 0..RUNS {
@@ -63,7 +65,12 @@ impl Simulation {
                 .then(|| SplitMix64::new(rng.clone().next_u64() ^ DISRUPTED));
             let ticking = churning
                 .as_mut()
-                .map(|churning| SplitMix64::new(churning.next_u64()));
+                .map(|churning| (SplitMix64::new(churning.next_u64()), &swapping));
+            // Only the engine's process on the single thread holds a read's waits to the engine's
+            // own timers.
+            let watched = clean && self.placing.is_none() && !self.threaded;
+            let bound = watched.then(|| stalls::bound(self.runs.config()));
+            let before = reports.len();
             let running = self.attempt_until(
                 phase,
                 scenario,
@@ -72,8 +79,11 @@ impl Simulation {
                 reports,
                 Until::For(deadline),
             );
-            let (ran, ()) = tokio::join!(running, arrive(&world, phase, arriving, ticks, ticking));
+            let arriving = arrive(&world, phase, arriving, ticks, ticking);
+            let (ran, (), stalled) =
+                tokio::join!(running, arriving, probe(&world, deadline, bound));
             world.reach(Reach::Followed);
+            kept_up(&world, (deadline, bound), &reports[before..], stalled);
             if ran.stopped {
                 world.produce(None);
                 world.named.name(None);
@@ -83,6 +93,40 @@ impl Simulation {
         world.produce(None);
         world.named.name(None);
         false
+    }
+}
+
+/// The stalls of the run `world` begins now as its `deadline` comes, each partition held to
+/// `bound`; none, at once, where no bound holds the run.
+async fn probe(world: &World, deadline: Duration, bound: Option<Duration>) -> Vec<String> {
+    let Some(bound) = bound else {
+        return Vec::new();
+    };
+    tokio::time::sleep(deadline).await;
+    let now = tokio::time::Instant::now();
+    stalls::stalls(world, &world.connected_since(), now, bound)
+}
+
+/// Fails `world` for each of `stalled`, where a `bound` held the runs that followed the source
+/// until `deadline` and each succeeded in one attempt, as `reports` say: one that failed, or took
+/// another attempt, read for less than its deadline.
+fn kept_up(
+    world: &World,
+    (deadline, bound): (Duration, Option<Duration>),
+    reports: &[Report],
+    stalled: Vec<String>,
+) {
+    let alone = reports
+        .iter()
+        .all(|report| report.status == RunStatus::Succeeded && report.attempted == 1);
+    let Some(bound) = bound.filter(|_| alone) else {
+        return;
+    };
+    if bound < deadline {
+        world.reach(Reach::KeptUp);
+    }
+    for stall in stalled {
+        world.violation(stall);
     }
 }
 
@@ -109,13 +153,14 @@ fn arrived(world: &World, phase: usize, rng: &mut SplitMix64) -> BTreeMap<(usize
 }
 
 /// Makes more of phase `phase`'s rows arrive every tick, `ticks` times; where the source churns,
-/// drawing from `churning`, it also retires or names a partition at a third of them.
+/// drawing from `churning`, it also changes what it names at a third of them, swapping the
+/// partitions of the streams it swaps.
 async fn arrive(
     world: &World,
     phase: usize,
     mut rng: SplitMix64,
     ticks: u64,
-    mut churning: Option<SplitMix64>,
+    mut churning: Option<(SplitMix64, &Swapping)>,
 ) {
     for _ in 0..ticks {
         tokio::time::sleep(TICK).await;
@@ -132,10 +177,10 @@ async fn arrive(
             }
         }
         world.produce(Some(arrived));
-        if let Some(churning) = churning.as_mut()
+        if let Some((churning, swapping)) = churning.as_mut()
             && churning.chance(CHANGES)
         {
-            churn::change(world, churning);
+            churn::change(world, swapping, churning);
         }
     }
 }

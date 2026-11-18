@@ -5,9 +5,10 @@ use std::time::Duration;
 use rdlt_connector::ReadMode;
 use rdlt_engine::{CommitPolicy, EngineConfig, GrowthLimits, RetryPolicy};
 
+use super::churn::Swapping;
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
-use crate::workload::Workload;
+use crate::workload::{PHASES, Workload};
 use crate::world::Pressure;
 
 /// How often a streaming world plans again: every quarter second, so its runs meet the partitions
@@ -20,12 +21,14 @@ pub(super) const REPLAN: Duration = Duration::from_millis(250);
 /// that: small enough that a source pressing on it, as [`pressed`] draws, fills its shares.
 ///
 /// A run reads at least one partition more at once than the `endless` partitions it follows
-/// without end, which hold their places for as long as it runs, and holds to the `growth`
-/// limits. Where `wait` is drawn, the engine waits that long for each connector call.
+/// without end at most, which hold their places for as long as it runs, and exactly one more where
+/// its source `swapped` them, naming fewer than all at once: a pipeline that reads them all then
+/// holds every place as a plan swaps one. It holds to the `growth` limits, and where `wait` is
+/// drawn, the engine waits that long for each connector call.
 pub(super) fn config(
     rng: &mut SplitMix64,
     streaming: bool,
-    endless: usize,
+    (endless, swapped): (usize, bool),
     growth: GrowthLimits,
     wait: Option<Duration>,
 ) -> EngineConfig {
@@ -52,7 +55,12 @@ pub(super) fn config(
     };
     let memory = least + rng.below(least);
     let writer_window = to_usize(1 + rng.below(3));
-    let partitions = to_usize(1 + rng.below(4)).max(endless + 1);
+    let drawn = to_usize(1 + rng.below(4));
+    let partitions = if swapped {
+        endless + 1
+    } else {
+        drawn.max(endless + 1)
+    };
     builder
         .memory(memory)
         .writers(writers)
@@ -91,18 +99,37 @@ pub(super) fn growth(seed: Seed) -> GrowthLimits {
     }
 }
 
-/// How many partitions of `workload`'s streams never end and are followed: in a streaming world,
-/// those of streams some phase reads incrementally, whose rows arrive or not.
-pub(super) fn endless(workload: &Workload) -> usize {
+/// How many partitions of `workload`'s streams that never end a run follows at once at most: in a
+/// streaming world, those of streams some phase reads incrementally, whose rows arrive or not.
+///
+/// Where the source swaps the partitions of the streams `swapping` holds, it counts those one
+/// pipeline reads incrementally in one phase, each swapped stream's as many as its source names at
+/// once, in the pipeline and phase that follow the most.
+pub(super) fn endless(workload: &Workload, swapping: &Swapping) -> usize {
     if !workload.features.streaming {
         return 0;
     }
-    workload
-        .streams
-        .iter()
-        .filter(|stream| stream.unbounded && stream.reads.contains(&ReadMode::Incremental))
-        .map(|stream| stream.partitions.len())
-        .sum()
+    let unbounded = workload.streams.iter().enumerate();
+    let unbounded = unbounded.filter(|(_, stream)| stream.unbounded);
+    if swapping.is_empty() {
+        let read = unbounded.filter(|(_, stream)| stream.reads.contains(&ReadMode::Incremental));
+        return read.map(|(_, stream)| stream.partitions.len()).sum();
+    }
+    let mut most = 0;
+    for pipeline in 0..workload.pipelines {
+        for phase in 0..PHASES {
+            let read = unbounded.clone().filter(|(index, stream)| {
+                index % workload.pipelines == pipeline
+                    && stream.reads[phase] == ReadMode::Incremental
+            });
+            let followed = read.map(|(index, stream)| {
+                let named = swapping.get(&index).copied();
+                named.unwrap_or(stream.partitions.len())
+            });
+            most = most.max(followed.sum());
+        }
+    }
+    most
 }
 
 /// How hard the source of the world `seed`, of `workload`, presses on the budget of an engine of

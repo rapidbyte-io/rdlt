@@ -274,23 +274,30 @@ A formal layer is added to the layers of its class, never in place of one.
   never reads again one whose read ended fails `PlansFollowTheSource` in TLC. Its header names
   `tlc`: the model is finite, and TLC checks every state, 1,631,793 of them, at three partitions,
   one of two rows and two of one, and two changes or crashes; that covers every run a bounded check
-  could explore. Every invariant and temporal
-  property over them takes about 30 minutes on one core of a developer's machine; the time on the
-  nightly runner is not measured, and the nightly job's limit is 120 minutes. `just quint` tests and
-  simulates 2,000 runs of 60 steps of each module, among them `replan_rows2`, at two rows of every
-  partition and three changes or crashes, which no checker explores. In the simulation, a churning
-  source (ADR 0031) retires, adds and names again partitions while runs follow it, through the
-  seeds' faults, and checks named for the invariants hold its runs. `no_partition_lost_or_doubled`
-  holds, in the engine's process, that no run reads a partition twice at once. Beside it, in every
-  placement, unless a reset races the runs, the destination holds that no row of an incremental
-  stream lands below where it held the partition, and the contents check holds that every row lands
-  once. `plans_follow_the_source` holds, in the engine's process on the single thread, that a read
-  whose partition a later plan dropped sends no more than its partition's channel holds and one in
-  flight. Its other half, that a partition named comes to be read, holds only at each phase's end,
-  where every partition is named again and every row must land. `removed_drains` holds, in the
-  engine's process, that an undisturbed run that succeeded in one attempt, with every run beside it,
-  commits every checkpoint the engine took from a read of a partition its plans dropped. Beside
-  them, the engine's tests `a_following_run_starts_the_partitions_its_source_adds`,
+  could explore. Every invariant and temporal property over them takes about 30 minutes on one core
+  of a developer's machine; the time on the nightly runner is not measured, and the nightly job's
+  limit is 120 minutes. `just quint` tests and simulates 2,000 runs of 60 steps of each module,
+  among them `replan_rows2`, at two rows of every partition and three changes or crashes, which no
+  checker explores. In the simulation, a churning source (ADR 0031) retires, adds and names again
+  partitions, or swaps them at every place, while runs follow it, through the seeds' faults, and
+  checks named for the invariants hold its runs. `no_partition_lost_or_doubled` holds, in the
+  engine's process, that no run reads a partition twice at once. Beside it, in every placement,
+  unless a reset races the runs, the destination holds that no row of an incremental stream lands
+  below where it held the partition, and the contents check holds that every row lands once.
+  `plans_follow_the_source` holds, in the engine's process on the single thread, that a read whose
+  partition a later plan dropped sends no more than its partition's channel holds and one in flight.
+  Its other half, that a partition named comes to be read, holds inside a following run as `stalls`
+  holds it, in a run with neither faults nor disruptions, in the engine's process on the single
+  thread, that succeeded in one attempt: no partition of a followed stream its source names waits
+  longer for a read, from its plan's answer or, where no plan has named it since, from when the
+  source named it, than the engine's timers allow, three re-plan intervals, the policy's interval
+  and two barrier waits, and none its plans dropped is held, past that, short of a checkpoint the
+  engine took from its read; so a run that stops planning fails it too. The seed's reach `KeptUp`
+  says the bound was shorter than the run. It holds again at each phase's end, where every partition
+  is named again and every row must land. `removed_drains` holds, in the engine's process, that an
+  undisturbed run that succeeded in one attempt, with every run beside it, commits every checkpoint
+  the engine took from a read of a partition its plans dropped. Beside them, the engine's tests
+  `a_following_run_starts_the_partitions_its_source_adds`,
   `a_following_run_reads_a_bounded_stream_again_as_it_grows`,
   `a_run_for_a_while_follows_its_source_and_loads_each_message_once` and
   `a_partition_a_plan_drops_and_names_again_reads_on_from_where_it_was_committed` exercise
@@ -430,15 +437,23 @@ what no bound names.
   the destination's and the contents checks. On threaded runs it does not bound a read's late sends
   even there: between the source's answer and the engine's stop, another worker's reads go on for an
   unbounded time, so no bound on a late send holds; two reads at once and undrained checkpoints are
-  judged there as on one thread. Within a following run of half a second to two, a named partition
-  may wait for a read slot, or for a commit the policy makes due later. So that a named partition
-  comes to be read is held only at a phase's end, by initial planning. A churned source names starts
-  in the recorded phase, which the engine must not start from. With the fix that starts a partition
-  added mid-run from its beginning undone, churning seeds fail. Hand-planted defects fail each
+  judged there as on one thread. Within a following run, a named partition may wait for a read
+  slot behind a read whose cursor waits for a commit, and for its end's commit: the policy's
+  interval, or the next re-plan's where it has none (ADR 0031). So that a named partition comes to
+  be read is held within the bound those timers set, only where nothing else sets the time a read
+  waits: a run with neither faults nor disruptions, in the engine's process on the single thread,
+  that succeeded in one attempt; and in every run at a phase's end, by initial planning. A churned
+  source names starts in the recorded phase, which the engine must not start from. With the fix that
+  starts a partition added mid-run from its beginning undone, churning seeds fail; with a re-plan's
+  commit of the ends that wait under a policy with no interval undone, seeds 7236 and 12270 fail on
+  partitions their plans named and no read took up; with a followed read's wait for its place
+  undone, 17 of 34 clean seeds whose source swaps fail, refused `partitions_too_few`, in the
+  engine's process and placed apart, and seed 3232 is kept. Hand-planted defects fail each
   check: a partition read again from its beginning, a dropped read left running, a stopped read's
-  seals dropped, and a stopped read not counted as unsettled. Cost: a re-plan that never starts a
-  partition its source adds, while the next run's initial planning does, is found only by the
-  engine's tests and the spec's own checks.
+  seals dropped, a stopped read not counted as unsettled, and a run that stops planning. Cost: a
+  stall within the bound, or in a run the bound outlasts, as a policy's interval of a second or more
+  makes it outlast most of the runs of half a second to two, is found only by the engine's tests and
+  the spec's own checks.
 - **Process placement enters the simulation as a played launch.** `rdlt-host`'s `sim` feature gives
   `Local` a launch whose process a script plays in the host's own process. The host checks the
   binary, drains and scrubs the output, witnesses the exit, and stops and kills the process as it

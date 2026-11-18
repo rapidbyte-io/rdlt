@@ -350,6 +350,12 @@ impl World {
         mem::take(&mut *self.connections.lock())
     }
 
+    /// The records of every connection made since [`connections`](Self::connections) was last
+    /// asked, which it still gives.
+    pub(crate) fn connected_since(&self) -> Vec<Arc<Plans>> {
+        self.connections.lock().clone()
+    }
+
     /// Sets how many rows of each followed partition have arrived, or none for every row, and
     /// wakes the reads that follow them.
     pub(crate) fn produce(&self, produced: Option<BTreeMap<(usize, usize), usize>>) {

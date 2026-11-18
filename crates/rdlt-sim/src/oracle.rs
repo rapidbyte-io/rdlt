@@ -22,6 +22,7 @@ mod reset;
 mod rows;
 mod scenario;
 mod settle;
+mod stalls;
 mod streaming;
 mod tables;
 mod twice;
@@ -46,6 +47,7 @@ use crate::workload::{PHASES, Relaxed, Row};
 use crate::world::World;
 use attempts::{PIPELINES, kept_to_the_protocol, plan};
 pub use changes::check_changes;
+use churn::{Swapping, swapping};
 use config::{config, endless, growth, pressed, waited};
 use events::Runs;
 use expected::Discards;
@@ -148,10 +150,11 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, threaded:
         world.without_hangs();
     }
     env.perturb(world.workload.features.perturb);
+    let swapping = swapping(seed, &world.workload);
     let config = config(
         &mut rng,
         world.workload.features.streaming,
-        endless(&world.workload),
+        (endless(&world.workload, &swapping), !swapping.is_empty()),
         growth(seed),
         waited(seed, !threaded && world.workload.features.faults),
     );
@@ -165,6 +168,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>, threaded:
         runs: Runs::new(config, env),
         placing,
         relaxed: vec![Relaxed::default(); world.workload.streams.len()],
+        swapping,
         world,
         name,
         budget,
@@ -204,6 +208,8 @@ struct Simulation {
     /// processes.
     placing: Option<Placing>,
     relaxed: Vec<Relaxed>,
+    /// The streams whose churning source swaps their partitions, naming fewer than all at once.
+    swapping: Swapping,
     /// Bytes: the engine's memory budget, which no run reserves more than.
     budget: u64,
     /// What its runs left: their trace, their waits on the budget, and the last one's length.

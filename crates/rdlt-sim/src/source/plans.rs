@@ -5,8 +5,10 @@
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use parking_lot::Mutex;
+use tokio::time::Instant;
 
 /// One connection's plans and reads, each partition by its stream's index and its own.
 #[derive(Debug, Default)]
@@ -31,6 +33,11 @@ struct Planned {
     /// The furthest checkpoint the engine took from the reads of each partition, by how many plans
     /// the connection had answered when they began.
     taken: BTreeMap<(usize, usize), BTreeMap<u64, u64>>,
+    /// Since when each partition its stream's last plan names has had no read running, where it
+    /// has none: since it was named, or since its last read ended.
+    idle: BTreeMap<(usize, usize), Instant>,
+    /// When each partition its stream's last plan does not name stopped being named.
+    gone: BTreeMap<(usize, usize), Instant>,
     findings: Findings,
 }
 
@@ -39,23 +46,52 @@ struct Planned {
 pub(crate) struct Findings {
     /// Whether a plan named other partitions of a stream than the plan before it.
     pub(crate) replanned: bool,
+    /// Whether a plan of a stream stopped naming a partition a read of which ran, and named one
+    /// the plan before it did not.
+    pub(crate) swapped: bool,
     /// The partitions two reads read at once.
     pub(crate) doubled: BTreeSet<(usize, usize)>,
     /// The most pushes and checkpoints the engine took from one read of each partition once a
     /// plan answered since the read began stopped naming the partition.
     pub(crate) late: BTreeMap<(usize, usize), u64>,
+    /// The longest each partition its plans named waited for a read to begin, of the waits that
+    /// ended.
+    pub(crate) waited: BTreeMap<(usize, usize), Duration>,
 }
 
 impl Plans {
     /// Notes that a plan of stream `stream` named the partitions `named`.
     pub(crate) fn answered(&self, stream: usize, named: BTreeSet<usize>) {
+        let now = Instant::now();
         let mut guard = self.0.lock();
         let planned = &mut *guard;
         planned.answered += 1;
-        if let Some(before) = planned.named.get(&stream) {
+        let before = planned.named.remove(&stream);
+        if let Some(before) = &before {
             planned.findings.replanned |= *before != named;
-            for gone in before.difference(&named) {
-                planned.dropped.insert((stream, *gone), planned.answered);
+            let running = |partition: &usize| {
+                let reads = planned.reading.get(&(stream, *partition));
+                reads.is_some_and(|reads| *reads > 0)
+            };
+            let stopped = before.difference(&named).any(running);
+            planned.findings.swapped |= stopped && !named.is_subset(before);
+        }
+        let before = before.unwrap_or_default();
+        for gone in before.difference(&named) {
+            let key = (stream, *gone);
+            planned.dropped.insert(key, planned.answered);
+            planned.idle.remove(&key);
+            planned.gone.insert(key, now);
+        }
+        for partition in named.difference(&before) {
+            let key = (stream, *partition);
+            planned.gone.remove(&key);
+            if planned
+                .reading
+                .get(&key)
+                .is_none_or(|running| *running == 0)
+            {
+                planned.idle.entry(key).or_insert(now);
             }
         }
         planned.named.insert(stream, named);
@@ -64,6 +100,7 @@ impl Plans {
     /// A read of partition `partition` of stream `stream` that begins now, counted among the
     /// connection's until it drops.
     pub(crate) fn read(&self, stream: usize, partition: usize) -> PlannedRead<'_> {
+        let now = Instant::now();
         let mut guard = self.0.lock();
         let planned = &mut *guard;
         let key = (stream, partition);
@@ -71,6 +108,10 @@ impl Plans {
         *running += 1;
         if *running > 1 {
             planned.findings.doubled.insert(key);
+        }
+        if let Some(since) = planned.idle.remove(&key) {
+            let waited = planned.findings.waited.entry(key).or_default();
+            *waited = (*waited).max(now.saturating_duration_since(since));
         }
         planned.began += 1;
         PlannedRead {
@@ -100,6 +141,39 @@ impl Plans {
                 let furthest = reads.range(..*plan).map(|(_, next)| *next).max()?;
                 Some((*key, furthest))
             })
+            .collect()
+    }
+
+    /// How long each partition its plans named waited for a read to begin, by `now`: the longest
+    /// wait that ended, or the wait still open where that is longer; and each the source has named
+    /// since as `named` says, of a stream its plans named, that no plan of it named since.
+    pub(crate) fn waits(
+        &self,
+        now: Instant,
+        named: &BTreeMap<(usize, usize), Instant>,
+    ) -> BTreeMap<(usize, usize), Duration> {
+        let planned = self.0.lock();
+        let mut waits = planned.findings.waited.clone();
+        let unplanned = named.iter().filter(|((stream, partition), _)| {
+            let last = planned.named.get(stream);
+            last.is_some_and(|last| !last.contains(partition))
+        });
+        for (key, since) in planned.idle.iter().chain(unplanned) {
+            let waited = waits.entry(*key).or_default();
+            *waited = (*waited).max(now.saturating_duration_since(*since));
+        }
+        waits
+    }
+
+    /// Each partition a plan stopped naming that no later plan named again: since when, and the
+    /// furthest checkpoint the engine took from a read of it begun before.
+    pub(crate) fn gone(&self) -> Vec<((usize, usize), Instant, u64)> {
+        let drained: BTreeMap<(usize, usize), u64> = self.drained().into_iter().collect();
+        let planned = self.0.lock();
+        planned
+            .gone
+            .iter()
+            .filter_map(|(key, since)| Some((*key, *since, *drained.get(key)?)))
             .collect()
     }
 }
@@ -157,11 +231,20 @@ impl PlannedRead<'_> {
 
 impl Drop for PlannedRead<'_> {
     fn drop(&mut self) {
+        let now = Instant::now();
         let mut guard = self.plans.0.lock();
         let planned = &mut *guard;
         planned.beyond.remove(&self.number);
+        let (stream, partition) = self.key;
+        let named = planned
+            .named
+            .get(&stream)
+            .is_some_and(|named| named.contains(&partition));
         if let Some(running) = planned.reading.get_mut(&self.key) {
             *running = running.saturating_sub(1);
+            if *running == 0 && named {
+                planned.idle.entry(self.key).or_insert(now);
+            }
         }
     }
 }

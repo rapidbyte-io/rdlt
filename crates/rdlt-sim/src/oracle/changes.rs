@@ -108,7 +108,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     let config = config(
         &mut rng,
         false,
-        0,
+        (0, false),
         growth(seed),
         waited(seed, features.faults),
     );

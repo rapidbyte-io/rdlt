@@ -23,6 +23,10 @@ impl Simulation {
         if connections.iter().any(|plans| plans.findings().replanned) {
             self.world.reach(Reach::Replanned);
         }
+        let swapped = connections.iter().any(|plans| plans.findings().swapped);
+        if swapped && !self.swapping.is_empty() {
+            self.world.reach(Reach::Swapped);
+        }
         // A read placed apart ends only once its stop crosses to it, and sends into what the wire
         // holds meanwhile: only the engine's own process holds a read to its run's plans.
         if self.placing.is_some() {
