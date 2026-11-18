@@ -6,7 +6,7 @@ import inspect
 import types
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 
 from rdlt.connector._config import Config
 from rdlt.connector._context import Partition, PartitionPlan, StreamState
@@ -16,7 +16,20 @@ from rdlt.connector._spec import Checkpointing, ReadWord, StreamSpec
 from rdlt.connector._streams import Committed
 from rdlt.model import ReadMode, StreamName
 
-T = TypeVar("T")
+
+class SourceConnector(Protocol):
+    """A source connector's class, as `@source` takes it and the Rust SDK names it.
+
+    Its instance answers `check()` as typed here, and, where it has them, `streams()` the streams
+    `stream(...)` makes and `discover()` a `StreamSpec` for each stream.
+    """
+
+    def check(self) -> None:
+        """Verifies the source can read, raising where it cannot."""
+        ...
+
+
+T = TypeVar("T", bound=SourceConnector)
 
 _CURSOR_VERSIONS = range(2**16)
 """The formats a cursor may be in, as the Rust SDK's `u16` holds them."""
@@ -101,14 +114,18 @@ def stream(
     """Makes a function a stream a pipeline reads as its source, or a method a stream of its class.
 
     It takes the cursor where one is declared, then `ctx` where it names it, and yields rows, Arrow
-    data and `checkpoint(cursor)`, or, read as changes, `changes(batch)`. Called at run time, on a
-    bound method, a closure or a `partial`, it makes a stream a source's `streams()` answers.
-    `name`, the function's name unless given, is a name or a `rdlt.StreamName` within a namespace,
-    such as a database schema. `partitions` answers the partitions, each an id or a `Partition`,
-    called as the stream is, with the instance where it is a method, or names a method that does;
-    `ctx.partition` then says which one is read. Where it names a `state` parameter, it is given the
-    stream's committed `StreamState`, as a Rust stream's `partitions` is: its phase, and where each
-    partition stands, a cursor or `PartitionState.DONE`. A method stays a method:
+    data and `checkpoint(cursor)`, or, read as changes, `changes(batch)`, as a generator or an async
+    generator, which runs on an event loop of its own. Every function it is given below is a plain
+    function, which rdlt calls on a thread of its own, where it may block, and which answers what it
+    states: one that answers anything else, a coroutine, as `async def` answers, a generator where
+    it states no iterable, or `False` where it answers `None`, fails the call, naming it. Called at
+    run time, on a bound method, a closure or a `partial`, it makes a stream a source's `streams()`
+    answers. `name`, the function's name unless given, is a name or a `rdlt.StreamName` within a
+    namespace, such as a database schema. `partitions` answers the partitions, each an id or a
+    `Partition`, called as the stream is, with the instance where it is a method, or names a method
+    that does; `ctx.partition` then says which one is read. Where it names a `state` parameter, it
+    is given the stream's committed `StreamState`, as a Rust stream's `partitions` is: its phase,
+    and where each partition stands, a cursor or `PartitionState.DONE`. A method stays a method:
     `self.tickets(since, ctx)` calls it. It makes a `ReadStream`, typed `Any` so it is called and
     overridden as the function or method it was. How its rows land is the pipeline's to say, as
     `rdlt.stream(name, write=...)`, whatever its source. `cursor_version`, 1 unless given, is the
@@ -164,17 +181,17 @@ def stream(
     `invalid_message`, as a Rust source's does.
 
     `committed`, a function called as `partitions` is or a method's name, takes the cursors each
-    commit made durable, as `(partition id, cursor)` pairs, as a Rust stream's `committed` does: a
-    source that acknowledges upstream, as a queue settling its messages, does it there. A cursor
-    may be told more than once, and one older than the last, so an acknowledgement never moves
-    back for it. `acknowledged`, called as `committed` is or a method's name, takes a partition's
-    id and answers where the stream stands for it outside the engine, as a Rust stream's
-    `acknowledged` does: the cursor it was last told is committed, as a consumer group's committed
-    offset keeps it beyond a connection, or `None` where it keeps none or was never told. Only
-    certification asks, of a source `@source(acknowledged=True)` makes, from a connection of its
-    own, and it answers the cursor `committed` was told as soon as that call returns.
-    `replayable=False` declares a stream that cannot be read again from any committed cursor, as
-    the Rust SDK's `StreamSpec::with_replayable` does.
+    commit made durable, as `(partition id, cursor)` pairs, and answers `None`, raising where it
+    fails, as a Rust stream's `committed` does: a source that acknowledges upstream, as a queue
+    settling its messages, does it there. A cursor may be told more than once, and one older than
+    the last, so an acknowledgement never moves back for it. `acknowledged`, called as `committed`
+    is or a method's name, takes a partition's id and answers where the stream stands for it outside
+    the engine, as a Rust stream's `acknowledged` does: the cursor it was last told is committed, as
+    a consumer group's committed offset keeps it beyond a connection, or `None` where it keeps none
+    or was never told. Only certification asks, of a source `@source(acknowledged=True)` makes, from
+    a connection of its own, and it answers the cursor `committed` was told as soon as that call
+    returns. `replayable=False` declares a stream that cannot be read again from any committed
+    cursor, as the Rust SDK's `StreamSpec::with_replayable` does.
 
     A stream without `partitions` reads `Partition.single()`, which never ends, as a Rust source's
     does, and so does a `Partition(id, unbounded=True)` that `partitions` answers. Read `full`,
@@ -305,19 +322,13 @@ def _answers(connector: type, method: str) -> bool:
     """Whether `connector` defines `method`, as a method.
 
     Raises:
-        TypeError: it defines it, as something else, or as one that is async.
+        TypeError: it defines it as something else.
     """
     defined = getattr(connector, method, None)
     if defined is None:
         return False
     if not inspect.isfunction(defined):
         message = f"{connector.__name__}.{method} is no method: a source answers {method}()"
-        raise TypeError(message)
-    if inspect.iscoroutinefunction(defined) or inspect.isasyncgenfunction(defined):
-        message = (
-            f"{connector.__name__}.{method} is async: a source answers {method}() as it is "
-            "called, as a Rust source's does"
-        )
         raise TypeError(message)
     return True
 
@@ -332,7 +343,11 @@ def source(
     """Makes a class a source connector: built from its validated `config`, checked with `check()`.
 
     Its `__init__` takes the configuration, and a `ConnectContext` as `context` where it names
-    one, as a Rust source's `connect(config, &ConnectContext)` does. `acknowledged=True` says its
+    one, as a Rust source's `connect(config, &ConnectContext)` does. `check()` answers `None`, and
+    raises where the source cannot read. Each method is a plain function, which rdlt calls on a
+    thread of its own, where it may block: one that answers anything else than it states, a
+    coroutine, as `async def` answers, or `False` where it answers `None`, fails the call, naming
+    it. `acknowledged=True` says its
     streams tell where they stand outside the engine, with their `acknowledged`, as the Rust SDK's
     `#[source(..., acknowledged)]` does: certification's `S-ACK` then checks that a stream's
     position moves only in `committed`, and tells it a few checkpoints are committed, so it runs

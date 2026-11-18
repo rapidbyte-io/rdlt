@@ -19,6 +19,7 @@ from rdlt.connector import (
     SCHEMA_CONFLICT,
     TABLE_OWNED,
     Capabilities,
+    CommitMeta,
     Config,
     Fence,
     Fenced,
@@ -26,6 +27,7 @@ from rdlt.connector import (
     InvalidData,
     OpenContext,
     Opened,
+    Receipt,
     WriteStats,
     destination,
 )
@@ -74,12 +76,6 @@ def _ipc(batch: pa.RecordBatch) -> bytes:
 
 def _batch(ipc: bytes) -> pa.RecordBatch:
     return pa.ipc.open_stream(ipc).read_next_batch()
-
-
-def _in(segment: int, ranges: Json) -> bool:
-    """Whether `segment` is in `ranges`, a segment set: its runs of consecutive ids."""
-    spans = cast("list[dict[str, int]]", ranges)
-    return any(span["first"] <= segment <= span["last"] for span in spans)
 
 
 def _columns(change: Mapping[str, Json]) -> tuple[str, dict[str, Json]]:
@@ -196,15 +192,15 @@ class _Session:
             "delete from staged where pipeline = ? and epoch < ?", (self.pipeline, self.epoch)
         )
 
-    def commit(self, meta: Mapping[str, Json]) -> Mapping[str, Json]:
+    def commit(self, meta: CommitMeta) -> Receipt:
         """Publishes `meta`'s segments with its state, in one transaction with its receipt."""
         return _within(self.database, lambda: self._committed(meta))
 
-    def _committed(self, meta: Mapping[str, Json]) -> Mapping[str, Json]:
+    def _committed(self, meta: CommitMeta) -> Receipt:
         epoch, kept = self.database.execute(
             "select epoch, landed from fence where pipeline = ?", (self.pipeline,)
         ).fetchone()
-        kept_landed = None if kept is None else cast("dict[str, Json]", json.loads(kept))
+        kept_landed = None if kept is None else cast("Receipt", json.loads(kept))
         landed = Fence(epoch, kept_landed).decide(meta)
         if landed is not None:
             return landed
@@ -214,14 +210,14 @@ class _Session:
             (self.pipeline, self.epoch),
         ).fetchall()
         for rowid, segment, table, ipc in staged:
-            if _in(segment, meta["segments"]):
+            if segment in meta["segments"]:
                 batch = _batch(ipc)
                 self.database.execute("insert into published values (?, ?)", (table, ipc))
                 rows, size = rows + batch.num_rows, size + batch.nbytes
-            elif not _in(segment, meta["abandoned"]):
+            elif segment not in meta["abandoned"]:
                 continue
             self.database.execute("delete from staged where rowid = ?", (rowid,))
-        for change in cast("list[dict[str, Json]]", meta["state_delta"]):
+        for change in meta["state_delta"]:
             ((kind, detail),) = change.items()
             if kind == "put":
                 record = cast("dict[str, Json]", detail)
@@ -232,7 +228,7 @@ class _Session:
                     "delete from state where pipeline = ? and key = ?", (self.pipeline, detail)
                 )
         now = time.time_ns()
-        receipt: dict[str, Json] = {
+        receipt: Receipt = {
             "key": meta["key"],
             "committed_at": {
                 "secs_since_epoch": now // 1_000_000_000,
@@ -276,7 +272,7 @@ class PySqlite:
         pipeline = context.pipeline
         database = _connected(self.path)
 
-        def opened() -> tuple[int, dict[str, Json] | None, list[dict[str, Json]]]:
+        def opened() -> tuple[int, Receipt | None, list[dict[str, Json]]]:
             row = database.execute(
                 "select epoch, landed from fence where pipeline = ?", (pipeline,)
             ).fetchone()

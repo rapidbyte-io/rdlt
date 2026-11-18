@@ -69,6 +69,13 @@ fn read<T: for<'de> Deserialize<'de>>(what: &str, text: &str) -> Result<T> {
     })
 }
 
+/// Closes `session`, whose open answered what rdlt cannot read, so it lets go of what it holds,
+/// and returns why: it matters more than any error from closing.
+async fn close_after(session: PythonSession, error: ConnectorError) -> ConnectorError {
+    drop(session.close().await);
+    error
+}
+
 /// A change to a table, as a Python destination is told it.
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -258,7 +265,10 @@ impl DestinationConnector for PythonDestination {
             turns: Turns::new(),
             at_once,
         };
-        let opened: OpenedJson = read("an opened session", &opened)?;
+        let opened: OpenedJson = match read("an opened session", &opened) {
+            Ok(opened) => opened,
+            Err(error) => return Err(close_after(session, error).await),
+        };
         Ok(Opened {
             session,
             epoch: opened.epoch,

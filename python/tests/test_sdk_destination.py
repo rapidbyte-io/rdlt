@@ -11,6 +11,7 @@ import time
 import weakref
 from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import Any, cast
 
 import pyarrow as pa
 import pytest
@@ -21,11 +22,13 @@ from rdlt.connector import (
     COMMIT_STALE,
     Answer,
     Capabilities,
+    CommitMeta,
     Config,
     Fence,
     Fenced,
     OpenContext,
     Opened,
+    Receipt,
     Transient,
     WriteModes,
     WriteStats,
@@ -164,49 +167,101 @@ def test_a_destination_that_reads_nothing_back_leaves_those_clauses_unobserved()
         assert certification.result(clause).outcome == "unobserved", clause
 
 
+def _receipt(epoch: int, seq: int) -> dict[str, Json]:
+    """The receipt of commit `seq` of `epoch`, as a destination's fence row keeps it."""
+    at: dict[str, Json] = {"secs_since_epoch": 5, "nanos_since_epoch": 0}
+    return {"key": {"epoch": epoch, "seq": seq}, "committed_at": at, "rows": 3, "bytes": 24}
+
+
 @pytest.mark.parametrize(
     ("landed", "key", "after", "decided"),
     [
         (None, {"epoch": 2, "seq": 1}, None, "apply"),
-        ({"key": {"epoch": 2, "seq": 1}}, {"epoch": 2, "seq": 1}, None, "landed"),
-        ({"key": {"epoch": 1, "seq": 4}}, {"epoch": 1, "seq": 4}, None, "landed"),
+        (_receipt(2, 1), {"epoch": 2, "seq": 1}, None, "landed"),
+        (_receipt(1, 4), {"epoch": 1, "seq": 4}, None, "landed"),
         (None, {"epoch": 1, "seq": 1}, None, "fenced"),
-        ({"key": {"epoch": 2, "seq": 1}}, {"epoch": 2, "seq": 3}, {"epoch": 2, "seq": 2}, "stale"),
+        (_receipt(2, 1), {"epoch": 2, "seq": 3}, {"epoch": 2, "seq": 2}, "stale"),
         (None, {"epoch": 2, "seq": 2}, {"epoch": 2, "seq": 1}, "stale"),
-        ({"key": {"epoch": 2, "seq": 1}}, {"epoch": 2, "seq": 2}, {"epoch": 2, "seq": 1}, "apply"),
+        (_receipt(2, 1), {"epoch": 2, "seq": 2}, {"epoch": 2, "seq": 1}, "apply"),
     ],
 )
 def test_a_commit_is_answered_as_the_rust_sdk_answers_it(
-    landed: Mapping[str, Json] | None,
-    key: Mapping[str, Json],
-    after: Mapping[str, Json] | None,
+    landed: Any,  # noqa: ANN401 - a receipt, as a fence row keeps it
+    key: Any,  # noqa: ANN401 - a commit's key
+    after: Any,  # noqa: ANN401 - the key a commit expects landed
     decided: str,
 ) -> None:
     assert answer(Fence(2, landed), key, after) is Answer(decided)
 
 
+@pytest.mark.parametrize(
+    ("landed", "key", "after"),
+    [
+        (None, {"epoch": "2", "seq": 1}, None),
+        (None, {"epoch": 2, "seq": -1}, None),
+        (None, {"epoch": 2}, None),
+        (None, {"epoch": 2, "seq": 2}, {"epoch": 2, "seq": "1"}),
+        ({"key": {"epoch": 2, "seq": 1}}, {"epoch": 2, "seq": 2}, None),
+    ],
+)
+def test_a_commit_or_receipt_rdlt_cannot_read_is_refused_rather_than_compared(
+    landed: Any,  # noqa: ANN401 - what a fence row keeps
+    key: Any,  # noqa: ANN401 - what a commit is keyed by
+    after: Any,  # noqa: ANN401 - what a commit expects landed
+) -> None:
+    with pytest.raises(ValueError):  # noqa: PT011 - the refusal has no code
+        answer(Fence(2, landed), key, after)
+
+
+@pytest.mark.parametrize("epoch", [-1, 2**64, True, 2.0, "2"])
+def test_a_fence_at_what_is_no_epoch_is_refused(epoch: object) -> None:
+    with pytest.raises(ValueError):  # noqa: PT011 - the refusal has no code
+        Fence(cast("Any", epoch))
+
+
+class _Index:
+    """An integer that is no `int`, as numpy's are."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __index__(self) -> int:
+        return self.value
+
+
+def test_a_fence_takes_any_integer_as_its_epoch() -> None:
+    fence = Fence(cast("Any", _Index(2)))
+    assert fence.epoch == 2
+    assert type(fence.epoch) is int
+
+
+def _meta(key: Json, after: Json) -> Any:  # noqa: ANN401 - the commit, as much as a fence reads
+    """A commit keyed `key` expecting `after` landed, publishing nothing."""
+    return {"key": key, "after": after}
+
+
 def test_a_fence_decides_a_commit_as_the_rust_sdk_s_does() -> None:
-    receipt: dict[str, Json] = {"key": {"epoch": 2, "seq": 1}, "rows": 3}
-    fence = Fence(2, receipt)
-    assert fence.decide({"key": {"epoch": 2, "seq": 1}, "after": None}) == receipt
-    assert fence.decide({"key": {"epoch": 2, "seq": 2}, "after": {"epoch": 2, "seq": 1}}) is None
+    receipt = _receipt(2, 1)
+    fence = Fence(2, cast("Any", receipt))
+    assert fence.decide(_meta({"epoch": 2, "seq": 1}, None)) == receipt
+    assert fence.decide(_meta({"epoch": 2, "seq": 2}, {"epoch": 2, "seq": 1})) is None
     with pytest.raises(Fenced) as fenced:
-        fence.decide({"key": {"epoch": 1, "seq": 9}, "after": None})
+        fence.decide(_meta({"epoch": 1, "seq": 9}, None))
     assert fenced.value.code is None
     with pytest.raises(Fenced) as stale:
-        fence.decide({"key": {"epoch": 2, "seq": 3}, "after": {"epoch": 2, "seq": 2}})
+        fence.decide(_meta({"epoch": 2, "seq": 3}, {"epoch": 2, "seq": 2}))
     assert stale.value.code == COMMIT_STALE
 
 
 def test_a_stale_refusal_names_the_key_expected_and_the_key_that_landed() -> None:
-    landed = Fence(2, {"key": {"epoch": 2, "seq": 3}})
+    landed = Fence(2, cast("Any", _receipt(2, 3)))
     with pytest.raises(Fenced) as stale:
-        landed.decide({"key": {"epoch": 2, "seq": 1}, "after": None})
+        landed.decide(_meta({"epoch": 2, "seq": 1}, None))
     assert str(stale.value) == (
         "commit 1 of epoch 2 expects no commit landed, and commit 3 of epoch 2 did"
     )
     with pytest.raises(Fenced) as stale:
-        Fence(2).decide({"key": {"epoch": 2, "seq": 4}, "after": {"epoch": 2, "seq": 3}})
+        Fence(2).decide(_meta({"epoch": 2, "seq": 4}, {"epoch": 2, "seq": 3}))
     assert str(stale.value) == (
         "commit 4 of epoch 2 expects commit 3 of epoch 2 landed, and no commit did"
     )
@@ -226,7 +281,7 @@ def test_the_minimal_capabilities_are_the_rust_sdk_s_and_say_what_they_hold() ->
 def test_a_class_without_open_is_refused_where_it_is_declared() -> None:
     with pytest.raises(TypeError, match="open"):
 
-        @destination(id="io.example.unopened", config=Config)
+        @destination(id="io.example.unopened", config=Config)  # pyright: ignore[reportArgumentType, reportUntypedClassDecorator] - it has no open
         class Unopened:
             def __init__(self, config: Config) -> None:
                 del config
@@ -474,9 +529,9 @@ class _OrderedSession:
     def discard_staged(self) -> None:
         """Stages nothing."""
 
-    def commit(self, meta: Mapping[str, Json]) -> Mapping[str, Json]:
+    def commit(self, meta: CommitMeta) -> Receipt:
         """Publishes nothing."""
-        at: dict[str, Json] = {"secs_since_epoch": 0, "nanos_since_epoch": 0}
+        at = {"secs_since_epoch": 0, "nanos_since_epoch": 0}
         return {"key": meta["key"], "committed_at": at, "rows": 0, "bytes": 0}
 
     def close(self) -> None:

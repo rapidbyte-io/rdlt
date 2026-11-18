@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import gc
+import inspect
 import subprocess
 import sys
 import textwrap
 import threading
 import time
 import weakref
+from collections.abc import Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -280,3 +283,33 @@ def test_a_first_build_held_at_a_fork_leaves_the_child_refused_not_hung(
         [sys.executable, "-c", script], timeout=60, check=False, capture_output=True
     )
     assert finished.returncode == 0, finished.stderr
+
+
+def test_a_secret_store_that_answers_a_coroutine_is_refused_and_the_coroutine_closed(
+    tmp_path: Path, connectors: Path
+) -> None:
+    async def answer(name: str) -> str:
+        return name
+
+    answered: list[Coroutine[Any, Any, str]] = []
+
+    def store(name: str) -> str | None:
+        answered.append(answer(name))
+        # A coroutine where the store states a text: what the host refuses.
+        return cast("str | None", answered[-1])
+
+    host = rdlt.Host(
+        connectors=connectors, writable=[tmp_path], trust_binaries=True, secret_store=store
+    )
+    document = generated("awaited", 10, tmp_path / "out.db")
+    document["destination"] = {
+        "connector": "io.rapidbyte.sqlite",
+        "config": {"path": "${secret:out}"},
+        "access": {"write": [str(tmp_path)]},
+    }
+    with pytest.raises(rdlt.Error) as refused:
+        rdlt.Pipeline.from_document(document).build(host).check()
+    assert refused.value.code == "secret_unresolved"
+    assert answered, "the store was asked"
+    # Closed, its body never runs and it is never left unawaited.
+    assert all(inspect.getcoroutinestate(found) == inspect.CORO_CLOSED for found in answered)

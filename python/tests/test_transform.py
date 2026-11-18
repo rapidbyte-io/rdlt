@@ -198,6 +198,59 @@ def test_a_pipeline_may_use_a_transform_its_host_registered(
     assert len(selected(tmp_path, 'SELECT cents FROM "orders"')) == 10
 
 
+@pytest.mark.parametrize("kind", ["transform", "filter"])
+def test_an_async_transform_or_filter_fails_the_run_naming_itself(
+    tmp_path: Path, connectors: Path, kind: str
+) -> None:
+    async def late(batch: pa.RecordBatch) -> object:
+        return batch
+
+    made = (
+        rdlt.filter()(late)
+        if kind == "filter"
+        else rdlt.transform(output=pa.schema([("id", pa.int64())]))(late)
+    )
+    builder = rdlt.pipeline(
+        "late",
+        source=orders,
+        destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("orders", transform=[made])],
+        retry=rdlt.Retry(max_attempts=1),
+    )
+    with pytest.raises(rdlt.TransformError) as raised:
+        builder.build(host(tmp_path, connectors)).run()
+    report = raised.value.report()
+    assert f"{kind} 'late'" in " ".join([report.message, *report.causes])
+    assert landed(tmp_path) == 0
+
+
+class _Exported:
+    """A mask any Arrow library could hand over: it exports an array, and is no iterable."""
+
+    def __init__(self, array: pa.Array[Any]) -> None:
+        self.array = array
+
+    def __arrow_c_array__(self, requested_schema: object | None = None) -> tuple[object, object]:
+        return cast("Any", self.array).__arrow_c_array__(requested_schema)
+
+
+def test_a_filter_answering_what_exports_a_boolean_array_selects_its_rows(
+    tmp_path: Path, connectors: Path
+) -> None:
+    @rdlt.filter()
+    def exported(batch: pa.RecordBatch) -> object:
+        amount = cast("pa.Array[Any]", batch.column("amount"))
+        return _Exported(pc.greater(amount, pa.scalar(6.0)))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+
+    rdlt.pipeline(
+        "exported",
+        source=orders,
+        destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("orders", transform=[exported])],
+    ).build(host(tmp_path, connectors)).run()
+    assert selected(tmp_path, 'SELECT id FROM "orders" ORDER BY id') == [(n,) for n in range(5, 10)]
+
+
 @pytest.mark.parametrize(
     "mask", [pa.array([1] * 10, pa.int64()), pa.array([1.5] * 10)], ids=["int64", "double"]
 )

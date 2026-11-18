@@ -111,6 +111,26 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   Arrow handed over through the C Data Interface, the GIL released while it merges. Its
   configuration is a pydantic model, whose refusals name the field, the fault and the kind of value,
   never the value.
+- **A method answers what its docs state, and nothing else reads as an answer.** rdlt calls each
+  method of a connector, its sessions and table writers, and each function of a stream on a daemon
+  thread, where it may block, and reads what it answers as it returns: `None` where it is called for
+  what it does, as a `check`, `committed`, `apply_schema`, `discard_staged`, `close` and `write`
+  are, and otherwise the type its docs and `rdlt.connector`'s `Session` and `TableWriter` name.
+  Anything else fails the call, as the connector's internal error naming the method and what it
+  answered: a coroutine or another awaitable, an async generator, and a generator where no iterable
+  is stated, so a method written `async def` or with a stray `yield` never reads as one that ran,
+  and `False` where `None` is stated, so a `check` answering `False` fails. A stream's read alone
+  may be async: an async generator, run on an event loop of its own. A transform and a filter answer
+  under the same rule. A host's secret store answers text, or `None` for a secret it does not hold,
+  which Rust reads as it reads any store's answer: anything else is no text, said without the
+  store's message, which may hold the secret. What a session's `open` answers that rdlt cannot read
+  closes the session, as the Rust SDK closes one whose open failed after it was made; a session
+  whose open the engine stopped waiting for is let go, not closed, as a Rust session is dropped: its
+  finalizers release what it holds, since no one would own or await a `close` made for it. A commit
+  is a `CommitMeta`, its segment sets `SegmentSet`s, which `segment in segments` asks as the Rust
+  SDK's `contains` does and which refuse what is no segment id, and it answers a `Receipt`;
+  `Fence.decide` decides by `rdlt_connector::answer` itself, which refuses a key or a receipt it
+  cannot read.
 - **One way to write a source, in the Rust SDK's words.** `rdlt.connector` names what the Rust SDK
   names, in Python's case: `ConnectorError` and its kinds, `RateLimited`'s `retry_after`, a source's
   `streams()`, answering the `ReadStream`s its connection offers, and `discover()`, answering its
@@ -120,27 +140,29 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   and `replayable`, a source's `acknowledged`, `Cursor` and a stream's `cursor_version`,
   `checkpoint`, `changes` and the `ChangeOp`, `OP_COLUMN`, `SEQ_COLUMN` and `UNCHANGED_COLUMN` of a
   change batch, the `ConnectContext` a connector's `__init__` takes where it names one, a
-  destination's `capabilities()` answering its `Capabilities`, `OpenContext`, `WriteStats` and
-  `Fence`, a merge table's `MergeKey`, `ChangeColumns`, `RootKey` and `HistoryColumns`, `to_arrow`
-  of a table schema, the merge kit `rdlt.connector.merge` with `Merged`, the failure codes, such as
-  `COMMIT_STALE`, and `serve`'s `args`. Where Python differs,
+  destination's `capabilities()` answering its `Capabilities`, `OpenContext`, its `Session` and
+  `TableWriter`, `WriteStats`, a commit's `CommitMeta`, `CommitKey`, `SegmentSet` and
+  `SegmentRange`, its `Receipt` and `Fence`, a connector class as `SourceConnector` and
+  `DestinationConnector` type it, a merge table's `MergeKey`, `ChangeColumns`, `RootKey` and
+  `HistoryColumns`, `to_arrow` of a table schema, the merge kit `rdlt.connector.merge` with
+  `Merged`, the failure codes, such as `COMMIT_STALE`, and `serve`'s `args`. Where Python differs,
   the language makes it: decorators for attributes, so `stream(...)` is called at run time to make a
   stream `streams()` answers, keywords for a builder's methods, a `ChangeOp` that is its code,
   exceptions for `Result`, named as exceptions are, so `InvalidConfig`, `Unauthorized` and
-  `InvalidData` are the kinds Rust calls `Config`, `Auth` and `Data`, generators for an emitter, and
-  a `StreamContext`, with its `Exclusion`, `Limits` and `Headroom`, for what a Rust read is told by
-  its partition and asks its emitter, given where a read names `ctx`, as a `partitions` or `plan` is
-  given the `StreamState` where it names `state`. A stream without a cursor is read in full alone,
-  since Python's cursor is optional and Rust's is not. A stream's schema is any Arrow schema, read
-  through the C Data Interface, so no one Arrow library is required, and refused where it is
-  declared where Rust has no table schema for it. Rust checks what a source answers as it checks a
-  Rust source's, so a catalog, a plan or a change batch is refused with Rust's own error and code.
-  How a stream's rows land is the pipeline's to say, as for a Rust source. `@stream` makes a
-  function a stream as it makes a method one, under the same rules, so a function moves into a
-  `@source` class taking `self`, as its `partitions=`, `plan=` and `committed=` callables then do
-  too. A pipeline reads its stream functions in process, as the streams of one source,
-  `io.rapidbyte.functions`, which has no configuration, and is not served, installed or certified: a
-  stream that needs those is a class's.
+  `InvalidData` are the kinds Rust calls `Config`, `Auth` and `Data`, a plain function on a thread
+  of its own for an async method, generators for an emitter, and a `StreamContext`, with its
+  `Exclusion`, `Limits` and `Headroom`, for what a Rust read is told by its partition and asks its
+  emitter, given where a read names `ctx`, as a `partitions` or `plan` is given the `StreamState`
+  where it names `state`. A stream without a cursor is read in full alone, since Python's cursor is
+  optional and Rust's is not. A stream's schema is any Arrow schema, read through the C Data
+  Interface, so no one Arrow library is required, and refused where it is declared where Rust has no
+  table schema for it. Rust checks what a source answers as it checks a Rust source's, so a catalog,
+  a plan or a change batch is refused with Rust's own error and code. How a stream's rows land is
+  the pipeline's to say, as for a Rust source. `@stream` makes a function a stream as it makes a
+  method one, under the same rules, so a function moves into a `@source` class taking `self`, as its
+  `partitions=`, `plan=` and `committed=` callables then do too. A pipeline reads its stream
+  functions in process, as the streams of one source, `io.rapidbyte.functions`, which has no
+  configuration, and is not served, installed or certified: a stream that needs those is a class's.
 - **A class's streams are one answer.** Its `@stream` methods are its `streams()` written as
   declarations, so a class has one or the other, and one with both is refused where it is
   declared. `streams()` is asked once a connection, as the Rust SDK assembles a connection's
@@ -354,9 +376,18 @@ Rejected:
 - **Waking an async read through a daemon thread and `call_soon_threadsafe`**, as an awaited
   answer is handed over: every wait would take a daemon thread and the GIL, which a busy loop
   holds, so the read would fall behind the engine it waits for.
+- **Async methods beside a read, each awaited.** A coroutine run on an event loop of its call's own
+  ends with the call, so a client made in it, bound to that loop, could not serve the next call.
+  Keeping one loop a connection instead takes a thread for the loop for the connection's life, a
+  thread that must be torn down under this ADR's exit rules, and a read, on an event loop of its
+  own, still cannot share what the connection's loop holds. A plain method blocks on its own daemon
+  thread instead, which does what the loop would.
 - **Taking a session's turns in Python**, as each call reaches the wrapper on its daemon thread: two
   daemon threads reach it in no fixed order, the GIL and a free-threaded build alike, so a call the
   Rust SDK made before `close` could take its turn after it.
+- **Refusing an async method where it is declared.** A method of a session or a table writer, or
+  a stream's function given as a `partial` or a callable object, is known only as it is called,
+  so its answer is checked there, and that one check serves every method.
 - **pyo3-async-runtimes for awaitables.** It hands an awaited answer over by taking the GIL on the
   runtime's blocking pool, and given a runtime whose blocking pool were a daemon thread, the
   closure it hands over would still call asyncio beneath that thread's Rust frames.

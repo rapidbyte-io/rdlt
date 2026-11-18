@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, cast, runtime_checkable
 
 from rdlt import _native
+from rdlt._answers import answered
 from rdlt._weak import weakly_reached
 
 if TYPE_CHECKING:
@@ -18,6 +19,15 @@ Function: TypeAlias = "Callable[[pa.RecordBatch], object]"
 Passes: TypeAlias = "Mapping[str, str] | Iterable[str]"
 """The output columns a transform passes on as they arrived: each the input column of its name,
 or, as a mapping from output column to input column, the one it names."""
+
+
+@runtime_checkable
+class _Exported(Protocol):
+    """A batch any Arrow library hands over, as a transform answers it."""
+
+    def __arrow_c_array__(self, requested_schema: object | None = None) -> tuple[object, object]:
+        """The batch's schema and array, as the C Data Interface's capsules."""
+        ...
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
@@ -57,7 +67,11 @@ class Transform:
         reached = weakly_reached(self, f"transform {self.name!r}")
 
         def call(batch: pa.RecordBatch) -> object:
-            return reached().function(batch)
+            held = reached()
+            if held.filters:
+                return held.function(batch)
+            stated = "the batch reshaped, anything with __arrow_c_array__"
+            return answered(f"transform {held.name!r}", held.function(batch), _Exported, stated)
 
         return _native.Transform(self.name, call, self.filters, self.output, self.passes)
 
@@ -89,24 +103,27 @@ def _passed(passes: Passes | None) -> tuple[tuple[str, str], ...] | None:
     return tuple((name, name) for name in passes)
 
 
-def _mask(function: Function) -> Function:
-    """`function` with what it answers made a boolean array, one value a row."""
+def _mask(name: str, function: Function) -> Function:
+    """`function`, the filter `name`, with what it answers made a boolean array, one value a row."""
 
     def masked(batch: pa.RecordBatch) -> object:
         import pyarrow as pa  # noqa: PLC0415
 
-        answered: object = function(batch)
-        if isinstance(answered, pa.ChunkedArray):
-            answered = cast("pa.ChunkedArray[Any]", answered).combine_chunks()
-        if isinstance(answered, pa.Array):
-            array = cast("pa.Array[Any]", answered)
+        stated = "one boolean a row: an array, anything with __arrow_c_array__, or an iterable"
+        mask: object = answered(f"filter {name!r}", function(batch), (Iterable, _Exported), stated)
+        if isinstance(mask, _Exported) and not isinstance(mask, pa.Array):
+            mask = cast("object", pa.array(cast("Any", mask)))
+        if isinstance(mask, pa.ChunkedArray):
+            mask = cast("pa.ChunkedArray[Any]", mask).combine_chunks()
+        if isinstance(mask, pa.Array):
+            array = cast("pa.Array[Any]", mask)
             if pa.types.is_null(array.type):
                 return pa.nulls(len(array), pa.bool_())
             if array.type != pa.bool_():
-                message = f"a filter answered an array of {array.type}, not of booleans"
+                message = f"filter {name!r} answered an array of {array.type}, not of booleans"
                 raise TypeError(message)
             return cast("object", array)
-        return pa.array(cast("Iterable[Any]", answered), type=pa.bool_())
+        return pa.array(cast("Iterable[Any]", mask), type=pa.bool_())
 
     return masked
 
@@ -125,6 +142,7 @@ def filter(name: str | None = None) -> Callable[[Function], Transform]:  # noqa:
     """Makes a function a filter of the streams it is given to: it answers which rows to keep."""
 
     def made(function: Function) -> Transform:
-        return Transform(name or function.__name__, _mask(function), filters=True, output=None)
+        named = name or function.__name__
+        return Transform(named, _mask(named, function), filters=True, output=None)
 
     return made

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 from typing import Any, cast
 
 from rdlt import _native
+from rdlt._answers import answered, nothing
 from rdlt.connector._context import (
     Partition,
     PartitionPlan,
@@ -48,7 +49,7 @@ class Stream:
         plan: Callable[[StreamState], PartitionPlan] | None,
         *,
         stated: bool,
-        committed: Callable[[Committed], None] | None,
+        committed: Callable[[Committed], object] | None,
         acknowledged: Acknowledged | None,
         cursor_version: int,
         takes_context: bool,
@@ -130,7 +131,7 @@ class Stream:
         parsed = [
             (partition, None if of is None else _parsed(of, text)) for partition, text in cursors
         ]
-        self._committed(parsed)
+        nothing(f"committed= of stream {self._name!r}", self._committed(parsed))
 
     def acknowledged(self, partition: str) -> str | None:
         """Where the author's code says the stream stands for `partition`, as JSON.
@@ -140,47 +141,54 @@ class Stream:
         """
         if self._acknowledged is None:
             return None
-        found = self._acknowledged(partition)
-        if found is None:
-            return None
-        if self._cursor is None or not isinstance(found, self._cursor):
-            expected = "no cursor" if self._cursor is None else self._cursor.__name__
-            message = (
-                f"stream {self._name!r}: acknowledged= answered {type(found).__name__}: it "
-                f"answers the stream's cursor, {expected}, or None"
-            )
-            raise TypeError(message)
-        return found.model_dump_json()
+        of = self._cursor
+        found = answered(
+            f"acknowledged= of stream {self._name!r}",
+            self._acknowledged(partition),
+            type(None) if of is None else (of, type(None)),
+            f"the stream's cursor, {'none' if of is None else of.__name__}, or None",
+        )
+        return None if found is None else cast("Cursor", found).model_dump_json()
 
     def read(
         self, partition: str, cursor: str | None, context: _native.StreamContext
     ) -> Iterable[object] | AsyncIterable[object]:
-        """Opens the read, its cursor parsed and the `ctx` it names built."""
+        """Opens the read, its cursor parsed and the `ctx` it names built.
+
+        Raises:
+            TypeError: the read answered neither an iterable nor an async iterable.
+        """
         del partition
         arguments: list[object] = []
         if self._cursor is not None:
             arguments.append(_parsed(self._cursor, cursor))
         keywords: dict[str, object] = {"ctx": StreamContext(context)} if self._takes_context else {}
-        return self._read(*arguments, **keywords)
+        opened: object = answered(
+            f"the read of stream {self._name!r}",
+            self._read(*arguments, **keywords),
+            (Iterable, AsyncIterable),
+            "what it reads, as a generator or an async generator yields it",
+        )
+        return cast("Iterable[object] | AsyncIterable[object]", opened)
 
 
-def as_plan(stream: str, answered: object, *, whole: bool) -> PartitionPlan:
-    """What a stream's `plan=`, where `whole`, or its `partitions=` answered, as a plan.
+def as_plan(stream: str, value: object, *, whole: bool) -> PartitionPlan:
+    """What a stream's `plan=`, where `whole`, or its `partitions=` answered, `value`, as a plan.
 
     `plan=` answers a whole plan; `partitions=` its partitions, of the phase the state records.
 
     Raises:
-        TypeError: `plan=` answered no `PartitionPlan`, or `partitions=` one string.
+        TypeError: `plan=` answered no `PartitionPlan`, or `partitions=` no partitions.
     """
     if not whole:
-        return PartitionPlan(cast("Sequence[str | Partition]", answered))
-    if not isinstance(answered, PartitionPlan):
-        message = (
-            f"stream {stream!r}: plan= answered a {type(answered).__name__}: it answers a "
-            "PartitionPlan"
+        partitions: object = answered(
+            f"partitions= of stream {stream!r}",
+            value,
+            (Iterable,),
+            "the stream's partitions, each an id or a Partition",
         )
-        raise TypeError(message)
-    return answered
+        return PartitionPlan(cast("Sequence[str | Partition]", partitions))
+    return answered(f"plan= of stream {stream!r}", value, PartitionPlan, "a PartitionPlan")
 
 
 def _parsed(of: type[Cursor], cursor: str | None) -> Cursor:

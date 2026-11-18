@@ -18,6 +18,7 @@ from rdlt.connector._changes import (
     ChangeOp,
     changes,
 )
+from rdlt.connector._commit import CommitKey, CommitMeta, Receipt, SegmentRange, SegmentSet
 from rdlt.connector._config import Config
 from rdlt.connector._context import (
     Exclusion,
@@ -32,7 +33,7 @@ from rdlt.connector._context import (
 )
 from rdlt.connector._cursor import Cursor
 from rdlt.connector._declared import ConnectContext
-from rdlt.connector._destination import OpenContext, Opened, WriteStats, destination
+from rdlt.connector._destination import DestinationConnector, OpenContext, Opened, destination
 from rdlt.connector._failures import (
     COLUMN_MISSING,
     COMMIT_STALE,
@@ -52,7 +53,8 @@ from rdlt.connector._failures import (
 from rdlt.connector._landed import Answer, Fence, answer
 from rdlt.connector._secret import Secret
 from rdlt.connector._serve import acknowledging_source_factory, readable_destination_factory, serve
-from rdlt.connector._source import ReadStream, source, stream
+from rdlt.connector._session import Session, TableWriter, WriteStats
+from rdlt.connector._source import ReadStream, SourceConnector, source, stream
 from rdlt.connector._spec import Checkpointing, StreamSpec
 from rdlt.connector._tables import ChangeColumns, HistoryColumns, MergeKey, RootKey, to_arrow
 
@@ -71,11 +73,14 @@ __all__ = [
     "ChangeColumns",
     "ChangeOp",
     "Checkpointing",
+    "CommitKey",
+    "CommitMeta",
     "Config",
     "ConnectContext",
     "ConnectorError",
     "Cursor",
     "DeleteModes",
+    "DestinationConnector",
     "Exclusion",
     "Fence",
     "Fenced",
@@ -94,12 +99,18 @@ __all__ = [
     "PartitionState",
     "RateLimited",
     "ReadStream",
+    "Receipt",
     "RootKey",
     "SchemaChanges",
     "Secret",
+    "SegmentRange",
+    "SegmentSet",
+    "Session",
+    "SourceConnector",
     "StreamContext",
     "StreamSpec",
     "StreamState",
+    "TableWriter",
     "Transient",
     "Unauthorized",
     "Unsupported",

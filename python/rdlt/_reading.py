@@ -415,7 +415,7 @@ def _made(function: Callable[..., object], arguments: tuple[object, ...], answer
 
 
 def transformed(function: Callable[[pa.RecordBatch], object], batch: object) -> object:
-    """`function` over the Rust batch `batch`, its answer exported for Rust to read.
+    """`function`, a transform its `Transform` checks, over the Rust batch `batch`, exported.
 
     pyarrow releases the GIL inside both, and a thread whose interpreter exits as it takes the
     GIL back must have only Python beneath it.
@@ -423,14 +423,7 @@ def transformed(function: Callable[[pa.RecordBatch], object], batch: object) -> 
     import pyarrow as pa  # noqa: PLC0415
 
     answered = function(pa.record_batch(cast("Any", batch)))
-    export = getattr(answered, "__arrow_c_array__", None)
-    if export is None:
-        message = (
-            f"a transform answered {type(answered).__name__}: it must answer one batch, "
-            "anything with __arrow_c_array__"
-        )
-        raise TypeError(message)
-    return list(export())
+    return list(cast("Any", answered).__arrow_c_array__())
 
 
 def connected(

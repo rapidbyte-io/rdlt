@@ -3,24 +3,26 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 
 from rdlt import _native
+from rdlt._answers import answered, nothing
 from rdlt._weak import weakly_reached
 from rdlt.connector._capabilities import Capabilities
+from rdlt.connector._commit import Receipt
 from rdlt.connector._config import Config, validated
 from rdlt.connector._declared import Placement, built, declare, declared_as, package_version
+from rdlt.connector._session import NativeSession, Session
 from rdlt.model import Json, _parse
-
-T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
 class Opened:
-    """What a destination's `open` answers, beside its session.
+    """What a destination's `open` answers: its `Session`, and what the open found.
 
     `epoch` is the epoch the open set, above every earlier open's of the pipeline, kept where
     a later open finds it; `landed` the receipt of the last commit that landed, as the session's
@@ -28,9 +30,9 @@ class Opened:
     `{"key": ..., "value": ...}`, its value the JSON text a commit gave it.
     """
 
-    session: Any
+    session: Session
     epoch: int
-    landed: Mapping[str, Json] | None
+    landed: Receipt | None
     state: Sequence[Mapping[str, Json]]
 
 
@@ -41,12 +43,24 @@ class OpenContext:
     pipeline: str
 
 
-@dataclass(frozen=True, slots=True)
-class WriteStats:
-    """What a table writer's `flush` staged: its rows, and its bytes as the destination counts."""
+class DestinationConnector(Protocol):
+    """A destination connector's class, as `@destination` takes it and the Rust SDK names it.
 
-    rows: int
-    bytes: int
+    Its instance answers `check()` and `open(context)` as typed here, and, where it has them,
+    `capabilities()` a `Capabilities` and `published(table)` the `pyarrow.RecordBatch`es a table
+    published.
+    """
+
+    def check(self) -> None:
+        """Verifies the destination can be opened, raising where it cannot."""
+        ...
+
+    def open(self, context: OpenContext, /) -> Opened:
+        """Opens a session for `context`'s pipeline at its next epoch."""
+        ...
+
+
+T = TypeVar("T", bound=DestinationConnector)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,12 +83,19 @@ def destination(
 
     The class is built from its validated `config`, and a `ConnectContext` as `context` where its
     `__init__` names one, asked what it can store with `capabilities()`, checked with `check()`,
-    and opened once a load with `open(context)`, an `OpenContext`, answering `Opened`; for
-    certification, `published(table)` yields the `pyarrow.RecordBatch`es a table published. A
-    session has `apply_schema(change)`, `writer(table)`, `discard_staged()`, `commit(meta)`
-    answering its receipt, and `close()`; a table writer has `write(segment, batch)`, taking a
-    `pyarrow.RecordBatch`, and `flush()`, answering the `WriteStats` it staged. Changes, tables,
-    commits and receipts are the Rust SDK's types as mappings, as their JSON is.
+    which answers `None` and raises where the destination cannot be opened, and opened once a
+    load with `open(context)`, an `OpenContext`, answering `Opened`; for certification,
+    `published(table)` yields the `pyarrow.RecordBatch`es a table published. `Opened.session` is
+    a `Session`, whose `writer(table)` answers a `TableWriter`: their annotations say what each
+    method answers. A commit is a `CommitMeta`, its segment sets `SegmentSet`s, and answers a
+    `Receipt`; changes and tables are the Rust SDK's types as mappings, as their JSON is.
+
+    Each method is a plain function, which rdlt calls on a thread of its own, where it may block.
+    One that answers anything else than it states fails the call, as an internal error naming it:
+    a coroutine, as a method written `async def` answers, a generator, as one with a `yield`
+    does, or `False` where it answers `None`. Where the `Opened` an open answers cannot be read,
+    its session is closed. A session whose open the engine stopped waiting for is let go, not
+    closed, as a Rust session is dropped: its finalizers release what it holds.
 
     `capabilities()` answers a `Capabilities`, as `Capabilities.minimal()` starts it, and is
     `Capabilities.minimal()` where the class has none, as a Rust destination's `capabilities`
@@ -92,10 +113,11 @@ def destination(
       session opened is never published: its flush raises `Fenced`, or keeps it apart.
     - `commit(meta)` decides with `Fence(epoch, landed).decide(meta)`, from the fence row it reads
       under its transaction's write lock. Where it applies, it publishes what its epoch staged in
-      `meta["segments"]`, removes what was staged in `meta["abandoned"]`, applies
-      `meta["state_delta"]` and writes its receipt into the fence row, all in one transaction.
-      The receipt is `{"key": meta["key"], "committed_at": {"secs_since_epoch": s,
-      "nanos_since_epoch": n}, "rows": rows, "bytes": size}`, the rows and bytes it published.
+      a segment of `meta["segments"]`, as `segment in meta["segments"]` asks, removes what was
+      staged in `meta["abandoned"]`, applies `meta["state_delta"]` and writes its receipt into
+      the fence row, all in one transaction. The receipt is `{"key": meta["key"],
+      "committed_at": {"secs_since_epoch": s, "nanos_since_epoch": n}, "rows": rows, "bytes":
+      size}`, the rows and bytes it published.
     - A table belongs to the pipeline that created it: another's schema change or writer raises
       `InvalidConfig(..., code=TABLE_OWNED)`, and a column declared at another type than the
       table holds raises `InvalidData(..., code=SCHEMA_CONFLICT)`.
@@ -147,61 +169,6 @@ def declaration(connector: type) -> _Declared:
     return cast("_Declared", declared)
 
 
-class _Writer:
-    """An author's table writer, as the native side calls it, each call in the turn Rust gave it."""
-
-    def __init__(self, writer: Any) -> None:  # noqa: ANN401 - the author's writer
-        self._writer = writer
-
-    def write(self, segment: int, batch: object) -> None:
-        """Stages the native batch `batch`, read as pyarrow's, sharing its buffers."""
-        import pyarrow as pa  # noqa: PLC0415
-
-        self._writer.write(segment, pa.record_batch(cast("Any", batch)))
-
-    def flush(self) -> tuple[int, int]:
-        """The rows and bytes the flush staged."""
-        stats = self._writer.flush()
-        if not isinstance(stats, WriteStats):
-            message = (
-                f"flush() answered {type(stats).__name__}: it answers rdlt.connector.WriteStats"
-            )
-            raise TypeError(message)
-        return stats.rows, stats.bytes
-
-
-class _Session:
-    """An author's session, as the native side calls it: arguments and answers as the SDK's JSON.
-
-    Each call comes in the turn Rust gave it as the engine made it: a call the engine stopped
-    waiting for still runs, and holds its turn until it returns.
-    """
-
-    def __init__(self, session: Any) -> None:  # noqa: ANN401 - the author's session
-        self._session = session
-
-    def apply_schema(self, change: str) -> None:
-        """Applies the schema change `change`."""
-        self._session.apply_schema(_parse(change))
-
-    def writer(self, table: str) -> _Writer:
-        """A table writer of `table`."""
-        return _Writer(self._session.writer(_parse(table)))
-
-    def discard_staged(self) -> None:
-        """Removes what older sessions staged."""
-        self._session.discard_staged()
-
-    def commit(self, meta: str) -> str:
-        """Commits `meta`, answering its receipt."""
-        receipt = self._session.commit(_parse(meta))
-        return json.dumps(dict(receipt))
-
-    def close(self) -> None:
-        """Ends the session."""
-        self._session.close()
-
-
 class _Connected:
     """One connection of a class's destination, as the native side holds it.
 
@@ -215,52 +182,96 @@ class _Connected:
     def _instance(self) -> Any:  # noqa: ANN401 - the author's class
         return self._placement().connections[self]
 
+    def _called(self, method: str) -> str:
+        """The instance's `method`, as a failure names it."""
+        return f"{self._placement().declared.connector.__name__}.{method}()"
+
     def capabilities(self) -> str:
         """What the instance says it can store, as the Rust SDK's `Capabilities` JSON.
 
         Raises:
             TypeError: it answered what is no `Capabilities`.
         """
-        instance = self._instance()
-        said = getattr(instance, "capabilities", None)
-        found = Capabilities.minimal() if said is None else said()
-        if not isinstance(found, Capabilities):
-            message = (
-                f"capabilities() answered {type(found).__name__}: it answers "
-                "rdlt.connector.Capabilities"
+        said = getattr(self._instance(), "capabilities", None)
+        found = (
+            Capabilities.minimal()
+            if said is None
+            else answered(
+                self._called("capabilities"), said(), Capabilities, "rdlt.connector.Capabilities"
             )
-            raise TypeError(message)
+        )
         return found._json()
 
     def check(self) -> None:
         """Verifies the destination can be opened."""
-        self._instance().check()
+        nothing(self._called("check"), self._instance().check())
 
-    def open(self, pipeline: str) -> tuple[_Session, str]:
-        """Opens a session for `pipeline`, with what the open answers beside it as JSON."""
-        opened = self._instance().open(OpenContext(pipeline))
-        if not isinstance(opened, Opened):
-            message = f"open() answered {type(opened).__name__}: it answers rdlt.connector.Opened"
-            raise TypeError(message)
-        landed = None if opened.landed is None else dict(opened.landed)
-        state = [dict(record) for record in opened.state]
-        told = {"epoch": opened.epoch, "landed": landed, "state": state}
-        return _Session(opened.session), json.dumps(told)
+    def open(self, pipeline: str) -> tuple[NativeSession, str]:
+        """Opens a session for `pipeline`, with what the open answers beside it as JSON.
+
+        Raises:
+            TypeError: it answered no `Opened`, or one rdlt cannot read, whose session it closed.
+        """
+        called = self._called("open")
+        opened = answered(
+            called, self._instance().open(OpenContext(pipeline)), Opened, "rdlt.connector.Opened"
+        )
+        try:
+            told = _told(opened)
+        except Exception as unreadable:
+            _close_after(opened.session)
+            message = f"{called} answered an Opened rdlt cannot read: {unreadable}"
+            raise TypeError(message) from unreadable
+        return NativeSession(opened.session), told
 
     def published(self, table: str) -> list[list[object]]:
         """Each batch `table` published, exported as the C Data Interface's capsules."""
-        batches = cast("Iterable[object]", self._instance().published(_parse(table)))
+        batches = cast(
+            "Iterable[object]",
+            answered(
+                self._called("published"),
+                self._instance().published(_parse(table)),
+                Iterable,
+                "the batches the table published",
+            ),
+        )
         exported: list[list[object]] = []
         for batch in batches:
             export = getattr(batch, "__arrow_c_array__", None)
             if export is None:
                 message = (
-                    f"published() yielded {type(batch).__name__}: it yields batches, anything "
-                    "with __arrow_c_array__"
+                    f"{self._called('published')} yielded {type(batch).__name__}: it yields "
+                    "batches, anything with __arrow_c_array__"
                 )
                 raise TypeError(message)
             exported.append(list(cast("Callable[[], Iterable[object]]", export)()))
         return exported
+
+
+def _told(opened: Opened) -> str:
+    """What `opened` says beside its session, as the native side reads it.
+
+    Raises:
+        TypeError: its session is no `Session`, or what it says is no JSON.
+        ValueError: its receipt or a state record is no mapping.
+    """
+    if not isinstance(cast("object", opened.session), Session):
+        message = "its session has no apply_schema, writer, discard_staged, commit or close"
+        raise TypeError(message)
+    landed = None if opened.landed is None else dict(opened.landed)
+    state = [dict(record) for record in opened.state]
+    return json.dumps({"epoch": opened.epoch, "landed": landed, "state": state})
+
+
+def _close_after(session: object) -> None:
+    """Closes `session`, whose open failed after it was made, so it lets go of what it holds.
+
+    The open's failure matters more than any of closing, which is let go.
+    """
+    close = getattr(session, "close", None)
+    if callable(close):
+        with contextlib.suppress(Exception):
+            nothing("close()", close())
 
 
 def placed(connector: type) -> tuple[_native.DestinationFactory, Placement[_Declared]]:
