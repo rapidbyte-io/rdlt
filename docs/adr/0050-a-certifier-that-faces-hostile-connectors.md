@@ -30,8 +30,9 @@ falls short four ways:
     source's streams each in the first of incremental, full and change reads it serves.
   - Unobserved is everything else that is not a pass or a failure: nothing reads back what a
     destination published, a source sent no checkpoint, a read ended within its first credit, no
-    kill reached the connector, the source holds more than a clause reads, a destination keeps
-    history alone or names shorter than `D-NAMES` writes. None counts toward a pass.
+    kill reached the connector, the source holds more than a clause reads or cannot read again a
+    stream `K-SOURCE` loads, a destination keeps history alone or names shorter than `D-NAMES`
+    writes. None counts toward a pass.
   - A report's verdict is passed, incomplete or failed. It passes when no clause failed, none
     was unobserved and one passed. The binary exits 0, 2 or 1; `--require partial` exits 0 for
     an incomplete run in which a clause passed, and the report says incomplete all the same.

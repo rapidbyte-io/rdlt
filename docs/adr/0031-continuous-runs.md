@@ -101,7 +101,8 @@ they are built apart.
     with the change source's slots).
   - Partitions may be added later (`partitions_later`) or retired (`partitions_retired`), may end
     at their head (`bounded`), and may forget what their group committed (`replayable: false`).
-  - It is certified, `S-ACK` included, replayable or not.
+  - It passes the source clauses, `S-ACK` included, replayable or not; `K-SOURCE` is unobserved
+    where it forgets (ADR 0022).
 - **The simulation's `streaming` feature**, drawn apart from the seed's generator:
   - The rows of the streams read incrementally in every phase arrive as runs follow them, and
     those whose partitions never end are followed (ADR 0012).

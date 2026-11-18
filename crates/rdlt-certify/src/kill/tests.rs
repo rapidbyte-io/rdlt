@@ -385,6 +385,45 @@ fn every_stream_an_engine_reads_is_loaded_as_it_reads_it() {
 }
 
 #[test]
+fn a_source_is_not_observed_where_it_cannot_read_again_a_stream_the_clause_loads() {
+    use rdlt_connector::{Catalog, ReadMode, StreamName, StreamSpec};
+
+    use super::source::unrepeatable;
+    let stream = |name: &str, modes: &[ReadMode], replayable: bool| {
+        StreamSpec::new(StreamName::new(name).expect("a valid name"))
+            .with_read_modes(modes.iter().copied())
+            .with_replayable(replayable)
+    };
+    let (full, incremental, changes) = (ReadMode::Full, ReadMode::Incremental, ReadMode::Cdc);
+    let cases = [
+        (vec![stream("events", &[incremental], true)], false),
+        (vec![stream("events", &[incremental], false)], true),
+        (vec![stream("events", &[changes], false)], true),
+        // The engine refuses a full read of it, which is the only read it declares.
+        (vec![stream("events", &[full], false)], true),
+        (
+            vec![
+                stream("events", &[incremental], true),
+                stream("queue", &[incremental], false),
+            ],
+            true,
+        ),
+        // A stream no load reads is no load's to refuse.
+        (
+            vec![
+                stream("events", &[incremental], true),
+                stream("queue", &[], false),
+            ],
+            false,
+        ),
+    ];
+    for (streams, unobserved) in cases {
+        let catalog = Catalog::new(streams).expect("distinct streams");
+        assert_eq!(unrepeatable(&catalog).is_some(), unobserved, "{catalog:?}");
+    }
+}
+
+#[test]
 fn a_load_proves_a_source_resumes_only_once_a_read_of_it_starts_after_a_kill() {
     let kills = rdlt_host::Kills::new();
     let resumed = Resumed::new(Arc::new(Cursors::of(1)), &kills);
