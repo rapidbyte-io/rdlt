@@ -14,10 +14,12 @@ import pytest
 import rdlt
 from rdlt.connector import (
     Capabilities,
+    CommitMeta,
     Config,
     InvalidData,
     OpenContext,
     Opened,
+    Receipt,
     StreamContext,
     WriteStats,
     destination,
@@ -121,7 +123,7 @@ class _StagingSession:
         """As the memory destination discards."""
         self.session.discard_staged()
 
-    def commit(self, meta: Mapping[str, Json]) -> Mapping[str, Json]:
+    def commit(self, meta: CommitMeta) -> Receipt:
         """As the memory destination commits."""
         return self.session.commit(meta)
 

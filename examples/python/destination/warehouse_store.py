@@ -19,10 +19,13 @@ import pyarrow as pa
 
 from rdlt.connector import (
     TABLE_OWNED,
+    CommitMeta,
     Fenced,
     InvalidConfig,
     InvalidData,
     MergeKey,
+    Receipt,
+    SegmentSet,
     merge,
     to_arrow,
 )
@@ -75,12 +78,6 @@ def _batch(kept: bytes) -> pa.RecordBatch:
     return pa.ipc.open_stream(kept).read_next_batch()
 
 
-def _within(segment: int, ranges: Json) -> bool:
-    """Whether `segment` is in `ranges`, a segment set: its runs of consecutive ids."""
-    spans = cast("list[dict[str, int]]", ranges)
-    return any(span["first"] <= segment <= span["last"] for span in spans)
-
-
 def made(path: str) -> None:
     """Makes the store's tables at `path`, where they are not."""
     with closing(connected(path)) as database:
@@ -128,9 +125,7 @@ class Store:
     def __init__(self, database: sqlite3.Connection) -> None:
         self.database = database
 
-    def opened(
-        self, pipeline: str
-    ) -> tuple[int, Mapping[str, Json] | None, list[Mapping[str, Json]]]:
+    def opened(self, pipeline: str) -> tuple[int, Receipt | None, list[Mapping[str, Json]]]:
         """Raises `pipeline`'s epoch above every earlier open's, durably, answering what it opens.
 
         That is the epoch, the receipt its fence row keeps and the pipeline's state records.
@@ -151,12 +146,12 @@ class Store:
         state = cast("list[Mapping[str, Json]]", [json.loads(record) for (record,) in records])
         return epoch, landed, state
 
-    def fence(self, pipeline: str) -> tuple[int, Mapping[str, Json] | None]:
+    def fence(self, pipeline: str) -> tuple[int, Receipt | None]:
         """`pipeline`'s fence row: its epoch and the receipt of its last commit that landed."""
         epoch, landed = self.database.execute(
             "select epoch, landed from fence where pipeline = ?", (pipeline,)
         ).fetchone()
-        return epoch, None if landed is None else cast("Mapping[str, Json]", json.loads(landed))
+        return epoch, None if landed is None else cast("Receipt", json.loads(landed))
 
     def epoch(self, pipeline: str) -> int:
         """`pipeline`'s newest epoch, 0 before its first open."""
@@ -164,12 +159,10 @@ class Store:
         found = row.fetchone()
         return 0 if found is None else int(found[0])
 
-    def committed(
-        self, pipeline: str, meta: Mapping[str, Json], receipt: Mapping[str, Json]
-    ) -> None:
+    def committed(self, pipeline: str, meta: CommitMeta, receipt: Receipt) -> None:
         """Applies `meta`'s state changes and keeps `receipt` as the last commit's that landed."""
-        for change in json_list(meta["state_delta"]):
-            ((kind, detail),) = json_object(change).items()
+        for change in meta["state_delta"]:
+            ((kind, detail),) = change.items()
             if kind == "put":
                 record = json_object(detail)
                 row = (pipeline, str(record["key"]), json.dumps(record))
@@ -270,7 +263,7 @@ class Store:
             row = (name, kind, generation, _ipc(batch))
             self.database.execute("insert into kept values (?, ?, ?, ?)", row)
 
-    def staged(self, name: str, pipeline: str, epoch: int, segments: Json) -> Staged:
+    def staged(self, name: str, pipeline: str, epoch: int, segments: SegmentSet) -> Staged:
         """What `pipeline`'s session at `epoch` staged in `name` in `segments`, in their order."""
         rows = self.database.execute(
             "select segment, generation, ipc from staged "
@@ -278,12 +271,10 @@ class Store:
             (name, pipeline, epoch),
         ).fetchall()
         return [
-            (generation, _batch(kept))
-            for segment, generation, kept in rows
-            if _within(segment, segments)
+            (generation, _batch(kept)) for segment, generation, kept in rows if segment in segments
         ]
 
-    def publish(self, pipeline: str, epoch: int, meta: Mapping[str, Json]) -> tuple[int, int]:
+    def publish(self, pipeline: str, epoch: int, meta: CommitMeta) -> tuple[int, int]:
         """Publishes what `meta`'s segments staged, answering the rows and bytes it published.
 
         Only what this session's epoch staged is published: an older session's, however late it
@@ -296,7 +287,7 @@ class Store:
             "select rowid, segment from staged where pipeline = ? and epoch = ?", (pipeline, epoch)
         ).fetchall()
         for rowid, segment in held:
-            if _within(segment, meta["segments"]) or _within(segment, meta["abandoned"]):
+            if segment in meta["segments"] or segment in meta["abandoned"]:
                 self.database.execute("delete from staged where rowid = ?", (rowid,))
         rows = size = 0
         for name, staged, merged in plans:
@@ -322,25 +313,25 @@ class Store:
             self.database.execute(
                 "update kept set kind = 'published', generation = null where tbl = ?", (name,)
             )
-        for dropped in json_list(meta["drop_tables"]):
-            name = str(json_object(dropped)["name"])
+        for dropped in meta["drop_tables"]:
+            name = str(dropped["name"])
             self.database.execute("delete from tables where name = ?", (name,))
             self.database.execute("delete from names where name = ?", (name,))
             self.database.execute("delete from kept where tbl = ?", (name,))
             self.database.execute("delete from staged where tbl = ?", (name,))
         return rows, size
 
-    def _owns(self, pipeline: str, meta: Mapping[str, Json]) -> None:
+    def _owns(self, pipeline: str, meta: CommitMeta) -> None:
         """Refuses `meta` where a table it swaps a generation into, or drops, is another's."""
         swapped = [path for path, _ in cast("list[tuple[Json, int]]", meta["finish_generations"])]
         names = [self.named(pipeline, path) for path in swapped]
-        dropped = [str(json_object(table)["name"]) for table in json_list(meta["drop_tables"])]
+        dropped = [str(table["name"]) for table in meta["drop_tables"]]
         for name in [*names, *dropped]:
             if name is not None and self.table(name) is not None:
                 self.owned(pipeline, name)
 
     def _plans(
-        self, pipeline: str, epoch: int, meta: Mapping[str, Json]
+        self, pipeline: str, epoch: int, meta: CommitMeta
     ) -> list[tuple[str, Staged, merge.Merged | None]]:
         """What publishing `meta` does to each table: what it staged, and a merge table's rows.
 
@@ -351,8 +342,7 @@ class Store:
             return self.staged(name, pipeline, epoch, meta["segments"])
 
         children = {
-            str(json_object(child)["table"]): cast("MergeKey", json_object(child)["merge"])
-            for child in json_list(meta["child_tables"])
+            str(child["table"]): cast("MergeKey", child["merge"]) for child in meta["child_tables"]
         }
         plans: list[tuple[str, Staged, merge.Merged | None]] = []
         for (name,) in self.database.execute("select name from tables order by name").fetchall():

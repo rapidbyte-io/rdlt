@@ -24,6 +24,7 @@ import pyarrow as pa
 from rdlt.connector import (
     SCHEMA_CONFLICT,
     Capabilities,
+    CommitMeta,
     Config,
     DeleteModes,
     Fence,
@@ -32,6 +33,7 @@ from rdlt.connector import (
     MergeKey,
     OpenContext,
     Opened,
+    Receipt,
     WriteModes,
     WriteStats,
     destination,
@@ -183,7 +185,7 @@ class _Session:
         with transaction(self.path) as store:
             store.discarded(self.pipeline, self.epoch)
 
-    def commit(self, meta: Mapping[str, Json]) -> Mapping[str, Json]:
+    def commit(self, meta: CommitMeta) -> Receipt:
         """Publishes `meta`'s segments with its state, in one transaction with its receipt.
 
         Only what this session's epoch staged is published, so what an older session's abandoned
@@ -194,7 +196,7 @@ class _Session:
             landed = Fence(epoch, kept).decide(meta)
             if landed is not None:
                 return landed
-            key = json_object(meta["key"])
+            key = meta["key"]
             if key["epoch"] != self.epoch:
                 message = (
                     f"a session of epoch {self.epoch} cannot apply commit {key['seq']} "
@@ -203,7 +205,7 @@ class _Session:
                 raise Fenced(message)
             rows, size = store.publish(self.pipeline, self.epoch, meta)
             now = time.time_ns()
-            receipt: dict[str, Json] = {
+            receipt: Receipt = {
                 "key": meta["key"],
                 "committed_at": {
                     "secs_since_epoch": now // 1_000_000_000,

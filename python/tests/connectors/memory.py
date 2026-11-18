@@ -18,6 +18,7 @@ import pyarrow as pa
 from rdlt.connector import (
     SCHEMA_CONFLICT,
     TABLE_OWNED,
+    CommitMeta,
     Config,
     Fence,
     Fenced,
@@ -25,6 +26,7 @@ from rdlt.connector import (
     InvalidData,
     OpenContext,
     Opened,
+    Receipt,
     WriteStats,
     destination,
 )
@@ -47,7 +49,7 @@ class _Pipeline:
     """A pipeline's fence row and state: its newest epoch, its last receipt, its records."""
 
     epoch: int = 0
-    landed: dict[str, Json] | None = None
+    landed: Receipt | None = None
     state: dict[str, dict[str, Json]] = field(default_factory=dict[str, dict[str, Json]])
 
 
@@ -92,12 +94,6 @@ def _column(nodes: Json) -> tuple[str, Json]:
     """A column's name and type, from its field: the field's nodes, its root naming it."""
     root, *nested = _list(nodes)
     return str(_object(root)["name"]), [_object(root)["type"], *nested]
-
-
-def _within(segment: int, ranges: Json) -> bool:
-    """Whether `segment` is in `ranges`, a segment set: its runs of consecutive ids."""
-    spans = cast("list[dict[str, int]]", ranges)
-    return any(span["first"] <= segment <= span["last"] for span in spans)
 
 
 class MemoryConfig(Config):
@@ -149,7 +145,7 @@ class _Session:
                 if key[0] == self.pipeline and key[1] < self.epoch:
                     del self.store.staged[key]
 
-    def commit(self, meta: Mapping[str, Json]) -> Mapping[str, Json]:
+    def commit(self, meta: CommitMeta) -> Receipt:
         with self.store.lock:
             fence = self.store.pipelines[self.pipeline]
             landed = Fence(fence.epoch, fence.landed).decide(meta)
@@ -157,21 +153,21 @@ class _Session:
                 return landed
             rows = size = 0
             for key in [key for key in self.store.staged if key[:2] == (self.pipeline, self.epoch)]:
-                if _within(key[2], meta["segments"]):
+                if key[2] in meta["segments"]:
                     for name, batch in self.store.staged.pop(key):
                         self.store.tables[name].published.append(batch)
                         rows, size = rows + batch.num_rows, size + batch.nbytes
-                elif _within(key[2], meta["abandoned"]):
+                elif key[2] in meta["abandoned"]:
                     del self.store.staged[key]
-            for change in _list(meta["state_delta"]):
-                ((kind, detail),) = _object(change).items()
+            for change in meta["state_delta"]:
+                ((kind, detail),) = change.items()
                 if kind == "put":
                     record = _object(detail)
                     fence.state[str(record["key"])] = record
                 else:
                     fence.state.pop(str(detail), None)
             now = time.time_ns()
-            receipt: dict[str, Json] = {
+            receipt: Receipt = {
                 "key": meta["key"],
                 "committed_at": {
                     "secs_since_epoch": now // 1_000_000_000,

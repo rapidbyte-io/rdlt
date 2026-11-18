@@ -309,7 +309,11 @@ document names a transform its host registered with `host.transform("name", func
 `{"code": "name"}`, and `rdlt.testing.certify_transform` runs the transform clauses against one.
 
 **Connectors.** `rdlt.connector` writes a connector as a class, in the Rust SDK's words.
-Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, beneath it.
+Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, beneath it. Each
+method, and each function a stream is given, is a plain function rdlt calls on a thread of its
+own, where it may block; a stream's read alone may be async, as an async generator. One that
+answers anything but what its docs state, a coroutine, a generator where no iterable is stated,
+or `False` where `None` is, fails the call, naming the method.
 
 - **Sources.** `@source` takes its configuration, a pydantic model in which a credential is a
   `Secret`, which the class's `__init__` takes, with a `ConnectContext` where it names `context`.
@@ -354,18 +358,20 @@ Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, ben
 - **Destinations.** `@destination` takes its configuration. Its instance's `capabilities()` answers
   what it can store, a `Capabilities`, which `Capabilities.minimal()` starts and which it is where
   the class has none, as a Rust destination's `capabilities` does; capabilities Rust's cannot hold,
-  as no writers, are refused where they are made. Its `open(context)` answers a session whose table
-  writers stage what a commit publishes, each `flush()` answering `WriteStats`; a commit decides
-  with `Fence(epoch, landed).decide(meta)`. A session's calls reach the class one at a time, in the
-  order the Rust SDK made them where it made them one after another, and so do its writers' where it
-  runs one writer, so it needs no lock of its own; one whose `capabilities()` says it runs more has
-  its writers called at once, each writer's calls one at a time, and `commit` and `close` wait until
-  every call made before them returned. A merge table is merged as a Rust destination merges one, by
-  `rdlt.connector.merge`: `merge_sparse(to_arrow(schema), published, buried, incoming, key)` runs
-  Rust's merge, with the GIL released, over any Arrow handed to it, `key` the `MergeKey` in
-  `table["merge"]`, and `read_back` gives a reader every column.
-  [`examples/python/destination`](examples/python/destination) is one that writes every way the
-  engine has, certified with every destination clause.
+  as no writers, are refused where they are made. Its `open(context)` answers an `Opened` holding a
+  `Session` whose `TableWriter`s stage what a commit publishes, each `flush()` answering
+  `WriteStats`. A commit is told a `CommitMeta`, whose `segments` and `abandoned` are `SegmentSet`s,
+  so `segment in meta["segments"]` says whether it publishes a segment; it decides with
+  `Fence(epoch, landed).decide(meta)` and answers its `Receipt`. A session's calls reach the class
+  one at a time, in the order the Rust SDK made them where it made them one after another, and so do
+  its writers' where it runs one writer, so it needs no lock of its own; one whose `capabilities()`
+  says it runs more has its writers called at once, each writer's calls one at a time, and `commit`
+  and `close` wait until every call made before them returned. A merge table is merged as a Rust
+  destination merges one, by `rdlt.connector.merge`:
+  `merge_sparse(to_arrow(schema), published, buried, incoming, key)` runs Rust's merge, with the GIL
+  released, over any Arrow handed to it, `key` the `MergeKey` in `table["merge"]`, and `read_back`
+  gives a reader every column. [`examples/python/destination`](examples/python/destination) is one
+  that writes every way the engine has, certified with every destination clause.
 - **Errors.** `ConnectorError` and its kinds, such as `Transient` and `RateLimited(retry_after=)`,
   say what kind of failure the connector met. `InvalidConfig`, `Unauthorized` and `InvalidData`
   are Rust's `Config`, `Auth` and `Data`, and `COMMIT_STALE`, `TABLE_OWNED` and the rest are its

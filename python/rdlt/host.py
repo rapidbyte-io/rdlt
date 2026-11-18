@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import os
 import threading
 from collections.abc import Callable, Sequence
@@ -59,7 +60,11 @@ class _SecretStore:
         reached = weakly_reached(self, "this host's secret store")
 
         def answer(name: str) -> str | None:
-            return reached()._answer(name)
+            found = cast("object", reached()._answer(name))
+            # Refused as no text: closed, so its body never runs and it is never left unawaited.
+            if inspect.iscoroutine(found):
+                found.close()
+            return cast("str | None", found)
 
         return answer
 

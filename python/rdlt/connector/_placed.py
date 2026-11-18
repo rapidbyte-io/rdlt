@@ -13,6 +13,7 @@ from functools import partial
 from typing import Any, cast
 
 from rdlt import _native
+from rdlt._answers import answered, nothing
 from rdlt._weak import weakly_reached
 from rdlt.connector._config import validated
 from rdlt.connector._context import PartitionPlan, StreamState
@@ -70,15 +71,12 @@ class _Connected:
         Raises:
             TypeError: it answered something other than a sequence of `StreamSpec`s.
         """
-        answered = self._instance().discover()
-        specs: list[object] = [] if isinstance(answered, str) else list(answered)
-        if isinstance(answered, str) or not all(isinstance(spec, StreamSpec) for spec in specs):
-            message = (
-                f"{self._declared().connector.__name__}.discover() answers a sequence of "
-                "StreamSpecs, one a stream"
-            )
-            raise TypeError(message)
-        return json.dumps([described(cast("StreamSpec", spec)) for spec in specs])
+        called = f"{self._declared().connector.__name__}.discover()"
+        stated = "a StreamSpec for each stream"
+        specs = cast(
+            "Iterable[object]", answered(called, self._instance().discover(), Iterable, stated)
+        )
+        return json.dumps([described(answered(called, spec, StreamSpec, stated)) for spec in specs])
 
     def _instance(self) -> Any:  # noqa: ANN401 - the author's class
         return self._placement().connections[self]
@@ -91,24 +89,18 @@ class _Connected:
 
     def check(self) -> None:
         """Verifies the source can read."""
-        self._instance().check()
+        nothing(f"{self._declared().connector.__name__}.check()", self._instance().check())
 
 
-def _found(connector: type, answered: object) -> tuple[ReadStream, ...]:
-    """What `connector`'s `streams()` answered, the streams it reads.
+def _found(connector: type, value: object) -> tuple[ReadStream, ...]:
+    """What `connector`'s `streams()` answered, `value`, the streams it reads.
 
     Raises:
-        TypeError: it answered something other than a sequence of streams `stream(...)` made.
+        TypeError: it answered something other than the streams `stream(...)` made.
     """
-    found: list[object] = (
-        [] if isinstance(answered, str) else list(cast("Iterable[object]", answered))
-    )
-    if isinstance(answered, str) or not all(isinstance(made, ReadStream) for made in found):
-        message = (
-            f"{connector.__name__}.streams() answers a sequence of the streams stream(...) makes"
-        )
-        raise TypeError(message)
-    return tuple(cast("list[ReadStream]", found))
+    called, stated = f"{connector.__name__}.streams()", "the streams stream(...) makes"
+    found = cast("Iterable[object]", answered(called, value, Iterable, stated))
+    return tuple(answered(called, made, ReadStream, stated) for made in found)
 
 
 def _native_stream(
@@ -151,8 +143,8 @@ def _native_stream(
         answered = _given_state(bound(held.plan if whole else held.partitions), state)
         return as_plan(shown, answered, whole=whole)
 
-    def committed(cursors: Committed) -> None:
-        bound(reached().committed)(cursors)
+    def committed(cursors: Committed) -> object:
+        return bound(reached().committed)(cursors)
 
     def acknowledged(partition: str) -> Cursor | None:
         return bound(reached().acknowledged)(partition)

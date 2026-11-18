@@ -232,24 +232,6 @@ def test_streams_that_are_no_method_are_refused_where_they_are_declared() -> Non
                 """Nothing to check."""
 
 
-@pytest.mark.parametrize("method", ["streams", "discover"])
-def test_an_async_streams_or_discover_is_refused_where_it_is_declared(method: str) -> None:
-    async def answering(self: object) -> list[object]:
-        del self
-        return []
-
-    def streams(self: object) -> list[ReadStream]:
-        del self
-        return []
-
-    def check(self: object) -> None:
-        del self
-
-    body: dict[str, object] = {"check": check, "streams": streams, method: answering}
-    with pytest.raises(TypeError, match=f"{method}.*async"):
-        source(id="io.example.async", config=Config, version="1.0.0")(type("Async", (), body))
-
-
 class _Names(Config):
     names: tuple[str, ...] = ()
     count: int = 0

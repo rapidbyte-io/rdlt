@@ -487,8 +487,8 @@ fn the_readable_factory_reads_back_what_the_destination_answers() {
 }
 
 #[test]
-fn an_opened_session_rdlt_cannot_read_is_an_internal_error_naming_what_it_is() {
-    let (factory, _) = recorder(r#"{"epoch": 4, "landed": null}"#);
+fn an_opened_session_rdlt_cannot_read_is_closed_and_an_internal_error_naming_what_it_is() {
+    let (factory, recorded) = recorder(r#"{"epoch": 4, "landed": null}"#);
     let factory = factory.factory();
     let error = within(async {
         let destination = factory
@@ -502,6 +502,124 @@ fn an_opened_session_rdlt_cannot_read_is_an_internal_error_naming_what_it_is() {
     });
     assert_eq!(error.kind(), ConnectorErrorKind::Internal);
     assert!(error.to_string().contains("an opened session"), "{error}");
+    let told = calls(&recorded);
+    assert_eq!(told.as_array().unwrap().last(), Some(&json!(["close"])));
+}
+
+/// A destination class as an author writes one, with `{write}` and `{check}` replaced by the
+/// bodies of its table writers' `write` and its `check`; what its writers and commits are told
+/// is kept in `told`.
+const AUTHORED: &str = "\
+import rdlt.connector as c
+told = []
+class Writer:
+    {write}
+    def flush(self):
+        return c.WriteStats(0, 0)
+class Session:
+    def apply_schema(self, change):
+        pass
+    def writer(self, table):
+        return Writer()
+    def discard_staged(self):
+        pass
+    def commit(self, meta):
+        told.append([[s in meta['segments'] for s in (6, 7, 8)], [s in meta['abandoned'] for s in (7, 8, 9)]])
+        at = {'secs_since_epoch': 5, 'nanos_since_epoch': 0}
+        return {'key': meta['key'], 'committed_at': at, 'rows': 0, 'bytes': 0}
+    def close(self):
+        pass
+@c.destination(id='io.example.authored', config=c.Config, version='1.0.0')
+class Authored:
+    def __init__(self, config):
+        pass
+    {check}
+    def open(self, context):
+        return c.Opened(Session(), 4, None, [])
+";
+
+/// A write that keeps the segment it stages in.
+const WRITES: &str = "def write(self, segment, batch):\n        told.append(segment)";
+
+/// A check that finds nothing wrong.
+const CHECKS: &str = "def check(self):\n        pass";
+
+/// The factory of [`AUTHORED`] with `write` and `check` as given, the placement keeping its
+/// instances, which the caller holds while it is placed, and what it was told.
+fn authored(write: &str, check: &str) -> (Py<PyAny>, Box<dyn DestinationFactory>, Py<PyAny>) {
+    embedded::with(|py| {
+        let code = AUTHORED.replace("{write}", write).replace("{check}", check);
+        let globals = PyDict::new(py);
+        py.run(&std::ffi::CString::new(code).unwrap(), Some(&globals), None)
+            .unwrap();
+        let placed = py
+            .import("rdlt.connector._destination")
+            .unwrap()
+            .call_method1("placed", (globals.get_item("Authored").unwrap(),))
+            .unwrap();
+        let factory: Py<NativeDestinationFactory> = placed.get_item(0).unwrap().extract().unwrap();
+        let factory = factory.get().factory();
+        (
+            placed.unbind(),
+            factory,
+            globals.get_item("told").unwrap().unbind(),
+        )
+    })
+}
+
+/// A batch of three rows.
+fn batch() -> RecordBatch {
+    let ids = Arc::new(Int64Array::from(vec![1, 2, 3]));
+    RecordBatch::try_from_iter([("n", ids as _)]).unwrap()
+}
+
+#[test]
+fn a_write_that_is_async_or_yields_fails_as_an_internal_error_naming_it() {
+    for write in [
+        "async def write(self, segment, batch):\n        told.append(segment)",
+        "def write(self, segment, batch):\n        told.append(segment)\n        yield",
+    ] {
+        let (_placement, factory, told) = authored(write, CHECKS);
+        let error = within(async {
+            let destination = factory
+                .connect(json!({}), ConnectContext::new())
+                .await
+                .unwrap();
+            let context = OpenContext {
+                pipeline: PipelineId::parse("p").unwrap(),
+            };
+            let mut session = destination.open(&context).await.unwrap().session;
+            let mut writer = session.writer(&table()).await.unwrap();
+            writer.write(SegmentId(7), batch()).await.expect_err(write)
+        });
+        assert_eq!(error.kind(), ConnectorErrorKind::Internal, "{write}");
+        assert!(error.to_string().contains("write()"), "{error}");
+        assert_eq!(calls(&told), json!([]), "{write}");
+    }
+}
+
+#[test]
+fn a_check_that_answers_false_fails_as_an_internal_error_naming_it() {
+    let (_placement, factory, _) = authored(WRITES, "def check(self):\n        return False");
+    let error = within(async {
+        let destination = factory
+            .connect(json!({}), ConnectContext::new())
+            .await
+            .unwrap();
+        destination.check().await.expect_err("refused")
+    });
+    assert_eq!(error.kind(), ConnectorErrorKind::Internal);
+    assert!(error.to_string().contains("check()"), "{error}");
+}
+
+#[test]
+fn a_commit_s_segment_sets_answer_in_as_an_author_asks() {
+    let (_placement, factory, told) = authored(WRITES, CHECKS);
+    within(committing(factory.as_ref(), &commit_meta())).unwrap();
+    assert_eq!(
+        calls(&told),
+        json!([[[false, true, false], [false, true, false]]])
+    );
 }
 
 #[test]

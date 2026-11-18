@@ -107,7 +107,7 @@ def test_a_secret_in_a_source_exception_is_scrubbed(
 def test_a_class_without_check_is_refused_where_it_is_declared() -> None:
     with pytest.raises(TypeError, match="check"):
 
-        @source(id="io.example.unchecked", config=Config)
+        @source(id="io.example.unchecked", config=Config)  # pyright: ignore[reportArgumentType, reportUntypedClassDecorator] - it has no check
         class Unchecked:
             def __init__(self, config: Config) -> None:
                 del config

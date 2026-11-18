@@ -182,7 +182,7 @@ def test_partitions_answered_as_one_string_fail_the_plan(tmp_path: Path, connect
     with pytest.raises(rdlt.SourceError) as raised:
         built.build(host(tmp_path, connectors)).run()
     assert raised.value.report().connector_code == "type_error"
-    assert "not one string" in said(raised.value)
+    assert "partitions=" in said(raised.value)
 
 
 @pytest.mark.parametrize("phase", [-1, 2**16, True, 1.0, "1"])
