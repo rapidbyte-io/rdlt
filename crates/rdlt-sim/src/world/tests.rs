@@ -237,3 +237,26 @@ fn a_source_names_every_partition_unless_a_phase_churns_them() {
     named.name(None);
     assert!(named.names(1, 1));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_churning_source_names_each_partition_since_it_last_began_to() {
+    let ms = Duration::from_millis;
+    let named = super::Named::default();
+    let first = tokio::time::Instant::now();
+    named.name(Some(BTreeMap::from([(0, BTreeSet::from([0, 1]))])));
+    tokio::time::advance(ms(100)).await;
+    let swapped = tokio::time::Instant::now();
+    named.name(Some(BTreeMap::from([(0, BTreeSet::from([0, 2]))])));
+    tokio::time::advance(ms(100)).await;
+    named.name(Some(BTreeMap::from([(0, BTreeSet::from([0, 1, 2]))])));
+    assert_eq!(
+        named.since(),
+        BTreeMap::from([
+            ((0, 0), first),
+            ((0, 1), tokio::time::Instant::now()),
+            ((0, 2), swapped),
+        ])
+    );
+    named.name(None);
+    assert_eq!(named.since(), BTreeMap::new());
+}

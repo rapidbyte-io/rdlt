@@ -7,7 +7,7 @@ use rdlt_sim::{
 ///
 /// A seed fails if its defect comes back, unless its comment says otherwise: such a seed keeps
 /// only the path, and its defect may come back unseen.
-const FOUND: [(u64, Reach); 17] = [
+const FOUND: [(u64, Reach); 19] = [
     // Over the network: a host whose handshake a partition cut short held its connection, and
     // its connector's stop, forever.
     (743, Reach::LinkCut),
@@ -20,6 +20,13 @@ const FOUND: [(u64, Reach); 17] = [
     // Streaming: reads cut batches wherever rows had arrived, so JSON pushes inferred types the
     // model never saw, until they served whole checkpoint groups.
     (4_516, Reach::Followed),
+    // Streaming: a following run under a policy of rows alone never committed the ends of its
+    // polled partitions' reads, so its plans read them no more while it ran. Seed 7236 met it too.
+    (12_270, Reach::KeptUp),
+    // Streaming: a source that swapped a followed partition at every place failed its following
+    // run for good, `partitions_too_few`, as the read it named took its place before the stopped
+    // read gave it up. Sixteen of the 33 other clean seeds that swap met it too.
+    (3_232, Reach::Swapped),
     // A frozen normalized stream's declared array whose table no row had made yet was refused
     // as new to the table once a crashed attempt had created the stream's own table.
     (167_631, Reach::Crashed),

@@ -35,6 +35,11 @@ impl Runs {
         Self { config, env }
     }
 
+    /// The configuration its runs read under.
+    pub(super) fn config(&self) -> &EngineConfig {
+        &self.config
+    }
+
     /// An engine of the simulation's, for what is not a run: a reset.
     pub(super) fn engine(&self) -> Engine {
         Engine::new(self.config.clone(), Arc::clone(&self.env) as Arc<dyn Env>)

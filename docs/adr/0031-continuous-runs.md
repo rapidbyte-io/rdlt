@@ -140,6 +140,12 @@ they are built apart.
     them. Each phase begins with one to three of their partitions retired or named again, and a
     third of the ticks that make rows arrive retire, add or name again one more. Once the following
     runs end, the source names every partition again, and the phase's last runs read every row.
+  - In half the churning seeds, drawn apart, the source swaps instead, as a consumer group's
+    rebalance does: it names one to one fewer than all of each followed unbounded stream's
+    partitions at once, and each change retires one it names and names one it does not. The
+    engine then reads one partition more at once than the run that follows the most, so every
+    place is held in that run. A seed reaches `Swapped` where a plan stopped naming a partition
+    being read and named one the plan before it did not.
   - A churned stream's plans give each partition a start at its newest arrived row. Re-planning
     within the phase the stream's state records ignores those starts: a partition it starts
     begins at its committed position, or at its beginning, never at the start the plan names,

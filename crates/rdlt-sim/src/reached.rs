@@ -21,6 +21,12 @@ pub enum Reach {
     Spared,
     /// A run followed the source for a while.
     Followed,
+    /// A clean following run was held to read every partition its plans named, and drain every
+    /// one they dropped, within a bound shorter than the run.
+    KeptUp,
+    /// In a world whose source swaps, a plan stopped naming a partition a read of which ran, and
+    /// named one the plan before it did not.
+    Swapped,
     /// A merge table's column widened over values written as another type.
     Widened,
     /// The destination's commit met a child table no row had reached.
@@ -61,13 +67,15 @@ pub enum Reach {
 
 impl Reach {
     /// Every path, in the order a timing line names them.
-    const ALL: [Self; 22] = [
+    const ALL: [Self; 24] = [
         Self::ConnectorStopped,
         Self::LinkCut,
         Self::Crashed,
         Self::Refused,
         Self::Spared,
         Self::Followed,
+        Self::KeptUp,
+        Self::Swapped,
         Self::Widened,
         Self::EmptyChild,
         Self::ResetRefused,
