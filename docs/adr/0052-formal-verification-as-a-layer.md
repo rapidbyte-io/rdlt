@@ -260,16 +260,21 @@ A formal layer is added to the layers of its class, never in place of one.
   once), and the reads follow the source (`PlansFollowTheSource`: a partition the source names, but
   for a done one it says ends, comes to be read, again once a read of it stopped or ended, and any
   other to have no read running, or a plan refuses the run), which TLC checks under weak fairness of
-  every plan and every commit. A refused run satisfies it whether or not the refusal was due: that a
-  plan refuses only where a done partition the source names never ends, and passes over one it says
-  ends, the specification's tests hold, not TLC. A dropped partition drains, its sealed rows
-  committed unless the run crashes first (`RemovedDrains`), which TLC checks under weak fairness of
-  every commit. Each invariant has a test that breaks its rule, a plan that starts a done partition
-  from its cursor, as it starts any other, among them, and a plan that never starts a partition the
-  source adds, never stops one it dropped, or never reads again one whose read ended fails
-  `PlansFollowTheSource` in TLC. Its header names `tlc`: the model is finite, and TLC checks every
-  state, 1,631,793 of them, at three partitions, one of two rows and two of one, and two changes or
-  crashes; that covers every run a bounded check could explore. Every invariant and temporal
+  every plan and of the commit a read's end makes due: a read that ended or that a plan stopped
+  waits for it, and it is the one commit a policy with no interval is sure to make (ADR 0031), so
+  no fairness of any other commit is assumed. A refused run satisfies it whether or not the refusal
+  was due: that a plan refuses only where a done partition the source names never ends, and passes
+  over one it says ends, the specification's tests hold, not TLC. A dropped partition drains, its
+  sealed rows committed unless the run crashes first (`RemovedDrains`), which TLC checks under weak
+  fairness of that commit alone. The model has one stream and no read slots: that a re-plan waits
+  for no other stream's seals, and that a read a plan names waits for the place a stopped read
+  holds rather than failing the run, the engine's tests hold. Each invariant has a test that breaks
+  its rule, a plan that starts a done partition from its cursor, as it starts any other, among
+  them, and a plan that never starts a partition the source adds, never stops one it dropped, or
+  never reads again one whose read ended fails `PlansFollowTheSource` in TLC. Its header names
+  `tlc`: the model is finite, and TLC checks every state, 1,631,793 of them, at three partitions,
+  one of two rows and two of one, and two changes or crashes; that covers every run a bounded check
+  could explore. Every invariant and temporal
   property over them takes about 30 minutes on one core of a developer's machine; the time on the
   nightly runner is not measured, and the nightly job's limit is 120 minutes. `just quint` tests and
   simulates 2,000 runs of 60 steps of each module, among them `replan_rows2`, at two rows of every
@@ -297,6 +302,11 @@ A formal layer is added to the layers of its class, never in place of one.
   one again, and `a_following_run_stops_the_partitions_its_source_no_longer_plans` exercise
   `PlansFollowTheSource`; and that last one exercises `RemovedDrains`: the retired partition's first
   rows land and are committed, and it reads no further than a plan past its retirement.
+  `a_following_run_whose_policy_has_no_interval_reads_a_bounded_stream_again_as_it_grows`,
+  `a_partition_read_again_waits_for_no_seal_of_another_stream_s_partition_of_its_id` and
+  `a_plan_that_swaps_followed_partitions_at_every_place_waits_for_the_stopped_read_s_place` hold
+  `PlansFollowTheSource` where the model does not reach: under a policy with no interval, across
+  streams whose partitions share ids, and at every place.
   `a_partition_a_replan_drops_keeps_its_position_across_runs` holds that a run records a dropped
   partition's position where it committed it, and that the next run reads on from there with no row
   loaded twice. The refusal of a done partition the source says never ends is held at a plan of a

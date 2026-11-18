@@ -13,7 +13,10 @@
 // and disappear between plans, and change from bounded to unbounded and back, a read keeping the
 // kind its partition had when it started; a read of an unbounded partition may end on its own, the
 // rows after its last checkpoint read again by the next; rows arrive as the run reads; the run may
-// crash, and the next plans from what was committed.
+// crash, and the next plans from what was committed. The run commits as its policy says, and the
+// only commit it is sure to make is the one a read's end makes due: a policy with no interval
+// commits nothing else until its rows or bytes are reached. One stream is modelled, with no read
+// slots: a read never waits for a place.
 //
 // quint main: replan replan_rows2
 // quint steps: --step simulated --max-steps 60
@@ -219,6 +222,15 @@ module replan_protocol {
     }
   }
 
+  /// Whether a read's end makes a commit due: a read that ended, or that a plan stopped, has sealed
+  /// rows or an end no commit took.
+  val endsWait: bool =
+    reads.exists(r => (r.ended or r.stopped) and (r.sealed > r.base or (r.ended and not(r.landed))))
+
+  /// The run commits as a read's end makes a commit due. Under a policy with no interval this is
+  /// the one commit the run is sure to make, as its rows and bytes may never reach the policy's.
+  action commitEnds = all { endsWait, commit }
+
   /// A row of `part` arrives.
   action arrive(part: str): bool = all {
     arrived.get(part) < ROWS.get(part),
@@ -325,8 +337,9 @@ module replan_protocol {
   def draining(p: str): bool = readsOf(p).exists(r => r.stopped and r.sealed > r.base)
 
   /// A removed partition drains: a read a plan stopped with sealed rows has them committed, or the
-  /// run crashes first and the next reads them again.
-  temporal RemovedDrains = weakFair(commit, vars).implies(PARTS.forall(p => draining(p).leadsTo(not(draining(p)))))
+  /// run crashes first and the next reads them again, though no commit is sure but those reads'
+  /// ends make due.
+  temporal RemovedDrains = weakFair(commitEnds, vars).implies(PARTS.forall(p => draining(p).leadsTo(not(draining(p)))))
 
   /// Whether a plan is to read `p`: the source names it, and says it ends where no read finished
   /// it.
@@ -340,9 +353,10 @@ module replan_protocol {
 
   /// Plans follow the source: a partition due to be read is started, and read again once a read of
   /// it that stopped or ended gave its place up, and any other has no read running, or a plan
-  /// refuses the run, as it does where a done partition the source names never ends.
+  /// refuses the run, as it does where a done partition the source names never ends; with every
+  /// plan sure to come, and no commit sure but those reads' ends make due.
   temporal PlansFollowTheSource =
-    (weakFair(replan, vars) and weakFair(commit, vars)).implies(PARTS.forall(p => not(follows(p)).leadsTo(follows(p) or refused)))
+    (weakFair(replan, vars) and weakFair(commitEnds, vars)).implies(PARTS.forall(p => not(follows(p)).leadsTo(follows(p) or refused)))
 
   // ---- Tests
 
@@ -430,7 +444,7 @@ module replan_rows2 {
       .then(reshape(Set("p0"), Set("p0")))
       .then(replan)
       .expect(draining("p1"))
-      .then(commit)
+      .then(commitEnds)
       .expect(all {
         not(draining("p1")),
         readsOf("p1") == Set(),
@@ -438,6 +452,19 @@ module replan_rows2 {
         rows.get("p1").get(0) == 1,
         NoPartitionLostOrDoubled,
       })
+
+  /// A running read's checkpoint makes no commit due by an end: under a policy with no interval it
+  /// waits for the rows or bytes the policy allows, or for a read's end.
+  run aRunningReadsCheckpointWaitsForAnEndTest =
+    init
+      .then(replan)
+      .then(readOn("p1"))
+      .then(checkpointOn("p1"))
+      .expect(not(endsWait))
+      .then(readOn("p0"))
+      .then(checkpointOn("p0"))
+      .then(commitEnds)
+      .expect(committed.get("p0") == 1 and committed.get("p1") == 1 and NoPartitionLostOrDoubled)
 
   /// A partition named again is read from where its drained read was committed.
   run aPartitionNamedAgainResumesWhereItWasCommittedTest =
@@ -465,7 +492,7 @@ module replan_rows2 {
       .then(readOn("p0"))
       .then(checkpointOn("p0"))
       .expect(readsOf("p0").forall(r => r.ended))
-      .then(commit)
+      .then(commitEnds)
       .then(arrive("p0"))
       .then(replan)
       .expect(readsOf("p0").forall(r => r.base == 1 and not(r.ended)))
