@@ -88,6 +88,9 @@ struct PagesConfig {
     /// The page its phase starts at, which its plans name; a read from before it is refused, as
     /// a change stream's is from before the position its snapshot captured.
     start: u32,
+    /// A read from the start pushes two pages a push, and any other one a push, as a source
+    /// pushes what each poll returned; it checkpoints after each push.
+    regroup: bool,
 }
 
 impl Default for PagesConfig {
@@ -112,6 +115,7 @@ impl Default for PagesConfig {
             replanned: String::new(),
             phase: 0,
             start: 0,
+            regroup: false,
         }
     }
 }
@@ -250,15 +254,23 @@ impl ReadStream<Pages> for Page {
             (false, true) if cursor > 0 => (cursor - 1, source.config.pages - 1),
             (false, _) => (cursor, source.config.pages),
         };
-        for page in start..end {
-            let pushed = out.rows(&[json!({ "page": page })]).await;
-            if source.config.fail_on_stop && pushed.is_err() {
+        let width = if source.config.regroup && cursor == 0 {
+            2
+        } else {
+            1
+        };
+        let pages: Vec<u32> = (start..end).collect();
+        for pushed in pages.chunks(width) {
+            let rows: Vec<serde_json::Value> =
+                pushed.iter().map(|page| json!({ "page": page })).collect();
+            let sent = out.rows(&rows).await;
+            if source.config.fail_on_stop && sent.is_err() {
                 return Err(ConnectorError::data("gave up"));
             }
-            pushed?;
+            sent?;
             let answers = !source.config.ignore_barriers || !out.checkpoint_due();
             if answers && !source.config.uncheckpointed {
-                out.checkpoint(&(page + 1)).await?;
+                out.checkpoint(&(pushed.last().unwrap() + 1)).await?;
             }
         }
         Ok(())
@@ -415,6 +427,23 @@ async fn each_broken_source_behavior_fails_exactly_its_clause() {
         let report = certify_source::<Pages>(json!({ flag: true })).await;
         assert_eq!(failed(&report), clauses, "{flag}: {report}");
     }
+}
+
+#[tokio::test]
+async fn a_resumed_read_is_held_to_its_rows_whatever_pushes_carry_them() {
+    let regrouped = certify_source::<Pages>(json!({ "regroup": true })).await;
+    regrouped.assert_passed();
+    let shifted = certify_source::<Pages>(json!({ "regroup": true, "shifted": true })).await;
+    assert_eq!(failed(&shifted), ["S-RESUME", "S-PARTITION"], "{shifted}");
+    // The first row the resumed read sent differs: the reason shows it, and the row owed.
+    let Some(Outcome::Failed(reason)) = shifted.outcome("S-RESUME") else {
+        panic!("{shifted}");
+    };
+    let parted = concat!(
+        r#"resumed from checkpoint 1, its row 1 after it is {"page":1}, "#,
+        r#"and the first read's {"page":2}"#,
+    );
+    assert!(reason.contains(parted), "{reason}");
 }
 
 #[tokio::test]

@@ -182,9 +182,10 @@ JSON push is charged a row for each record its text holds before any is parsed, 
 more than 1 MiB leaves the clause unobserved.
 - `S-RESUME` resumes from every checkpoint of a read that sent five at most, and else from \
 five spread from the first to the last: a resume that is wrong only from a checkpoint between \
-them is not caught. It compares the pushes of a resumed read only while their batches, with the \
-first read's, expand to 64 MiB at most once each row holds its own value; beyond that it is \
-unobserved.
+them is not caught. It compares the rows a resumed read sends with those the first read sent \
+after the checkpoint, in order and each exactly, whatever pushes carry them, only while their \
+batches, both reads together, expand to 64 MiB at most once each row holds its own value; beyond \
+that it is unobserved.
 - A read-back holds at most 10,000 rows (100,000 for the kill clause) of flat columns, plain, \
 dictionary or run-end encoded, that take at most 16 MiB once each row holds its own value, and at \
 most 64 MiB on the wire. A column is read only as the kind it was written as, or a kind that \
