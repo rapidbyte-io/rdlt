@@ -351,18 +351,18 @@ Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, ben
   stream. In an async read both return at once, and are sent in their turn, so the event loop
   keeps running; a yield waits until its item is sent, with the loop running meanwhile, however
   slow the destination.
-- **Destinations.** `@destination` takes its configuration. Its instance's `capabilities()`
-  answers what it can store, a `Capabilities`, which `Capabilities.minimal()` starts and which it
-  is where the class has none, as a Rust destination's `capabilities` does; capabilities Rust's
-  cannot hold, as no writers, are refused where they are made. Its `open(context)` answers a
-  session whose table writers stage what a commit publishes, each `flush()` answering
-  `WriteStats`; a commit decides with `Fence(epoch, landed).decide(meta)`. A session's calls
-  reach the class one at a time, and so do its writers' where it runs one writer, so it needs no
-  lock of its own; one whose `capabilities()` says it runs more has its writers called at once,
-  each writer's calls one at a time, and `commit` and `close` wait until no writer's call is in
-  flight. A merge table is merged as a Rust destination merges one, by
-  `rdlt.connector.merge`: `merge_sparse(to_arrow(schema), published, buried, incoming, key)`
-  runs Rust's merge, with the GIL released, over any Arrow handed to it, `key` the `MergeKey` in
+- **Destinations.** `@destination` takes its configuration. Its instance's `capabilities()` answers
+  what it can store, a `Capabilities`, which `Capabilities.minimal()` starts and which it is where
+  the class has none, as a Rust destination's `capabilities` does; capabilities Rust's cannot hold,
+  as no writers, are refused where they are made. Its `open(context)` answers a session whose table
+  writers stage what a commit publishes, each `flush()` answering `WriteStats`; a commit decides
+  with `Fence(epoch, landed).decide(meta)`. A session's calls reach the class one at a time, in the
+  order the Rust SDK made them where it made them one after another, and so do its writers' where it
+  runs one writer, so it needs no lock of its own; one whose `capabilities()` says it runs more has
+  its writers called at once, each writer's calls one at a time, and `commit` and `close` wait until
+  every call made before them returned. A merge table is merged as a Rust destination merges one, by
+  `rdlt.connector.merge`: `merge_sparse(to_arrow(schema), published, buried, incoming, key)` runs
+  Rust's merge, with the GIL released, over any Arrow handed to it, `key` the `MergeKey` in
   `table["merge"]`, and `read_back` gives a reader every column.
   [`examples/python/destination`](examples/python/destination) is one that writes every way the
   engine has, certified with every destination clause.

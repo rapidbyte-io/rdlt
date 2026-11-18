@@ -82,24 +82,35 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   `Unauthorized`, `InvalidData`, `Unsupported`), whose message is said as written, with no
   traceback; `TimeoutError` and `ConnectionError` are transient, and any other exception is
   internal.
-- **The SDK is the Rust SDK.** A Python connector class, which `@source` or `@destination` makes,
-  is wrapped as an `rdlt-connector` source or destination described at run time, so barriers,
-  checkpoints, frame sizing, limits, credit, heartbeats and deadlines, and a destination's
-  sessions, table writers and commits, are the Rust SDK's. A session's calls reach the class one
-  at a time, in the order the Rust SDK gives them, and so do its table writers' where the
-  destination runs one writer, as `Capabilities.minimal()` does, so such a destination needs no
-  lock of its own. One whose `capabilities()` says it runs more says its table writers may be
-  called at once, as the Rust SDK's served session calls them: each writer's calls come one at a
-  time, in order, beside the other writers' and the session's `apply_schema`, `writer` and
-  `discard_staged`, and what its writers share, with each other and with the session, is the
-  author's to lock. No writer's call runs while `commit` or `close` runs, a call the engine
-  stopped waiting for included, and none begins until they return. What an older session's
-  abandoned calls stage is the destination's to keep from a commit, by its fence and by
-  publishing only its session's own epoch. A session opened before `capabilities()` answered is
-  called one at a time. A destination merges as a Rust one does, with `rdlt.connector.merge`,
-  `rdlt_connector::merge` run in Rust over Arrow handed over through the C Data Interface, the
-  GIL released while it merges. Its configuration is a pydantic model, whose refusals name the
-  field, the fault and the kind of value, never the value.
+- **The SDK is the Rust SDK.** A Python connector class, which `@source` or `@destination` makes, is
+  wrapped as an `rdlt-connector` source or destination described at run time, so barriers,
+  checkpoints, frame sizing, limits, credit, heartbeats and deadlines, and a destination's sessions,
+  table writers and commits, are the Rust SDK's. A session's calls reach the class one at a time, in
+  the order the Rust SDK gives them, and so do its table writers' where the destination runs one
+  writer, as `Capabilities.minimal()` does, so such a destination needs no lock of its own. One
+  whose `capabilities()` says it runs more says its table writers may be called at once, as the Rust
+  SDK's served session calls them: each writer's calls come one at a time, in order, beside the
+  other writers' and the session's `apply_schema`, `writer` and `discard_staged`, and what its
+  writers share, with each other and with the session, is the author's to lock. Each call takes its
+  turn where the Rust SDK makes it, before it is handed to a daemon thread: in the engine where the
+  connector runs in process, in the service's handler where it is served. Calls made one after
+  another come in that order, and calls made at once in either. The turn is a shared turn of its
+  session, then its turn one at a time with the calls it comes one at a time with, while `commit`
+  and `close` take the session's whole turn, through tokio's locks, which queue in order and queue a
+  shared turn behind a whole one waiting. So `commit` and `close` begin once every call made before
+  them has returned, and no call begins until they return. The shared turn comes first, so a call
+  waiting for an earlier one already holds back a `commit` or `close` made after it. A call holds
+  its turn until its Python call has returned, a call the engine stopped waiting for included. One
+  the engine stopped waiting for before its turn came is never made: the engine ends its wait for a
+  `commit` or a `close` as for any call, so a `commit` waiting behind a call it abandoned can be
+  one, which lands nothing and ends its attempt as any commit whose wait ended does, the next open's
+  landed receipt saying what landed, and a session whose `close` is never made is let go, as one
+  whose open was abandoned. What an older session's abandoned calls stage is the destination's to
+  keep from a commit, by its fence and by publishing only its session's own epoch. A destination
+  merges as a Rust one does, with `rdlt.connector.merge`, `rdlt_connector::merge` run in Rust over
+  Arrow handed over through the C Data Interface, the GIL released while it merges. Its
+  configuration is a pydantic model, whose refusals name the field, the fault and the kind of value,
+  never the value.
 - **One way to write a source, in the Rust SDK's words.** `rdlt.connector` names what the Rust SDK
   names, in Python's case: `ConnectorError` and its kinds, `RateLimited`'s `retry_after`, a source's
   `streams()`, answering the `ReadStream`s its connection offers, and `discover()`, answering its
@@ -343,6 +354,9 @@ Rejected:
 - **Waking an async read through a daemon thread and `call_soon_threadsafe`**, as an awaited
   answer is handed over: every wait would take a daemon thread and the GIL, which a busy loop
   holds, so the read would fall behind the engine it waits for.
+- **Taking a session's turns in Python**, as each call reaches the wrapper on its daemon thread: two
+  daemon threads reach it in no fixed order, the GIL and a free-threaded build alike, so a call the
+  Rust SDK made before `close` could take its turn after it.
 - **pyo3-async-runtimes for awaitables.** It hands an awaited answer over by taking the GIL on the
   runtime's blocking pool, and given a runtime whose blocking pool were a daemon thread, the
   closure it hands over would still call asyncio beneath that thread's Rust frames.
