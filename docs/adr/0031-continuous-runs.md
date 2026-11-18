@@ -66,7 +66,17 @@ they are built apart.
   - a partition read again takes the place its ended read had, so a run that reads for ever
     tracks each partition once.
 
-  Re-planning does not commit. The commit policy alone decides when a following run commits.
+  Re-planning commits only where the commit policy has no interval. There an interval's re-plan
+  that finds a read ended, at its end or at a plan's stop, with seals waiting first commits every
+  seal, then plans, so a partition read to its end is read again, and one a plan dropped is
+  tracked no more, within a re-plan interval and the barrier's wait. A policy's rows and bytes
+  are never sure to come in a following run, whose source may be quiet, and a timer the operator
+  never set would commit a busy stream more often than the rows or bytes the policy allows: the
+  commit is tied to the ends that wait for it, at most one a re-plan. A running read's
+  checkpoints still wait for the rows or bytes, so a quiet followed partition's tail, and the
+  cursor its source keeps, stay uncommitted until they come; an operator bounds that wait by
+  setting `every`. Under a policy with an interval the policy alone decides when a following run
+  commits, and an end waits for it.
 - **Read slots.** In a following run an unbounded partition's read holds a read slot for as long as
   the run, as every read holds one, and keeps what it keeps from the parts of the reads' share no
   other read holds, never the last, where each other read holds a whole part (ADR 0039). A run
@@ -140,6 +150,7 @@ they are built apart.
 
 - A pipeline can load a Kafka-style topic, a change stream or a polled table continuously, with
   exactly-once delivery through crashes, stops, faults and partitions that come and go.
-- A following run calls `plan` once per stream every `replan` interval.
+- A following run calls `plan` once per stream every `replan` interval, and under a policy with no
+  interval commits at most once an interval for the ends of its reads.
 - `ReadRequest` grows with what a read is asked, so it is `#[non_exhaustive]` and built with its
   constructor.

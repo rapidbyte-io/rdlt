@@ -303,7 +303,13 @@ def _maybe_duration(span: timedelta | None) -> Json:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Commit:
-    """When a run commits: whichever threshold it reaches first."""
+    """When a run commits: whichever threshold it reaches first.
+
+    A run that follows its source with no `every` commits too as it plans its streams again, where
+    reads that ended wait: their partitions are read again once their ends commit. A running read's
+    checkpoints still wait for the rows or bytes, so a quiet followed partition's tail stays
+    uncommitted until they are reached; setting `every` bounds that wait.
+    """
 
     every: timedelta | None = None
     """How long after the last commit the next is due."""

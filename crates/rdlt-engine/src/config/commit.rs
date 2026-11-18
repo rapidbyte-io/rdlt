@@ -6,6 +6,12 @@ use std::time::Duration;
 use crate::error::{Error, codes};
 
 /// When the engine commits: whichever threshold is reached first.
+///
+/// A following run under a policy with no interval commits too as it plans its streams again,
+/// where reads that ended wait: their partitions are read again, and those its plans dropped are
+/// tracked no more, only once their ends commit. A running read's checkpoints still wait for the
+/// rows or bytes, so a quiet followed partition's tail, and its source's cursor, stay uncommitted
+/// until they are reached; setting `every` bounds that wait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommitPolicy {
     every: Option<Duration>,

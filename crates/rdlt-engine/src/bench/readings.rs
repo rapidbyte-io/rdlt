@@ -80,17 +80,18 @@ impl Readings {
 impl fmt::Display for Readings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (c, flushes) = (&self.commits, &self.flushes);
-        let commits = c.interval + c.size + c.cursors + c.end;
+        let commits = c.interval + c.size + c.cursors + c.replan + c.end;
         let table_writer_flushes = flushes.pressure + flushes.commit + flushes.retired;
         write!(
             f,
-            "commits {commits} (interval {}, size {}, cursors {}, end {}), work waits \
+            "commits {commits} (interval {}, size {}, cursors {}, replan {}, end {}), work waits \
              {:.1} % of the run, intake waits {:.1} %, decode waits {:.1} %, pool idle {:.1} %, \
              pool queue and way back {:.1} %, writers written {}, table writer flushes \
              {table_writer_flushes} (pressure {}, commit {}, retired {}), signals {:.1} a batch",
             c.interval,
             c.size,
             c.cursors,
+            c.replan,
             c.end,
             self.work * 100.0,
             self.intake * 100.0,
