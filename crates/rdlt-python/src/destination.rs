@@ -6,6 +6,7 @@
 
 #[cfg(test)]
 mod tests;
+mod turns;
 
 use std::sync::Arc;
 
@@ -26,13 +27,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::arrow::{NativeBatch, imported};
 use crate::source::called;
+use turns::Turns;
 
 /// The method `name` of `object`, a wrapper `rdlt.connector._destination` made or the function
 /// that connects one, called through `rdlt._reading` on a daemon thread with the arguments
 /// `arguments` builds there; `extract` reads its answer.
+///
+/// `turn` is held until the call has returned, or until the call is let go unmade: a turn
+/// [`Turns`] gave, or `()`.
 async fn method<T: Send + 'static>(
     object: &Arc<Py<PyAny>>,
     name: &'static str,
+    turn: impl Send + 'static,
     arguments: impl for<'py> FnOnce(Python<'py>) -> std::result::Result<Bound<'py, PyTuple>, PyErr>
     + Send
     + 'static,
@@ -42,7 +48,11 @@ async fn method<T: Send + 'static>(
     called(
         "method",
         move |py| (object.clone_ref(py), name, arguments(py)?).into_pyobject(py),
-        extract,
+        move |answered| {
+            let read = extract(answered);
+            drop(turn);
+            read
+        },
     )
     .await
 }
@@ -225,6 +235,7 @@ impl DestinationConnector for PythonDestination {
         method(
             &self.connected,
             "check",
+            (),
             |py| Ok(PyTuple::empty(py)),
             |_| Ok(()),
         )
@@ -236,13 +247,20 @@ impl DestinationConnector for PythonDestination {
         let (session, opened): (Py<PyAny>, String) = method(
             &self.connected,
             "open",
+            (),
             move |py| (pipeline,).into_pyobject(py),
             |answered| answered.extract(),
         )
         .await?;
+        let at_once = self.capabilities.max_parallel_writers.get() > 1;
+        let session = PythonSession {
+            session: Arc::new(session),
+            turns: Turns::new(),
+            at_once,
+        };
         let opened: OpenedJson = read("an opened session", &opened)?;
         Ok(Opened {
-            session: PythonSession(Arc::new(session)),
+            session,
             epoch: opened.epoch,
             landed: opened.landed,
             state: opened.state.into_iter().map(Kept::record).collect(),
@@ -256,6 +274,7 @@ impl ReadBack for PythonDestination {
         let batches: Vec<RecordBatch> = method(
             &self.connected,
             "published",
+            (),
             move |py| (table,).into_pyobject(py),
             |answered| {
                 answered
@@ -272,17 +291,25 @@ impl ReadBack for PythonDestination {
     }
 }
 
-/// One load's session of a Python destination.
-pub(crate) struct PythonSession(Arc<Py<PyAny>>);
+/// One load's session of a Python destination, whose calls and its table writers' take their
+/// turns as [`turns`] says.
+pub(crate) struct PythonSession {
+    session: Arc<Py<PyAny>>,
+    turns: Turns,
+    /// Whether its table writers run at once, beside each other and the session.
+    at_once: bool,
+}
 
 impl Session for PythonSession {
     type Writer = PythonWriter;
 
     async fn apply_schema(&mut self, table_change: &TableChange) -> Result<()> {
         let told_change = change(table_change);
+        let turn = self.turns.call().await;
         method(
-            &self.0,
+            &self.session,
             "apply_schema",
+            turn,
             move |py| (told_change,).into_pyobject(py),
             |_| Ok(()),
         )
@@ -291,20 +318,27 @@ impl Session for PythonSession {
 
     async fn writer(&mut self, table: &TableRef) -> Result<PythonWriter> {
         let table = json(table);
+        let turn = self.turns.call().await;
         let writer = method(
-            &self.0,
+            &self.session,
             "writer",
+            turn,
             move |py| (table,).into_pyobject(py),
             |answered| Ok(answered.unbind()),
         )
         .await?;
-        Ok(PythonWriter(Arc::new(writer)))
+        Ok(PythonWriter {
+            writer: Arc::new(writer),
+            turns: self.turns.writer(self.at_once),
+        })
     }
 
     async fn discard_staged(&mut self) -> Result<()> {
+        let turn = self.turns.call().await;
         method(
-            &self.0,
+            &self.session,
             "discard_staged",
+            turn,
             |py| Ok(PyTuple::empty(py)),
             |_| Ok(()),
         )
@@ -313,9 +347,11 @@ impl Session for PythonSession {
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
         let meta = commit(meta)?;
+        let turn = self.turns.whole().await;
         let receipt: String = method(
-            &self.0,
+            &self.session,
             "commit",
+            turn,
             move |py| (meta,).into_pyobject(py),
             |answered| answered.extract(),
         )
@@ -324,18 +360,31 @@ impl Session for PythonSession {
     }
 
     async fn close(self) -> Result<()> {
-        method(&self.0, "close", |py| Ok(PyTuple::empty(py)), |_| Ok(())).await
+        let turn = self.turns.whole().await;
+        method(
+            &self.session,
+            "close",
+            turn,
+            |py| Ok(PyTuple::empty(py)),
+            |_| Ok(()),
+        )
+        .await
     }
 }
 
-/// A Python table writer.
-pub(crate) struct PythonWriter(Arc<Py<PyAny>>);
+/// A Python table writer, whose calls take their turns as [`turns`] says.
+pub(crate) struct PythonWriter {
+    writer: Arc<Py<PyAny>>,
+    turns: Turns,
+}
 
 impl TableWriter for PythonWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
+        let turn = self.turns.call().await;
         method(
-            &self.0,
+            &self.writer,
             "write",
+            turn,
             move |py| (segment.0, Py::new(py, NativeBatch::new(batch))?).into_pyobject(py),
             |_| Ok(()),
         )
@@ -343,9 +392,11 @@ impl TableWriter for PythonWriter {
     }
 
     async fn flush(&mut self) -> Result<WriteStats> {
+        let turn = self.turns.call().await;
         let flushed = method(
-            &self.0,
+            &self.writer,
             "flush",
+            turn,
             |py| Ok(PyTuple::empty(py)),
             |answered| answered.extract(),
         );
@@ -415,6 +466,7 @@ impl NativeDestinationFactory {
                 let connected = method(
                     &connect,
                     "__call__",
+                    (),
                     move |py| (config, host).into_pyobject(py),
                     |answered| Ok(answered.unbind()),
                 )
@@ -423,6 +475,7 @@ impl NativeDestinationFactory {
                 let answered: String = method(
                     &connected,
                     "capabilities",
+                    (),
                     |py| Ok(PyTuple::empty(py)),
                     |answered| answered.extract(),
                 )

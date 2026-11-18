@@ -148,7 +148,7 @@ fn recorder_saying(
     })
 }
 
-fn table() -> TableRef {
+pub(super) fn table() -> TableRef {
     TableRef {
         path: TablePath::new(["orders"]).unwrap(),
         name: "orders".into(),
@@ -166,7 +166,7 @@ fn record(key: &str, value: &'static [u8]) -> StateRecord {
 }
 
 /// `future`'s answer, within a minute, on a runtime of its own: the caller holds no GIL.
-fn within<T>(future: impl Future<Output = T>) -> T {
+pub(super) fn within<T>(future: impl Future<Output = T>) -> T {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
@@ -194,7 +194,7 @@ const OPENED: &str =
     r#"{"epoch": 4, "landed": null, "state": [{"key": "k", "value": "{\"n\": 1}"}]}"#;
 
 /// A commit of segment 7 that abandons segment 8, puts one state record and deletes another.
-fn commit_meta() -> CommitMeta {
+pub(super) fn commit_meta() -> CommitMeta {
     CommitMeta {
         key: CommitKey {
             epoch: Epoch(4),
@@ -674,4 +674,112 @@ fn a_state_value_that_is_not_utf8_is_refused_before_python_is_called() {
 fn the_minimal_capabilities_are_the_sdk_s() {
     let read: Capabilities = serde_json::from_str(&minimal_capabilities()).unwrap();
     assert_eq!(read, Capabilities::minimal());
+}
+
+/// A destination running two writers whose calls are kept in `told` as they reach the author,
+/// its session as the native side holds it delaying a schema change until `close` has returned,
+/// or half a second, as a daemon thread that reaches the wrapper late does.
+const LATE: &str = "\
+import dataclasses, threading
+import rdlt.connector as c
+from rdlt.connector import _destination
+from rdlt.connector._declared import Placement
+told = []
+closed = threading.Event()
+class Session:
+    def apply_schema(self, change):
+        told.append('apply_schema')
+    def writer(self, table):
+        raise NotImplementedError
+    def discard_staged(self):
+        pass
+    def commit(self, meta):
+        raise NotImplementedError
+    def close(self):
+        told.append('close')
+@c.destination(id='io.example.late', config=c.Config, version='1.0.0')
+class Late:
+    def __init__(self, config):
+        pass
+    def capabilities(self):
+        return dataclasses.replace(c.Capabilities.minimal(), max_parallel_writers=2)
+    def check(self):
+        pass
+    def open(self, context):
+        return c.Opened(Session(), 4, None, [])
+class Delayed:
+    def __init__(self, native):
+        self.native = native
+    def __getattr__(self, name):
+        return getattr(self.native, name)
+    def apply_schema(self, change):
+        closed.wait(0.5)
+        return self.native.apply_schema(change)
+    def close(self):
+        try:
+            return self.native.close()
+        finally:
+            closed.set()
+class Connected:
+    def __init__(self, connected):
+        self.connected = connected
+    def __getattr__(self, name):
+        return getattr(self.connected, name)
+    def open(self, pipeline):
+        session, opened = self.connected.open(pipeline)
+        return Delayed(session), opened
+placement = Placement(_destination.declaration(Late))
+def connect(config, host):
+    connected = _destination._Connected(lambda: placement)
+    placement.connections[connected] = Late(c.Config())
+    return Connected(connected)
+";
+
+/// What `future` answers when polled once, none where it waits.
+pub(super) fn polled<F: Future>(future: std::pin::Pin<&mut F>) -> Option<F::Output> {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match future.poll(&mut context) {
+        std::task::Poll::Ready(answer) => Some(answer),
+        std::task::Poll::Pending => None,
+    }
+}
+
+#[test]
+fn a_call_made_before_close_runs_before_it_however_late_it_reaches_python() {
+    let (factory, told) = embedded::with(|py| {
+        let globals = PyDict::new(py);
+        let code = std::ffi::CString::new(LATE).unwrap();
+        py.run(&code, Some(&globals), None).unwrap();
+        let connect = globals.get_item("connect").unwrap().unbind();
+        let factory = NativeDestinationFactory::new(
+            "io.example.late",
+            "1.0.0".to_owned(),
+            "{}",
+            false,
+            connect,
+        )
+        .unwrap();
+        (
+            factory.factory(),
+            globals.get_item("told").unwrap().unbind(),
+        )
+    });
+    within(async {
+        let destination = factory
+            .connect(json!({}), ConnectContext::new())
+            .await
+            .unwrap();
+        let context = OpenContext {
+            pipeline: PipelineId::parse("p").unwrap(),
+        };
+        let mut session = destination.open(&context).await.unwrap().session;
+        let add = TableChange::AddColumn {
+            table: table(),
+            field: Field::new("n", LogicalType::Int64, true),
+        };
+        // The schema change is made, and the engine stops waiting for it.
+        assert!(polled(std::pin::pin!(session.apply_schema(&add))).is_none());
+        session.close().await.unwrap();
+    });
+    assert_eq!(calls(&told), json!(["apply_schema", "close"]));
 }
