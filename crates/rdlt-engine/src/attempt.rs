@@ -293,7 +293,7 @@ async fn launch(
     };
     let partition_context = shared_by_partitions(context, opened.epoch, (&writers, &tables), ends);
     let (tasks, spawned) = mpsc::unbounded_channel();
-    let (streams, partitions) = spawn_partitions(&mut scope, planned, &partition_context);
+    let (streams, partitions) = spawn_partitions(&mut scope, planned, &partition_context)?;
     let coordinator = Coordinator::new(CoordinatorParts {
         env: Arc::clone(&context.env),
         policy: context.config.commit_for(context.plan.commits_as_stream()),
@@ -313,6 +313,7 @@ async fn launch(
         stop: context.stop.clone(),
         cancel: scope.token().clone(),
         log,
+        slots: partition_context.slots.clone(),
         launcher: launcher(partition_context, tasks),
         done: DoneMarkers::from(&opened.state),
         stored: opened.stored,
@@ -377,13 +378,20 @@ fn shared_by_partitions(
 ///
 /// The context goes on to the launcher, so only the partitions and the launcher keep the writers
 /// and the progress channel open.
+///
+/// # Errors
+///
+/// `partitions_too_few`, or `source_calls_exceeded` where the source's calls set the read slots,
+/// before any task starts, where the plans name more followed unbounded partitions than the slots
+/// have places for.
 fn spawn_partitions(
     scope: &mut TaskScope<Error>,
     planned: Vec<Planned>,
     context: &Arc<PartitionContext>,
-) -> (Vec<StreamRun>, Vec<PartitionRun>) {
+) -> Result<(Vec<StreamRun>, Vec<PartitionRun>), Error> {
     let mut streams = Vec::with_capacity(planned.len());
     let mut partitions = Vec::new();
+    let mut jobs = Vec::new();
     for (index, mut stream) in planned.into_iter().enumerate() {
         for (partition, cursor) in stream.partitions {
             let id = partition.id().clone();
@@ -407,10 +415,23 @@ fn spawn_partitions(
             }
             let stop = job.stop.clone();
             let tracked = PartitionRun::new(index, id, stream.on_demand, stop);
-            partitions.push(tracked.starting(job.cursor.as_ref()));
-            scope.spawn(partition::run(job, Arc::clone(context)));
+            partitions.push(
+                tracked
+                    .starting(job.cursor.as_ref())
+                    .following(job.followed()),
+            );
+            jobs.push(job);
         }
         streams.push(stream.stream);
     }
-    (streams, partitions)
+    let following = jobs.iter().filter(|job| job.followed());
+    for (count, job) in following.enumerate() {
+        context
+            .slots
+            .admit(&job.stream, job.partition.id(), count + 1)?;
+    }
+    for job in jobs {
+        scope.spawn(partition::run(job, Arc::clone(context)));
+    }
+    Ok((streams, partitions))
 }

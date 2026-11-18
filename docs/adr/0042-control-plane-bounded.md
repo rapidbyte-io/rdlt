@@ -92,9 +92,10 @@ to be taken on trust either. Without the rules below:
       `EngineConfig::partitions` where that is fewer (16 by default). A followed unbounded read
       holds its call as long as the run, and a slot stays for every other read, so a run follows
       at most 197 unbounded partitions of a served source, or one fewer than its partitions
-      where those are fewer: one more is refused as it starts, with `source_calls_exceeded`,
-      naming the calls, where the source's calls set the slots, and with `partitions_too_few`
-      where the partitions do (ADR 0039). Bounded reads beyond the slots wait for one.
+      where those are fewer: plans naming one more are refused (ADR 0031), with
+      `source_calls_exceeded`, naming the calls, where the source's calls set the slots, and with
+      `partitions_too_few` where the partitions do (ADR 0039). Bounded reads beyond the slots
+      wait for one.
     - A session makes one other call at a time while table writers are open, a schema change, a
       commit or a close, a table writer's opening being that table writer's own call, so an
       attempt holds at most 198 of a served destination's table writers open, or

@@ -19,6 +19,7 @@ mod phases;
 mod pressure;
 mod replan;
 mod retried;
+mod run;
 mod signals;
 #[cfg(test)]
 mod tests;
@@ -26,7 +27,6 @@ mod waiting;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -45,10 +45,10 @@ use crate::crash::crash_point;
 use crate::env::{Env, Sleep};
 use crate::error::Error;
 use crate::event::Announcer;
-use crate::partition::{Latest, Progress};
+use crate::partition::{Latest, Progress, Slots};
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, Tally, Trigger};
-use crate::status::{Live, Place, RunClock};
+use crate::status::{Live, RunClock};
 use crate::stored::{Measured, Stored};
 use crate::table::Tables;
 use crate::watch;
@@ -57,6 +57,7 @@ pub(crate) use cycle::{Cycle, FullRead};
 pub(crate) use done::DoneMarkers;
 use done::Recorded;
 pub(crate) use phases::{Begun, Launcher, Phases, Template, launcher, plan_of};
+pub(crate) use run::PartitionRun;
 use waiting::WaitingSeals;
 
 /// A stream as one attempt loads it.
@@ -91,57 +92,6 @@ impl StreamRun {
     }
 }
 
-/// A partition as the coordinator sees it.
-#[derive(Debug)]
-pub(crate) struct PartitionRun {
-    pub(crate) stream: usize,
-    pub(crate) id: PartitionId,
-    /// Whether the partition checkpoints when asked.
-    pub(crate) on_demand: bool,
-    started: bool,
-    ended: bool,
-    answered: u64,
-    /// Stops this partition alone.
-    stop: CancellationToken,
-    /// Where the partition stood when its read started, then the position of its last commit
-    /// that landed: a commit that records it there again moves it nowhere.
-    stands: Option<PartitionState>,
-    /// When the partition last told the coordinator anything, for the run's status.
-    stamp: Arc<AtomicU64>,
-}
-
-impl PartitionRun {
-    pub(crate) fn new(
-        stream: usize,
-        id: PartitionId,
-        on_demand: bool,
-        stop: CancellationToken,
-    ) -> Self {
-        Self {
-            stream,
-            id,
-            on_demand,
-            started: false,
-            ended: false,
-            answered: 0,
-            stop,
-            stands: None,
-            stamp: Arc::new(AtomicU64::new(Place::WAITING)),
-        }
-    }
-
-    /// The partition, whose read starts from `cursor`, where the destination holds it.
-    pub(crate) fn starting(mut self, cursor: Option<&rdlt_connector::Cursor>) -> Self {
-        self.stands = cursor.cloned().map(PartitionState::Cursor);
-        self
-    }
-
-    /// Whether barrier `barrier` is waiting for this partition.
-    fn owes(&self, barrier: u64) -> bool {
-        self.on_demand && self.started && !self.ended && self.answered < barrier
-    }
-}
-
 /// Everything a coordinator starts with.
 pub(crate) struct CoordinatorParts {
     pub(crate) env: Arc<dyn Env>,
@@ -173,6 +123,8 @@ pub(crate) struct CoordinatorParts {
     pub(crate) log: Arc<Mutex<AttemptLog>>,
     /// Starts the partitions of a stream's next phase.
     pub(crate) launcher: Launcher,
+    /// The attempt's read slots, which refuse more followed unbounded reads than their places.
+    pub(crate) slots: Slots,
     /// The partitions the destination holds done, through the commits that landed.
     pub(crate) done: DoneMarkers,
     /// What the destination's stored state takes, through the commits that landed.

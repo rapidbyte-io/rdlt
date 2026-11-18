@@ -1257,7 +1257,7 @@ A served source reads each partition over a call of its one connection, and a fo
 its call for the run. A connection carries at most 200 calls (`rdlt_wire::limits::MAX_CALLS`), the
 heartbeat among them; the engine keeps one of the rest for its other call into the source and a
 slot for every other read, so a run follows at most 197 unbounded partitions of a served source and
-refuses one more as it starts: with `source_calls_exceeded` where its partitions are more than 198,
+refuses plans naming one more: with `source_calls_exceeded` where its partitions are more than 198,
 as in a cell of 256 streams, which reads a partition more than its streams, and with
 `partitions_too_few` where they are not (ADR 0042). 256 followed streams cannot be served; 192 is
 the largest of the in-process counts within that.

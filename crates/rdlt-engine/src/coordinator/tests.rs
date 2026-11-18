@@ -36,7 +36,7 @@ use crate::env::SystemEnv;
 use crate::error::{Error, ErrorKind, Origin, codes};
 use crate::event::Announcer;
 use crate::naming::Naming;
-use crate::partition::{CursorHold, Latest, Progress, Seal};
+use crate::partition::{CursorHold, Latest, Progress, Seal, Slots};
 use crate::plan::StreamPlan;
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitPhases, Tally};
@@ -377,7 +377,6 @@ impl Setup {
             told: Arc::default(),
         };
         let tables = self.tables(session).await;
-        let source = Arc::new(self.listener(acks, commits, &harness));
         let (env, live, announcer) = told(&harness);
         let coordinator = Coordinator::new(CoordinatorParts {
             env: Arc::clone(&env),
@@ -385,7 +384,7 @@ impl Setup {
             barrier_wait: self.barrier_wait,
             writers: writers(&tables),
             tables,
-            source,
+            source: Arc::new(self.listener(acks, commits, &harness)),
             epoch: Epoch(3),
             after: self.after,
             streams: self.streams,
@@ -399,6 +398,7 @@ impl Setup {
             cancel: harness.cancel.clone(),
             log: Arc::clone(&harness.log),
             launcher: Box::new(|_| Err(Error::internal("the tests start no phases"))),
+            slots: Slots::new(NonZeroUsize::new(16).unwrap(), None, &harness.budget),
             done: super::DoneMarkers::default(),
             stored: stored(harness.budget.limits().state_bytes),
             follow: false,

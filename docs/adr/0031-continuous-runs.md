@@ -67,13 +67,21 @@ they are built apart.
     tracks each partition once.
 
   Re-planning does not commit. The commit policy alone decides when a following run commits.
-- **Read slots.** In a following run an unbounded partition's read holds a read slot for as long
-  as the run, as every read holds one, and keeps what it keeps from the parts of the reads' share
-  no other read holds, never the last, where each other read holds a whole part (ADR 0039). A
-  run follows fewer unbounded partitions than it has slots: one more is refused as it starts,
+- **Read slots.** In a following run an unbounded partition's read holds a read slot for as long as
+  the run, as every read holds one, and keeps what it keeps from the parts of the reads' share no
+  other read holds, never the last, where each other read holds a whole part (ADR 0039). A run
+  follows fewer unbounded partitions than it has slots: plans naming one more are refused,
   `partitions_too_few`, or `source_calls_exceeded` where a served source's calls leave it fewer
-  slots than its partitions (ADR 0042). An incremental stream that plans no partitions reads one
-  unbounded partition, so it takes one of those places. Bounded partitions share the slots left,
+  slots than its partitions (ADR 0042), as the run starts and once an interval's re-plan has planned
+  every stream. A plan of one stream, as a signal asks for, refuses nothing: another stream's source
+  may have dropped a partition that stream's last plan still names; nor does a phase's begin. A
+  followed read that either launches beyond the places waits, and the next interval's re-plan
+  refuses it, up to an interval later; a run whose deadline comes first ends without the refusal and
+  loses nothing, the read never having started. A read a plan names waits for its place while a read
+  a plan stopped holds it, and the stopped read gives it up as its stop ends it, within the stop
+  wait; so a plan that drops one followed partition and names another, as a consumer group's
+  rebalance does, swaps them at every place. An incremental stream that plans no partitions reads
+  one unbounded partition, so it takes one of those places. Bounded partitions share the slots left,
   each waiting for one until one frees.
 - **The commit default.** An unset commit policy resolves per run:
   - `CommitPolicy::streaming()` (every 10 s, or 1 GiB) where the run follows its source or reads

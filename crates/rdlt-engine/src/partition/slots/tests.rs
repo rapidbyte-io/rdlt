@@ -58,18 +58,48 @@ fn followed_reads_beyond_the_slots_less_one_are_refused_by_whatever_sets_the_slo
     ] {
         let budget = budget(256 << 20, partitions);
         let slots = Slots::new(count(partitions), calls.map(count), &budget);
-        let held: Vec<_> = (0..places)
-            .map(|index| slots.endless(&job(index, true)).unwrap())
-            .collect();
-        assert!(held.iter().all(Option::is_some));
-        let refused = slots.endless(&job(places, true)).unwrap_err();
+        let (stream, partition) = (
+            StreamName::new("events").unwrap(),
+            PartitionId::parse("p0").unwrap(),
+        );
+        assert!(slots.admit(&stream, &partition, places).is_ok());
+        let refused = slots.admit(&stream, &partition, places + 1).unwrap_err();
         assert_eq!(
             (refused.kind(), refused.code()),
             (ErrorKind::Config, Some(code)),
             "{partitions} partitions, {calls:?} calls: {refused}"
         );
-        assert!(slots.endless(&job(places, false)).unwrap().is_none());
     }
+}
+
+#[tokio::test(start_paused = true)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test bounds its waits on tokio's paused clock directly"
+)]
+async fn a_followed_read_beyond_the_places_waits_for_one_until_one_frees() {
+    // Four slots: three places for followed reads, all held.
+    let budget = budget(64 << 20, 4);
+    let slots = Slots::new(count(4), None, &budget);
+    let mut held = Vec::new();
+    for index in 0..3 {
+        held.push(slots.read(&job(index, true), &budget).await.unwrap());
+    }
+    let followed = job(3, true);
+    let waiting = tokio::time::timeout(Duration::from_secs(3600), slots.read(&followed, &budget));
+    assert!(
+        waiting.await.is_err(),
+        "a fourth followed read found a place"
+    );
+    let unfollowed = job(4, false);
+    let other = tokio::time::timeout(Duration::from_secs(1), slots.read(&unfollowed, &budget));
+    assert!(
+        other.await.is_ok(),
+        "a read that is not followed waited for a place"
+    );
+    drop(held.pop());
+    let freed = tokio::time::timeout(Duration::from_secs(1), slots.read(&followed, &budget)).await;
+    assert!(freed.is_ok(), "a freed place was not taken");
 }
 
 #[tokio::test(start_paused = true)]

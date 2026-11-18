@@ -125,17 +125,15 @@ pub(crate) fn run(
 }
 
 async fn reading(job: PartitionJob, context: Arc<PartitionContext>) -> Result<(), Error> {
-    // Every read holds a slot, and one that is not followed a part of what reads keep. A followed
-    // unbounded read holds a slot for as long as the run; fewer of them than slots run at once,
-    // so the other reads always have a slot to take in turn.
-    let _endless = context.slots.endless(&job)?;
+    // Every read holds a slot, a followed unbounded read a place among them for as long as the
+    // run, and one that is not followed a part of what reads keep.
     let _slot = tokio::select! {
         biased;
         // Cancellation wins: a partition that has not started never needs to.
         () = context.cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
         // A stop request comes next: a partition still waiting for a slot ends without reading.
         () = job.stop.cancelled() => None,
-        // Otherwise the read waits for a slot, and for its part, until each frees.
+        // Otherwise the read waits for its place, its slot and its part, until each frees.
         slot = context.slots.read(&job, &context.budget) => Some(slot?),
     };
     if job.stop.is_cancelled() {
