@@ -11,9 +11,11 @@ use rdlt_connector::{
     SourceEvent, StreamName, StreamState,
 };
 use rdlt_connector_reference::changes::{ChangedStream, expected};
-use rdlt_engine::{CommitPolicy, EngineConfig, RunStatus, Until, WriteMode};
+use rdlt_engine::{
+    CommitPolicy, EngineConfig, ErrorKind, RetryPolicy, RunStatus, Until, WriteMode, codes,
+};
 
-use crate::changes::{changes, log, logged, orders, rows};
+use crate::changes::{changes, changes_of, log, logged, orders, rows};
 use crate::support::{engine, memory, pipeline, stream};
 
 /// A configuration that commits every second and plans again every 200 ms.
@@ -192,4 +194,42 @@ async fn a_following_run_logs_every_change_once() {
     let mut positions = logged("followed_log", "orders");
     positions.sort_unstable();
     assert_eq!(positions, log(8, &captured));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_followed_read_a_phase_begins_beyond_the_places_is_refused_at_the_next_interval_re_plan()
+{
+    // Two partitions leave one place for a followed read, and each stream's changes are one: the
+    // second stream's changes wait for a place from the commit that begins them until the re-plan
+    // at two seconds counts what the plans name.
+    let returns = ChangedStream {
+        name: "returns".into(),
+        ..orders(&[])
+    };
+    let source = changes_of(8, &[orders(&[]), returns]).await;
+    let streams = ["orders", "returns"].map(|name| stream(name).read(ReadMode::Cdc));
+    let plan = pipeline("beyond", streams).with_until(Until::For(Duration::from_secs(60)));
+    let every = CommitPolicy::new(Some(Duration::from_millis(100)), None, None)
+        .expect("an interval is valid");
+    let config = EngineConfig::builder()
+        .writers(2)
+        .barrier_wait(Duration::from_millis(100))
+        .replan(Duration::from_secs(2))
+        .commit(every)
+        .partitions(2)
+        .retry(RetryPolicy::default().max_attempts(1));
+    let started = tokio::time::Instant::now();
+    let outcome = engine(config)
+        .run(plan, source, memory("beyond_changes").await)
+        .await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Config, Some(codes::PARTITIONS_TOO_FEW))
+    );
+    let waited = started.elapsed();
+    assert!(
+        (Duration::from_secs(2)..Duration::from_millis(2_500)).contains(&waited),
+        "{waited:?}"
+    );
 }

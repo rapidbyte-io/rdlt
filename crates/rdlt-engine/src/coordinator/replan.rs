@@ -6,12 +6,17 @@ use std::collections::BTreeSet;
 
 use rdlt_connector::{Partition, PartitionId, PartitionPlan};
 
-use super::Coordinator;
+use super::{Coordinator, PartitionRun};
 use crate::error::Error;
 use crate::partition::resumed;
 
 impl Coordinator {
-    /// Plans each stream that tracks its partitions again, unless the attempt is stopping.
+    /// Plans each stream that tracks its partitions again, unless the attempt is stopping, and
+    /// refuses the attempt where the plans name more followed unbounded partitions than their
+    /// places.
+    ///
+    /// The places are counted once every stream is planned: a stream planned before another that
+    /// dropped a partition its source no longer names would count that partition still.
     pub(super) async fn replan(&mut self) -> Result<(), Error> {
         if self.stopping {
             return Ok(());
@@ -20,6 +25,18 @@ impl Coordinator {
             if self.parts.streams[stream].phases.is_some() {
                 self.replan_stream(stream).await?;
             }
+        }
+        self.within_places()
+    }
+
+    /// Refuses the attempt where the followed unbounded reads its streams' plans name, running or
+    /// waiting for a place, are more than the places: a read a plan stopped holds its place only
+    /// until its stop ends it.
+    fn within_places(&self) -> Result<(), Error> {
+        let following = self.parts.partitions.iter().filter(|run| run.follows());
+        for (index, run) in following.enumerate() {
+            let stream = &self.parts.streams[run.stream].name;
+            self.parts.slots.admit(stream, &run.id, index + 1)?;
         }
         Ok(())
     }
@@ -110,5 +127,13 @@ impl Coordinator {
         }
         self.forget_lag(stream, Some(&dropped));
         Ok(())
+    }
+}
+
+impl PartitionRun {
+    /// Whether the partition's read holds or waits for a place its stream's plans name it for: a
+    /// followed read neither ended nor asked to stop.
+    fn follows(&self) -> bool {
+        self.followed && !self.ended && !self.stop.is_cancelled()
     }
 }

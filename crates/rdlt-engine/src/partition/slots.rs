@@ -8,6 +8,7 @@ mod tests;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use rdlt_connector::{PartitionId, StreamName};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 
 pub(crate) use self::parts::Parts;
@@ -22,7 +23,8 @@ use crate::limits;
 ///
 /// A followed unbounded read holds its slot for as long as the run, so fewer of them than slots
 /// read at once: the other reads always have a slot to take in turn, and a part, which followed
-/// reads never all hold.
+/// reads never all hold. A run whose plans name more is refused, and a read the plans name waits
+/// for its place while one they no longer name still holds it.
 #[derive(Clone, Debug)]
 pub(crate) struct Slots {
     reads: Arc<Semaphore>,
@@ -35,9 +37,11 @@ pub(crate) struct Slots {
     parts: Arc<Parts>,
 }
 
-/// A read's slot, and the part of what reads keep a read that is not followed holds with it.
+/// A read's slot, with the place a followed unbounded read holds, or the part of what reads keep
+/// another holds.
 pub(super) struct Slot<'a> {
-    _slot: SemaphorePermit<'a>,
+    _place: Option<OwnedSemaphorePermit>,
+    _read: SemaphorePermit<'a>,
     _part: Option<OwnedSemaphorePermit>,
 }
 
@@ -84,27 +88,30 @@ impl Slots {
         }
     }
 
-    /// For a followed unbounded read, one of the places such reads have; nothing for another.
+    /// Refuses `partition` of `stream`, read as a followed unbounded partition, where it is one of
+    /// `followed` such reads its run's plans name, more than the places.
     ///
     /// # Errors
     ///
-    /// A `Config` error where as many followed unbounded reads run as there are slots less one:
-    /// the slots must outnumber them. It is coded `source_calls_exceeded` where the source's calls
-    /// set the slots, and `partitions_too_few` where the run's partitions do.
-    pub(super) fn endless(
+    /// A `Config` error where the followed unbounded reads are as many as the slots or more: the
+    /// slots must outnumber them. It is coded `source_calls_exceeded` where the source's calls set
+    /// the slots, and `partitions_too_few` where the run's partitions do.
+    pub(crate) fn admit(
         &self,
-        job: &PartitionJob,
-    ) -> Result<Option<OwnedSemaphorePermit>, Error> {
-        if !job.followed() {
-            return Ok(None);
+        stream: &StreamName,
+        partition: &PartitionId,
+        followed: usize,
+    ) -> Result<(), Error> {
+        if followed > self.places {
+            return Err(self.refused(stream, partition));
         }
-        let place = Arc::clone(&self.endless).try_acquire_owned();
-        place.map(Some).map_err(|_| self.refused(job))
+        Ok(())
     }
 
-    /// The refusal of `job`, a followed unbounded read beyond the places, naming what sets them.
-    fn refused(&self, job: &PartitionJob) -> Error {
-        let (stream, partition, places) = (&job.stream, job.partition.id(), self.places);
+    /// The refusal of `partition` of `stream`, a followed unbounded read beyond the places, naming
+    /// what sets them.
+    fn refused(&self, stream: &StreamName, partition: &PartitionId) -> Error {
+        let places = self.places;
         let refused = match self.bound {
             Bound::Partitions => Error::config(format!(
                 "stream {stream}: partition {partition} would be one more followed unbounded read \
@@ -122,16 +129,25 @@ impl Slots {
         refused.with_stream(stream)
     }
 
-    /// A slot for `job`, and for a read that is not followed a part of what reads keep, each at
-    /// once where one is free, or once one frees, the waits counted by `budget`.
+    /// A slot for `job`, for a followed unbounded read first a place, and for a read that is not
+    /// followed a part of what reads keep, each at once where one is free, or once one frees, the
+    /// waits for slots and parts counted by `budget`.
     ///
     /// No deadline ends a wait: a read that is not followed ends, freeing its slot and its part,
-    /// and the followed unbounded reads leave a slot and a part, so each always comes round.
+    /// and the followed unbounded reads leave a slot and a part, so each always comes round. A
+    /// place is waited for only while a read the plans no longer name holds it, which its stop
+    /// ends.
     pub(super) async fn read(
         &self,
         job: &PartitionJob,
         budget: &MemoryBudget,
     ) -> Result<Slot<'_>, Error> {
+        let place = if job.followed() {
+            let place = Arc::clone(&self.endless).acquire_owned().await;
+            Some(place.map_err(|_| Error::internal("partition places closed"))?)
+        } else {
+            None
+        };
         let slot = match self.reads.try_acquire() {
             Ok(slot) => slot,
             Err(_) => budget
@@ -147,7 +163,8 @@ impl Slots {
             Some(budget.read_slot(self.parts.take()).await)
         };
         Ok(Slot {
-            _slot: slot,
+            _place: place,
+            _read: slot,
             _part: part,
         })
     }

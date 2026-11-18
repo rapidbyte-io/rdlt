@@ -311,7 +311,40 @@ async fn a_following_run_with_as_many_unbounded_partitions_as_slots_is_refused_a
         (ErrorKind::Config, Some(codes::PARTITIONS_TOO_FEW))
     );
     assert!(!error.is_retryable());
-    // Refused as the read that would take the last slot starts, not after any wait.
+    // Refused as the run plans, before any read starts, not after any wait.
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_following_run_whose_plans_name_more_unbounded_partitions_than_slots_is_refused_at_once()
+{
+    let source = log(
+        "widened",
+        json!({
+            "name": "events", "partitions": 2, "messages": 3,
+            "partitions_later": 1, "later_after_ms": 500,
+        }),
+    )
+    .await;
+    let plan = pipeline("widened", [incremental()]).with_until(Until::For(Duration::from_secs(60)));
+    let started = tokio::time::Instant::now();
+    let outcome = engine(
+        following()
+            .partitions(3)
+            .retry(RetryPolicy::default().max_attempts(1)),
+    )
+    .run(plan, source, memory("widened").await)
+    .await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Config, Some(codes::PARTITIONS_TOO_FEW))
+    );
+    // Refused at the plan that names the third, not once the deadline ends the wait for a place.
     assert!(
         started.elapsed() < Duration::from_secs(1),
         "{:?}",

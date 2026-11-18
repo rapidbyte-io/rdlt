@@ -67,12 +67,12 @@ budget before it is held, or bounded by a limit with a typed refusal.
       included, so the cursors' share is divided among them. A source whose calls are bounded,
       as a served one's are, has fewer slots where its calls, less the engine's one other call
       into it, are fewer than the partitions (ADR 0042). A followed unbounded read holds its
-      slot as long as the run, so a run reads fewer of them than it has slots: one more is
-      refused as it starts, `partitions_too_few`, or `source_calls_exceeded` where the source's
-      calls set the slots, rather than leaving the other reads no slot. A read beyond the slots
-      waits for one until one frees, with no deadline: a bounded read's end frees its slot, and
-      the followed reads leave one, so a slot always comes round. The waits for a slot and a
-      part are counted with the reads' share.
+      slot as long as the run, so a run reads fewer of them than it has slots: plans naming one
+      more are refused (ADR 0031), `partitions_too_few`, or `source_calls_exceeded` where the
+      source's calls set the slots, rather than leaving the other reads no slot. A read beyond
+      the slots waits for one until one frees, with no deadline: a bounded read's end frees its
+      slot, and the followed reads leave one, so a slot always comes round. The waits for a slot
+      and a part are counted with the reads' share.
     - A read that would keep more than a part fails at the frame that would pass it. Sixteen
       reads keeping all they may, and seventeen followed reads through eighteen slots, leave
       pushes and checkpoints flowing, which tests hold on the ledger, through the engine's

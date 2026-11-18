@@ -225,11 +225,26 @@ impl Coordinator {
     ) -> Result<(), Error> {
         crate::attempt::within_partition_limit(self.unended.saturating_add(1))?;
         let id = partition.id().clone();
-        let stop = self.parts.stop_reads.child_token();
-        let tracked = PartitionRun::new(stream, id.clone(), template.on_demand, stop.clone())
-            .starting(cursor.as_ref());
         let index = self.place(stream, &id);
-        let place = tracked.place(&self.parts.streams[stream].name);
+        let job = PartitionJob {
+            index,
+            stream: self.parts.streams[stream].name.clone(),
+            table: template.table,
+            partition,
+            read: template.read,
+            cursor,
+            on_demand: template.on_demand,
+            changes: template.changes,
+            stop: self.parts.stop_reads.child_token(),
+            follow: self.parts.follow,
+            reset_retention: template.reset_retention,
+            exclude: template.exclude.clone(),
+            stage: template.stage.clone(),
+        };
+        let tracked = PartitionRun::new(stream, id.clone(), template.on_demand, job.stop.clone())
+            .starting(job.cursor.as_ref())
+            .following(job.followed());
+        let place = tracked.place(&job.stream);
         match self.parts.partitions.get_mut(index) {
             Some(place) => *place = tracked,
             None => self.parts.partitions.push(tracked),
@@ -241,21 +256,6 @@ impl Coordinator {
             phases.reading.insert(id, index);
         }
         run.remaining += 1;
-        let job = PartitionJob {
-            index,
-            stream: run.name.clone(),
-            table: template.table,
-            partition,
-            read: template.read,
-            cursor,
-            on_demand: template.on_demand,
-            changes: template.changes,
-            stop,
-            follow: self.parts.follow,
-            reset_retention: template.reset_retention,
-            exclude: template.exclude.clone(),
-            stage: template.stage.clone(),
-        };
         (self.parts.launcher)(job)
     }
 

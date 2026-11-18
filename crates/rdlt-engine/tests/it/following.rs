@@ -130,7 +130,12 @@ impl Source for Shaped {
 }
 
 async fn log(group: &str, stream: &Value) -> Arc<dyn Source> {
-    let config = json!({ "seed": 5, "group": group, "streams": [stream] });
+    logs(group, &json!([stream])).await
+}
+
+/// A log of the streams `streams` lists, keeping its offsets in `group`.
+async fn logs(group: &str, streams: &Value) -> Arc<dyn Source> {
+    let config = json!({ "seed": 5, "group": group, "streams": streams });
     let source = source_factory::<LogSource>()
         .connect(config, ConnectContext::new())
         .await
@@ -147,9 +152,9 @@ fn following(commit_every: Duration) -> EngineConfigBuilder {
         .commit(every)
 }
 
-/// The offsets each of `partitions` partitions published to `events` in `store`, sorted.
-fn offsets(store: &str, partitions: u32) -> Vec<Vec<u64>> {
-    let rows = published_json(store, "events");
+/// The offsets each of `partitions` partitions published to `table` in `store`, sorted.
+fn offsets(store: &str, table: &str, partitions: u32) -> Vec<Vec<u64>> {
+    let rows = published_json(store, table);
     (0..partitions)
         .map(|index| {
             let partition = format!("p{index}");
@@ -166,7 +171,7 @@ fn offsets(store: &str, partitions: u32) -> Vec<Vec<u64>> {
 
 /// Asserts each partition published every offset from 0 once, and returns how many each did.
 fn contiguous(store: &str, partitions: u32) -> Vec<u64> {
-    offsets(store, partitions)
+    offsets(store, "events", partitions)
         .into_iter()
         .enumerate()
         .map(|(index, offsets)| {
@@ -281,4 +286,37 @@ async fn a_following_run_stopped_before_its_deadline_is_stopped() {
         "{:?}",
         outcome.error
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_plan_that_swaps_followed_partitions_at_every_place_waits_for_the_stopped_read_s_place() {
+    // Four partitions leave three places for followed reads, all held. At once stream `a` loses
+    // its p1 and stream `b` gains one, and `a`'s stopped read holds its place a second longer.
+    let streams = json!([
+        {
+            "name": "a", "partitions": 2, "messages": 2,
+            "partitions_retired": 1, "retired_after_ms": 500,
+        },
+        {
+            "name": "b", "partitions": 1, "messages": 2,
+            "partitions_later": 1, "later_after_ms": 500,
+        },
+    ]);
+    let shaped = Arc::new(Shaped {
+        inner: Some(logs("swapped", &streams).await),
+        hold: Some(Duration::from_secs(1)),
+        ..Shaped::default()
+    });
+    let streams = ["a", "b"].map(|name| stream(name).read(ReadMode::Incremental));
+    let plan = pipeline("swapped", streams).with_until(Until::For(Duration::from_secs(3)));
+    let outcome = engine(following(Duration::from_millis(100)).partitions(4))
+        .run(plan, shaped, memory("swapped").await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(offsets("swapped", "b", 2), [vec![0, 1], vec![0, 1]]);
 }
