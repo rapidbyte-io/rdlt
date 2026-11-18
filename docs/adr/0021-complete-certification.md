@@ -46,7 +46,8 @@ in process:
 - **The clauses.**
   - `D-NAMES`: a table and a column named as long as the destination's rules allow, a column
     beyond ASCII when it allows any character, and one in mixed case when it keeps case, each
-    folded as its rules fold, are published under their names. Unobserved below 32 bytes.
+    folded as its rules fold, are published under their names. Unobserved below 32 bytes, and
+    where the rules reserve every form of a name it writes.
   - `D-WRITERS`: as many table writers of one table as the destination runs at once, up to four, stage
     at the same time, and a commit publishes what each staged. Inapplicable for one writer.
   - `S-CHECK`: check succeeds exactly when a read of the first partition starts, and both do.

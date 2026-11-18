@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 
+use super::identifiers::{folded, unreserved};
 use super::{Bench, commit, meta};
 use crate::capabilities::{IdentifierCase, IdentifierChars, IdentifierRules};
 use crate::destination::{TableChange, TableRef};
@@ -39,9 +40,12 @@ impl Bench<'_> {
             generation: None,
             merge: None,
         };
-        let names = names(rules).ok_or(
-            "the destination reserves every form of a name its identifiers are long enough for",
-        )?;
+        let names = names(rules).ok_or_else(|| {
+            Violation::unobserved(
+                "the destination reserves every form of a name its identifiers are long enough \
+                 for",
+            )
+        })?;
         let (schema, rows) = table_of(&names);
         let mut opened = self.open(self.destination).await?;
         opened
@@ -113,18 +117,6 @@ fn names(rules: &IdentifierRules) -> Option<Vec<String>> {
     Some(names)
 }
 
-/// `name`, lengthened with `_` until it is none of the `reserved` words; none when the
-/// `longest` identifier is still one.
-fn unreserved(reserved: &BTreeSet<String>, longest: usize, mut name: String) -> Option<String> {
-    while reserved.contains(&name) {
-        if name.len() >= longest {
-            return None;
-        }
-        name.push('_');
-    }
-    Some(name)
-}
-
 /// A table of `names`' columns, the first an id and the rest strings, and three rows of it.
 fn table_of(names: &[String]) -> (TableSchema, RecordBatch) {
     let mut fields = vec![Field::new(names[0].as_str(), LogicalType::Int64, false)];
@@ -141,15 +133,6 @@ fn table_of(names: &[String]) -> (TableSchema, RecordBatch) {
     let rows = RecordBatch::try_from_iter(names.iter().cloned().zip(columns))
         .expect("the rows fit their columns");
     (schema, rows)
-}
-
-/// `name` as `rules` fold it.
-fn folded(rules: &IdentifierRules, name: &str) -> String {
-    match rules.case {
-        IdentifierCase::Preserve => name.to_owned(),
-        IdentifierCase::Lower => name.to_lowercase(),
-        IdentifierCase::Upper => name.to_uppercase(),
-    }
 }
 
 /// `name`, lengthened with `with` to `longest` bytes.

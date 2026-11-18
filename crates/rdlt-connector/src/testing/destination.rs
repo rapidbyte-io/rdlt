@@ -10,6 +10,8 @@ mod encoding;
 mod evolving;
 mod fence;
 mod history;
+mod identifiers;
+mod judged;
 mod landed;
 mod names;
 mod owned;
@@ -30,9 +32,7 @@ pub use clauses::DESTINATION_CLAUSES;
 pub(in crate::testing) use names::simply_folded;
 pub use read::read_back_integers;
 
-use super::{
-    Clause, ClauseResult, Observed, Outcome, Report, Violation, bounded, bounded_call, outcome,
-};
+use super::{Clause, ClauseResult, Observed, Report, Violation, bounded, bounded_call};
 use crate::commit::{CommitKey, CommitMeta, Receipt, SegmentSet};
 use crate::destination::{
     Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
@@ -42,7 +42,8 @@ use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{Epoch, PipelineId, SchemaVersion, SegmentId, TablePath};
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::{StateChange, StateRecord};
-use rows::{STALE, expect_rows, rows, schema};
+use identifiers::Identifiers;
+use rows::{STALE, expect_rows};
 
 /// Reads what a destination has published, so clauses can compare it with what was committed.
 pub trait Probe: Send + Sync {
@@ -143,24 +144,19 @@ pub async fn certify_destination_factory_observed(
     let results = match connections.await {
         Ok((destination, peer)) => {
             let started = started();
+            let identifiers = Identifiers::new(&destination.capabilities().identifiers);
+            let unnamed = identifiers.unnamed();
             let mut results = Vec::new();
             for (index, clause) in DESTINATION_CLAUSES.iter().enumerate() {
                 let bench = Bench {
                     destination: destination.as_ref(),
                     peer: peer.as_ref(),
                     probe,
+                    names: &identifiers,
                     started,
                     index,
                 };
-                let unread = !probe.reads() && clauses::PROBED.contains(&clause.id);
-                let inapplicable = evolving::inapplicable(destination.as_ref(), clause.id);
-                let unobserved = evolving::unobserved(destination.as_ref(), clause.id);
-                let outcome = match (inapplicable, unobserved) {
-                    (Some(reason), _) => Outcome::Inapplicable(reason.into()),
-                    (None, Some(reason)) => Outcome::Unobserved(reason.into()),
-                    (None, None) if unread => Outcome::Unobserved(UNREAD.into()),
-                    (None, None) => outcome(super::timed(bench.check(clause.id)).await),
-                };
+                let outcome = bench.judged(clause.id, unnamed.as_deref()).await;
                 let result = ClauseResult {
                     clause: *clause,
                     note: tables::noted(probe, clause.id, &outcome),
@@ -189,9 +185,6 @@ pub async fn certify_destination_factory_observed(
     Report { connector, results }
 }
 
-/// Why a clause that reads published data is not observed without a probe that reads it.
-const UNREAD: &str = "the destination's published data cannot be read";
-
 /// When this run started: it names the run's pipelines and tables.
 fn started() -> SystemTime {
     SystemTime::now()
@@ -204,6 +197,8 @@ struct Bench<'a> {
     /// A second connection to the same store, playing another worker.
     peer: &'a dyn Destination,
     probe: &'a dyn Probe,
+    /// The identifiers the destination's rules give the clause's tables and columns.
+    names: &'a Identifiers,
     started: SystemTime,
     index: usize,
 }
@@ -260,10 +255,14 @@ impl Bench<'_> {
     }
 
     fn table(&self) -> TableRef {
-        let name = self.name();
+        self.table_called(&self.name())
+    }
+
+    /// The table certification calls `name`, under the identifier the rules give it.
+    fn table_called(&self, name: &str) -> TableRef {
         TableRef {
-            path: TablePath::new([name.as_str()]).expect("table paths are valid"),
-            name: name.into(),
+            path: TablePath::new([name]).expect("table paths are valid"),
+            name: self.names.table(name),
             version: SchemaVersion(1),
             generation: None,
             merge: None,
@@ -296,7 +295,7 @@ impl Bench<'_> {
         let mut writer = self.writer(&mut opened.session).await?;
         for segment in segments {
             writer
-                .write(SegmentId(*segment), rows(*segment))
+                .write(SegmentId(*segment), self.rows(*segment))
                 .await
                 .map_err(|error| Violation::from(format!("write: {error}")))?;
         }
@@ -325,7 +324,7 @@ impl Bench<'_> {
         session
             .apply_schema(&TableChange::Create {
                 table: table.clone(),
-                schema: schema(),
+                schema: self.schema(),
             })
             .await
             .map_err(|error| Violation::from(format!("apply_schema: {error}")))?;

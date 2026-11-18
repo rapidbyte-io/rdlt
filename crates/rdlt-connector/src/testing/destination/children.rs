@@ -5,20 +5,19 @@ use std::sync::Arc;
 use arrow_array::cast::AsArray;
 use arrow_array::{BinaryArray, Int64Array, RecordBatch, StringArray};
 
+use super::identifiers::Identifiers;
 use super::{Bench, commit, meta};
+use crate::change::SEQ_COLUMN;
 use crate::commit::{ChildTable, CommitMeta};
 use crate::destination::{
     DestinationSession, DestinationWriter, MergeKey, RootKey, TableChange, TableRef,
 };
 use crate::id::SegmentId;
+use crate::meta::{ID_COLUMN, ROOT_ID_COLUMN};
 use crate::schema::TableSchema;
 use crate::testing::reason::Listed;
 use crate::testing::{Violation, bounded_call};
 use crate::types::{Field, LogicalType};
-
-const ID: &str = "_rdlt_id";
-const ROOT_ID: &str = "_rdlt_root_id";
-const SEQ: &str = "_rdlt_seq";
 
 /// A root row: its key, its id's byte and its sequence's last byte.
 type Root = (i64, u8, u8);
@@ -36,12 +35,12 @@ impl Bench<'_> {
     pub(super) async fn children_follow_their_roots(&self) -> Result<(), Violation> {
         let [roots, items, tags] = self.family();
         let mut opened = self.open(self.destination).await?;
-        create(&mut opened.session, &roots, &[&items, &tags]).await?;
+        create(self.names, &mut opened.session, &roots, &[&items, &tags]).await?;
         let mut writers = Vec::new();
         for table in [&roots, &items, &tags] {
             writers.push(bounded_call("table writer", opened.session.writer(table)).await?);
         }
-        stage(&mut writers).await?;
+        stage(self.names, &mut writers).await?;
         let child_tables: Vec<ChildTable> = [&items, &tags].into_iter().map(child_table).collect();
         for segment in [1, 2] {
             let commit_meta = CommitMeta {
@@ -75,10 +74,11 @@ impl Bench<'_> {
 
     /// The clause's root table, merging by `id`, and two child tables following it.
     fn family(&self) -> [TableRef; 3] {
+        let column = |name| self.names.column(name);
         let roots = TableRef {
             merge: Some(MergeKey {
-                columns: vec!["id".into()],
-                seq: SEQ.into(),
+                columns: vec![column("id")],
+                seq: column(SEQ_COLUMN),
                 root: None,
                 changes: None,
                 history: None,
@@ -87,12 +87,12 @@ impl Bench<'_> {
         };
         let child = |suffix: &str| TableRef {
             merge: Some(MergeKey {
-                columns: vec![ROOT_ID.into()],
-                seq: SEQ.into(),
+                columns: vec![column(ROOT_ID_COLUMN)],
+                seq: column(SEQ_COLUMN),
                 root: Some(RootKey {
                     table: Arc::clone(&roots.name),
-                    id: ID.into(),
-                    seq: SEQ.into(),
+                    id: column(ID_COLUMN),
+                    seq: column(SEQ_COLUMN),
                 }),
                 changes: None,
                 history: None,
@@ -109,7 +109,8 @@ impl Bench<'_> {
         let mut values = Vec::with_capacity(published.rows());
         for batch in published.batches() {
             // A child's value holds no null: a row without one is a row too many.
-            let column = batch.required("value", &arrow_schema::DataType::Utf8)?;
+            let value = self.names.column("value");
+            let column = batch.required(&value, &arrow_schema::DataType::Utf8)?;
             let column = column.as_string::<i32>();
             values.extend((0..batch.rows()).map(|row| column.value(row).to_owned()));
         }
@@ -118,8 +119,12 @@ impl Bench<'_> {
 }
 
 /// Stages, through the table writers of the roots and their two child tables, the clause's first
-/// segment and its second, which gives the second child table nothing.
-async fn stage(writers: &mut [Box<dyn DestinationWriter>]) -> Result<(), Violation> {
+/// segment and its second, which gives the second child table nothing, its columns as `names`
+/// name them.
+async fn stage(
+    names: &Identifiers,
+    writers: &mut [Box<dyn DestinationWriter>],
+) -> Result<(), Violation> {
     let first_roots = [(1, 1, 1), (2, 2, 2), (3, 3, 3), (4, 4, 4)];
     let first_items = [
         ("a", 1, 1),
@@ -135,14 +140,17 @@ async fn stage(writers: &mut [Box<dyn DestinationWriter>]) -> Result<(), Violati
         (
             1,
             vec![
-                root_batch(&first_roots),
-                child_batch(&first_items),
-                child_batch(&first_tags),
+                root_batch(names, &first_roots),
+                child_batch(names, &first_items),
+                child_batch(names, &first_tags),
             ],
         ),
         (
             2,
-            vec![root_batch(&second_roots), child_batch(&second_items)],
+            vec![
+                root_batch(names, &second_roots),
+                child_batch(names, &second_items),
+            ],
         ),
     ];
     for (segment, batches) in segments {
@@ -154,21 +162,24 @@ async fn stage(writers: &mut [Box<dyn DestinationWriter>]) -> Result<(), Violati
     Ok(())
 }
 
-/// Creates the root table `roots` and its child tables `children`.
+/// Creates the root table `roots` and its child tables `children`, their columns as `names`
+/// name them.
 async fn create(
+    names: &Identifiers,
     session: &mut Box<dyn DestinationSession>,
     roots: &TableRef,
     children: &[&TableRef],
 ) -> Result<(), Violation> {
+    let column = |name| names.column(name);
     let root_schema = schema(vec![
-        Field::new("id", LogicalType::Int64, false),
-        Field::new(ID, LogicalType::Binary, false),
-        Field::new(SEQ, LogicalType::Binary, false),
+        Field::new(column("id"), LogicalType::Int64, false),
+        Field::new(column(ID_COLUMN), LogicalType::Binary, false),
+        Field::new(column(SEQ_COLUMN), LogicalType::Binary, false),
     ]);
     let child_schema = schema(vec![
-        Field::new("value", LogicalType::Utf8, false),
-        Field::new(ROOT_ID, LogicalType::Binary, false),
-        Field::new(SEQ, LogicalType::Binary, false),
+        Field::new(column("value"), LogicalType::Utf8, false),
+        Field::new(column(ROOT_ID_COLUMN), LogicalType::Binary, false),
+        Field::new(column(SEQ_COLUMN), LogicalType::Binary, false),
     ]);
     let tables = std::iter::once((roots, root_schema))
         .chain(children.iter().map(|child| (*child, child_schema.clone())));
@@ -204,26 +215,26 @@ fn bytes(byte: u8) -> Vec<u8> {
     bytes
 }
 
-fn root_batch(rows: &[Root]) -> RecordBatch {
+fn root_batch(names: &Identifiers, rows: &[Root]) -> RecordBatch {
     let keys: Int64Array = rows.iter().map(|row| row.0).collect();
     let ids = BinaryArray::from_iter_values(rows.iter().map(|row| bytes(row.1)));
     let seqs = BinaryArray::from_iter_values(rows.iter().map(|row| bytes(row.2)));
     RecordBatch::try_from_iter([
-        ("id", Arc::new(keys) as _),
-        (ID, Arc::new(ids) as _),
-        (SEQ, Arc::new(seqs) as _),
+        (names.column("id"), Arc::new(keys) as _),
+        (names.column(ID_COLUMN), Arc::new(ids) as _),
+        (names.column(SEQ_COLUMN), Arc::new(seqs) as _),
     ])
     .expect("the certification batch is valid")
 }
 
-fn child_batch(rows: &[Child]) -> RecordBatch {
+fn child_batch(names: &Identifiers, rows: &[Child]) -> RecordBatch {
     let values: StringArray = rows.iter().map(|row| Some(row.0)).collect();
     let roots = BinaryArray::from_iter_values(rows.iter().map(|row| bytes(row.1)));
     let seqs = BinaryArray::from_iter_values(rows.iter().map(|row| bytes(row.2)));
     RecordBatch::try_from_iter([
-        ("value", Arc::new(values) as _),
-        (ROOT_ID, Arc::new(roots) as _),
-        (SEQ, Arc::new(seqs) as _),
+        (names.column("value"), Arc::new(values) as _),
+        (names.column(ROOT_ID_COLUMN), Arc::new(roots) as _),
+        (names.column(SEQ_COLUMN), Arc::new(seqs) as _),
     ])
     .expect("the certification batch is valid")
 }

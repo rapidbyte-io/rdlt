@@ -22,7 +22,7 @@ impl Bench<'_> {
             .map_err(|error| Violation::from(format!("open: {error}")))?;
         let create = TableChange::Create {
             table: self.table(),
-            schema: super::schema(),
+            schema: self.schema(),
         };
         owned("apply_schema", intruder.session.apply_schema(&create).await)?;
         owned(

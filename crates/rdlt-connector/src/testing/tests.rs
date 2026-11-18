@@ -23,13 +23,15 @@ use super::{
     Unprobed, Verdict, certify_destination, certify_destination_factory_observed, certify_source,
     certify_source_factory_observed,
 };
-use crate::capabilities::{Capabilities, SchemaChanges};
+use crate::capabilities::{
+    Capabilities, IdentifierCase, IdentifierChars, IdentifierRules, SchemaChanges,
+};
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
 use crate::commit::{CommitMeta, Receipt};
 use crate::cursor::Cursor;
 use crate::destination::{
-    DestinationConnector, MergeKey, OpenContext, Opened, RootKey, Session, TableChange, TableRef,
-    TableWriter, WriteStats,
+    Deletion, DestinationConnector, MergeKey, OpenContext, Opened, RootKey, Session, TableChange,
+    TableRef, TableWriter, WriteStats,
 };
 use crate::emitter::Emitter;
 use crate::error::{COLUMN_MISSING, COMMIT_STALE, ConnectorError, ConnectorErrorKind, Result};
@@ -41,7 +43,7 @@ use crate::sink::Push;
 use crate::source::{Partition, PartitionPlan, ReadStream, SourceConnector, Streams};
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::{StateChange, StateRecord, StreamState};
-use crate::types::LogicalType;
+use crate::types::{Field, LogicalType};
 
 fn failed(report: &Report) -> Vec<&'static str> {
     report.failures().map(|result| result.clause.id).collect()
@@ -751,6 +753,12 @@ struct VaultConfig {
     identifier_len: u16,
     /// Reserves `id`, and every lengthening of it its identifiers are long enough for.
     reserve_ids: bool,
+    /// Declares it folds identifiers to upper case.
+    upper_case: bool,
+    /// Words it reserves besides.
+    reserved: Vec<String>,
+    /// Table prefixes it reserves.
+    reserved_prefixes: Vec<String>,
     /// Never finishes a flush.
     hang_flush: bool,
     /// Lets any pipeline write into any table, whichever pipeline created it.
@@ -937,6 +945,78 @@ impl VaultConfig {
         Epoch(if self.static_epoch { 1 } else { epoch })
     }
 
+    /// The identifier rules the vault declares, and keeps to.
+    fn identifiers(&self) -> IdentifierRules {
+        let mut rules = Capabilities::minimal().identifiers;
+        if let Some(longest) = std::num::NonZeroU16::new(self.identifier_len) {
+            rules.max_len = longest;
+        }
+        if self.reserve_ids {
+            let longest = usize::from(rules.max_len.get());
+            rules.reserved = (0..=longest - 2)
+                .map(|more| format!("id{}", "_".repeat(more)))
+                .collect();
+        }
+        rules.reserved.extend(self.reserved.iter().cloned());
+        rules.reserved_table_prefixes = self.reserved_prefixes.iter().cloned().collect();
+        if self.upper_case {
+            rules.case = IdentifierCase::Upper;
+        }
+        if self.fold_simply {
+            rules.case = IdentifierCase::Lower;
+            rules.chars = IdentifierChars::Any;
+        }
+        rules
+    }
+
+    /// Refuses, as a data error, a table called `table` with the columns `columns` where an
+    /// identifier breaks the rules the vault declares: longer than they allow, not folded as they
+    /// fold, of a character they do not allow, reserved, or a table's under a reserved prefix.
+    fn named<'a>(&self, table: &str, columns: impl IntoIterator<Item = &'a str>) -> Result<()> {
+        let rules = self.identifiers();
+        let fold = |text: &str| match rules.case {
+            IdentifierCase::Preserve => text.to_owned(),
+            IdentifierCase::Lower => text.to_lowercase(),
+            IdentifierCase::Upper => text.to_uppercase(),
+        };
+        let breaks = |name: &str| {
+            let allowed = |c: char| match rules.chars {
+                IdentifierChars::AsciiWord => c.is_ascii_alphanumeric() || c == '_',
+                IdentifierChars::Any => !c.is_control(),
+            };
+            name.len() > usize::from(rules.max_len.get())
+                || fold(name) != name
+                || !name.chars().all(allowed)
+                || rules.reserved.iter().any(|word| fold(word) == name)
+        };
+        let prefixed = rules
+            .reserved_table_prefixes
+            .iter()
+            .any(|prefix| table.starts_with(&fold(prefix)));
+        let broken = if breaks(table) {
+            Some(table)
+        } else {
+            columns.into_iter().find(|name| breaks(name))
+        };
+        match broken {
+            Some(name) => Err(ConnectorError::data(format!(
+                "identifier {name} breaks the rules the vault declares"
+            ))),
+            None if prefixed => Err(ConnectorError::data(format!(
+                "table {table} starts with a prefix the vault reserves"
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Refuses `table` where an identifier it names breaks the rules the vault declares.
+    fn named_table(&self, table: &TableRef) -> Result<()> {
+        let merge = table.merge.as_ref().map(merge_columns).unwrap_or_default();
+        self.named(&table.name, merge)?;
+        let root = table.merge.as_ref().and_then(|merge| merge.root.as_ref());
+        root.map_or(Ok(()), |root| self.named(&root.table, []))
+    }
+
     /// The pipeline's current epoch, from the store this configuration keeps epochs in.
     fn epoch(&self, shared: &VaultStore, stores: &VaultStores, pipeline: &PipelineId) -> u64 {
         let epochs = |store: &VaultStore| store.epochs.get(pipeline).copied().unwrap_or_default();
@@ -1046,21 +1126,9 @@ impl DestinationConnector for Vault {
         if let Some(writers) = std::num::NonZeroU16::new(self.config.writers) {
             capabilities.max_parallel_writers = writers;
         }
-        if let Some(longest) = std::num::NonZeroU16::new(self.config.identifier_len) {
-            capabilities.identifiers.max_len = longest;
-        }
-        if self.config.reserve_ids {
-            let longest = usize::from(capabilities.identifiers.max_len.get());
-            capabilities.identifiers.reserved = (0..=longest - 2)
-                .map(|more| format!("id{}", "_".repeat(more)))
-                .collect();
-        }
+        capabilities.identifiers = self.config.identifiers();
         if self.config.fixed_schema {
             capabilities.schema_changes = SchemaChanges::default();
-        }
-        if self.config.fold_simply {
-            capabilities.identifiers.case = crate::capabilities::IdentifierCase::Lower;
-            capabilities.identifiers.chars = crate::capabilities::IdentifierChars::Any;
         }
         capabilities.merge_changes &= !self.config.no_change_merges;
         capabilities.write_modes.replace &= !self.config.no_replace;
@@ -1433,18 +1501,18 @@ impl Session for VaultSession {
     type Writer = VaultWriter;
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
-        // It keeps to the identifiers it declares: ASCII word characters, unless it takes any.
-        if let TableChange::Create { schema, .. } = change
-            && !self.config.fold_simply
-            && let Some(field) = schema.fields().iter().find(|field| {
-                !field
-                    .name()
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
-            })
-        {
-            let message = format!("column {} breaks the identifier rules", field.name());
-            return Err(ConnectorError::data(message));
+        self.config.named_table(change.table())?;
+        match change {
+            TableChange::Create { table, schema } => {
+                self.config
+                    .named(&table.name, schema.fields().iter().map(Field::name))?;
+            }
+            TableChange::AddColumn { table, field } => {
+                self.config.named(&table.name, [field.name()])?;
+            }
+            TableChange::Widen { table, column, .. } => {
+                self.config.named(&table.name, [&**column])?;
+            }
         }
         let mut store = self.stores.shared.lock();
         self.claimed(&mut store, &change.table().name)?;
@@ -1488,6 +1556,7 @@ impl Session for VaultSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<VaultWriter> {
+        self.config.named_table(table)?;
         {
             let mut store = self.stores.shared.lock();
             let claimed = self.claimed(&mut store, &table.name);
@@ -1529,6 +1598,13 @@ impl Session for VaultSession {
     }
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
+        for child in &meta.child_tables {
+            self.config
+                .named(&child.table, merge_columns(&child.merge))?;
+        }
+        for dropped in &meta.drop_tables {
+            self.config.named(&dropped.name, [])?;
+        }
         let mut store = self.stores.shared.lock();
         let current = self.config.epoch(&store, &self.stores, &self.pipeline);
         let fence = Fence {
@@ -1674,6 +1750,9 @@ impl VaultWriter {
 
 impl TableWriter for VaultWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
+        let schema = batch.schema();
+        let columns = schema.fields().iter().map(|field| field.name().as_str());
+        self.config.named(&self.table, columns)?;
         let mut store = self.stores.shared.lock();
         let current = self.config.epoch(&store, &self.stores, &self.pipeline);
         if !self.config.stale_writes && current != self.epoch {
@@ -1936,6 +2015,31 @@ fn record(store: &mut VaultStore, change: &TableChange) {
     }
 }
 
+/// Every column identifier `merge` names.
+fn merge_columns(merge: &MergeKey) -> Vec<&str> {
+    let mut columns: Vec<&str> = merge.columns.iter().map(AsRef::as_ref).collect();
+    columns.push(&merge.seq);
+    if let Some(root) = &merge.root {
+        columns.extend([&*root.id, &*root.seq]);
+    }
+    if let Some(changes) = &merge.changes {
+        columns.push(&changes.op);
+        columns.extend(changes.unchanged.as_deref());
+        if let Deletion::Soft { at } = &changes.deletion {
+            columns.push(at);
+        }
+    }
+    if let Some(history) = &merge.history {
+        columns.extend([
+            &*history.valid_from,
+            &*history.valid_to,
+            &*history.is_current,
+            &*history.row_hash,
+        ]);
+    }
+    columns
+}
+
 /// `batch` with its `name` column, if it has one, all nulls.
 fn blanked_names(batch: &RecordBatch) -> RecordBatch {
     let (fields, columns): (Vec<_>, Vec<_>) = batch
@@ -2089,7 +2193,8 @@ async fn the_writers_clause_does_not_apply_to_one_writer_and_short_names_leave_n
         let store = config["store"].as_str().expect("a store name").to_owned();
         let report = certify_destination::<Vault>(config, &VaultProbe(vault(&store))).await;
         // The engine never runs two writers where one is declared; it names tables and
-        // columns whatever their length, which the clause's own names do not fit.
+        // columns whatever their length, as every other clause does, which the names clause's
+        // own names do not fit.
         let expected = match (runs, report.outcome(clause)) {
             (true, outcome) => outcome == Some(&Outcome::Passed),
             (false, Some(Outcome::Inapplicable(_))) => clause == "D-WRITERS",
@@ -2100,11 +2205,72 @@ async fn the_writers_clause_does_not_apply_to_one_writer_and_short_names_leave_n
     }
 }
 
+/// Words the clauses name columns with, which a destination may reserve.
+const WORDS: [&str; 6] = ["id", "name", "value", "epoch", "_rdlt_seq", "_rdlt_op"];
+
+/// Rules of identifiers sixteen bytes long, folded to upper case, that reserve [`WORDS`].
+fn strictly_ruled(store: &str) -> serde_json::Value {
+    json!({ "store": store, "upper_case": true, "identifier_len": 16, "reserved": WORDS })
+}
+
 #[tokio::test]
-async fn a_destination_reserving_every_form_of_a_name_fails_the_names_clause_alone() {
-    let config = json!({ "store": "reserved", "identifier_len": 40, "reserve_ids": true });
-    let report = certify_destination::<Vault>(config, &VaultProbe(vault("reserved"))).await;
-    assert_eq!(failed(&report), ["D-NAMES"], "{report}");
+async fn every_clause_names_its_tables_and_columns_as_the_destination_declares() {
+    let cases = [
+        (json!({ "identifier_len": 16 }), &["D-NAMES"][..]),
+        (json!({ "identifier_len": 31 }), &["D-NAMES"]),
+        (json!({ "upper_case": true }), &[]),
+        (json!({ "reserved": WORDS }), &[]),
+        (strictly_ruled(""), &["D-NAMES"]),
+    ];
+    for (index, (mut config, unobserved)) in cases.into_iter().enumerate() {
+        let store = format!("ruled_{index}");
+        config["store"] = json!(store);
+        let report = certify_destination::<Vault>(config, &VaultProbe(vault(&store))).await;
+        assert!(failed(&report).is_empty(), "{report}");
+        let found: Vec<&str> = report.unobserved().map(|result| result.clause.id).collect();
+        assert_eq!(found, unobserved, "{report}");
+    }
+}
+
+#[tokio::test]
+async fn a_broken_destination_fails_its_clauses_whatever_the_rules_it_declares() {
+    let flags = [
+        "miscount",
+        "merge_appends",
+        "history_overwrites",
+        "keep_staging",
+        "no_fence",
+        "ignore_added_columns",
+    ];
+    for flag in flags {
+        let store = format!("ruled_{flag}");
+        let mut config = strictly_ruled(&store);
+        config[flag] = json!(true);
+        let report = certify_destination::<Vault>(config, &VaultProbe(vault(&store))).await;
+        let (_, clauses) = BROKEN.iter().find(|(broken, _)| *broken == flag).unwrap();
+        assert_eq!(failed(&report), *clauses, "{flag}: {report}");
+    }
+}
+
+#[tokio::test]
+async fn a_destination_leaving_no_name_unreserved_leaves_every_clause_naming_one_unobserved() {
+    let cases = [
+        json!({ "identifier_len": 40, "reserve_ids": true }),
+        json!({ "reserved_prefixes": ["certify"] }),
+    ];
+    for (index, mut config) in cases.into_iter().enumerate() {
+        let store = format!("unnamed_{index}");
+        config["store"] = json!(store);
+        let report = certify_destination::<Vault>(config, &VaultProbe(vault(&store))).await;
+        assert!(failed(&report).is_empty(), "{report}");
+        let observed: Vec<&str> = report
+            .results
+            .iter()
+            .filter(|result| !matches!(result.outcome, Outcome::Unobserved(_)))
+            .map(|result| result.clause.id)
+            .collect();
+        assert_eq!(observed, ["D-CHECK", "D-STATE"], "{report}");
+    }
 }
 
 #[tokio::test]

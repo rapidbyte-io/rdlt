@@ -9,6 +9,7 @@ use arrow_array::{Array, ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBat
 use arrow_schema::DataType;
 
 use super::evolving::GENERATION;
+use super::identifiers::Identifiers;
 use super::{Bench, commit, meta};
 use crate::change::{ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN};
 use crate::commit::CommitMeta;
@@ -77,8 +78,9 @@ fn live(id: i64, name: &str) -> Marked {
 }
 
 /// `changes` as a change stream writes them: the key, the name, the sequence, where deletes are
-/// `soft` the deletion time, then the op and the unchanged flags, bit 1 the name.
-fn written(changes: &[Change], soft: bool) -> RecordBatch {
+/// `soft` the deletion time, then the op and the unchanged flags, bit 1 the name; each column as
+/// `names` names it.
+fn written(names: &Identifiers, changes: &[Change], soft: bool) -> RecordBatch {
     let mut columns: Vec<(&str, ArrayRef)> = vec![
         (
             "id",
@@ -110,19 +112,27 @@ fn written(changes: &[Change], soft: bool) -> RecordBatch {
         .map(|change| change.partial.then_some(&[0b10_u8][..]))
         .collect();
     columns.push((UNCHANGED_COLUMN, Arc::new(flags)));
+    let columns = columns
+        .into_iter()
+        .map(|(name, column)| (names.column(name), column));
     RecordBatch::try_from_iter(columns).expect("the certification batch is valid")
 }
 
 /// The stored columns of a change stream's table: its key, name and sequence, and where deletes
-/// are `soft`, the deletion time.
-fn stored(soft: bool) -> TableSchema {
+/// are `soft`, the deletion time; each as `names` names it.
+fn stored(names: &Identifiers, soft: bool) -> TableSchema {
+    let column = |name| names.column(name);
     let mut fields = vec![
-        Field::new("id", LogicalType::Int64, false),
-        Field::new("name", LogicalType::Utf8, true),
-        Field::new(SEQ_COLUMN, LogicalType::Binary, false),
+        Field::new(column("id"), LogicalType::Int64, false),
+        Field::new(column("name"), LogicalType::Utf8, true),
+        Field::new(column(SEQ_COLUMN), LogicalType::Binary, false),
     ];
     if soft {
-        fields.push(Field::new(DELETED_AT_COLUMN, LogicalType::Int64, true));
+        fields.push(Field::new(
+            column(DELETED_AT_COLUMN),
+            LogicalType::Int64,
+            true,
+        ));
     }
     TableSchema::new(fields).expect("the certification schema is valid")
 }
@@ -131,21 +141,22 @@ impl Bench<'_> {
     /// A table of this clause, called `suffix` after its own, merging a change stream whose
     /// deletes and truncates are `soft` or hard.
     fn changed_table(&self, suffix: &str, soft: bool) -> TableRef {
+        let column = |name| self.names.column(name);
         let deletion = if soft {
             Deletion::Soft {
-                at: DELETED_AT_COLUMN.into(),
+                at: column(DELETED_AT_COLUMN),
             }
         } else {
             Deletion::Hard
         };
         TableRef {
             merge: Some(MergeKey {
-                columns: vec!["id".into()],
-                seq: SEQ_COLUMN.into(),
+                columns: vec![column("id")],
+                seq: column(SEQ_COLUMN),
                 root: None,
                 changes: Some(ChangeColumns {
-                    op: OP_COLUMN.into(),
-                    unchanged: Some(UNCHANGED_COLUMN.into()),
+                    op: column(OP_COLUMN),
+                    unchanged: Some(column(UNCHANGED_COLUMN)),
                     deletion,
                 }),
                 history: None,
@@ -167,11 +178,12 @@ impl Bench<'_> {
             let mut opened = self.open(self.destination).await?;
             let create = TableChange::Create {
                 table: table.clone(),
-                schema: stored(soft),
+                schema: stored(self.names, soft),
             };
             bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
             let mut writer = bounded_call("table writer", opened.session.writer(table)).await?;
-            bounded_call("write", writer.write(SegmentId(1), written(changes, soft))).await?;
+            let batch = written(self.names, changes, soft);
+            bounded_call("write", writer.write(SegmentId(1), batch)).await?;
             bounded_call("flush", writer.flush()).await?;
             commit(&mut opened, meta(&[1], Vec::new())).await?;
             drop(writer);
@@ -189,7 +201,7 @@ impl Bench<'_> {
             merge: None,
             ..table.clone()
         };
-        let batch = written(rows, false);
+        let batch = written(self.names, rows, false);
         let batch = batch
             .project(&[0, 1, 2])
             .expect("the stored columns come first");
@@ -211,9 +223,10 @@ impl Bench<'_> {
         let published = self.read(table).await?;
         let mut rows = Vec::with_capacity(published.rows());
         for batch in published.batches() {
-            let ids = batch.required("id", &DataType::Int64)?;
-            let names = batch.nullable("name", &DataType::Utf8)?;
-            let at = batch.optional(DELETED_AT_COLUMN, &DataType::Int64)?;
+            let column = |name| self.names.column(name);
+            let ids = batch.required(&column("id"), &DataType::Int64)?;
+            let names = batch.nullable(&column("name"), &DataType::Utf8)?;
+            let at = batch.optional(&column(DELETED_AT_COLUMN), &DataType::Int64)?;
             let (ids, names) = (ids.as_primitive::<Int64Type>(), names.as_string::<i32>());
             let at = at.as_ref().map(AsArray::as_primitive::<Int64Type>);
             for row in 0..batch.rows() {
