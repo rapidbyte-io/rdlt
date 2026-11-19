@@ -345,19 +345,50 @@ fn connect(
     Ok((client, server))
 }
 
-#[test]
-fn every_connection_is_a_full_handshake() {
-    let pki = Pki::new("ca");
+/// The configurations of a connector and of a host of one CA.
+fn configs(pki: &Pki) -> (ClientConfig, ServerConfig) {
     let server = server_config(
         &identity(&pki.server("server", &["localhost"])),
-        &accepted(&pki, &["client"]),
+        &accepted(pki, &["client"]),
     )
     .expect("the server's configuration builds");
     let client = client_config(&identity(&pki.client("client")), &pki.ca())
         .expect("the client's configuration builds");
+    (client, server)
+}
+
+#[test]
+fn a_connector_resumes_no_session_of_a_host_that_would() {
+    let pki = Pki::new("ca");
+    let (mut client, server) = configs(&pki);
+    // A host as rustls makes one keeps the tickets it is sent, and offers them again.
+    client.resumption = rustls::client::Resumption::in_memory_sessions(256);
     let (client, server) = (Arc::new(client), Arc::new(server));
     for _ in 0..3 {
         let (host, connector) = connect(&client, &server).expect("they handshake");
+        assert_eq!(
+            host.tls13_tickets_received(),
+            0,
+            "the connector sent tickets"
+        );
+        assert_eq!(
+            connector.handshake_kind(),
+            Some(rustls::HandshakeKind::Full)
+        );
+    }
+}
+
+#[test]
+fn a_host_resumes_no_session_of_a_connector_that_would() {
+    let pki = Pki::new("ca");
+    let (client, mut server) = configs(&pki);
+    // A connector as rustls makes one remembers its sessions, and sends tickets for them.
+    server.session_storage = rustls::server::ServerSessionMemoryCache::new(256);
+    server.send_tls13_tickets = 2;
+    let (client, server) = (Arc::new(client), Arc::new(server));
+    for _ in 0..3 {
+        let (host, connector) = connect(&client, &server).expect("they handshake");
+        assert!(host.tls13_tickets_received() > 0, "the connector sent none");
         assert_eq!(host.handshake_kind(), Some(rustls::HandshakeKind::Full));
         assert_eq!(
             connector.handshake_kind(),
