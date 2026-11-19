@@ -5,6 +5,7 @@
 mod events;
 mod facade;
 mod ledger;
+mod masks;
 mod metered;
 mod placement;
 #[cfg(feature = "local")]

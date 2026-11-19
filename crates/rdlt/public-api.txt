@@ -7,6 +7,7 @@ pub use rdlt::Call
 pub use rdlt::Catalog
 pub use rdlt::Code
 pub use rdlt::ColumnChange
+pub use rdlt::ColumnPath
 pub use rdlt::CommitPhases
 pub use rdlt::Commits
 pub use rdlt::ConnectorId
@@ -939,13 +940,13 @@ impl core::marker::UnsafeUnpin for rdlt::Lagged
 impl core::panic::unwind_safe::RefUnwindSafe for rdlt::Lagged
 impl core::panic::unwind_safe::UnwindSafe for rdlt::Lagged
 #[non_exhaustive] pub struct rdlt::MaskStep
-pub rdlt::MaskStep::columns: alloc::vec::Vec<alloc::string::String>
+pub rdlt::MaskStep::columns: alloc::vec::Vec<rdlt_connector::schema::ColumnPath>
 pub rdlt::MaskStep::key: core::option::Option<alloc::string::String>
 pub rdlt::MaskStep::text: core::option::Option<alloc::string::String>
 pub rdlt::MaskStep::with: rdlt::MaskWith
 impl rdlt::MaskStep
 pub fn rdlt::MaskStep::key(self, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn rdlt::MaskStep::new(impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<alloc::string::String>>, rdlt::MaskWith) -> Self
+pub fn rdlt::MaskStep::new(impl core::iter::traits::collect::IntoIterator<Item = impl core::convert::Into<rdlt_connector::schema::ColumnPath>>, rdlt::MaskWith) -> Self
 pub fn rdlt::MaskStep::text(self, impl core::convert::Into<alloc::string::String>) -> Self
 impl core::clone::Clone for rdlt::MaskStep
 pub fn rdlt::MaskStep::clone(&self) -> rdlt::MaskStep

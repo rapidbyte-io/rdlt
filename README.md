@@ -537,8 +537,9 @@ batch to its table. Keys, change columns and the source's change time pass every
 they arrive.
 
 - **Ops** are data: `rename`, `mask` (`hmac_sha256` in lower-case hex, `redact`, or `null`,
-  nested struct fields included) and `constant`. They are bounded and validated, safe in a
-  tenant's configuration.
+  nested struct fields included, each named by its path, `columns: [email, [address, street]]`;
+  a column's name is read as written, a dot in it included) and `constant`. They are bounded and
+  validated, safe in a tenant's configuration.
 - **SQL** (`rdlt-sql`) is data too: one projection of `input`, optionally filtered, calling only
   the functions `rdlt_sql::function_names()` lists, evaluated batch by batch on the engine's pool.
   Its integer arithmetic never wraps: a value its type cannot hold fails the batch.

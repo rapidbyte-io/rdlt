@@ -1,6 +1,5 @@
 //! A stream entry's transform steps, checked once, and each stream's engine transforms.
 
-use rdlt_connector::ColumnPath;
 use rdlt_engine::{Mask, Op, TransformStep as Step};
 
 use crate::{Error, Host, MaskStep, MaskWith, TransformStep, codes};
@@ -26,9 +25,7 @@ pub(super) async fn lowered(steps: &[TransformStep], host: &Host) -> Result<Vec<
             ),
             TransformStep::Mask(mask) => {
                 let with = masked(mask, host).await?;
-                Checked::Shared(
-                    Op::mask(mask.columns.iter().map(|column| path(column)), with).into(),
-                )
+                Checked::Shared(Op::mask(mask.columns.iter().cloned(), with).into())
             }
             TransformStep::Constant(columns) => Checked::Shared(
                 Op::constant(
@@ -75,12 +72,6 @@ fn unknown(name: &str, host: &Host) -> Error {
          {registered}"
     );
     Error::config(codes::TRANSFORM_UNKNOWN, message)
-}
-
-/// The column `column` names: a top-level name, or a path through structs, a dot parting each
-/// field.
-fn path(column: &str) -> ColumnPath {
-    ColumnPath::new(column.split('.')).expect("splitting text gives at least one part")
 }
 
 /// How `mask` masks each value, its key resolved through `host`'s secrets.
