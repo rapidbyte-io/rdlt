@@ -636,8 +636,37 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 }
 
-pub(super) fn database() -> (Connection, SqlPlanner<Sqlite>) {
+/// An in-memory SQLite that reads a double-quoted name as a name alone, never as the text of a
+/// string where no column has it, as the SQLite destination's own connection does.
+pub(super) fn connection() -> Connection {
+    use rusqlite::config::DbConfig;
     let connection = Connection::open_in_memory().unwrap();
+    for setting in [
+        DbConfig::SQLITE_DBCONFIG_DQS_DML,
+        DbConfig::SQLITE_DBCONFIG_DQS_DDL,
+    ] {
+        connection.set_db_config(setting, false).unwrap();
+    }
+    connection
+}
+
+#[test]
+fn the_test_database_reads_a_double_quoted_name_as_a_name_alone() {
+    let (connection, _) = database();
+    connection
+        .execute_batch("CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1)")
+        .unwrap();
+    // A name no column has is an error, as on the destination's own connection, never the text.
+    let missing = connection.query_row("SELECT \"missing\" FROM t", [], |row| {
+        row.get::<_, Value>(0)
+    });
+    assert!(missing.is_err(), "{missing:?}");
+    let indexed = connection.execute("CREATE INDEX i ON t (\"missing\")", []);
+    assert!(indexed.is_err(), "{indexed:?}");
+}
+
+pub(super) fn database() -> (Connection, SqlPlanner<Sqlite>) {
+    let connection = connection();
     let planner = SqlPlanner::try_new(Sqlite).unwrap();
     for statement in planner.bootstrap() {
         run(&connection, &statement);
@@ -994,7 +1023,7 @@ proptest! {
 
     #[test]
     fn chunked_state_changes_write_what_the_changes_in_order_would(commits in state_operations()) {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = connection();
         let planner = SqlPlanner::try_new(Narrow).unwrap();
         run_all(&connection, &planner.bootstrap());
         let mine = pipeline("mine");
