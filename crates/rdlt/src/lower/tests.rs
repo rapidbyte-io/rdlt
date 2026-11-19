@@ -362,7 +362,10 @@ async fn transform_steps_lower_in_order_to_the_engine_s_ops_and_the_host_s_code(
     let steps = Stream::new("people")
         .transform(TransformStep::rename([("a", "b")]))
         .transform(TransformStep::Mask(MaskStep::new(
-            ["address.street"],
+            [
+                ColumnPath::new(["address", "street"]).unwrap(),
+                ColumnPath::from("user.email"),
+            ],
             MaskWith::Redact,
         )))
         .transform(TransformStep::Mask(
@@ -381,7 +384,11 @@ async fn transform_steps_lower_in_order_to_the_engine_s_ops_and_the_host_s_code(
     let code = host.code("unchanged").expect("registered");
     let expected: Vec<rdlt_engine::TransformStep> = vec![
         Op::rename([("a", "b")]).into(),
-        Op::mask([street], Mask::redact("***")).into(),
+        Op::mask(
+            [street, ColumnPath::from("user.email")],
+            Mask::redact("***"),
+        )
+        .into(),
         Op::mask(["b"], Mask::redact("-")).into(),
         Op::mask(["email"], Mask::Null).into(),
         Op::constant([

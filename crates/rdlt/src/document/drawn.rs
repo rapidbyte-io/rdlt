@@ -6,6 +6,7 @@ use std::time::Duration;
 use proptest::collection::{btree_map, vec};
 use proptest::option;
 use proptest::prelude::*;
+use rdlt_connector::ColumnPath;
 
 use crate::{
     Column, Commit, Connector, Document, Hint, Literal, MaskStep, MaskWith, Nested, OnUnsupported,
@@ -14,6 +15,12 @@ use crate::{
 
 fn name() -> impl Strategy<Value = String> {
     "[a-z][a-z0-9_]{0,8}"
+}
+
+/// A mask's column: a top-level name, a dot in it at times, or a path through structs.
+fn masked() -> impl Strategy<Value = ColumnPath> {
+    vec("[a-z][a-z0-9_.]{0,8}", 1..3)
+        .prop_map(|names| ColumnPath::new(names).expect("a path of a name at least"))
 }
 
 fn policy() -> impl Strategy<Value = SchemaPolicy> {
@@ -55,7 +62,7 @@ fn step() -> impl Strategy<Value = TransformStep> {
     let constant = any::<i32>().prop_map(|value| Literal::Integer(i64::from(value)));
     prop_oneof![
         btree_map(name(), name(), 1..3).prop_map(TransformStep::rename),
-        vec(name(), 1..3)
+        vec(masked(), 1..3)
             .prop_map(|columns| { TransformStep::Mask(MaskStep::new(columns, MaskWith::Null)) }),
         btree_map(name(), constant, 1..3).prop_map(TransformStep::constant),
     ]

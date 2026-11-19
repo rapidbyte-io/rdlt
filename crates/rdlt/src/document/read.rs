@@ -155,7 +155,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Mapped<T> {
 }
 
 /// Items the document holds as a list, each read as `T` reads it.
-struct Listed<T>(Vec<T>);
+pub(super) struct Listed<T>(pub(super) Vec<T>);
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Listed<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {

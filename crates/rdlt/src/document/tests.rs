@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use proptest::prelude::*;
-use rdlt_connector::{Catalog, StreamName, StreamSpec};
+use rdlt_connector::{Catalog, ColumnPath, StreamName, StreamSpec};
 
 use super::Document;
 pub(crate) use super::fault::tests::{holds, said};
@@ -220,8 +220,19 @@ fn every_transform_step_reads_as_it_writes() {
             TransformStep::rename([("amount", "cents")]),
         ),
         (
-            serde_json::json!({ "mask": { "columns": ["address.street"], "with": "redact", "text": "-" } }),
-            TransformStep::Mask(MaskStep::new(["address.street"], MaskWith::Redact).text("-")),
+            serde_json::json!({
+                "mask": { "columns": ["user.email", ["address", "street"]], "with": "redact", "text": "-" }
+            }),
+            TransformStep::Mask(
+                MaskStep::new(
+                    [
+                        ColumnPath::from("user.email"),
+                        ColumnPath::new(["address", "street"]).unwrap(),
+                    ],
+                    MaskWith::Redact,
+                )
+                .text("-"),
+            ),
         ),
         (
             serde_json::json!({ "mask": { "columns": ["email"], "with": "null" } }),
@@ -241,6 +252,18 @@ fn every_transform_step_reads_as_it_writes() {
         ),
     ] {
         reads_and_writes(&json, &step);
+    }
+    // A path through structs names a column at least, and a name is text.
+    for columns in [
+        serde_json::json!([[]]),
+        serde_json::json!([["a", 1]]),
+        serde_json::json!([1]),
+    ] {
+        let mask = serde_json::json!({ "mask": { "columns": columns, "with": "null" } });
+        assert!(
+            serde_json::from_value::<TransformStep>(mask).is_err(),
+            "{columns}"
+        );
     }
 }
 
@@ -782,6 +805,16 @@ fn every_refusal_says_what_it_expected() {
 }
 
 #[test]
+fn a_mask_column_neither_named_nor_listed_says_what_it_expected() {
+    let mask = serde_json::json!({ "mask": { "columns": [true], "with": "redact" } });
+    let said = serde_json::from_value::<TransformStep>(mask)
+        .expect_err("refused")
+        .to_string();
+    let expected = "expected a column's name, or a list of names down through structs";
+    assert!(said.contains(expected), "{said}");
+}
+
+#[test]
 fn no_debug_shows_a_side_s_configuration() {
     let inline = serde_json::json!({ "password": "CANARY", "dsn": "pg://user:CANARY@db/x" });
     let side = Side::new(Connector::new("io.rapidbyte.postgres"))
@@ -901,6 +934,11 @@ fn the_document_s_schema_defines_each_value_written_by_hand() {
             "A duration: digits and one of ns, us, ms, s, m, h.",
         ),
         ("Until", "How long a run reads."),
+        (
+            "MaskColumn",
+            "A top-level column's name as written, a dot in it included, or a field within \
+             structs by its path: a list of names from its top-level column down.",
+        ),
     ] {
         assert_eq!(defined[name]["description"], description, "{name}");
     }

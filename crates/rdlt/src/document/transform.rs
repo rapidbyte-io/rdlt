@@ -1,9 +1,12 @@
 //! A stream's transform steps as a document writes them: ops, SQL, and code the host registered.
 
+mod masked;
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 
+use rdlt_connector::ColumnPath;
 use rdlt_engine::Literal;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::de::{self, IgnoredAny, MapAccess, Visitor};
@@ -133,9 +136,15 @@ impl TransformStep {
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct MaskStep {
-    /// The columns: top-level names, or paths through structs, a dot parting each field.
-    #[serde(deserialize_with = "read::texts")]
-    pub columns: Vec<String>,
+    /// The columns: each a top-level column by its name as written, a dot in it included, or a
+    /// field within structs by its path, written as a list of names from its top-level column
+    /// down.
+    #[serde(
+        deserialize_with = "masked::deserialize",
+        serialize_with = "masked::serialize"
+    )]
+    #[schemars(with = "Vec<masked::ColumnText>")]
+    pub columns: Vec<ColumnPath>,
     /// How each value is masked.
     pub with: MaskWith,
     /// The key of an `hmac_sha256` mask: a secret reference, `${env:NAME}`, `${file:/path}` or
@@ -157,8 +166,9 @@ pub struct MaskStep {
 }
 
 impl MaskStep {
-    /// A mask of `columns`, each value masked as `with` says.
-    pub fn new(columns: impl IntoIterator<Item = impl Into<String>>, with: MaskWith) -> Self {
+    /// A mask of `columns`, each value masked as `with` says: a top-level column by its name, a
+    /// field within structs by its path.
+    pub fn new(columns: impl IntoIterator<Item = impl Into<ColumnPath>>, with: MaskWith) -> Self {
         Self {
             columns: columns.into_iter().map(Into::into).collect(),
             with,

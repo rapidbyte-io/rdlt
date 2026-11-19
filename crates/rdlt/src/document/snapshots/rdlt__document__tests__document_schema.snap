@@ -355,14 +355,29 @@ expression: schema
         }
       ]
     },
+    "MaskColumn": {
+      "description": "A top-level column's name as written, a dot in it included, or a field within structs by its path: a list of names from its top-level column down.",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      ]
+    },
     "MaskStep": {
       "additionalProperties": false,
       "description": "A mask of columns' values.",
       "properties": {
         "columns": {
-          "description": "The columns: top-level names, or paths through structs, a dot parting each field.",
+          "description": "The columns: each a top-level column by its name as written, a dot in it included, or a\nfield within structs by its path, written as a list of names from its top-level column\ndown.",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/MaskColumn"
           },
           "type": "array"
         },

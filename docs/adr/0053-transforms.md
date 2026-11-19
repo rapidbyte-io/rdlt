@@ -160,8 +160,10 @@ determinism under simulation whatever the configuration says.
   - `constant` adds a column holding one text, integer or boolean.
   - `mask` replaces values with their `HMAC-SHA256` in lower-case hex (text and bytes in every
     layout, a dictionary's values hashed once), a redaction, or a column of the null type.
-  - A mask reaches nested fields through structs, their siblings shared. A key is a
-    `rdlt_connector::Secret` and never appears in errors, events or reports.
+  - A mask reaches nested fields through structs, their siblings shared. A document names a
+    mask's column as everywhere else, by its top-level name as written, a dot in it included, and a
+    field within structs by its path, a list of names: `columns: [email, [address, street]]`. A key
+    is a `rdlt_connector::Secret` and never appears in errors, events or reports.
   - A column a batch lacks is passed by. There is no expression language: SQL is the
     expression language.
   - The plan bounds what ops hold: at most `TRANSFORMS_PER_STREAM` transforms, `NAMED_COLUMNS`

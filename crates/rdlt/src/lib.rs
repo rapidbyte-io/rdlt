@@ -78,9 +78,9 @@ pub use pipeline::{
     Checked, Pipeline, PipelineBuilder, PlacedConnector, Placement, StreamSelector,
 };
 pub use rdlt_connector::{
-    BoxFuture, Catalog, ConnectorId, ConnectorSpec, DestinationConnector, DestinationFactory,
-    Epoch, PipelineId, Role, Secret, SourceConnector, SourceFactory, StreamName, StreamSpec,
-    TablePath,
+    BoxFuture, Catalog, ColumnPath, ConnectorId, ConnectorSpec, DestinationConnector,
+    DestinationFactory, Epoch, PipelineId, Role, Secret, SourceConnector, SourceFactory,
+    StreamName, StreamSpec, TablePath,
 };
 pub use rdlt_engine::{
     Acks, AttemptReport, Bound, Call, Code, ColumnChange, CommitPhases, Commits, Cores, Counters,
