@@ -17,7 +17,7 @@ use rdlt_testkit::fake::{Fake, Fault, socket};
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::support::connectors::{Denied, Echo, SlowCommits};
+use crate::support::connectors::{Denied, Echo, Panicking, SlowCommits};
 use crate::support::{memory_destination, plane_client, served, served_within};
 
 /// Options that notice a lost connector within about a tenth of a second.
@@ -218,6 +218,33 @@ async fn no_part_of_a_secret_a_cause_is_cut_within_crosses_the_wire() {
         assert!(!cause.contains(run), "{run} in {cause}");
         assert!(!error.to_string().contains(run), "{run} in {error}");
     }
+}
+
+#[tokio::test]
+async fn a_connector_call_that_panics_fails_as_internal_not_as_its_transport() {
+    let secret = "Zq7Kx9Vw2Lm4Np6Rt8Hy3Jb5Fd1Gs0Ac";
+    let io = served(Served::new().with_source(source_factory::<Panicking>()));
+    let redactions = Redactions::new();
+    redactions.add(secret);
+    let config = serde_json::json!({ "said": secret });
+    let connection = Connection::connect(io, Role::Source, &config, Options::default(), redactions)
+        .await
+        .unwrap();
+    let source = RemoteSource::new(connection);
+    let error = source.check().await.unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Internal, "{error}");
+    assert_ne!(
+        error.code(),
+        Some(rdlt_connector::wire::TRANSPORT),
+        "{error}"
+    );
+    // What the panic said reaches the host, scrubbed as every error a connector sends is.
+    let shown = error.to_string();
+    assert!(shown.contains("the check met a bug reading ***"), "{error}");
+    assert!(!shown.contains(secret), "{error}");
+    // The connection serves the calls after it.
+    let again = source.check().await.unwrap_err();
+    assert_eq!(again.kind(), ConnectorErrorKind::Internal, "{again}");
 }
 
 #[tokio::test]

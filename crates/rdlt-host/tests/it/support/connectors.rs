@@ -267,6 +267,27 @@ impl SourceConnector for Denied {
     }
 }
 
+/// A source whose check panics, saying its configuration's `said`.
+#[derive(Debug)]
+pub(crate) struct Panicking(String);
+
+#[source(id = "test.panicking")]
+impl SourceConnector for Panicking {
+    type Config = serde_json::Value;
+
+    async fn connect(config: serde_json::Value, _context: &ConnectContext) -> Result<Self> {
+        Ok(Self(config["said"].as_str().unwrap_or_default().to_owned()))
+    }
+
+    async fn check(&self) -> Result<()> {
+        panic!("the check met a bug reading {}", self.0)
+    }
+
+    fn streams(&self) -> Streams<Self> {
+        Streams::new()
+    }
+}
+
 /// The memory destination, whose commits each take `delay` longer.
 pub(crate) struct SlowCommits {
     inner: Box<dyn DestinationFactory>,
