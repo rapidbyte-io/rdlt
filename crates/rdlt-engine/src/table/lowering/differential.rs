@@ -163,6 +163,10 @@ fn prepared(
     match prepared {
         Ok(prepared) => {
             prop_assert!(!expected.refused, "held a value its column cannot hold");
+            prop_assert!(
+                prepared.batch.num_rows() == 0 || view.model.created(),
+                "rows are lowered into a table no batch created"
+            );
             Ok(Some((prepared, expected)))
         }
         Err(error) if error.code() == Some(codes::VALUE_UNREPRESENTABLE) => {

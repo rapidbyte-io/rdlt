@@ -12,8 +12,8 @@ use arrow_array::RecordBatch;
 use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectContext, ConnectorError, ConnectorErrorKind,
     Destination, DestinationConnector, DestinationSession, DestinationWriter, OpenContext, Opened,
-    OpenedSession, Receipt, Result, SegmentId, Session, TableChange, TableRef, TableWriter,
-    WriteStats, destination_factory,
+    OpenedSession, Receipt, Result, SchemaVersion, SegmentId, Session, TableChange, TableRef,
+    TableWriter, WriteStats, destination_factory,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -29,13 +29,20 @@ struct NullConfig {
     stalls: bool,
 }
 
-/// Counts what it stages, slowly, and publishes nothing, so tests can measure the engine alone.
+/// Counts what it stages, slowly, and publishes nothing, so tests can measure the engine alone;
+/// refuses a table writer for a table no schema change created, or at a version from before its
+/// creation, as a destination that holds tables does.
 struct Null {
     buffers: bool,
     stalls: bool,
     /// The epoch the last open set: each open sets a newer one, as every destination does.
     epoch: std::sync::atomic::AtomicU64,
+    created: Created,
 }
+
+/// The schema version each table was first created at, by table, which outlives the session
+/// that created it.
+type Created = Arc<parking_lot::Mutex<BTreeMap<Arc<str>, SchemaVersion>>>;
 
 /// A destination that discards every batch.
 pub(crate) async fn null() -> Arc<dyn Destination> {
@@ -75,6 +82,7 @@ impl DestinationConnector for Null {
             buffers: config.buffers,
             stalls: config.stalls,
             epoch: std::sync::atomic::AtomicU64::new(0),
+            created: Arc::default(),
         })
     }
 
@@ -86,6 +94,7 @@ impl DestinationConnector for Null {
         Ok(Opened {
             session: NullSession {
                 staged: Arc::default(),
+                created: Arc::clone(&self.created),
                 buffers: self.buffers,
                 stalls: self.stalls,
             },
@@ -100,6 +109,7 @@ impl DestinationConnector for Null {
 
 struct NullSession {
     staged: Arc<parking_lot::Mutex<BTreeMap<SegmentId, u64>>>,
+    created: Created,
     buffers: bool,
     stalls: bool,
 }
@@ -107,11 +117,31 @@ struct NullSession {
 impl Session for NullSession {
     type Writer = NullWriter;
 
-    async fn apply_schema(&mut self, _change: &TableChange) -> Result<()> {
+    async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
+        let table = change.table();
+        let mut created = self.created.lock();
+        if let TableChange::Create { .. } = change {
+            let at = created
+                .entry(Arc::clone(&table.name))
+                .or_insert(table.version);
+            *at = (*at).min(table.version);
+        } else if !created.contains_key(&table.name) {
+            return Err(ConnectorError::internal(format!(
+                "a change to {}, which no schema change created",
+                table.name
+            )));
+        }
         Ok(())
     }
 
-    async fn writer(&mut self, _table: &TableRef) -> Result<NullWriter> {
+    async fn writer(&mut self, table: &TableRef) -> Result<NullWriter> {
+        let created = self.created.lock().get(&table.name).copied();
+        if created.is_none_or(|at| table.version < at) {
+            return Err(ConnectorError::internal(format!(
+                "a table writer for {} at version {}, before any schema change created it",
+                table.name, table.version
+            )));
+        }
         Ok(NullWriter {
             staged: Arc::clone(&self.staged),
             buffered: self.buffers.then(Vec::new),

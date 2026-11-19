@@ -41,13 +41,17 @@ different types.
   its values routed to variant columns; a refused new column still has new names hashed
   (ADR 0041).
 - **The first batch, or the declared schema, creates the table.** A stream needs no declared schema;
-  a declared one is resolved like a batch before anything is read. A batch whose columns hold only
-  nulls creates only a normalized stream's table, which holds its rows' lineage; rows of no column,
-  as an empty object's or those of a stream that excludes every column, create a table of the
-  engine's own columns. After the table exists, a new column or a value its column cannot hold is a
-  change, which the column's policy applies (`evolve`), refuses (`freeze`) or discards
-  (`discard_row`, `discard_value`). Settings resolve column → stream → pipeline in one function. A
-  child table's columns take the settings of the stream's column whose arrays the table holds.
+  a declared one is resolved like a batch before anything is read. The first batch creates the
+  table whatever its columns hold, since its rows are written to it: a column holding only nulls
+  has no type, so it is no column of the table yet, and a batch of nothing but nulls, or rows of
+  no column, as an empty object's or those of a stream that excludes every column, create a table
+  of the engine's own columns, a normalized stream's lineage among them. Such rows hold no key, so
+  a merge stream's create no table and are refused before they are written (`merge_key_missing`).
+  After the table exists, a new column, one that held only nulls until now among them, or a value
+  its column cannot hold is a change, which the column's policy applies (`evolve`), refuses
+  (`freeze`) or discards (`discard_row`, `discard_value`). Settings resolve column → stream →
+  pipeline in one function. A child table's columns take the settings of the stream's column whose
+  arrays the table holds.
 - **A type has one form in the model.** A column's type is recorded with each struct's fields in
   name order and each list's item named `item`, at any depth: the form the lattice's join returns. A
   destination's native struct therefore has its fields in name order whichever record, partition or
@@ -63,7 +67,10 @@ different types.
   reference destinations refuse a declared type not in this form, so they hold only types the join
   compares rightly.
 - **Evolution widens in place or adds a variant.** A change the destination can apply, or that
-  does not change how it stores the column, widens the column. Otherwise, under `variant_column`,
+  does not change how it stores the column, widens the column. The latter advances the table's
+  schema version with no change sent, as a struct gaining a field does where the destination
+  stores it as text: the destination meets the new version first in a table writer's
+  `TableRef`, over the table the version before left. Otherwise, under `variant_column`,
   values land in `<name>__<kind>`, the variant of the joined type's kind, widened while the
   destination can, or else in `<name>__json`, which holds anything. Values the original column
   holds keep landing there. Merge key columns never take variants: a key change the destination
