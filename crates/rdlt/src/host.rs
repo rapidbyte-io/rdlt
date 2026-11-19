@@ -16,7 +16,9 @@ use rdlt_connector::{
     ConnectorSpec, DestinationConnector, DestinationFactory, Role, Secret, SourceConnector,
     SourceFactory, destination_factory, source_factory,
 };
-use rdlt_engine::{SystemEnv, Transform};
+use rdlt_engine::{EngineConfig, SystemEnv, Transform};
+#[cfg(any(feature = "local", feature = "remote"))]
+use rdlt_host::Options;
 use rdlt_host::{
     Config, Provider as _, Redactions, Registry, SecretError, SecretResolver, Secrets,
 };
@@ -238,14 +240,14 @@ impl Host {
     }
 
     /// What `connector` says it is, as `role`, from its handshake, before any configuration
-    /// reaches it; placed as a pipeline would place it.
+    /// reaches it; placed as a pipeline of the engine's default resources would place it.
     ///
     /// # Errors
     ///
     /// The placement's error, as building a pipeline reports it.
     pub async fn spec(&self, connector: &Connector, role: Role) -> Result<ConnectorSpec, Error> {
         let reference = crate::lower::reference(&Side::new(connector.clone()), role)?;
-        self.provider()
+        self.provider(&EngineConfig::default())
             .spec(&reference, role)
             .await
             .map_err(|error| Error::placement(role, error))
@@ -256,9 +258,17 @@ impl Host {
         self.build_wait
     }
 
-    /// The registry a pipeline is placed by: the compiled-in connectors, then remote and local
-    /// placement as this host allows them.
-    pub(crate) fn provider(&self) -> Registry {
+    /// The registry a pipeline of an engine configured as `config` is placed by: the compiled-in
+    /// connectors, then remote and local placement as this host allows them, each connector they
+    /// place told and held to the limits `config` admits within.
+    pub(crate) fn provider(
+        &self,
+        #[cfg_attr(
+            not(any(feature = "local", feature = "remote")),
+            expect(unused_variables, reason = "only a placed connector is told limits")
+        )]
+        config: &EngineConfig,
+    ) -> Registry {
         let mut registry = Registry::trusted().secrets(self.secrets.clone());
         for factory in &self.sources {
             registry = registry.trusted_source_factory(Arc::clone(factory));
@@ -268,11 +278,12 @@ impl Host {
         }
         #[cfg(feature = "remote")]
         if let Some(tls) = &self.remote {
-            registry = registry.remote(tls.remote().secrets(self.secrets.clone()));
+            let remote = tls.remote().options(admitting(config));
+            registry = registry.remote(remote.secrets(self.secrets.clone()));
         }
         #[cfg(feature = "local")]
         {
-            registry = registry.local(self.local());
+            registry = registry.local(self.local(config));
         }
         registry
     }
@@ -358,9 +369,10 @@ impl Host {
         self.env.get_or_try_init(starting).await.map(Arc::clone)
     }
 
-    /// Local placement as this host allows it: sandboxed, unless the host trusts its binaries.
+    /// Local placement as this host allows it, for an engine configured as `config`: sandboxed,
+    /// unless the host trusts its binaries.
     #[cfg(feature = "local")]
-    fn local(&self) -> rdlt_host::Local {
+    fn local(&self, config: &EngineConfig) -> rdlt_host::Local {
         use rdlt_host::{Bubblewrap, Local};
         let policy = &self.local;
         let mut local = if policy.trusted {
@@ -380,7 +392,20 @@ impl Host {
         for path in &policy.always_readable {
             local = local.always_readable(path);
         }
-        local.secrets(self.secrets.clone())
+        local
+            .options(admitting(config))
+            .secrets(self.secrets.clone())
+    }
+}
+
+/// How each connection to a connector placed for an engine configured as `config` runs: telling
+/// the connector at its handshake, and holding it to, the limits `config` admits within, so what
+/// it sends fits the engine's budget.
+#[cfg(any(feature = "local", feature = "remote"))]
+fn admitting(config: &EngineConfig) -> Options {
+    Options {
+        limits: config.limits(),
+        ..Options::default()
     }
 }
 

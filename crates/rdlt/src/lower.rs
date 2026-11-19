@@ -81,6 +81,11 @@ pub(crate) async fn prepare<'a>(
 }
 
 impl Prepared<'_> {
+    /// The engine's configuration the document says.
+    pub(crate) fn config(&self) -> &EngineConfig {
+        &self.config
+    }
+
     /// How long a call into a connector may take, as the engine's configuration says.
     pub(crate) fn connector_wait(&self) -> Duration {
         self.config.connector_wait()
@@ -108,7 +113,7 @@ impl Prepared<'_> {
 }
 
 /// The engine's configuration `document`'s commit, resources and retry say.
-fn engine_config(document: &Document) -> Result<EngineConfig, Error> {
+pub(crate) fn engine_config(document: &Document) -> Result<EngineConfig, Error> {
     let mut builder = EngineConfig::builder();
     let resources = &document.resources;
     if let Some(memory) = resources.memory {

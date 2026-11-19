@@ -12,3 +12,5 @@ mod secrets;
 mod support;
 #[cfg(feature = "otel")]
 mod telemetry;
+#[cfg(any(feature = "local", feature = "remote"))]
+mod told;

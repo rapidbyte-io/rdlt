@@ -14,6 +14,7 @@ use rdlt_connector::{
 };
 use rdlt_engine::{CommitPolicy, Engine, EngineConfig, PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::Options;
+use rdlt_wire::Limits;
 use rdlt_wire::bounded::{Charge, Held};
 use rdlt_wire::limits::Class;
 use rdlt_wire::prost::Message as _;
@@ -131,6 +132,10 @@ impl Admission for Watching {
 
     fn charge(&self, _: u64) -> rdlt_connector::Result<Permit> {
         Ok(Box::new(()))
+    }
+
+    fn limits(&self) -> Limits {
+        Limits::default()
     }
 }
 

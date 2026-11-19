@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use parking_lot::Mutex;
+use rdlt_wire::Limits;
 use tokio::sync::Notify;
 
 use super::{
@@ -119,6 +120,10 @@ impl Admission for Gate {
             return Err(crate::ConnectorError::data("more than a read may keep"));
         }
         Ok(Box::new(bytes))
+    }
+
+    fn limits(&self) -> Limits {
+        Limits::default()
     }
 }
 
@@ -257,6 +262,10 @@ impl Admission for Granted {
 
     fn charge(&self, bytes: u64) -> crate::Result<Permit> {
         Ok(Box::new(bytes))
+    }
+
+    fn limits(&self) -> Limits {
+        Limits::default()
     }
 }
 
@@ -402,6 +411,10 @@ impl Admission for Columns {
 
     fn charge(&self, bytes: u64) -> crate::Result<Permit> {
         Ok(Box::new(bytes))
+    }
+
+    fn limits(&self) -> Limits {
+        Limits::default()
     }
 }
 

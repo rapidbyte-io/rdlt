@@ -4,7 +4,7 @@ use rdlt_connector::{
     BoxFuture, DestinationFactory, Role, Secret, SourceFactory, destination_factory, source_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
-use rdlt_engine::{Code, ErrorKind, Origin};
+use rdlt_engine::{Code, EngineConfig, ErrorKind, Origin};
 use rdlt_host::{
     Placement, Provider as _, SecretFault, SecretKind, SecretReference, SecretResolver,
 };
@@ -38,13 +38,13 @@ async fn a_registered_connector_is_placed_in_process() {
     let side = Side::new(Connector::new("io.rapidbyte.memory"));
     let reference = crate::lower::reference(&side, Role::Source).unwrap();
     let placed = host
-        .provider()
+        .provider(&EngineConfig::default())
         .source(&reference, &serde_json::json!({ "streams": {} }))
         .await
         .expect("placed");
     assert_eq!(placed.placement, Placement::InProcess);
     let placed = host
-        .provider()
+        .provider(&EngineConfig::default())
         .destination(&reference, &serde_json::json!({ "store": "host-placed" }))
         .await
         .expect("placed");
@@ -92,7 +92,7 @@ async fn a_registered_connector_refuses_what_running_in_process_cannot_honour() 
     let side = Side::new(memory).access(Access::new().write("/data"));
     let reference = crate::lower::reference(&side, Role::Source).unwrap();
     let placing = host
-        .provider()
+        .provider(&EngineConfig::default())
         .source(&reference, &serde_json::json!({ "streams": {} }))
         .await;
     let refused =
@@ -115,7 +115,7 @@ fn a_host_shows_what_it_allows() {
 /// What `host` places local connectors with, as its `Debug` shows it.
 #[cfg(feature = "local")]
 fn local(host: &Host) -> String {
-    format!("{:?}", host.local())
+    format!("{:?}", host.local(&EngineConfig::default()))
 }
 
 #[cfg(feature = "local")]
@@ -173,10 +173,16 @@ async fn a_configuration_reaches_a_private_file_only_beneath_a_directory_the_hos
     let allowed = Host::new()
         .allow_files([directory.path()])
         .source::<MemorySource>();
-    let placed = allowed.provider().source(&reference, &config).await;
+    let placed = allowed
+        .provider(&EngineConfig::default())
+        .source(&reference, &config)
+        .await;
     assert!(placed.is_ok(), "the file is beneath an allowed directory");
     let unallowed = Host::new().source::<MemorySource>();
-    let placing = unallowed.provider().source(&reference, &config).await;
+    let placing = unallowed
+        .provider(&EngineConfig::default())
+        .source(&reference, &config)
+        .await;
     let refused = crate::Error::placement(Role::Source, placing.err().expect("refused"));
     assert_eq!(refused.code(), Some(Code::new("secret_refused")));
     assert!(!refused.report().causes.join(" ").contains("CANARY"));

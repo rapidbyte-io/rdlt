@@ -71,12 +71,15 @@ operates its host.
   stream it selects shares what was lowered, so a pattern over many streams resolves its keys
   once; only its SQL is parsed again for each stream, into a transform of its own that plans
   once for each input schema it meets, so no stream's plans push out another's. Then both
-  connectors are placed and handshaken, the streams selected from the source's catalog, and each
-  checked against the catalog and the destination's capabilities (`Engine::check`, which opens no
-  session). What depends on what earlier runs committed, such as a stream's key against its
-  table's, a run's start checks. A reset opens a session and so fences a run in progress, as a
-  write should. Nothing reads state back until the destination contract has a read that fences
-  nothing.
+  connectors are placed and handshaken, each told and held to the limits the engine admits within
+  for the document's resources (`EngineConfig::limits`, ADR 0039), the streams selected from the
+  source's catalog, and each checked against the catalog and the destination's capabilities
+  (`Engine::check`, which opens no session). A source placed for its catalog alone
+  (`PipelineBuilder::discover`) is told the same limits; a connector asked only what it is
+  (`Host::spec`), those of the engine's defaults. What depends on what earlier runs committed,
+  such as a stream's key against its table's, a run's start checks. A reset opens a session and
+  so fences a run in progress, as a write should. Nothing reads state back until the destination
+  contract has a read that fences nothing.
 - **Errors.** One `Error` covers building and running, with the engine's kinds; the host's and
   the facade's codes join the engine's, which an embedder reads and never makes; a connector's
   code stays apart. A refusal says what to write instead.

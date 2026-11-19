@@ -113,11 +113,9 @@ pub trait Admission: Send + Sync {
     /// read may: the read fails with it.
     fn charge(&self, bytes: u64) -> Result<Permit>;
 
-    /// The limits on what a read sends that this admission admits within, where they are fewer
-    /// than the wire's defaults: a source that keeps to them is refused nothing here.
-    fn limits(&self) -> Limits {
-        Limits::default()
-    }
+    /// The limits on what a read sends that this admission admits within: a source that keeps
+    /// to them is refused nothing here.
+    fn limits(&self) -> Limits;
 }
 
 /// Creates the two ends of one partition's channel, buffering up to `capacity` events.

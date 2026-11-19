@@ -17,14 +17,13 @@ all_features = true
 # is the code as it is in every one of them: how a connector's binary is executed, whether a
 # group has a living member, and that bubblewrap launches nothing, on other platforms.
 #
-# A mutant that returns what the function already returns is the code as it is: an admission's
-# limits are the wire's defaults, a dialect reserves no table name, a sandbox names no program
-# that confines a connector, and a secret resolver reads from no directory, unless they say
-# otherwise; one that names an empty path for a sandbox is the code as it is too, as the guard on
-# roots passes over a path that is not absolute. The dialect a SQL transform's text is read in
-# forwards each rule of sqlparser's generic dialect, every one of which but the identifiers'
-# characters answers true: a mutant that answers true there is the rule as it is. Its own answer
-# to a query read with its table first, false, is no forward.
+# A mutant that returns what the function already returns is the code as it is: a dialect reserves
+# no table name, a sandbox names no program that confines a connector, and a secret resolver reads
+# from no directory, unless they say otherwise; one that names an empty path for a sandbox is the
+# code as it is too, as the guard on roots passes over a path that is not absolute. The dialect a
+# SQL transform's text is read in forwards each rule of sqlparser's generic dialect, every one of
+# which but the identifiers' characters answers true: a mutant that answers true there is the rule
+# as it is. Its own answer to a query read with its table first, false, is no forward.
 # So is one that joins open flags, or the options of a wait for a child, each a bit of its own
 # (read-only is none, on Linux and macOS alike), with `^` for `|`; and one that takes every widen a
 # destination refuses for a column not yet kept from widening: the resolver widens no column kept
@@ -83,7 +82,6 @@ exclude_re = [
   "crates/rdlt-connector-reference/src/sqlite/session/writer\\.rs:.*replace && with \\|\\| in ready$",
   "crates/rdlt-connector/src/cost/expanded/named\\.rs:.*replace < with <= in Meter<'_>::keyed$",
   "crates/rdlt-connector/src/cost/held\\.rs:.*replace > with >= in Allocations::buffer$",
-  "crates/rdlt-connector/src/sink\\.rs:.*replace Admission::limits -> Limits with Default::default\\(\\)",
   "crates/rdlt-connector/src/sqlgen/tables\\.rs:.*replace \\| with \\^ in base32$",
   "crates/rdlt-connector/src/sqlgen\\.rs:.*replace SqlDialect::reserves_table -> bool with false",
   "crates/rdlt-engine/src/env/inline\\.rs:.*replace <impl Env for InlineEnv>::cores -> NonZeroUsize with 1\\.try_into\\(\\)\\.unwrap\\(\\)",
