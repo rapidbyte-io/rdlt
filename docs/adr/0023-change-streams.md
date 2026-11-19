@@ -15,7 +15,11 @@ merges, the wire and the simulation must agree on what each change does and in w
 - **Truncate is op 3 in `_rdlt_op`**, in band and ordered by `_rdlt_seq`, and its rows name no
   key. A truncate at seq `s` removes every row whose seq is below `s`, or soft-deletes it, even
   rows staged earlier in the same commit. Bounded by its seq, a truncate sent again cannot remove
-  rows that changes after it wrote.
+  rows that changes after it wrote. A source sends rows that share a seq, as a truncate and the
+  rows its transaction writes after it may, in one segment, checkpointing only between rows of
+  different seqs, so one commit merges them: a soft delete leaves a row at its truncate's seq,
+  which a row of that seq merged in a later commit would not pass, where hard deletes would let
+  it apply, and the outcome would turn on where the engine cut its commits.
 - **A destination learns the merge semantics from `MergeKey.changes`**:
   `Option<ChangeColumns { op, unchanged, deletion: Hard | Soft { at } }>`. When it is set, seq is
   compared across commits: a row applies only if its seq is greater than the stored row's (the seq

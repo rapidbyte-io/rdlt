@@ -204,7 +204,8 @@ generated sources each take something as given unless they check it:
   but where a truncate and a key's row share one, the truncate removes what is before it and
   the row, which is not, applies: the Arrow merge orders them so wherever each was written,
   a row a truncate of the merge marked takes a change at that sequence, and the SQL plans order
-  a history key's events and choose a soft row's deletion time the same way.
+  a history key's events and choose a soft row's deletion time the same way. The source sends
+  rows of one sequence in one segment (ADR 0023), so they meet in one merge.
 - **A merge costs its rows, and a row the cells it holds.**
   - The Arrow merge reads each batch as the columns one of its rows holds a value in, and
     gives its rows back grouped by the columns they hold: a table is as many batches as its
