@@ -79,6 +79,11 @@ impl ReadStream<Counter> for Numbers {
         if source.limit == 42 {
             return Err(ConnectorError::data("forty-two rows are refused"));
         }
+        if source.limit == 11 {
+            // A read that says it was stopped, when nothing asked it to stop.
+            out.rows(&[json!({ "n": 0 })]).await?;
+            return Err(ConnectorError::stopped());
+        }
         if source.limit == 7 {
             // A counter to seven says whether it was given a cursor, as how far it is behind.
             out.behind(u64::from(out.resumes()), Headroom::default())
@@ -257,6 +262,15 @@ async fn a_stopped_read_ends_cleanly() {
     feed.stop();
     let request = ReadRequest::new(numbers(), Partition::single(), None);
     source.read(request, sink).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_stop_the_engine_did_not_ask_for_fails_the_read() {
+    let source = connect(11).await;
+    let (read, events) = read_all(source.as_ref(), None).await;
+    // Its partition is not done: what it had yet to send would never be read.
+    assert_eq!(read.unwrap_err().kind(), ConnectorErrorKind::Stopped);
+    assert_eq!(rows(&events).len(), 1);
 }
 
 #[tokio::test]

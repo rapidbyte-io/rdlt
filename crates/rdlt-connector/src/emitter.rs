@@ -6,6 +6,7 @@ mod tests;
 
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::task::{Context, Waker};
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -85,6 +86,13 @@ impl<C: Serialize> Emitter<C> {
     /// data selects on it, and returns.
     pub async fn stopped(&self) {
         self.sink.stopped().await;
+    }
+
+    /// Whether the engine has asked the read to stop, or stopped listening, by now.
+    pub(crate) fn stop_asked(&self) -> bool {
+        let stopped = std::pin::pin!(self.sink.stopped());
+        let mut context = Context::from_waker(Waker::noop());
+        stopped.poll(&mut context).is_ready()
     }
 
     /// Pushes `rows`, each a JSON object, as JSON lines for the engine to infer their schema; an
