@@ -86,6 +86,13 @@ seed, with connectors in the engine's process.
     the model says, whatever the network did.
 - **A served writer's panic fails its write** as an internal error, as a read's does, rather than
   ending the write as though it were done, which the host would report as a protocol violation.
+  A panic in answering any other call, a commit, an open or a plan among them, fails that call as
+  an internal error too, rather than reset its stream, which the host would read as a transient
+  failure of the connection and retry until its attempts were spent. The error says what the
+  panic said, cut as every error's message is and scrubbed by the host as every error is, so an
+  operator reads it even from a remote connector, whose standard error no host drains. The
+  session the call was answered in is kept, not dropped: an internal error is not retried, so it
+  fails its attempt, and a failed attempt closes its session.
 - **A host has as long to send HTTP/2's preface as it has for its TLS handshake.** HTTP/2's
   server waits for the preface with no deadline and pings no host before it has the preface
   whole, so a host whose network went after its handshake would hold its connection and a session

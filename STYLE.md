@@ -157,9 +157,10 @@ forever, `#[non_exhaustive]` everywhere) are adapted below.
   (clippy `disallowed-methods`). Elsewhere a thread is started only for a blocking wait that has
   no async form, through `std::thread::Builder` with a name, and is owned and joined.
 - **`catch_unwind` only contains a panic at a boundary**, turning it into an error: a task in a
-  `TaskScope`, a job on the compute pool, Arrow's readers decoding a hostile frame, a simulation
-  seed. The host's in-process connectors are the only place a panic is caught and let go on: its
-  message is scrubbed of the connector's secrets, and the panic unwinds on to the engine's catch.
+  `TaskScope`, a job on the compute pool, Arrow's readers decoding a hostile frame, a served
+  connector's call, a simulation seed. The host's in-process connectors are the only place a
+  panic is caught and let go on: its message is scrubbed of the connector's secrets, and the
+  panic unwinds on to the engine's catch.
   A crate that catches a panic refuses to compile with `panic = "abort"` (`cargo xtask lint`
   checks its root). A caught panic is still a bug and fails the run, call or seed it happened in;
   nothing relies on it for correctness.
