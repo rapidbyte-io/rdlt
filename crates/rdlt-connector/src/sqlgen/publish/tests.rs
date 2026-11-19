@@ -100,7 +100,7 @@ fn written<'a>(held: &[&'a str], merge: Option<&'a MergeKey>) -> Vec<&'a str> {
 }
 
 /// The plan publishing the rows of `orders`, or of its `generation`, written by `merge` with the
-/// columns `written`, into a target whose columns are `target`.
+/// columns `written`, into a target whose columns are `target`, each of which its staging holds.
 fn published(
     merge: Option<&MergeKey>,
     generation: Option<GenerationId>,
@@ -115,7 +115,14 @@ fn published(
         merge: merge.cloned(),
         rows: 1,
     };
-    planner.publish(&owned, &orders, target, written, Epoch(1), &segments(&[1]))
+    planner.publish(
+        &owned,
+        &orders,
+        [target, target],
+        written,
+        Epoch(1),
+        &segments(&[1]),
+    )
 }
 
 /// Checks that `outcome` is a refusal as `column_missing` naming `nickname` and `price`.
@@ -198,10 +205,11 @@ fn a_child_table_that_follows_its_root_publishes_told_no_columns() {
     let follows = publishing.iter().find(|staged| staged.name == "orders");
     let follows = follows.expect("the child table follows its root");
     let owned = planner.own(&pipeline("mine"), "orders");
+    let held = columns(&HELD);
     let plan = planner.publish(
         &owned,
         follows,
-        &columns(&HELD),
+        [&held, &held],
         &[],
         Epoch(1),
         &segments(&[1]),

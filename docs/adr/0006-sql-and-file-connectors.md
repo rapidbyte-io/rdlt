@@ -43,7 +43,12 @@ landed key must hold across a database's transactions and a file system's operat
   nothing. A column the staging holds
   that the rows were not written with, as a change stream's flags after the table is appended
   to, or a column an abandoned generation added, holds none of their values and stops nothing;
-  a change stream's op and unchanged flags direct its merge, and no table holds them.
+  a change stream's op and unchanged flags direct its merge, and no table holds them. A column
+  the table holds that its staging lacks, as one added outside the pipeline, keeps its default
+  in the rows an append publishes, as a JDBC sink inserts a record's fields alone; a merge
+  deletes the rows it replaces and would empty it, so its commit fails with a `Data` error
+  coded `column_unstaged` that names it. The destination reads the staging's columns, as it
+  reads the table's, at each commit.
 - **Merges delete and insert.** A commit ranks its staged rows per key by sequence, deletes the
   published rows of those keys and inserts the first of each. The table writer's `TableRef` decides:
   each staged segment records its merge key, so a table that switches between append and merge
