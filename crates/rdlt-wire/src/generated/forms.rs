@@ -635,6 +635,11 @@ pub(crate) static ERROR: Form = Form {
             kind: Kind::Message(&LIMIT_EXCEEDED),
             repeated: false,
         },
+        Field {
+            number: 6,
+            kind: Kind::String,
+            repeated: true,
+        },
     ],
 };
 

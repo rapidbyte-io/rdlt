@@ -1,11 +1,20 @@
 use super::{
-    MAX_ACKNOWLEDGEABLE, MAX_RESERVED_BYTES, MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS,
-    MIN_IDENTIFIER_LEN,
+    MAX_ACKNOWLEDGEABLE, MAX_ERROR_CAUSES, MAX_RESERVED_BYTES, MAX_RESERVED_PREFIXES,
+    MAX_RESERVED_WORDS, MIN_IDENTIFIER_LEN, SENT_CAUSE_BYTES,
 };
 
 #[test]
 fn the_acknowledgeable_positions_have_their_specified_value() {
     assert_eq!(MAX_ACKNOWLEDGEABLE, 1 << 18);
+}
+
+#[test]
+fn the_causes_an_error_sends_take_a_control_string_together_and_no_more() {
+    let causes = u64::try_from(MAX_ERROR_CAUSES).expect("fits");
+    assert_eq!(
+        SENT_CAUSE_BYTES * causes,
+        rdlt_wire::limits::CONTROL_STRING_BYTES
+    );
 }
 
 /// The words of the comment above the line of the catalog's protocol file that is

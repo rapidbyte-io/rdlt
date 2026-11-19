@@ -51,4 +51,6 @@ message Error {
   optional Duration retry_after = 4;
   // The limit exceeded, for an error that exceeded one.
   optional LimitExceeded limit = 5;
+  // Its causes as text, the outermost first.
+  repeated string causes = 6;
 }

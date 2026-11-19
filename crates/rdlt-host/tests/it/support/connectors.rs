@@ -242,7 +242,7 @@ impl ReadStream<Ticks> for TickStream {
     }
 }
 
-/// A source whose check fails as `Auth`, with code `test.denied`.
+/// A source whose check fails as `Auth`, with code `test.denied`, for a driver's reason.
 #[derive(Debug)]
 pub(crate) struct Denied;
 
@@ -257,7 +257,8 @@ impl SourceConnector for Denied {
     async fn check(&self) -> Result<()> {
         Err(
             ConnectorError::new(ConnectorErrorKind::Auth, "the token was refused")
-                .with_code("test.denied"),
+                .with_code("test.denied")
+                .with_source(Refused("the token".to_owned())),
         )
     }
 

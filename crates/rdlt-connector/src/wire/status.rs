@@ -7,10 +7,12 @@ use rdlt_wire::tonic::{Code, Status};
 
 use super::v1;
 use crate::error::{ConnectorError, ConnectorErrorKind};
+use crate::text::CUT;
 
 pub use crate::error::codes::{MALFORMED_FRAME, TRANSPORT, UNENCODABLE_BATCH, UNSENDABLE_TYPE};
 
-/// `error` as a gRPC status carrying it whole, its message cut to the control string limit.
+/// `error` as a gRPC status carrying it whole, its message cut to the control string limit and
+/// its causes as [`v1::Error`] cuts them.
 pub fn status(error: &ConnectorError) -> Status {
     let code = match error.kind() {
         ConnectorErrorKind::Config => Code::InvalidArgument,
@@ -33,10 +35,16 @@ pub fn status(error: &ConnectorError) -> Status {
 /// Bytes: the status's own message, for a reader that does not decode its details.
 const STATUS_MESSAGE_BYTES: u64 = 1024;
 
-/// Cuts `text` to at most `bytes`, at a character's boundary.
-fn cut(text: &mut String, bytes: u64) {
-    let end = text.floor_char_boundary(usize::try_from(bytes).unwrap_or(usize::MAX));
+/// Cuts `text` to at most `bytes`, at a character's boundary, ending in [`CUT`] where it cuts:
+/// the receiving end's scrubber masks what is left of a secret before that mark.
+pub(super) fn cut(text: &mut String, bytes: u64) {
+    let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+    if text.len() <= bytes {
+        return;
+    }
+    let end = text.floor_char_boundary(bytes.saturating_sub(CUT.len()));
     text.truncate(end);
+    text.push_str(CUT);
 }
 
 /// The error `status` carries, its texts passed through `scrubbed` before they are shown; one

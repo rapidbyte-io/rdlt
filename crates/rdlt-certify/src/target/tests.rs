@@ -19,6 +19,7 @@ fn an_error_a_connector_sends_is_scrubbed_of_what_it_was_sent_before_it_is_shown
         code: Some("auth".to_owned()),
         retry_after: None,
         limit: None,
+        causes: Vec::new(),
     };
     let carried = Status::with_details(Code::Unauthenticated, "", sent.encode_to_vec().into());
     let shown = r#"the password "***" was refused\u{1b}[2J"#;

@@ -651,6 +651,9 @@ pub struct Error {
     /// The limit exceeded, for an error that exceeded one.
     #[prost(message, optional, tag = "5")]
     pub limit: ::core::option::Option<LimitExceeded>,
+    /// Its causes as text, the outermost first.
+    #[prost(string, repeated, tag = "6")]
+    pub causes: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// What kind of failure an error is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]

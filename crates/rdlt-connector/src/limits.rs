@@ -50,5 +50,10 @@ pub const MAX_ERROR_CODE_BYTES: usize = 128;
 /// Causes: bounds the chain of causes of a connector's error a host keeps.
 pub const MAX_ERROR_CAUSES: usize = 8;
 
+/// Bytes: bounds each cause of an error a served connector sends its host, so the
+/// [`MAX_ERROR_CAUSES`] it sends take no more than the control string limit beside its message,
+/// and a failed call's trailers fit the host's header limit.
+pub const SENT_CAUSE_BYTES: u64 = 8 * 1024;
+
 /// Bytes: bounds the JSON schema of a connector's configuration, as its handshake answers it.
 pub const MAX_CONFIG_SCHEMA_BYTES: usize = 1024 * 1024;
