@@ -130,6 +130,13 @@ pub const MAX_CALLS: u32 = 200;
 /// Bytes: the most one transport frame carries; a ping waits for at most one.
 pub const TRANSPORT_FRAME_BYTES: u32 = 1024 * 1024;
 
+/// Bytes: bounds a heartbeat's ping on a served connection, its prefix apart, which holds a
+/// sequence number and no more.
+///
+/// A ping takes no room in the connection's window, so it never waits behind messages still
+/// arriving, and [`MAX_CALLS`] of them hold next to nothing beside it.
+pub const PING_BYTES: usize = 11;
+
 /// Bytes: the headers and trailers a host accepts in one response; a failed call's trailers carry
 /// its error in base64: its message, at most [`CONTROL_STRING_BYTES`], and its first causes,
 /// `MAX_ERROR_CAUSES` of at most `SENT_CAUSE_BYTES` each, as the connector SDK cuts them.

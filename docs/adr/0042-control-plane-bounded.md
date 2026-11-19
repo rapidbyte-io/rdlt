@@ -81,6 +81,11 @@ to be taken on trust either. Without the rules below:
     alive once the call and its connection are gone. None waits on another body to finish its
     message. The room it has gathered toward its message counts in the window and comes back if
     it is dropped.
+  - The heartbeat's pings take no room in the window, each held instead to the most a ping
+    takes (`PING_BYTES`, 11 bytes past its prefix). A ping that waited its turn behind
+    messages still arriving would wait for every byte they have yet to deliver, which over a
+    slow link and a budget whose writes fill the window outlasts the heartbeat's patience: the
+    host would lose a connector that is answering.
   - A served connection holds at most 200 open calls (`MAX_CALLS`), set explicitly. The host's
     heartbeat holds one for as long as the connection, and a source or destination over the
     connection tells the engine it carries the other 199 at once (`Source::max_calls`,
