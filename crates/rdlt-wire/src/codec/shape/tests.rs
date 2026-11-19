@@ -609,6 +609,121 @@ fn a_buffer_shorter_than_its_node_needs_is_refused_for_every_layout() {
     }
 }
 
+/// The last frame of `column`'s batch with `bytes` written `at` bytes into its buffer `buffer`,
+/// and a decoder that received every frame before it.
+fn corrupted(column: ArrayRef, buffer: usize, at: i64, bytes: &[u8]) -> (Decoder, IpcFrame) {
+    let (decoder, frames) = received(&batch_of(column));
+    let frame = frames.last().unwrap();
+    let (offset, _) = Parts::of(&frame.header).buffers[buffer];
+    (decoder, overwritten(frame, offset + at, bytes))
+}
+
+/// A union of an `Int32` and a `Utf8` field over three rows, dense or sparse.
+fn union(dense: bool) -> ArrayRef {
+    let fields = arrow_schema::UnionFields::try_new(
+        [0_i8, 1],
+        [
+            Field::new("n", DataType::Int32, false),
+            Field::new("s", DataType::Utf8, false),
+        ],
+    )
+    .unwrap();
+    let type_ids = ScalarBuffer::from(vec![0_i8, 1, 0]);
+    let (offsets, children): (_, Vec<ArrayRef>) = if dense {
+        (
+            Some(ScalarBuffer::from(vec![0_i32, 0, 1])),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(arrow_array::StringArray::from(vec!["x"])),
+            ],
+        )
+    } else {
+        (
+            None,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(arrow_array::StringArray::from(vec!["x", "y", "z"])),
+            ],
+        )
+    };
+    Arc::new(arrow_array::UnionArray::try_new(fields, type_ids, offsets, children).unwrap())
+}
+
+#[test]
+fn a_frame_the_walk_passes_and_arrow_must_refuse_is_refused_never_decoded() {
+    let text = || -> ArrayRef { Arc::new(arrow_array::StringArray::from(vec!["a", "bb", "c"])) };
+    let nulls: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
+    let keys: ArrayRef = Arc::new(
+        arrow_array::DictionaryArray::<arrow_array::types::Int8Type>::try_new(
+            vec![0_i8, 1, 0].into(),
+            Arc::new(arrow_array::StringArray::from(vec!["a", "bb"])),
+        )
+        .unwrap(),
+    );
+    let runs: ArrayRef = Arc::new(
+        RunArray::<Int32Type>::try_new(
+            &Int32Array::from(vec![2, 4, 5]),
+            &Int32Array::from(vec![7, 8, 9]),
+        )
+        .unwrap(),
+    );
+    let int = |value: i32| value.to_le_bytes().to_vec();
+    // Each column, the buffer and the byte in it overwritten, and what with.
+    let cases: [(&str, ArrayRef, usize, i64, Vec<u8>); 8] = [
+        ("an offset that goes back", text(), 1, 8, int(0)),
+        ("a last offset past the data", text(), 1, 12, int(99)),
+        ("text that is no UTF-8", text(), 2, 0, vec![0xff]),
+        (
+            "a key equal to its dictionary's length",
+            keys,
+            1,
+            1,
+            vec![2],
+        ),
+        (
+            "a validity bit cleared under its null count",
+            nulls,
+            0,
+            0,
+            vec![0b100],
+        ),
+        ("a run end that repeats", runs, 1, 4, int(2)),
+        ("a type id no field has", union(false), 0, 0, vec![7]),
+        (
+            "a dense offset at its child's length",
+            union(true),
+            1,
+            0,
+            int(2),
+        ),
+    ];
+    for (case, column, buffer, at, bytes) in cases {
+        let (mut decoder, frame) = corrupted(column, buffer, at, &bytes);
+        refused_by_arrow(case, decoder.frame(&frame));
+    }
+}
+
+#[test]
+fn a_struct_child_shorter_than_its_parent_is_refused_never_decoded() {
+    let fields = Fields::from(vec![Field::new("n", DataType::Int32, true)]);
+    let child: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
+    let structs: ArrayRef = Arc::new(StructArray::try_new(fields, vec![child], None).unwrap());
+    let (mut decoder, frames) = received(&batch_of(structs));
+    let short = changed(&frames, |parts| parts.nodes[1].0 -= 1);
+    refused_by_arrow("a struct child one shorter", decoder.frame(&short));
+}
+
+/// Fails `case` unless `decoded` is Arrow's refusal of the frame's data, or a panic it contained.
+fn refused_by_arrow(case: &str, decoded: Result<Option<RecordBatch>, WireError>) {
+    match refused(decoded) {
+        WireError::Arrow {
+            encoding: false, ..
+        }
+        | WireError::Panicked { .. } => {}
+        other => panic!("{case}: {other}"),
+    }
+}
+
 #[test]
 fn a_column_without_nulls_or_values_needs_no_validity_or_offsets() {
     for data_type in [DataType::Utf8, DataType::LargeBinary, DataType::Int32] {

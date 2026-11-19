@@ -179,6 +179,13 @@ proptest! {
                 decoder.frame(&frame)
             }));
             prop_assert!(decoded.is_ok(), "decoding a corrupted frame unwound");
+            // What decodes is valid whole: nothing Arrow would refuse passes as a batch.
+            if let Ok(Ok(Some(decoded))) = &decoded {
+                for column in decoded.columns() {
+                    let valid = column.to_data().validate_full();
+                    prop_assert!(valid.is_ok(), "{:?}: {valid:?}", column.data_type());
+                }
+            }
         }
     }
 }
