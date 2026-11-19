@@ -36,6 +36,9 @@ pub const READ: &str = "/rdlt.connector.v1.Connector/Read";
 /// The path of the `ReadPublished` call.
 pub const READ_PUBLISHED: &str = "/rdlt.connector.v1.Connector/ReadPublished";
 
+/// The path of the `Heartbeat` call.
+pub const HEARTBEAT: &str = "/rdlt.connector.v1.Connector/Heartbeat";
+
 /// Bytes: a message's prefix, a flag and its length.
 const PREFIX: usize = 5;
 

@@ -15,9 +15,9 @@ use tonic::body::Body;
 use tonic::codegen::http::{self, HeaderValue};
 use tonic::codegen::{BoxFuture, BoxStream, Service};
 
-use super::{Chained, Incoming, Outgoing, READ, READ_PUBLISHED, WRITE, status};
+use super::{Chained, HEARTBEAT, Incoming, Outgoing, READ, READ_PUBLISHED, WRITE, status};
 use crate::bounded::{Bounded, Bounds, Window};
-use crate::limits::{Class, Limits};
+use crate::limits::{Class, Limits, PING_BYTES};
 use crate::v1;
 
 /// The answers of a data-plane call, or the status that ends them.
@@ -50,8 +50,9 @@ pub trait Plane: Send + Sync + 'static {
     fn read_published(&self, request: v1::ReadPublishedRequest) -> Serving<'_, v1::ReadFrame>;
 }
 
-/// A connection's service: each request held to its class's bounds and the connection's window
-/// before anything reads it, the data plane's calls served by `P`, and the rest by `S`.
+/// A connection's service: each request held to its class's bounds and, a heartbeat's apart, the
+/// connection's window before anything reads it, the data plane's calls served by `P`, and the
+/// rest by `S`.
 #[derive(Debug)]
 pub struct Router<S, P> {
     inner: S,
@@ -140,7 +141,19 @@ where
         let method = method(path);
         let class = Class::of_request(method);
         let bounds = Bounds::of(&self.limits, class, crate::scan::request(method));
-        let window = Some(self.window.clone());
+        // The heartbeat measures the connection alone: its pings never wait for room behind
+        // messages still arriving, and are held to what a ping takes instead.
+        let (bounds, window) = if path == HEARTBEAT {
+            (
+                Bounds {
+                    wire: PING_BYTES,
+                    ..bounds
+                },
+                None,
+            )
+        } else {
+            (bounds, Some(self.window.clone()))
+        };
         let Some(call) = Call::at(path) else {
             let request = request.map(|body| Body::new(Bounded::new(body, bounds, window)));
             return Box::pin(self.inner.call(request));

@@ -13,7 +13,7 @@ use tonic::{Code, Status};
 use super::{Answers, Plane, Router, Serving};
 use crate::bounded::Window;
 use crate::limits::{HANDSHAKE_BYTES, Limits, MIN_FRAME_BYTES};
-use crate::plane::{Chained, Incoming, READ, READ_PUBLISHED, WRITE};
+use crate::plane::{Chained, HEARTBEAT, Incoming, READ, READ_PUBLISHED, WRITE};
 use crate::testing::{Feed, fed};
 use crate::v1;
 
@@ -504,6 +504,59 @@ async fn writes_still_arriving_hold_the_window_and_the_rest_wait() {
         tokio::task::yield_now().await;
     }
     assert_eq!(window.taken(), 0, "every write's room is given back");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_heartbeat_s_ping_passes_writes_holding_the_window() {
+    // The path is the protocol's call that pings.
+    let pinged = crate::scan::request(super::method(HEARTBEAT)).map(|form| form.name);
+    assert_eq!(pinged, Some("Ping"));
+    let length = limits().decoding(crate::limits::Class::Data) - 5;
+    let message = 5 + length;
+    let window = Window::new(2 * message);
+    let (told, _reads) = mpsc::unbounded_channel();
+    let mut router = router(Calls::Heard(told), window.clone());
+    let mut feeds = Vec::new();
+    // Two writes take the whole window, and a third waits for room.
+    for _ in 0..3 {
+        let (feed, request) = request(WRITE);
+        feed.send(Frame::data(begun(length))).unwrap();
+        feeds.push(feed);
+        tokio::spawn(router.call(request));
+    }
+    for _ in 0..1_000 {
+        if window.taken() == 2 * message {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(window.taken(), 2 * message);
+    let ping = prost::Message::encode_to_vec(&v1::Ping { seq: u64::MAX });
+    let mut sent = vec![0];
+    sent.extend(u32::try_from(ping.len()).unwrap().to_be_bytes());
+    sent.extend(ping);
+    let (feed, request) = request(HEARTBEAT);
+    feed.send(Frame::data(Bytes::from(sent.clone()))).unwrap();
+    drop(feed);
+    let answer = within(router.call(request)).await.unwrap();
+    let frames = within(drained(answer.into_body())).await;
+    let passed = frames
+        .first()
+        .and_then(|frame| frame.as_ref().ok()?.data_ref());
+    assert_eq!(passed.map(|data| data.to_vec()), Some(sent));
+    assert_eq!(window.taken(), 2 * message, "the ping took no room");
+    drop(feeds);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_heartbeat_s_message_longer_than_a_ping_is_refused() {
+    let mut router = router(Calls::Refused, Window::new(usize::MAX));
+    let (feed, request) = request(HEARTBEAT);
+    feed.send(Frame::data(begun(crate::limits::PING_BYTES + 1)))
+        .unwrap();
+    let answer = within(router.call(request)).await.unwrap();
+    let frames = within(drained(answer.into_body())).await;
+    assert!(matches!(frames[..], [Err(Code::OutOfRange)]), "{frames:?}");
 }
 
 #[test]
