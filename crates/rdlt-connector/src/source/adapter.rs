@@ -92,7 +92,11 @@ impl<S: SourceConnector, R: ReadStream<S>> ErasedStream<S> for R {
             };
             let mut out = Emitter::new(sink, version, follow).resuming(resumes);
             match ReadStream::read(self, source, &partition, cursor, &mut out).await {
-                Err(error) if error.kind() == ConnectorErrorKind::Stopped => Ok(()),
+                // A read the engine asked to stop ends cleanly saying so; any other stop is the
+                // read's error, which leaves its partition unfinished.
+                Err(error) if error.kind() == ConnectorErrorKind::Stopped && out.stop_asked() => {
+                    Ok(())
+                }
                 other => other,
             }
         })

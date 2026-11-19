@@ -15,7 +15,9 @@ without boxing tricks that leak into author code.
 - Author traits declare `-> impl Future<Output = _> + Send`; authors write `async fn`. The SDK
   boxes futures only at the engine-facing traits (`Source`, `Destination`).
 - `ConnectorErrorKind` has `Fenced` (a stale session's commit) and `Stopped` (the engine asked a
-  read to stop) beside its other kinds; the SDK turns `Stopped` into a clean end of the read.
+  read to stop) beside its other kinds; the SDK turns `Stopped` into a clean end of a read the
+  engine asked to stop, and fails any other read with it, as the engine does, so a source that
+  says it was stopped unasked leaves its partition unfinished rather than done.
 - A read's request names the columns its stream excludes (`ReadRequest::exclude`,
   `Emitter::excluded`). A source may leave them out, as a database source leaves them out of its
   query, and the SDK projects every batch it pushes without them before anything holds it, so a
