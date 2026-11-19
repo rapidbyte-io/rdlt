@@ -15,7 +15,7 @@ use datafusion_expr::col;
 use datafusion_expr::logical_plan::builder::{LogicalPlanBuilder, LogicalTableSource};
 use datafusion_sql::sqlparser::dialect::GenericDialect;
 use datafusion_sql::sqlparser::parser::Parser;
-use rdlt_engine::{Bound, NAMED_COLUMNS, Transform, allocated_beyond, codes};
+use rdlt_engine::{Bound, NAMED_COLUMNS, Transform, allocated_beyond, codes, column_bytes};
 
 use super::compact::compacted;
 use super::{logical, within};
@@ -948,6 +948,37 @@ fn text_made_anew_is_bounded_by_a_view_builders_first_block_its_rows_and_its_byt
         .with_rows(2 * 17)
         .with_column(0, 2 * 3 + 1);
     assert_eq!(sql.bound(&schema), Some(expected));
+}
+
+#[test]
+fn a_case_is_charged_two_copies_of_each_column_it_reads_at_each_level_of_a_nest() {
+    // Rows of `t` of one byte and of a thousand: the bound's difference over the bytes' is what it
+    // charges a byte of `t`.
+    let batch = |bytes: usize| {
+        let texts: StringArray = (0..64).map(|_| Some("x".repeat(bytes))).collect();
+        let n = Int64Array::from_iter_values(0..64);
+        RecordBatch::try_from_iter([
+            ("t", Arc::new(texts) as ArrayRef),
+            ("n", Arc::new(n) as ArrayRef),
+        ])
+        .unwrap()
+    };
+    let (small, large) = (batch(1), batch(1000));
+    let bytes = column_bytes(large.column(0).as_ref()) - column_bytes(small.column(0).as_ref());
+    let per_byte = |expression: &str| {
+        let sql = Sql::parse(&format!("SELECT {expression} AS x FROM input")).unwrap();
+        let bound = sql.bound(small.schema_ref()).unwrap();
+        let grown = bound.of(&large) - bound.of(&small);
+        assert_eq!(grown % bytes, 0, "{expression}");
+        grown / bytes
+    };
+    // A column computed from text reads `t` from a copy holding its rows alone.
+    assert_eq!(per_byte("length(t)"), 1);
+    let mut nested = "length(t)".to_owned();
+    for depth in 1..=3 {
+        nested = format!("CASE WHEN n <> {depth} THEN {nested} END");
+        assert_eq!(per_byte(&nested), 1 + 2 * depth, "{nested}");
+    }
 }
 
 #[test]
