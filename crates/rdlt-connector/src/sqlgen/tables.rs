@@ -195,8 +195,9 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// its key.
     ///
     /// A column the change declares at a type the existing column does not hold is a `Data` error
-    /// coded `schema_conflict`, and so is a widen the dialect cannot apply; nothing is planned
-    /// then. A change the tables already reflect plans nothing.
+    /// coded `schema_conflict`, and so is a widen the dialect cannot apply; one named as a
+    /// staging column is a `Config` error coded `column_name_reserved`. Nothing is planned then.
+    /// A change the tables already reflect plans nothing.
     pub fn change(
         &self,
         owned: &Owned<'_>,
@@ -284,14 +285,33 @@ impl<D: SqlDialect> SqlPlanner<D> {
         Ok(plan)
     }
 
+    /// Refuses a column of `names` that takes the name of a staging column, compared as the
+    /// database compares names, as a `Config` error coded `column_name_reserved`.
+    ///
+    /// A staging would hold the two as one, and publish the staging column's value as the
+    /// column's.
+    pub(super) fn unreserved<'a>(&self, names: impl IntoIterator<Item = &'a str>) -> Result<()> {
+        let reserved = STAGING_COLUMNS.map(|column| self.dialect.folds(column));
+        for name in names {
+            if reserved.contains(&self.dialect.folds(name)) {
+                return Err(ConnectorError::config(format!(
+                    "column {name}: the name of a column the destination keeps beside a table's own"
+                ))
+                .with_code("column_name_reserved"));
+            }
+        }
+        Ok(())
+    }
+
     /// Creates the tables of `names` that are missing with `fields`, and adds the fields an
-    /// existing one lacks.
+    /// existing one lacks; a field named as a staging column is refused.
     fn fields(
         &self,
         [target_name, staging_name]: [&String; 2],
         [target, staging]: [&[Column]; 2],
         fields: &[&Field],
     ) -> Result<Vec<Statement>> {
+        self.unreserved(fields.iter().map(|field| field.name()))?;
         let declared = fields
             .iter()
             .map(|field| Ok((field.name(), self.declared(field.logical_type())?)))
