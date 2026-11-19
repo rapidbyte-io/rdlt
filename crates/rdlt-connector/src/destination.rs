@@ -320,6 +320,10 @@ pub trait Session: Send + 'static {
     /// with the table's columns fails as [`TableChange`] describes. Table writers created
     /// before a change receive batches with the new columns after it.
     ///
+    /// A version whose change alters nothing the destination stores comes with no change, as a
+    /// struct gaining a field does where the destination stores it as text: a table writer may
+    /// name a version no change named, and writes to the table as the versions before left it.
+    ///
     /// A table belongs to the pipeline that first created it: a change from another pipeline's
     /// session fails with a `Config` error coded `table_owned` and changes nothing, so no
     /// pipeline's replace or merge reaches rows another pipeline loaded (clause `D-OWNED`).

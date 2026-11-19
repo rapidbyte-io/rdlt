@@ -10,8 +10,8 @@
 //! 2. Only grows the table: existing columns keep their order, identifiers, source columns and
 //!    nullability, and each type only widens; names only extend; the changes are exactly the
 //!    columns added and widened; the version advances by one exactly when there are changes, or
-//!    from 0 to 1 when a normalized stream's table is created; and every column's type is as a
-//!    table's model holds it, each struct's fields in name order.
+//!    from 0 to 1 when the first batch creates the table, a merge table's only with a column;
+//!    and every column's type is as a table's model holds it, each struct's fields in name order.
 //! 3. Is idempotent: resolving the same batch against the resolved model changes nothing and
 //!    routes it alike.
 //! 4. Is order-free: the batch's columns in another order are refused alike, or give the same
@@ -508,7 +508,8 @@ fn splits_whole(
 /// Checks that `resolution` only grows the table: existing columns keep their order,
 /// identifiers, source columns and nullability, and each type only widens; names only extend;
 /// the changes are exactly the columns added and widened; and the version advances by one
-/// exactly when there are changes, or from 0 to 1 when a normalized stream's table is created.
+/// exactly when there are changes, or from 0 to 1 when the first batch creates the table, a
+/// merge table's only with a column.
 fn only_grows(
     expected: &Expected<'_>,
     model: &Model,
@@ -554,7 +555,7 @@ fn only_grows(
         widened,
         "the changes widen other columns than the table widened"
     );
-    let created = expected.stream.lineage == LineageColumns::Root && model.version == 0;
+    let created = model.version == 0 && expected.stream.key.is_empty();
     let version = if resolution.changes.is_empty() && !created {
         model.version
     } else {

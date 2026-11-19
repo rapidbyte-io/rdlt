@@ -4,17 +4,23 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray, StructArray};
+use arrow_array::{
+    ArrayRef, Int32Array, Int64Array, NullArray, RecordBatch, StringArray, StructArray,
+};
 use arrow_schema::{DataType, Field as ArrowField};
-use rdlt_connector::{Field, IdentifierCase, LogicalType, TableSchema, TypeKind};
+use rdlt_connector::{
+    Destination, Field, IdentifierCase, LogicalType, OpenContext, PipelineId, PipelineState,
+    TablePath, TableSchema, TypeKind,
+};
 use rdlt_connector_reference::schema;
 use rdlt_engine::{
-    ErrorKind, OnUnsupported, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings, codes,
+    ErrorKind, OnUnsupported, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings, WriteMode, codes,
 };
 use serde_json::json;
 
 use crate::support::batches::{BatchStream, batches};
-use crate::support::destinations::limited;
+use crate::support::destinations::{limited, null};
+use crate::support::targets::Target;
 use crate::support::{commit_every, engine, memory, pipeline, published_json, stream};
 
 /// A batch of `columns`.
@@ -76,6 +82,145 @@ async fn a_stream_without_a_declared_schema_creates_its_table_from_its_first_bat
         published_json("created", "events"),
         [json!({"id": 1, "name": "a"}), json!({"id": 2, "name": "b"})]
     );
+}
+
+/// Whether the state `destination` holds for pipeline `name` records the schema of `table`.
+async fn recorded(destination: &dyn Destination, name: &str, table: &str) -> bool {
+    let context = OpenContext {
+        pipeline: PipelineId::parse(name).expect("a valid pipeline"),
+    };
+    let opened = destination.open(&context).await.expect("it opens");
+    let state = PipelineState::from_records(&opened.state).expect("the state reads");
+    let path = TablePath::new([table]).expect("a valid path");
+    state
+        .tables
+        .get(&path)
+        .is_some_and(|table| table.schema.is_some())
+}
+
+/// The stream `events`, whose one flush holds two rows of nothing but nulls, as an Arrow batch of
+/// the null type or as JSON.
+fn only_nulls(json: bool) -> BatchStream {
+    if json {
+        BatchStream::json("events", &["{\"deleted_at\":null}\n{\"deleted_at\":null}"])
+    } else {
+        let nulls: ArrayRef = Arc::new(NullArray::new(2));
+        BatchStream::new("events", vec![batch(vec![("deleted_at", nulls)])])
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_first_flush_of_nothing_but_nulls_creates_its_table_and_records_it() {
+    for target in Target::IN_PROCESS {
+        for json in [false, true] {
+            let store = format!("only_nulls_{json}");
+            let source = batches(&store, vec![only_nulls(json)]).await;
+            let destination = target.destination(&store).await;
+            let plan = pipeline(&store, [stream("events")]);
+            let outcome = engine(commit_every(10))
+                .run(plan, source, Arc::clone(&destination))
+                .await;
+            let case = format!("{target:?}, json {json}: {:?}", outcome.error);
+            assert_eq!(outcome.report.status, RunStatus::Succeeded, "{case}");
+            let published = target.published(&store, "events");
+            let rows: usize = published.iter().map(RecordBatch::num_rows).sum();
+            assert_eq!(rows, 2, "{case}");
+            assert!(
+                recorded(destination.as_ref(), &store, "events").await,
+                "{case}"
+            );
+        }
+    }
+    // A destination refusing a table writer for a table no schema change created.
+    let source = batches("only_nulls_null", vec![only_nulls(false)]).await;
+    let plan = pipeline("only_nulls_null", [stream("events")]);
+    let outcome = engine(commit_every(10))
+        .run(plan, source, null().await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    // A merge stream whose key holds nothing but nulls is refused, its rows loaded nowhere.
+    let keyed = BatchStream::json("events", &["{\"id\":null}"]).primary_key(&["id"]);
+    let source = batches("only_null_keys", vec![keyed]).await;
+    let plan = pipeline("only_null_keys", [stream("events").write(WriteMode::Merge)]);
+    let destination = memory("only_null_keys").await;
+    let outcome = engine(commit_every(10))
+        .run(plan, source, destination)
+        .await;
+    let refused = outcome.error.expect("a key of nulls is refused");
+    let refusal = (refused.kind(), refused.code());
+    assert_eq!(
+        refusal,
+        (ErrorKind::Schema, Some(codes::MERGE_KEY_MISSING)),
+        "{refused:?}"
+    );
+    assert!(published_json("only_null_keys", "events").is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_widen_the_destination_stores_alike_writes_under_its_new_version_with_no_change() {
+    // The null destination stores a struct as text, so the struct gaining a field widens it
+    // in place to the same storage: a new version, with no change sent.
+    let a = || Arc::new(ArrowField::new("a", DataType::Int64, true));
+    let first: ArrayRef = Arc::new(StructArray::from(vec![(a(), ints(&[1]))]));
+    let b = Arc::new(ArrowField::new("b", DataType::Utf8, true));
+    let second: ArrayRef = Arc::new(StructArray::from(vec![
+        (a(), ints(&[2])),
+        (b, text(&["x"])),
+    ]));
+    let pushes = vec![batch(vec![("s", first)]), batch(vec![("s", second)])];
+    let source = batches("widened_alike", vec![BatchStream::new("events", pushes)]).await;
+    let plan = pipeline("widened_alike", [stream("events")]);
+    let outcome = engine(commit_every(1))
+        .run(plan, source, null().await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_column_that_held_only_nulls_is_a_change_once_it_holds_a_value() {
+    let pushes = || {
+        let nulls: ArrayRef = Arc::new(NullArray::new(2));
+        vec![
+            batch(vec![("deleted_at", nulls)]),
+            batch(vec![("deleted_at", ints(&[7]))]),
+        ]
+    };
+    let freeze = SchemaSettings::new().policy(SchemaPolicy::Freeze);
+    for (name, settings) in [
+        ("nulls_evolve", SchemaSettings::new()),
+        ("nulls_freeze", freeze),
+    ] {
+        let source = batches(name, vec![BatchStream::new("events", pushes())]).await;
+        let plan = pipeline(name, [stream("events").schema(settings)]);
+        let outcome = engine(commit_every(1))
+            .run(plan, source, memory(name).await)
+            .await;
+        if name == "nulls_freeze" {
+            let error = outcome.error.expect("a frozen table takes no new column");
+            assert_eq!(error.code(), Some(codes::SCHEMA_FROZEN), "{error:?}");
+            continue;
+        }
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{:?}",
+            outcome.error
+        );
+        let added = [("deleted_at".to_owned(), LogicalType::Int64)];
+        assert_eq!(columns(name, "events"), added);
+        let rows = [json!({"deleted_at": 7}), json!({}), json!({})];
+        assert_eq!(published_json(name, "events"), rows);
+    }
 }
 
 #[tokio::test(start_paused = true)]

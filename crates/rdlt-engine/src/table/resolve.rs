@@ -246,10 +246,10 @@ impl Resolver {
         }
         let stream = |error: Error| error.with_stream(&self.stream);
         let mut resolution = draft.finish(routes, &self.naming).map_err(stream)?;
-        // A normalized stream's table holds its rows' lineage even where they hold no other value,
-        // and rows of no column, as when a stream excludes every column, hold the engine's columns
-        // alone, so the first batch of either creates the table.
-        if (self.meta.id.is_some() || fields.is_empty()) && !resolution.model.created() {
+        // The first batch's rows are written to the table, so it creates the table, of the
+        // engine's columns alone where its columns hold only nulls or it has none; such rows
+        // hold no key, so a merge stream's are refused before they are written.
+        if !resolution.model.created() && self.settings.key.is_empty() {
             resolution.model.version = 1;
         }
         if resolution.model.version != model.version {

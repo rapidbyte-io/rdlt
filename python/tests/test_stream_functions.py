@@ -66,6 +66,10 @@ def rows_of(tmp_path: Path, table: str) -> list[tuple[object, ...]]:
             for row in database.execute(f'PRAGMA table_info("{table}")')
             if not str(row[1]).startswith("_rdlt")
         ]
+        if not columns:
+            # Rows of nothing but nulls land in a table of the engine's columns alone.
+            (count,) = database.execute(f'SELECT count(*) FROM "{table}"').fetchone()
+            return [()] * count
         selected = ", ".join(f'"{column}"' for column in sorted(columns))
         return sorted(database.execute(f'SELECT {selected} FROM "{table}"').fetchall(), key=repr)
 

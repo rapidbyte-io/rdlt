@@ -1292,26 +1292,29 @@ proptest! {
 }
 
 #[test]
-fn a_column_of_nulls_creates_only_a_normalized_table() {
-    let plain = resolver(capabilities(), plan(), &[]);
+fn a_first_batch_of_nulls_creates_its_table_without_their_column() {
     let nulls = schema(&[("unknown", LogicalType::Null)]);
-    let resolution = plain.resolve(&Model::default(), &nulls).unwrap();
-    assert!(
-        !resolution.model.created(),
-        "a plain table waits for a value"
-    );
     let mut normalized = resolver(capabilities(), plan(), &[]);
     normalized.meta.id = Some("_rdlt_id".into());
-    let first = normalized.resolve(&Model::default(), &nulls).unwrap();
-    assert_eq!(first.model.version, 1, "its rows' lineage creates it");
-    let wider = normalized
-        .resolve(&first.model, &schema(&[("a", LogicalType::Int64)]))
-        .unwrap();
-    assert_eq!(wider.model.version, 2);
-    let again = normalized
-        .resolve(&wider.model, &schema(&[("a", LogicalType::Int64)]))
-        .unwrap();
-    assert_eq!(again.model.version, 2, "a batch that fits changes nothing");
+    for resolving in [resolver(capabilities(), plan(), &[]), normalized] {
+        let first = resolving.resolve(&Model::default(), &nulls).unwrap();
+        assert_eq!(first.model.version, 1, "its rows create the table");
+        assert!(
+            first.model.columns.is_empty(),
+            "a column of nulls has no type"
+        );
+        assert_eq!(first.routes, [Route::Skip]);
+        let again = resolving.resolve(&first.model, &nulls).unwrap();
+        assert_eq!(again.model.version, 1, "a batch that fits changes nothing");
+        let valued = schema(&[("unknown", LogicalType::Int64)]);
+        let wider = resolving.resolve(&first.model, &valued).unwrap();
+        assert_eq!(wider.model.version, 2, "a value of the column adds it");
+        assert!(matches!(wider.changes[..], [Change::Add { .. }]));
+    }
+    // Rows of nothing but nulls hold no key, so they create no merge table.
+    let merged = resolver(capabilities(), plan(), &["unknown"]);
+    let keyless = merged.resolve(&Model::default(), &nulls).unwrap();
+    assert!(!keyless.model.created());
 }
 
 #[test]
