@@ -78,6 +78,8 @@ pub(super) fn publish(
             None => staged.name.clone(),
         };
         let standing = standing(transaction, planner, &staged.name)?;
+        let stage = planner.staging_table(&staged.name);
+        let staged_columns = columns(transaction, planner.dialect(), &stage)?;
         let columns = columns(transaction, planner.dialect(), &target)?;
         // A child table the commit names that no row has reached is not created yet: it holds
         // no children to replace.
@@ -89,7 +91,8 @@ pub(super) fn publish(
         let staging = (staged.name.clone(), staged.generation);
         let names = noted.get(&staging).into_iter().flatten();
         let names: Vec<&str> = names.map(String::as_str).collect();
-        let plan = planner.publish(&table, &staged, &columns, &names, epoch, &meta.segments)?;
+        let tables = [columns.as_slice(), staged_columns.as_slice()];
+        let plan = planner.publish(&table, &staged, tables, &names, epoch, &meta.segments)?;
         run_all(transaction, &plan)?;
     }
     run(
