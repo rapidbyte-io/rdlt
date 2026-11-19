@@ -19,6 +19,23 @@ mod tests;
 /// Builders that grow by doubling hold up to twice what they keep.
 const SLACK: u64 = 2;
 
+/// Copies of the rows of each column a `CASE` reads that it holds at once while a branch runs:
+/// the rows left to test, and those it parts from them for the branch and for the rest.
+const CASE_COPIES: u64 = 2;
+
+/// Bytes a `CASE` holds whatever the batch, beside its copies: the arrays of its rows' places,
+/// the selections parting them and its conditions' answers.
+const CASE_ARRAYS: u64 = 10 * ARRAY;
+
+/// Bytes the arrays a `CASE` copies one column into hold whatever the batch: the rows left to
+/// test, and those it parts from them for the branch and for the rest.
+const COPY_ARRAYS: u64 = 3 * ARRAY;
+
+/// Bytes a `CASE` holds for each row beside its copies: the places of the rows left to test and
+/// of those parted from them, as 32-bit indices, the selections parting them, its conditions'
+/// answers, and the branch each row took.
+const CASE_ROW: u64 = 32;
+
 /// What an expression outputs at most, and what evaluating it allocates at most, its children
 /// included.
 struct Sized {
@@ -219,7 +236,8 @@ fn called(expr: &Expr, call: &ScalarFunction, schema: &DFSchema) -> Result<Sized
     Ok(made(output, args))
 }
 
-/// A `CASE`: each row takes one branch's value, so its output holds at most every branch's.
+/// A `CASE`: each row takes one branch's value, so its output holds at most every branch's; and
+/// while a branch runs, the `CASE` holds what it parted its rows into, as [`parted`] says.
 fn cased(expr: &Expr, case: &Case, schema: &DFSchema) -> Result<Sized, TransformError> {
     let values = case.when_then_expr.iter().map(|(_, then)| then.as_ref());
     let values: Vec<&Expr> = values.chain(case.else_expr.as_deref()).collect();
@@ -229,6 +247,11 @@ fn cased(expr: &Expr, case: &Case, schema: &DFSchema) -> Result<Sized, Transform
     }
     let mut output = text_rows();
     let mut children = all(case.expr.as_deref(), schema)?;
+    let mut held = parted(expr, schema);
+    // A `CASE` of a value parts that value's array with its rows, a copy beside it.
+    for compared in &children {
+        held = held.plus(&compared.output);
+    }
     for (when, then) in &case.when_then_expr {
         children.push(sized(when, schema)?);
         let then = sized(then, schema)?;
@@ -239,7 +262,23 @@ fn cased(expr: &Expr, case: &Case, schema: &DFSchema) -> Result<Sized, Transform
         output = output.plus(&other.output);
         children.push(other);
     }
-    Ok(made(output, children))
+    let branches = made(output, children);
+    Ok(Sized {
+        allocated: branches.allocated.plus(&held),
+        ..branches
+    })
+}
+
+/// What a `CASE`, `expr`, holds of its rows while a branch runs, which a `CASE` within the branch
+/// holds again of the rows that reach it: copies of each column it reads, and for each row the
+/// places and selections that part them.
+fn parted(expr: &Expr, schema: &DFSchema) -> Bound {
+    let mut held = Bound::new(CASE_ARRAYS).with_rows(CASE_ROW);
+    for read in columns(expr, schema) {
+        let copies = Bound::new(COPY_ARRAYS).with_column(read, CASE_COPIES);
+        held = held.plus(&copies);
+    }
+    held
 }
 
 /// `expr`'s text, where it is a text literal, cast to another layout of text as coercion may.

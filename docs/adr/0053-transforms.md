@@ -301,6 +301,11 @@ determinism under simulation whatever the configuration says.
     replacement by a literal one growth a byte, and a number, a time or a truth its type's
     width. An expression's bound is twice its nodes' outputs, for builders that double, and a
     view builder's first block, 16 KiB, for each array of text.
+  - A `CASE`, `coalesce`'s among them, runs each branch on a copy of the rows that reach it, of
+    every column it reads, and a `CASE` within a branch copies its rows again. So beside its
+    branches a `CASE` is charged two copies of each column it reads, the rows left to test and
+    those it parts from them being held at once, and for each row the places and selections that
+    part them; a nest of `CASE`s is charged a level each.
   - Some of DataFusion's and Arrow's kernels size what they make by the whole buffer a slice of
     text was cut from, and the stage cuts batches. So a column of text or bytes an output
     column computes from is copied to hold its own rows alone, where a batch holds it in a

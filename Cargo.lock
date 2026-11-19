@@ -4077,6 +4077,7 @@ dependencies = [
  "datafusion-sql",
  "insta",
  "parking_lot",
+ "peak_alloc",
  "proptest",
  "rdlt-certify",
  "rdlt-connector",
