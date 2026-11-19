@@ -6,7 +6,7 @@ use arrow_array::{Array, ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBat
 use super::super::tests::{apply, columns, create, database, query, run_all, table};
 use super::super::tests::{pipeline, segments};
 use super::super::{Staged, Statement};
-use super::staged_changes;
+use super::staged_batch;
 use crate::destination::{ChangeColumns, Deletion, MergeKey, TableRef};
 use crate::error::ConnectorErrorKind;
 use crate::id::Epoch;
@@ -120,7 +120,7 @@ fn unchanged_flags_stage_as_a_byte_at_the_ordinal_of_each_table_column_they_name
     let target = columns(&connection, &planner, "orders");
     // Field 1 of the batch, `name`, is column 2 of the table; no flags, or none set, stage none.
     let batch = written(&[Some(vec![0b10]), None, Some(vec![0]), Some(Vec::new())]);
-    let staged = staged_changes(&batch, &orders, &target).unwrap();
+    let staged = staged_batch(&batch, &orders, &target).unwrap();
     let flags = staged
         .column_by_name("unchanged")
         .unwrap()
@@ -132,7 +132,7 @@ fn unchanged_flags_stage_as_a_byte_at_the_ordinal_of_each_table_column_they_name
     assert_eq!(flags, [Some(&[0, 0, 1][..]), None, None, None]);
     assert_eq!(staged.num_columns(), batch.num_columns());
     // A table merging no changes stages its batches as they are.
-    let plain = staged_changes(&batch, &table("orders"), &target).unwrap();
+    let plain = staged_batch(&batch, &table("orders"), &target).unwrap();
     assert_eq!(plain, batch);
 }
 
@@ -150,7 +150,7 @@ fn flags_past_a_long_zero_tail_name_no_field() {
     let mut tail = vec![0; 1 << 16];
     tail.push(0xff);
     let batch = written(&[Some(tail), Some(vec![0b10])]);
-    let staged = staged_changes(&batch, &orders, &target).unwrap();
+    let staged = staged_batch(&batch, &orders, &target).unwrap();
     let flags = staged
         .column_by_name("unchanged")
         .unwrap()
@@ -179,7 +179,7 @@ fn flags_on_a_key_a_sequence_or_a_column_the_table_lacks_are_refused() {
     ];
     for (bitmap, code) in refused {
         let batch = written(&[Some(vec![bitmap])]);
-        let error = staged_changes(&batch, &orders, &target).unwrap_err();
+        let error = staged_batch(&batch, &orders, &target).unwrap_err();
         assert_eq!(error.kind(), ConnectorErrorKind::Data, "{bitmap:b}");
         assert_eq!(error.code(), Some(code), "{bitmap:b}");
     }
@@ -196,7 +196,7 @@ fn flags_on_a_key_a_sequence_or_a_column_the_table_lacks_are_refused() {
     fields[4] = arrow_schema::Field::new("unchanged", arrow_schema::DataType::Int64, true);
     let schema = arrow_schema::Schema::new(fields);
     let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
-    let error = staged_changes(&batch, &orders, &target).unwrap_err();
+    let error = staged_batch(&batch, &orders, &target).unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
     assert_eq!(error.code(), Some("flags_invalid"));
 }
@@ -219,7 +219,7 @@ fn two_refused_flags_refuse_the_lowest_ordinal() {
     ];
     for (bitmap, code, field) in lowest {
         let batch = written(&[Some(vec![bitmap])]);
-        let error = staged_changes(&batch, &orders, &target).unwrap_err();
+        let error = staged_batch(&batch, &orders, &target).unwrap_err();
         assert_eq!(error.code(), Some(code), "{bitmap:b}");
         assert!(error.to_string().contains(field), "{bitmap:b}: {error}");
     }
@@ -252,12 +252,64 @@ fn a_change_without_a_sequence_is_refused() {
     let batch = written(&[None, None]);
     let seqs: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), None]));
     let unsequenced = replaced(&batch, &[(2, seqs)]);
-    let error = staged_changes(&unsequenced, &orders, &target).unwrap_err();
+    let error = staged_batch(&unsequenced, &orders, &target).unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
     assert_eq!(error.code(), Some("sequence_missing"));
     let seqless = batch.project(&[0, 1, 3, 4]).unwrap();
-    let error = staged_changes(&seqless, &orders, &target).unwrap_err();
+    let error = staged_batch(&seqless, &orders, &target).unwrap_err();
     assert_eq!(error.code(), Some("sequence_missing"));
+}
+
+#[test]
+fn a_merged_row_with_a_null_key_is_refused_and_only_a_truncate_names_none() {
+    let ids: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), None]));
+    let nulled = |ops: [i8; 2]| {
+        let ops: ArrayRef = Arc::new(Int8Array::from(ops.to_vec()));
+        replaced(&written(&[None, None]), &[(0, Arc::clone(&ids)), (3, ops)])
+    };
+    // A change of no key would read as a truncate's bound once it is a tombstone.
+    for op in [0, 1, 2] {
+        let error = staged_batch(&nulled([1, op]), &changed("orders"), &[]).unwrap_err();
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ConnectorErrorKind::Data, Some("merge_key_null")),
+            "{op}"
+        );
+    }
+    staged_batch(&nulled([1, 3]), &changed("orders"), &[]).unwrap();
+    let keyless = written(&[None, None]).project(&[1, 2, 3, 4]).unwrap();
+    let error = staged_batch(&keyless, &changed("orders"), &[]).unwrap_err();
+    assert_eq!(error.code(), Some("merge_key_missing"));
+    // A truncate names no key, so a batch of truncates alone needs no key column.
+    let truncates: ArrayRef = Arc::new(Int8Array::from(vec![3_i8, 3]));
+    let cleared = replaced(&written(&[None, None]), &[(3, truncates)]);
+    let cleared = cleared.project(&[1, 2, 3, 4]).unwrap();
+    staged_batch(&cleared, &changed("orders"), &[]).unwrap();
+    // Every row of a plain merge and of a child table names its key; an append's need not.
+    let merged = |root: Option<crate::destination::RootKey>| TableRef {
+        merge: Some(MergeKey {
+            columns: vec!["id".into()],
+            seq: "seq".into(),
+            root,
+            changes: None,
+            history: None,
+        }),
+        ..table("orders")
+    };
+    let child = crate::destination::RootKey {
+        table: "roots".into(),
+        id: "id".into(),
+        seq: "seq".into(),
+    };
+    let batch = replaced(&written(&[None, None]), &[(0, Arc::clone(&ids))]);
+    for keyed in [merged(None), merged(Some(child))] {
+        let error = staged_batch(&batch, &keyed, &[]).unwrap_err();
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ConnectorErrorKind::Data, Some("merge_key_null"))
+        );
+    }
+    staged_batch(&batch, &table("orders"), &[]).unwrap();
 }
 
 #[test]
@@ -288,19 +340,19 @@ fn a_deletion_of_a_soft_history_table_that_says_no_time_is_refused() {
     };
     for op in [2, 3] {
         let untimed = rows([1, op]);
-        let error = staged_changes(&untimed, &history(soft.clone(), true), &[]).unwrap_err();
+        let error = staged_batch(&untimed, &history(soft.clone(), true), &[]).unwrap_err();
         assert_eq!(error.kind(), ConnectorErrorKind::Data, "{op}");
         assert_eq!(error.code(), Some("deletion_untimed"), "{op}");
         let timeless = untimed.project(&[0, 2, 3]).unwrap();
-        let error = staged_changes(&timeless, &history(soft.clone(), true), &[]).unwrap_err();
+        let error = staged_batch(&timeless, &history(soft.clone(), true), &[]).unwrap_err();
         assert_eq!(error.code(), Some("deletion_untimed"), "{op}");
         // A deletion that says when, an upsert, a table of no history and one whose deletes
         // remove are staged.
-        staged_changes(&rows([op, 1]), &history(soft.clone(), true), &[]).unwrap();
-        staged_changes(&untimed, &history(soft.clone(), false), &[]).unwrap();
-        staged_changes(&untimed, &history(Deletion::Hard, true), &[]).unwrap();
+        staged_batch(&rows([op, 1]), &history(soft.clone(), true), &[]).unwrap();
+        staged_batch(&untimed, &history(soft.clone(), false), &[]).unwrap();
+        staged_batch(&untimed, &history(Deletion::Hard, true), &[]).unwrap();
     }
-    staged_changes(&rows([1, 0]), &history(soft, true), &[]).unwrap();
+    staged_batch(&rows([1, 0]), &history(soft, true), &[]).unwrap();
 }
 
 #[test]
@@ -320,7 +372,7 @@ fn a_change_whose_op_is_no_change_op_is_refused() {
         let mut columns = batch.columns().to_vec();
         columns[3] = Arc::new(Int8Array::from(vec![op]));
         let batch = RecordBatch::try_new(batch.schema(), columns).unwrap();
-        let staged = staged_changes(&batch, &orders, &target);
+        let staged = staged_batch(&batch, &orders, &target);
         assert_eq!(staged.is_ok(), op == 3, "{op}");
         if let Err(error) = staged {
             assert_eq!(error.kind(), ConnectorErrorKind::Data, "{op}");
@@ -328,7 +380,7 @@ fn a_change_whose_op_is_no_change_op_is_refused() {
         }
     } // A batch without its op column is refused too.
     let batch = written(&[None]).project(&[0, 1, 2, 4]).unwrap();
-    let error = staged_changes(&batch, &orders, &target).unwrap_err();
+    let error = staged_batch(&batch, &orders, &target).unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
     assert_eq!(error.code(), Some("op_invalid"));
 }
@@ -480,7 +532,7 @@ fn staging_flags_costs_a_pass_over_a_row_s_fields_not_a_search_for_each() {
         (0..3)
             .map(|_| {
                 let started = std::time::Instant::now();
-                std::hint::black_box(staged_changes(batch, &orders, &target).unwrap());
+                std::hint::black_box(staged_batch(batch, &orders, &target).unwrap());
                 started.elapsed()
             })
             .min()
@@ -492,7 +544,7 @@ fn staging_flags_costs_a_pass_over_a_row_s_fields_not_a_search_for_each() {
         flagged < plain * 40 + std::time::Duration::from_millis(200),
         "unflagged rows took {plain:?}, rows flagging every column {flagged:?}"
     );
-    let staged = staged_changes(&batch(true), &orders, &target).unwrap();
+    let staged = staged_batch(&batch(true), &orders, &target).unwrap();
     let flags = staged
         .column_by_name("unchanged")
         .unwrap()

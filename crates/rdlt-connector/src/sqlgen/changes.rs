@@ -165,21 +165,27 @@ fn changed(table: &TableRef) -> Option<(&MergeKey, &ChangeColumns)> {
 /// columns, the byte at a column's ordinal 1 where the row flags it, or null for none: what a
 /// commit reads a column's flag from at one position, whatever the table's width.
 ///
-/// Each refusal is a `Data` error under its code, raised before any row is staged: a row
-/// without an op a change stream has (`op_invalid`) or without a sequence (`sequence_missing`);
-/// flags that are no bitmap (`flags_invalid`), or naming a column the target lacks
-/// (`flag_on_missing_column`) or a key or sequence column, which a change always sets
-/// (`flag_on_key`); and for a history table whose deletes are soft, a delete or a truncate that
-/// says no deletion time (`deletion_untimed`).
-pub fn staged_changes(
+/// Each refusal is a `Data` error under its code, raised before any row is staged: a row of a
+/// merge table, a truncate apart, that lacks a key column (`merge_key_missing`) or holds a null
+/// in one (`merge_key_null`); a row without an op a change stream has (`op_invalid`) or without
+/// a sequence (`sequence_missing`); flags that are no bitmap (`flags_invalid`), or naming a
+/// column the target lacks (`flag_on_missing_column`) or a key or sequence column, which a
+/// change always sets (`flag_on_key`); and for a history table whose deletes are soft, a delete
+/// or a truncate that says no deletion time (`deletion_untimed`).
+pub fn staged_batch(
     batch: &RecordBatch,
     table: &TableRef,
     target: &[Column],
 ) -> Result<RecordBatch> {
-    let Some((key, changes)) = changed(table) else {
+    let Some(key) = table.merge.as_ref() else {
+        return Ok(batch.clone());
+    };
+    let Some(changes) = key.changes.as_ref() else {
+        keyed(batch, table, key, None)?;
         return Ok(batch.clone());
     };
     let ops = ops(batch, changes)?;
+    keyed(batch, table, key, Some(ops))?;
     sequenced(batch, key)?;
     timed(batch, key, changes, ops)?;
     let Some((index, _)) = changes
@@ -259,6 +265,41 @@ fn ops<'a>(batch: &'a RecordBatch, changes: &ChangeColumns) -> Result<&'a Int8Ar
         Some(op) => Err(invalid(format!("{op:?} is no change stream's op"))),
         None => Ok(ops),
     }
+}
+
+/// Refuses `batch`, written for `table`, a merge table keyed by `key`, where a row other than a
+/// truncate, which `ops` marks where the table merges a change stream, lacks a key column or
+/// holds a null in one: such a row's delete, buried as a tombstone, would read as a truncate's
+/// bound over every key.
+fn keyed(
+    batch: &RecordBatch,
+    table: &TableRef,
+    key: &MergeKey,
+    ops: Option<&Int8Array>,
+) -> Result<()> {
+    let truncate = ChangeOp::Truncate.code();
+    let names_a_key = |row: usize| ops.is_none_or(|ops| ops.value(row) != truncate);
+    let rows = 0..batch.num_rows();
+    for column in &key.columns {
+        let refused = match batch.column_by_name(column) {
+            None if rows.clone().any(names_a_key) => ("lacks", "merge_key_missing"),
+            Some(values)
+                if rows
+                    .clone()
+                    .any(|row| values.is_null(row) && names_a_key(row)) =>
+            {
+                ("holds a null in", "merge_key_null")
+            }
+            _ => continue,
+        };
+        let (holds, code) = refused;
+        return Err(ConnectorError::data(format!(
+            "table {}: a row it merges {holds} its key column {column}",
+            table.name
+        ))
+        .with_code(code));
+    }
+    Ok(())
 }
 
 /// Refuses `batch` unless each of its rows has a sequence, in the column `key` names.

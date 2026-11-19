@@ -191,7 +191,11 @@ generated sources each take something as given unless they check it:
   that says no deletion time (`deletion_untimed`). The merge adds a conversion that keeps no
   value (`type_unconvertible`), a value its wider type cannot hold (`value_unholdable`) and a
   key the rows cannot be merged by (`merge_key_invalid`). Any other failure of the merge is
-  its own, an internal error.
+  its own, an internal error. `sqlgen`'s staging refuses besides a row of a merge table, a
+  truncate apart, that lacks a key column (`merge_key_missing`) or holds a null in one
+  (`merge_key_null`), under the codes the engine refuses such rows with before it writes them:
+  a change of a null first key column, buried as a tombstone, would read as a truncate's bound
+  over every key, and a plain merge compares keys with `=`, which no null equals.
 - **A soft history delete says when.** A history table reads a version as deleted by its
   deletion time. A delete or a truncate without one would open a deleted version that reads as
   live, and the Arrow merge and the SQL plans each made something else of it; none is

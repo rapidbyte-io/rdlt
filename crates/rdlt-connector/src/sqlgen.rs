@@ -33,7 +33,7 @@ use crate::id::{Epoch, PipelineId};
 use crate::types::LogicalType;
 
 pub use catalog::{micros, receipt};
-pub use changes::staged_changes;
+pub use changes::staged_batch;
 pub use owned::{Check, Owned, Standing};
 pub use publish::{Staged, merge_key};
 pub use sqlite::Sqlite;
