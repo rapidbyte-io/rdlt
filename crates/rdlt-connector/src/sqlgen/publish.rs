@@ -45,7 +45,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// `segment`.
     ///
     /// Its parameters hold who staged the row; bind the row's values after them, in the order of
-    /// `columns`.
+    /// `columns`. A column named as a staging column is a `Config` error coded
+    /// `column_name_reserved`.
     pub fn stage(
         &self,
         owned: &Owned<'_>,
@@ -55,6 +56,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         columns: &[&str],
     ) -> Result<Statement> {
         owned.is(&table.name)?;
+        self.unreserved(columns.iter().copied())?;
         let pipeline = owned.pipeline();
         let mut sql = self.sql();
         let generation = table
