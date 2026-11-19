@@ -34,15 +34,19 @@ socket is.
     one connection.
 - **Errors travel whole.**
   - A failed call is a gRPC status whose code follows the error's kind, and whose details carry
-    the `v1::Error`. The host reads back the same kind, code, message, retry and limit.
+    the `v1::Error`. The host reads back the same kind, code, message, retry and limit, and the
+    error's first eight causes as text, the reason behind a message that gives only its
+    context (`ResultExt`, `with_source`, a Python exception's traceback); it scrubs and shows
+    them as it does the message (ADR 0043).
   - A status without an error in its details is a transport failure: transient where retrying
     may help, internal otherwise, with code `transport`.
   - A read that fails ends with its error's status. A write that fails answers with a `WriteAck`
     error, and the write ends.
   - A frame the codec refuses, or a message that does not decode, is an internal error:
     `malformed_frame` or `invalid_message`.
-  - A status's own message is cut to 1 KiB, and the error in its details to the control string
-    limit, so its trailers fit the host's header limit (`HEADER_LIST_BYTES`, 256 KiB).
+  - A status's own message is cut to 1 KiB, and in its details the error's message to the
+    control string limit and each cause to an eighth of it (`SENT_CAUSE_BYTES`, 8 KiB), so its
+    trailers fit the host's header limit (`HEADER_LIST_BYTES`, 256 KiB).
   - A write the connector ended answers with the error its last answers carry, not a transport
     failure.
 - **Credit.**

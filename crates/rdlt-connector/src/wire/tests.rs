@@ -384,22 +384,51 @@ fn error_kind() -> impl Strategy<Value = ConnectorErrorKind> {
 }
 
 /// What an error carries across the wire, for comparison.
-fn carried(
-    error: &ConnectorError,
-) -> (
+type Carried = (
     ConnectorErrorKind,
     String,
     Option<String>,
     Option<Duration>,
     Option<LimitExceeded>,
-) {
+    Vec<String>,
+);
+
+/// What `error` carries across the wire, for comparison.
+fn carried(error: &ConnectorError) -> Carried {
     (
         error.kind(),
         error.to_string(),
         error.code().map(ToOwned::to_owned),
         error.retry_after(),
         error.limit(),
+        causes(error),
     )
+}
+
+/// The texts of `error`'s causes, the outermost first.
+fn causes(error: &ConnectorError) -> Vec<String> {
+    let mut causes = Vec::new();
+    let mut cause = std::error::Error::source(error);
+    while let Some(error) = cause {
+        causes.push(error.to_string());
+        cause = error.source();
+    }
+    causes
+}
+
+/// `error` with `causes`, the outermost first, as a chain of errors behind it.
+fn caused(error: ConnectorError, causes: &[String]) -> ConnectorError {
+    let behind = causes.iter().rev().fold(None, |behind, text| {
+        let cause = ConnectorError::internal(text.clone());
+        Some(match behind {
+            Some(behind) => cause.with_source(behind),
+            None => cause,
+        })
+    });
+    match behind {
+        Some(behind) => error.with_source(behind),
+        None => error,
+    }
 }
 
 proptest! {
@@ -456,16 +485,18 @@ proptest! {
     }
 
     #[test]
-    fn errors_cross_the_wire_with_their_kind_code_retry_and_limit(
+    fn errors_cross_the_wire_with_their_kind_code_retry_limit_and_causes(
         kind in error_kind(),
         message in ".{0,20}",
         code in proptest::option::of("[a-z_.]{1,12}".prop_filter("a host's code", |code| !super::HOST_CODES.contains(&code.as_str()))),
         retry_after in proptest::option::of((any::<u32>(), 0..1_000_000_000_u32)),
         limit in proptest::option::of((proptest::sample::select(vec!["batch rows", "cursor bytes", "frame bytes"]), any::<u64>(), any::<u64>())),
+        causes in proptest::collection::vec(".{0,20}", 0..12),
     ) {
-        let mut error = ConnectorError::new(kind, message)
+        let error = ConnectorError::new(kind, message)
             .with_retry_after(retry_after.map(|(seconds, nanos)| Duration::new(u64::from(seconds), nanos)))
             .with_limit(limit.map(|(name, limit, actual)| LimitExceeded { name, limit, actual }));
+        let mut error = caused(error, &causes);
         if let Some(code) = code {
             error = error.with_code(code);
         }
@@ -787,6 +818,7 @@ fn an_error_naming_no_limit_this_end_knows_is_decoded_without_one() {
                 limit: 1,
                 actual: 2,
             }),
+            causes: Vec::new(),
         };
         let decoded = ConnectorError::from_wire(error, &|text| text).unwrap();
         assert_eq!(decoded.kind(), ConnectorErrorKind::Internal);
@@ -871,6 +903,69 @@ fn an_error_crosses_a_grpc_status_whole() {
         .with_retry_after(Some(Duration::from_secs(3)));
     let back = super::error(&super::status(&error), &|text| text);
     assert_eq!(carried(&back), carried(&error));
+}
+
+#[test]
+fn an_error_s_causes_cross_a_status_scrubbed_where_they_arrive() {
+    let reason = std::io::Error::other("the store refused pass1234");
+    let error = ConnectorError::new(ConnectorErrorKind::Transient, "keeping the slot")
+        .with_source(ConnectorError::internal("the driver failed").with_source(reason));
+    let scrubbed = |text: String| text.replace("pass1234", "***");
+    let back = super::error(&super::status(&error), &scrubbed);
+    assert_eq!(back.to_string(), "keeping the slot");
+    assert_eq!(
+        causes(&back),
+        ["the driver failed", "the store refused ***"]
+    );
+}
+
+#[test]
+fn a_status_carries_an_error_s_first_causes_each_cut_within_its_trailers_bound() {
+    use rdlt_wire::prost::Message as _;
+    let long = "é".repeat(40_000);
+    let chain: Vec<String> = (0..12).map(|depth| format!("{depth} {long}")).collect();
+    let error = caused(ConnectorError::data(long.clone()), &chain);
+    let status = super::status(&error);
+    let sent = v1::Error::decode(status.details()).expect("an error");
+    let limit = usize::try_from(crate::limits::SENT_CAUSE_BYTES).expect("fits");
+    assert_eq!(sent.causes.len(), crate::limits::MAX_ERROR_CAUSES);
+    for (depth, cause) in sent.causes.iter().enumerate() {
+        assert!(
+            cause.len() <= limit && cause.len() > limit - 4,
+            "{}",
+            cause.len()
+        );
+        // Marked as cut, so the host's scrubber masks what is left of a secret before the mark.
+        let kept = cause
+            .strip_suffix(crate::text::CUT)
+            .expect("a cut cause is marked");
+        assert!(chain[depth].starts_with(kept));
+    }
+    // Its details travel in base64, beside the status's own message.
+    let details = status.details().len().div_ceil(3) * 4 + status.message().len();
+    let header = usize::try_from(rdlt_wire::limits::HEADER_LIST_BYTES).expect("fits");
+    assert!(details < header, "{details}");
+    let back = super::error(&status, &|text| text);
+    assert_eq!(causes(&back).len(), crate::limits::MAX_ERROR_CAUSES);
+}
+
+#[test]
+fn a_cause_as_long_as_its_limit_is_sent_whole_and_a_byte_more_marked_cut() {
+    let limit = usize::try_from(crate::limits::SENT_CAUSE_BYTES).expect("fits");
+    let behind =
+        |cause: String| ConnectorError::data("outer").with_source(ConnectorError::data(cause));
+    let fits = "x".repeat(limit);
+    assert_eq!(
+        v1::Error::from(&behind(fits.clone())).causes,
+        [fits.as_str()]
+    );
+    let cut = v1::Error::from(&behind(format!("{fits}x"))).causes;
+    assert_eq!(cut[0].len(), limit);
+    assert!(
+        cut[0].ends_with(crate::text::CUT),
+        "{}",
+        &cut[0][limit - 16..]
+    );
 }
 
 #[test]
@@ -972,6 +1067,7 @@ fn a_connectors_error_text_is_shown_and_bounded_where_the_wire_delivers_it() {
         code: Some(hostile.to_owned()),
         retry_after: None,
         limit: None,
+        causes: Vec::new(),
     };
     let decoded = ConnectorError::from_wire(sent.clone(), &|text| text).expect("it decodes");
     let details = sent.encode_to_vec().into();
@@ -1271,6 +1367,7 @@ fn a_connector_error_code_outside_the_grammar_or_the_host_s_is_replaced() {
             code: Some(code.to_owned()),
             retry_after: None,
             limit: None,
+            causes: Vec::new(),
         };
         let error = ConnectorError::from_wire(sent, &|text| text).expect("it decodes");
         error.code().map(str::to_owned)
@@ -1309,6 +1406,7 @@ fn an_error_from_the_wire_is_scrubbed_as_it_was_said_and_only_then_shown() {
         code: None,
         retry_after: None,
         limit: None,
+        causes: Vec::new(),
     };
     let decoded = ConnectorError::from_wire(sent.clone(), &scrubbed).expect("it decodes");
     assert_eq!(decoded.to_string(), r#"it said "***" \u{1b}[2J"#);

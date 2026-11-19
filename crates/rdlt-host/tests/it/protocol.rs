@@ -17,7 +17,7 @@ use rdlt_testkit::fake::{Fake, Fault, socket};
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::support::connectors::{Denied, SlowCommits};
+use crate::support::connectors::{Denied, Echo, SlowCommits};
 use crate::support::{memory_destination, plane_client, served, served_within};
 
 /// Options that notice a lost connector within about a tenth of a second.
@@ -162,14 +162,17 @@ async fn a_role_the_connector_does_not_serve_is_refused() {
 }
 
 #[tokio::test]
-async fn a_connectors_error_crosses_the_wire_with_its_kind_code_and_message() {
+async fn a_connectors_error_crosses_the_wire_with_its_kind_code_message_and_causes() {
     let io = served(Served::new().with_source(source_factory::<Denied>()));
+    // What the host sent the connector is scrubbed from its causes as from its message.
+    let redactions = Redactions::new();
+    redactions.add("token");
     let connection = Connection::connect(
         io,
         Role::Source,
         &serde_json::json!({}),
         Options::default(),
-        Redactions::new(),
+        redactions,
     )
     .await
     .unwrap();
@@ -178,7 +181,43 @@ async fn a_connectors_error_crosses_the_wire_with_its_kind_code_and_message() {
         (error.kind(), error.code()),
         (ConnectorErrorKind::Auth, Some("test.denied"))
     );
-    assert_eq!(error.to_string(), "the token was refused");
+    assert_eq!(error.to_string(), "the *** was refused");
+    let cause = std::error::Error::source(&error).map(ToString::to_string);
+    assert_eq!(cause.as_deref(), Some("the driver refused the ***"));
+}
+
+#[tokio::test]
+async fn no_part_of_a_secret_a_cause_is_cut_within_crosses_the_wire() {
+    use rdlt_connector::limits::SENT_CAUSE_BYTES;
+    let secret = "Zq7Kx9Vw2Lm4Np6Rt8Hy3Jb5Fd1Gs0Ac";
+    // Said again and again, the secret is cut within at the connector, and the host's scrubbing
+    // of every whole one brings what is left of it at the cut within what the host shows.
+    let said = format!("{secret} ").repeat(300);
+    let sent = usize::try_from(SENT_CAUSE_BYTES).expect("fits");
+    let left = (sent - "the driver refused \"".len() - " [cut]".len()) % (secret.len() + 1);
+    assert!(
+        (1..secret.len()).contains(&left),
+        "the cut falls within a secret: {left}"
+    );
+    let io = served(Served::new().with_source(source_factory::<Echo>()));
+    let redactions = Redactions::new();
+    redactions.add(secret);
+    let config = serde_json::json!({ "said": said });
+    let connection = Connection::connect(io, Role::Source, &config, Options::default(), redactions)
+        .await
+        .unwrap();
+    let error = RemoteSource::new(connection).check().await.unwrap_err();
+    let cause = std::error::Error::source(&error)
+        .map(ToString::to_string)
+        .expect("the error's cause crosses");
+    assert!(cause.ends_with(rdlt_connector::text::CUT), "{cause}");
+    let runs: Vec<&str> = (0..secret.len() - 1)
+        .map(|at| &secret[at..at + 2])
+        .collect();
+    for run in runs {
+        assert!(!cause.contains(run), "{run} in {cause}");
+        assert!(!error.to_string().contains(run), "{run} in {error}");
+    }
 }
 
 #[tokio::test]

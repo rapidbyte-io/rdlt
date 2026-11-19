@@ -55,7 +55,17 @@ fn kind(value: i32) -> ConnectorErrorKind {
 }
 
 impl From<&ConnectorError> for v1::Error {
+    /// `error` as its host receives it: its causes, the first
+    /// [`MAX_ERROR_CAUSES`](crate::limits::MAX_ERROR_CAUSES), each cut to
+    /// [`SENT_CAUSE_BYTES`](crate::limits::SENT_CAUSE_BYTES).
     fn from(error: &ConnectorError) -> Self {
+        let causes = error
+            .causes()
+            .map(|mut cause| {
+                super::status::cut(&mut cause, crate::limits::SENT_CAUSE_BYTES);
+                cause
+            })
+            .collect();
         Self {
             kind: v1::ErrorKind::from(error.kind()) as i32,
             message: error.to_string(),
@@ -66,14 +76,15 @@ impl From<&ConnectorError> for v1::Error {
                 limit: limit.limit,
                 actual: limit.actual,
             }),
+            causes,
         }
     }
 }
 
 impl ConnectorError {
-    /// The error a connector sent as `error`, as its host keeps it: with its texts passed
-    /// through `scrubbed` before they are shown and bounded, as [`received`](Self::received)
-    /// keeps an error.
+    /// The error a connector sent as `error`, as its host keeps it: with its texts, its causes'
+    /// among them, passed through `scrubbed` before they are shown and bounded, as
+    /// [`received`](Self::received) keeps an error.
     ///
     /// # Errors
     ///
@@ -93,7 +104,8 @@ impl ConnectorError {
         });
         let mut decoded = Self::new(kind(error.kind), error.message)
             .with_retry_after(error.retry_after.map(std_duration).transpose()?)
-            .with_limit(limit);
+            .with_limit(limit)
+            .with_causes(error.causes);
         if let Some(code) = error.code {
             decoded = decoded.with_code(admitted(code));
         }
