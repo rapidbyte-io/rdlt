@@ -170,3 +170,44 @@ fn the_partitions_whose_starts_a_host_is_heard_for_are_no_more_than_the_limit() 
         .map(|partition| sent.knows(None, &orders, partition, &start));
     assert_eq!(heard, [true, true, false]);
 }
+
+#[test]
+fn a_partition_s_newest_checkpoint_outlasts_every_other_partition_s_checkpoints() {
+    let sent = Sent::remembering(3);
+    let (orders, quiet, busy) = (stream("orders"), partition("p0"), partition("p1"));
+    let (older, newest) = (cursor(1, b"older"), cursor(1, b"newest"));
+    // A partition that went quiet at its newest checkpoint, while another kept checkpointing.
+    sent.note(None, &orders, &quiet, &older);
+    sent.note(None, &orders, &quiet, &newest);
+    let positions: [&'static [u8]; 5] = [b"0", b"1", b"2", b"3", b"4"];
+    for position in positions {
+        sent.note(None, &orders, &busy, &cursor(1, position));
+    }
+    assert!(sent.knows(None, &orders, &quiet, &newest));
+    assert!(!sent.knows(None, &orders, &quiet, &older));
+    assert!(!sent.knows(Some("host"), &orders, &quiet, &newest));
+    let report = [(quiet.clone(), newest.clone()), (busy, cursor(1, b"4"))];
+    assert!(sent.admit(None, &orders, &report).is_ok());
+    // A read of the partition started again keeps its newest checkpoint beside its start.
+    let start = cursor(1, b"start");
+    sent.started(None, &orders, &quiet, &start);
+    assert!(sent.knows(None, &orders, &quiet, &newest));
+    assert!(sent.knows(None, &orders, &quiet, &start));
+}
+
+#[test]
+fn the_partitions_whose_newest_checkpoints_a_host_is_heard_for_are_no_more_than_the_limit() {
+    let sent = Sent::remembering(2);
+    let orders = stream("orders");
+    let partitions = ["p0", "p1", "p2"].map(partition);
+    for (partition, position) in partitions.iter().zip([b"0", b"1", b"2"]) {
+        sent.note(None, &orders, partition, &cursor(1, position));
+    }
+    // The ring holds the last two checkpoints; the first partition's is forgotten with its place.
+    let heard = [b"0", b"1", b"2"]
+        .iter()
+        .zip(&partitions)
+        .map(|(position, partition)| sent.knows(None, &orders, partition, &cursor(1, *position)))
+        .collect::<Vec<_>>();
+    assert_eq!(heard, [false, true, true]);
+}

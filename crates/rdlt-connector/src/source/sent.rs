@@ -29,7 +29,9 @@ pub const POSITION_UNSENT: &str = "position_unsent";
 ///
 /// They are remembered for as long as the value lives, a served connector's for its process, so
 /// a host that dials again reports what it committed. Beyond a limit for each host the oldest
-/// checkpoint is forgotten; where reads started is kept apart, a start for each partition.
+/// checkpoint is forgotten; each partition's newest checkpoint and where its latest read started
+/// are kept apart, so a partition that went quiet is heard for where it stands however many
+/// checkpoints other partitions send.
 pub struct Sent {
     /// Keyed at random for the process, so no host can choose a position that passes for another.
     hashing: RandomState,
@@ -54,15 +56,37 @@ impl Default for Sent {
 }
 
 /// The positions of one host: how many times each checkpoint was noted and in what order, and
-/// where the latest read of each partition started.
+/// for each partition its newest checkpoint and where its latest read started.
 #[derive(Default)]
 struct Positions {
     times: HashMap<u64, u32>,
     order: VecDeque<u64>,
-    /// By partition, apart from the checkpoints, so that no number of those forgets a start.
-    starts: HashMap<u64, u64>,
-    /// The partitions with a start, oldest start first.
-    started: VecDeque<u64>,
+    /// By partition, apart from the checkpoints, so that no number of those forgets either.
+    latest: HashMap<u64, Latest>,
+    /// The partitions kept, in the order their latest read started or, for a partition never
+    /// read from a start, its first checkpoint was noted.
+    kept: VecDeque<u64>,
+}
+
+/// A partition's newest checkpoint and where its latest read started, each a position's hash.
+#[derive(Clone, Copy, Default)]
+struct Latest {
+    checkpoint: Option<u64>,
+    start: Option<u64>,
+}
+
+impl Positions {
+    /// Keeps `latest` for the partition `place`, last among the partitions kept, forgetting the
+    /// first of them beyond `limit`.
+    fn keep(&mut self, place: u64, latest: Latest, limit: usize) {
+        if self.kept.len() >= limit
+            && let Some(oldest) = self.kept.pop_front()
+        {
+            self.latest.remove(&oldest);
+        }
+        self.kept.push_back(place);
+        self.latest.insert(place, latest);
+    }
 }
 
 impl Sent {
@@ -92,7 +116,7 @@ impl Sent {
     }
 
     /// Remembers `cursor` of `partition` of `stream` for `host`, none where the host has no
-    /// name: a checkpoint a read sent it.
+    /// name: a checkpoint a read sent it, the partition's newest.
     pub fn note(
         &self,
         host: Option<&str>,
@@ -100,6 +124,7 @@ impl Sent {
         partition: &PartitionId,
         cursor: &Cursor,
     ) {
+        let place = self.place(stream, partition);
         let hash = self.hash(stream, partition, cursor);
         let mut hosts = self.hosts.lock();
         let noted = hosts.entry(host.map(str::to_owned)).or_default();
@@ -114,13 +139,23 @@ impl Sent {
         }
         noted.order.push_back(hash);
         *noted.times.entry(hash).or_default() += 1;
+        if let Some(latest) = noted.latest.get_mut(&place) {
+            latest.checkpoint = Some(hash);
+        } else {
+            let latest = Latest {
+                checkpoint: Some(hash),
+                start: None,
+            };
+            noted.keep(place, latest, self.limit);
+        }
     }
 
     /// Remembers that `host`'s read of `partition` of `stream` started from `cursor`, in place
     /// of where its last read of the partition started.
     ///
     /// It is for the caller to say so only once the source accepted the read there. Beyond the
-    /// limit of partitions for a host, the start noted longest ago is forgotten.
+    /// limit of partitions for a host, the partition whose read started, or that was first sent
+    /// a checkpoint, longest ago is forgotten.
     pub fn started(
         &self,
         host: Option<&str>,
@@ -132,14 +167,12 @@ impl Sent {
         let hash = self.hash(stream, partition, cursor);
         let mut hosts = self.hosts.lock();
         let noted = hosts.entry(host.map(str::to_owned)).or_default();
-        noted.started.retain(|started| *started != place);
-        if noted.started.len() >= self.limit
-            && let Some(oldest) = noted.started.pop_front()
-        {
-            noted.starts.remove(&oldest);
-        }
-        noted.started.push_back(place);
-        noted.starts.insert(place, hash);
+        noted.kept.retain(|kept| *kept != place);
+        let latest = Latest {
+            start: Some(hash),
+            ..noted.latest.remove(&place).unwrap_or_default()
+        };
+        noted.keep(place, latest, self.limit);
     }
 
     /// Whether `cursor` of `partition` of `stream` is remembered for `host`.
@@ -154,7 +187,10 @@ impl Sent {
         let place = self.place(stream, partition);
         let hosts = self.hosts.lock();
         hosts.get(&host.map(str::to_owned)).is_some_and(|noted| {
-            noted.times.contains_key(&hash) || noted.starts.get(&place) == Some(&hash)
+            let latest = noted.latest.get(&place).copied().unwrap_or_default();
+            noted.times.contains_key(&hash)
+                || latest.checkpoint == Some(hash)
+                || latest.start == Some(hash)
         })
     }
 
