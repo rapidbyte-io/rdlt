@@ -1,8 +1,7 @@
 use bytes::Bytes;
-use rusqlite::Connection;
 use rusqlite::types::Value;
 
-use super::super::tests::{pipeline, query, run_all, table};
+use super::super::tests::{connection, pipeline, query, run_all, table};
 use super::super::{SqlDialect, SqlPlanner, Sqlite, Statement, Upserts};
 use crate::destination::TableRef;
 use crate::id::GenerationId;
@@ -87,7 +86,7 @@ impl SqlDialect for Dual {
 /// in two commits, and a table registered under a path it then takes another name for: the
 /// fence row, the owner, the state and the registered names.
 fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
-    let connection = Connection::open_in_memory().unwrap();
+    let connection = connection();
     connection
         .execute_batch("CREATE TABLE dual (x INTEGER); INSERT INTO dual VALUES (1)")
         .unwrap();
