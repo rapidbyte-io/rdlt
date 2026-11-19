@@ -1,5 +1,6 @@
 //! Decoding corrupted Arrow frames never panics past the decoder: Arrow's own panics are
-//! contained, quietly, and refused, and nothing allocates beyond the limits.
+//! contained, quietly, and refused, nothing allocates beyond the limits, and what decodes is
+//! valid whole.
 //!
 //! The frames are real encodings of a few batches, corrupted by the fuzzer's bytes, so the
 //! corruption reaches the framing checks and Arrow's readers rather than stopping at the header.
@@ -119,5 +120,12 @@ fuzz_target!(|input: (u8, u8, Vec<u8>, Vec<u8>, Vec<u8>)| {
             skew % 8 == 0 || body.is_empty() || !read,
             "a body {skew} bytes off its alignment decoded"
         );
+        // Nothing Arrow would refuse passes as a batch.
+        if let Ok(Some(batch)) = &decoded {
+            for column in batch.columns() {
+                let valid = column.to_data().validate_full();
+                assert!(valid.is_ok(), "{}: {valid:?}", column.data_type());
+            }
+        }
     }
 });
