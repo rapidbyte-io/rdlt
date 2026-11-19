@@ -84,18 +84,20 @@ impl PipelineBuilder {
         &self.document
     }
 
-    /// The source's catalog, the source placed alone as [`build`](Self::build) would place it:
-    /// for a document whose streams are not chosen yet.
+    /// The source's catalog, the source placed alone as [`build`](Self::build) would place it,
+    /// told the limits the document's resources admit: for a document whose streams are not
+    /// chosen yet.
     ///
     /// # Errors
     ///
-    /// The source's reference or placement error, or its failure to discover, as building the
-    /// pipeline reports them.
+    /// The document's commit, resources or retry error, the source's reference or placement
+    /// error, or its failure to discover, as building the pipeline reports them.
     pub async fn discover(&self, host: &Host) -> Result<Catalog, Error> {
+        let config = lower::engine_config(&self.document)?;
         let source = lower::reference(&self.document.source, Role::Source)?;
         #[cfg(feature = "local")]
         host.admits_network(&self.document.source, Role::Source)?;
-        let provider = host.provider();
+        let provider = host.provider(&config);
         let placing = provider.source(&source, &self.document.source.config);
         let placed = placed(Role::Source, host.wait(), placing).await?;
         discovered(placed.connector.as_ref(), host.wait()).await
@@ -108,7 +110,8 @@ impl PipelineBuilder {
     /// and transforms, with mask keys resolved through the host's secrets, SQL parsed and code
     /// transforms found among the host's, each once however many streams it selects; each
     /// stream then has a SQL transform of its own, which plans for its input schemas. Then both
-    /// connectors are placed and handshaken, the streams selected from the source's catalog,
+    /// connectors are placed and handshaken, each told and held to the limits the engine admits
+    /// within for the document's resources, the streams selected from the source's catalog,
     /// and each checked against the catalog and the destination's capabilities, as a run's
     /// start checks it.
     ///
@@ -126,7 +129,7 @@ impl PipelineBuilder {
         let prepared = lower::prepare(&document, host).await?;
         let source = lower::reference(&document.source, Role::Source)?;
         let destination = lower::reference(&document.destination, Role::Destination)?;
-        let provider = host.provider();
+        let provider = host.provider(prepared.config());
         let wait = host.wait();
         let placing_source = provider.source(&source, &document.source.config);
         let source = placed(Role::Source, wait, placing_source).await?;

@@ -17,6 +17,7 @@ use rdlt_connector::{
     source_factory,
 };
 use rdlt_host::{Connection, Options, RemoteSource};
+use rdlt_wire::Limits;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -138,6 +139,10 @@ impl Admission for Counting {
         self.0.most.fetch_max(kept, Ordering::SeqCst);
         self.0.charges.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(Kept(Arc::clone(&self.0), bytes)))
+    }
+
+    fn limits(&self) -> Limits {
+        Limits::default()
     }
 }
 
@@ -394,7 +399,7 @@ async fn wide(store: &str, dictionary: usize, told: bool) -> rdlt_engine::RunOut
         limits: if told {
             config.limits()
         } else {
-            rdlt_wire::Limits::default()
+            Limits::default()
         },
         ..Options::default()
     };

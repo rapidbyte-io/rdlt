@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use rdlt_testkit::cancel::{self, Ended};
+use rdlt_wire::Limits;
 use tokio::sync::mpsc;
 
 use super::{answering, json};
@@ -40,6 +41,10 @@ impl Admission for Paced {
 
     fn charge(&self, bytes: u64) -> crate::Result<Permit> {
         Ok(Box::new(bytes))
+    }
+
+    fn limits(&self) -> Limits {
+        Limits::default()
     }
 }
 

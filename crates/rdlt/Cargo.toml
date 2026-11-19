@@ -63,6 +63,7 @@ proptest.workspace = true
 rdlt-connector = { workspace = true, features = ["certify", "serve"] }
 rdlt-connector-reference = { workspace = true, features = ["certify"] }
 rdlt-testkit.workspace = true
+rdlt-wire.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = [
   "macros",
@@ -79,7 +80,8 @@ tracing-subscriber.workspace = true
 workspace = true
 
 # Connector binaries the facade's tests place, named apart from the command line's builds of the
-# same files: a failing source, and the reference memory source and SQLite destination.
+# same files: a failing source, the reference memory source and SQLite destination, and a source
+# telling the limits its reads are told.
 [[example]]
 name = "failing_connector"
 path = "../rdlt-cli/examples/serve_failing.rs"
@@ -87,3 +89,7 @@ path = "../rdlt-cli/examples/serve_failing.rs"
 [[example]]
 name = "reference_connector"
 path = "../rdlt-certify/examples/serve_reference.rs"
+
+[[example]]
+name = "told_connector"
+path = "examples/told_connector.rs"

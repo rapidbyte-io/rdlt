@@ -1012,9 +1012,10 @@ cargo add --git https://github.com/rapidbyte-io/rdlt rdlt-host
 A `Registry` places each connector a `ConnectorRef` names, by a policy the host states: in process
 for a registered id, remotely for a reference with an endpoint, and as a local binary otherwise. The
 program below runs the generator in process, dials any connector whose reference names a `grpcs://`
-endpoint, and runs every other connector in bubblewrap. On Linux it needs `rdlt-connector-sqlite` in
-a directory no other user may write. This command, run as root or as the host's user, puts it in
-`/opt/rdlt/bin`:
+endpoint, and runs every other connector in bubblewrap, telling each the limits the engine's
+configuration admits within (`EngineConfig::limits`), as the facade does. On Linux it needs
+`rdlt-connector-sqlite` in a directory no other user may write. This command, run as root or as the
+host's user, puts it in `/opt/rdlt/bin`:
 
 ```sh
 cargo install --locked --git https://github.com/rapidbyte-io/rdlt rdlt-connector-reference \
@@ -1029,7 +1030,8 @@ use rdlt_connector::{ConnectorId, PipelineId, StreamName};
 use rdlt_connector_reference::GeneratorSource;
 use rdlt_engine::{Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
 use rdlt_host::{
-    Bubblewrap, ConnectorRef, Identity, Local, Provider, Registry, Remote, Secrets, StopsSpawned,
+    Bubblewrap, ConnectorRef, Identity, Local, Options, Provider, Registry, Remote, Secrets,
+    StopsSpawned,
 };
 use serde_json::json;
 
@@ -1041,17 +1043,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn load() -> Result<(), Box<dyn std::error::Error>> {
+    // Each spawned or remote connector is told, and held to, the limits this engine admits
+    // within for its memory, so what it sends fits the budget.
+    let config = EngineConfig::builder().build()?;
+    let options = Options {
+        limits: config.limits(),
+        ..Options::default()
+    };
     // A spawned or remote connector's "${env:DB_PASSWORD}" resolves, and no other variable does.
     let secrets = Secrets::new().allow_env(["DB_PASSWORD"]);
     let sandboxed = Local::sandboxed(Bubblewrap::new())
         .connectors("/opt/rdlt/bin")
         .writable("/data")
+        .options(options)
         .secrets(secrets.clone());
     let identity = Identity {
         cert: "/etc/rdlt/host.pem".into(),
         key: "/etc/rdlt/host.key".into(),
     };
-    let remote = Remote::new(identity, "/etc/rdlt/ca.pem").secrets(secrets);
+    let remote = Remote::new(identity, "/etc/rdlt/ca.pem")
+        .options(options)
+        .secrets(secrets);
     // The generator is placed in process, a reference with an endpoint remotely, and every
     // other connector in bubblewrap.
     let provider = Registry::trusted()
@@ -1080,10 +1092,7 @@ async fn load() -> Result<(), Box<dyn std::error::Error>> {
         PipelineId::parse("orders-demo")?,
         [StreamPlan::new(StreamName::new("orders")?)],
     )?;
-    let engine = Engine::new(
-        EngineConfig::builder().build()?,
-        Arc::new(SystemEnv::try_from_host()?),
-    );
+    let engine = Engine::new(config, Arc::new(SystemEnv::try_from_host()?));
     let outcome = engine
         .run(plan, Arc::from(source), Arc::from(destination))
         .await;

@@ -227,6 +227,10 @@ impl Admission for Charging {
         self.0.0.lock().push(bytes);
         Ok(Box::new(Charged(Arc::clone(&self.0))))
     }
+
+    fn limits(&self) -> Limits {
+        Limits::default()
+    }
 }
 
 /// A batch of one dictionary column of one row, its dictionary one value of `fill`.
