@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use rdlt_connector::limits::MAX_PLAN_PARTITIONS;
-use rdlt_wire::limits::{MESSAGE_ROOM, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+use rdlt_wire::limits::{MESSAGE_ROOM, MIN_CURSOR_BYTES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
 
 use super::{BatchPolicy, CommitPolicy, EngineConfig, RetryPolicy};
 use crate::budget::{Shares, admitted};
@@ -199,7 +199,8 @@ fn reading_more_partitions_at_once_lowers_what_each_read_may_send() {
             .build()
     };
     let mut prev_limits = build(1).unwrap().limits();
-    for partitions in 2..=4_096 {
+    // Up to the most partitions the default memory reads at once, as their cursors leave it.
+    for partitions in 2..=511 {
         let limits = build(partitions).unwrap().limits();
         assert!(
             limits.cursor_bytes <= prev_limits.cursor_bytes,
@@ -235,11 +236,28 @@ fn reading_more_partitions_at_once_lowers_what_each_read_may_send() {
 }
 
 #[test]
-fn partitions_beyond_the_parts_the_memory_holds_need_no_more_memory() {
+fn partitions_beyond_the_parts_the_memory_holds_need_more_memory_only_for_their_cursors() {
     let most = EngineConfig::least_memory(18);
     assert_eq!(most, 37_810_920);
-    for partitions in [19, 128, 129, 257, MAX_PLAN_PARTITIONS] {
+    for partitions in [19, 71] {
         assert_eq!(EngineConfig::least_memory(partitions), most, "{partitions}");
+    }
+    // From 72 partitions the cursors set the least: a cursor of the protocol's least in each of
+    // two slots a partition and two more, whose share is a 64th of the memory.
+    for partitions in [72, 128, 257, 511, 1_024, MAX_PLAN_PARTITIONS] {
+        let slots = 2 * (u64::try_from(partitions).unwrap() + 1);
+        let least = EngineConfig::least_memory(partitions);
+        assert_eq!(least, 64 * MIN_CURSOR_BYTES * slots, "{partitions}");
+        let config = EngineConfig::builder()
+            .memory(least)
+            .partitions(partitions)
+            .build()
+            .unwrap();
+        assert_eq!(
+            config.limits().cursor_bytes,
+            MIN_CURSOR_BYTES,
+            "{partitions}"
+        );
     }
     // 257 partitions, as a run following 256 unbounded ones reads, within the default memory:
     // each read keeps twice the least dictionary, a schema of 780 columns at most.
@@ -262,6 +280,34 @@ fn partitions_beyond_the_parts_the_memory_holds_need_no_more_memory() {
         (defaults.schema_bytes, defaults.schema_columns),
         (349_525, 6_241)
     );
+}
+
+#[test]
+fn memory_whose_cursors_hold_less_than_the_protocol_s_least_cursor_a_slot_is_refused() {
+    // At the default memory, 1024 partitions would leave each cursor 2046 bytes.
+    let memory = EngineConfig::default().memory().get();
+    let build = |memory, partitions| {
+        EngineConfig::builder()
+            .memory(memory)
+            .partitions(partitions)
+            .build()
+    };
+    let refused = build(memory, 1_024).unwrap_err();
+    assert_eq!(
+        (refused.kind(), refused.code()),
+        (ErrorKind::Config, Some(codes::MEMORY_BELOW_MINIMUM))
+    );
+    let least = EngineConfig::least_memory(1_024);
+    assert_eq!(least, 537_395_200);
+    let said = refused.to_string();
+    assert!(said.contains(&format!("is {least} bytes")), "{said}");
+    let limits = build(least, 1_024).unwrap().limits();
+    assert_eq!(limits.cursor_bytes, MIN_CURSOR_BYTES);
+    assert_eq!(limits.admit_peer(), Ok(()));
+    // The default memory reads at most 511 partitions at once.
+    assert!(build(memory, 511).is_ok());
+    let refused = build(memory, 512).unwrap_err();
+    assert_eq!(refused.code(), Some(codes::MEMORY_BELOW_MINIMUM));
 }
 
 #[test]

@@ -1501,7 +1501,8 @@ pub struct ReadPublishedRequest {
 ///
 /// A sender cuts a batch to its receiver's frame_bytes, batch_rows and batch_values, so a peer
 /// may not set them below the protocol's minimums: 4194304 bytes, 1024 rows and 1048576 values.
-/// Nor may it set dictionary_bytes below 262144, a dictionary of some thousands of short values.
+/// Nor may it set dictionary_bytes below 262144, a dictionary of some thousands of short values,
+/// or cursor_bytes below 4096, a position that names a path, a key or a token beside its offset.
 /// A handshake naming a lower one, a dictionary_bytes left 0 included, is refused with
 /// `limit_below_minimum`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1521,7 +1522,7 @@ pub struct Limits {
     /// Bytes in one JSON push.
     #[prost(uint64, tag = "5")]
     pub json_push_bytes: u64,
-    /// Bytes in one cursor.
+    /// Bytes in one cursor: at least 4096.
     #[prost(uint64, tag = "6")]
     pub cursor_bytes: u64,
     /// Bytes in the configuration document.

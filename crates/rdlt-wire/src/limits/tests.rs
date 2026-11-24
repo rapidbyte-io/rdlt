@@ -167,7 +167,9 @@ fn documented(text: &str, declaration: &str) -> String {
 
 #[test]
 fn the_protocol_names_each_least_a_peer_may_set_and_the_limit_without_a_default() {
-    use super::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+    use super::{
+        MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_CURSOR_BYTES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES,
+    };
     // The generated code is what a Rust peer reads: it must say what the protocol file says.
     let proto = include_str!("../../proto/rdlt/connector/v1/connector.proto");
     let generated = include_str!("../generated/rdlt.connector.v1.rs");
@@ -186,6 +188,7 @@ fn the_protocol_names_each_least_a_peer_may_set_and_the_limit_without_a_default(
             format!("{MIN_BATCH_ROWS} rows"),
             format!("{MIN_BATCH_VALUES} values"),
             format!("dictionary_bytes below {MIN_DICTIONARY_BYTES}"),
+            format!("cursor_bytes below {MIN_CURSOR_BYTES}"),
         ] {
             assert!(limits.contains(&least), "{least:?} is not in {limits:?}");
         }
@@ -212,14 +215,18 @@ fn the_credit_floor_the_calls_and_a_messages_overhead_are_the_protocols() {
     assert_eq!(limits.decoding(super::Class::Data), 10 + 65_536);
 }
 
-/// The least limits a peer may set: each a sender cuts batches to at its protocol minimum.
+/// The least limits a peer may set: each a sender cuts batches to, and the cursor limit, at its
+/// protocol minimum.
 fn least() -> Limits {
-    use super::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+    use super::{
+        MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_CURSOR_BYTES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES,
+    };
     Limits {
         frame_bytes: MIN_FRAME_BYTES,
         batch_rows: MIN_BATCH_ROWS,
         batch_values: MIN_BATCH_VALUES,
         dictionary_bytes: MIN_DICTIONARY_BYTES,
+        cursor_bytes: MIN_CURSOR_BYTES,
         ..Limits::default()
     }
 }
@@ -227,11 +234,11 @@ fn least() -> Limits {
 #[test]
 fn a_peers_limit_below_its_protocol_minimum_is_refused() {
     use super::{
-        LIMIT_BELOW_MINIMUM, MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_DICTIONARY_BYTES,
-        MIN_FRAME_BYTES, Shortfall,
+        LIMIT_BELOW_MINIMUM, MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_CURSOR_BYTES,
+        MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES, Shortfall,
     };
     type Field = fn(&mut Limits) -> &mut u64;
-    let short: [(Field, Limit, u64); 4] = [
+    let short: [(Field, Limit, u64); 5] = [
         (
             |limits| &mut limits.frame_bytes,
             Limit::FrameBytes,
@@ -252,6 +259,11 @@ fn a_peers_limit_below_its_protocol_minimum_is_refused() {
             Limit::DictionaryBytes,
             MIN_DICTIONARY_BYTES,
         ),
+        (
+            |limits| &mut limits.cursor_bytes,
+            Limit::CursorBytes,
+            MIN_CURSOR_BYTES,
+        ),
     ];
     for (field, name, minimum) in short {
         let mut limits = least();
@@ -268,25 +280,28 @@ fn a_peers_limit_below_its_protocol_minimum_is_refused() {
 
 #[test]
 fn a_peers_limits_are_admitted_from_the_protocols_minimums_up() {
-    use super::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+    use super::{
+        MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_CURSOR_BYTES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES,
+    };
     assert_eq!(
         (
             MIN_FRAME_BYTES,
             MIN_BATCH_ROWS,
             MIN_BATCH_VALUES,
-            MIN_DICTIONARY_BYTES
+            MIN_DICTIONARY_BYTES,
+            MIN_CURSOR_BYTES
         ),
-        (4_194_304, 1_024, 1_048_576, 262_144)
+        (4_194_304, 1_024, 1_048_576, 262_144, 4_096)
     );
     assert_eq!(Limits::default().admit_peer(), Ok(()));
     let least = least();
     assert_eq!(least.admit_peer(), Ok(()));
-    // Limits a sender does not cut batches to have no minimum: one too low only refuses.
+    // Limits a sender does not cut batches to, but the cursor's, have no minimum: one too low
+    // only refuses.
     let others = Limits {
         schema_columns: 1,
         nesting_depth: 1,
         json_push_bytes: 1,
-        cursor_bytes: 1,
         config_bytes: 1,
         control_string_bytes: 1,
         schema_bytes: 1,

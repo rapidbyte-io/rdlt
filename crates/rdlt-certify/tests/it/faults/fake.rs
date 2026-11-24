@@ -118,8 +118,9 @@ pub(crate) const BROKEN: [(Fault, &str); 16] = [
 /// Its configuration limit, in bytes.
 const CONFIG_BYTES: usize = 1024;
 
-/// Its cursor limit, in bytes.
-const CURSOR_BYTES: usize = 1024;
+/// Its cursor limit, in bytes: the least the protocol lets a peer set,
+/// [`MIN_CURSOR_BYTES`](rdlt_wire::limits::MIN_CURSOR_BYTES).
+const CURSOR_BYTES: usize = 4 * 1024;
 
 /// Its frame limit, in bytes: the least the protocol lets a peer set.
 const FRAME_BYTES: u64 = rdlt_wire::limits::MIN_FRAME_BYTES;

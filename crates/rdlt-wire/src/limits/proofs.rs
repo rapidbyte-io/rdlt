@@ -3,7 +3,7 @@
 
 use super::{
     Class, LIMIT_BELOW_MINIMUM, Limit, Limits, MESSAGE_ROOM, MIN_BATCH_ROWS, MIN_BATCH_VALUES,
-    MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES, Refusal, Shortfall, count,
+    MIN_CURSOR_BYTES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES, Refusal, Shortfall, count,
 };
 use crate::v1;
 
@@ -167,6 +167,7 @@ fn every_limit_set_a_handshake_admits_meets_every_minimum_and_rule() {
             MIN_DICTIONARY_BYTES,
             limits.dictionary_bytes,
         ),
+        (Limit::CursorBytes, MIN_CURSOR_BYTES, limits.cursor_bytes),
     ];
     match limits.admit_peer() {
         Ok(()) => {
@@ -177,7 +178,6 @@ fn every_limit_set_a_handshake_admits_meets_every_minimum_and_rule() {
                 limits.schema_columns,
                 limits.nesting_depth,
                 limits.json_push_bytes,
-                limits.cursor_bytes,
                 limits.config_bytes,
                 limits.control_string_bytes,
                 limits.schema_bytes,

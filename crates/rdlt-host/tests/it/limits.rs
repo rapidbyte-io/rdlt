@@ -16,8 +16,9 @@ use crate::support::served_within;
 
 #[tokio::test]
 async fn a_cursor_beyond_the_sources_limit_is_refused_as_exceeding_it() {
+    use rdlt_wire::limits::MIN_CURSOR_BYTES;
     let limits = Limits {
-        cursor_bytes: 64,
+        cursor_bytes: MIN_CURSOR_BYTES,
         ..Limits::default()
     };
     let served = Served::new().with_source(source_factory::<MemorySource>());
@@ -32,10 +33,11 @@ async fn a_cursor_beyond_the_sources_limit_is_refused_as_exceeding_it() {
     .await
     .expect("the source handshakes");
     let (sink, _feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
+    let beyond = vec![b'x'; usize::try_from(MIN_CURSOR_BYTES).unwrap() + 1];
     let request = ReadRequest::new(
         StreamName::new("items").expect("a valid stream name"),
         Partition::single(),
-        Some(Cursor::new(1, &[b'x'; 65]).expect("a cursor within the host's")),
+        Some(Cursor::new(1, &beyond).expect("a cursor within the host's")),
     );
     let error = RemoteSource::new(connection)
         .read(request, sink)
@@ -44,13 +46,13 @@ async fn a_cursor_beyond_the_sources_limit_is_refused_as_exceeding_it() {
     assert_eq!(error.code(), Some("limit_exceeded"), "{error}");
     assert_eq!(
         error.limit().map(|limit| (limit.name, limit.limit)),
-        Some(("cursor bytes", 64))
+        Some(("cursor bytes", MIN_CURSOR_BYTES))
     );
 }
 
 /// Limits a byte, a row or a value under each of the protocol's minimums, with the limit's name.
-fn below_the_minimums() -> [(Limits, &'static str, u64); 3] {
-    use rdlt_wire::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_FRAME_BYTES};
+fn below_the_minimums() -> [(Limits, &'static str, u64); 4] {
+    use rdlt_wire::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_CURSOR_BYTES, MIN_FRAME_BYTES};
     [
         (
             Limits {
@@ -76,16 +78,25 @@ fn below_the_minimums() -> [(Limits, &'static str, u64); 3] {
             "batch values",
             MIN_BATCH_VALUES,
         ),
+        (
+            Limits {
+                cursor_bytes: MIN_CURSOR_BYTES - 1,
+                ..Limits::default()
+            },
+            "cursor bytes",
+            MIN_CURSOR_BYTES,
+        ),
     ]
 }
 
 /// The limits at every minimum.
 fn at_the_minimums() -> Limits {
-    use rdlt_wire::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_FRAME_BYTES};
+    use rdlt_wire::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_CURSOR_BYTES, MIN_FRAME_BYTES};
     Limits {
         frame_bytes: MIN_FRAME_BYTES,
         batch_rows: MIN_BATCH_ROWS,
         batch_values: MIN_BATCH_VALUES,
+        cursor_bytes: MIN_CURSOR_BYTES,
         ..Limits::default()
     }
 }

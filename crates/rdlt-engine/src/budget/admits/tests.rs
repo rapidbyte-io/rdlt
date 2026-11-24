@@ -6,10 +6,12 @@ use arrow_array::{ArrayRef, DictionaryArray, Int32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Fields, Schema, UnionFields, UnionMode};
 use proptest::prelude::*;
 use rdlt_connector::cost::{Allocations, batch_charge, json_charge};
-use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+use rdlt_wire::limits::{
+    Class, MESSAGE_ROOM, MIN_CURSOR_BYTES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES,
+};
 use rdlt_wire::{Decoder, Encoder, Limits};
 
-use super::{HALVED, admitted, kept, least, parts, pushed_arrays, row_overhead};
+use super::{HALVED, admitted, cursors_least, kept, least, parts, pushed_arrays, row_overhead};
 use crate::budget::Shares;
 use crate::fixtures::lowering::wide::{dictionaries, integers};
 use crate::limits::{COLUMN_RECORD, SCHEMA_KEPT};
@@ -299,9 +301,9 @@ fn the_least_budget_admits_the_protocol_s_least_limits_and_a_byte_less_does_not(
         assert!(admits(least - 1).admit_peer().is_err(), "{readers} readers");
     }
     // Many reads each keep a part of twice the least dictionary at least: a frame sets their
-    // least, the same from eighteen reads up, whose share holds eighteen parts there.
+    // least, the same from eighteen reads to seventy-one, whose share holds eighteen parts there.
     assert_eq!(least(18), 37_810_920);
-    for readers in [19, HALVED, HALVED + 1, 128, 600_000, 1 << 43, usize::MAX] {
+    for readers in [19, HALVED, HALVED + 1, 71] {
         assert_eq!(least(readers), least(18), "{readers} readers");
         let limits = admitted(Shares::of(least(18) - 1), readers);
         assert!(limits.frame_bytes < MIN_FRAME_BYTES, "{readers} readers");
@@ -309,6 +311,14 @@ fn the_least_budget_admits_the_protocol_s_least_limits_and_a_byte_less_does_not(
             limits.dictionary_bytes >= MIN_DICTIONARY_BYTES,
             "{readers} readers"
         );
+    }
+    // From seventy-two the cursors set it: a byte below, a frame is still at its least, and a
+    // cursor is not.
+    for readers in [72, 128, 600_000, 1 << 43] {
+        assert_eq!(least(readers), cursors_least(readers), "{readers} readers");
+        let limits = admitted(Shares::of(least(readers) - 1), readers);
+        assert!(limits.frame_bytes >= MIN_FRAME_BYTES, "{readers} readers");
+        assert!(limits.cursor_bytes < MIN_CURSOR_BYTES, "{readers} readers");
     }
 }
 
