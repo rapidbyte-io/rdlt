@@ -43,6 +43,10 @@ pub const MIN_BATCH_VALUES: u64 = 1024 * 1024;
 /// dictionary of some thousands of short values.
 pub const MIN_DICTIONARY_BYTES: u64 = 256 * 1024;
 
+/// Bytes: the least a peer may limit a cursor to: a position that names a file's path, an
+/// object's key or a page's token beside its offset.
+pub const MIN_CURSOR_BYTES: u64 = 4 * 1024;
+
 /// Columns: bounds one schema's width, counting nested fields, and the columns a JSON push's
 /// records are shredded into.
 pub const SCHEMA_COLUMNS: u64 = 10_000;
@@ -529,7 +533,8 @@ impl Limits {
     }
 
     /// Admits these limits as a peer's: each limit a sender cuts batches to is at least the
-    /// protocol's minimum, so no peer makes its sender send frames of mostly padding.
+    /// protocol's minimum, so no peer makes its sender send frames of mostly padding, and so is
+    /// the cursor limit, so every source can say where it stands.
     ///
     /// # Errors
     ///
@@ -544,6 +549,7 @@ impl Limits {
                 MIN_DICTIONARY_BYTES,
                 self.dictionary_bytes,
             ),
+            (Limit::CursorBytes, MIN_CURSOR_BYTES, self.cursor_bytes),
         ];
         match floors
             .into_iter()

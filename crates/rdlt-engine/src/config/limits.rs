@@ -37,15 +37,21 @@ impl EngineConfig {
     }
 
     /// Bytes: the least memory from which every memory upward admits what the protocol lets no
-    /// peer go below, for a configuration reading `partitions` partitions at once, while the
-    /// memory a byte below does not: the same from eighteen partitions up, as the reads that are
-    /// not followed read no more at once than the parts what reads keep is divided into.
+    /// peer go below, for a configuration reading `partitions` partitions at once, up to
+    /// [`MAX_PLAN_PARTITIONS`](rdlt_connector::limits::MAX_PLAN_PARTITIONS), the most a
+    /// configuration reads, while the memory a byte below does not.
+    ///
+    /// It is the same from eighteen partitions to seventy-one, as the reads that are not followed
+    /// read no more at once than the parts what reads keep is divided into. From seventy-two, the
+    /// cursors' share must hold a cursor of the protocol's least,
+    /// [`MIN_CURSOR_BYTES`](rdlt_wire::limits::MIN_CURSOR_BYTES), in two slots a partition and two
+    /// more: 512 KiB of memory a partition, so the default 256 MiB reads 511 at most.
     pub fn least_memory(partitions: usize) -> u64 {
         least(partitions)
     }
 
     /// Checks that the memory budget admits the least limits the protocol lets a peer set, its
-    /// frame and dictionary limits among them.
+    /// frame, dictionary and cursor limits among them.
     ///
     /// # Errors
     ///

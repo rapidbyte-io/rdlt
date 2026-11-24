@@ -194,7 +194,8 @@ connector, a served connector reading from a host, and certification's read-back
   `frame_bytes` is at least 4 MiB, its `batch_rows` at least 1,024 and its `batch_values` at
   least 1,048,576: one row of a schema at the column limit fits such a frame, and a hundred of
   its rows by their values. The host refuses a connector whose limits are below them, and a
-  served connector such a host, at the handshake, with `limit_below_minimum` naming the limit.
+  served connector such a host, at the handshake, with `limit_below_minimum` naming the limit,
+  as it does a `cursor_bytes` below 4,096, so every source can say where it stands (ADR 0039).
   The other limits have no minimum: one too low only refuses what exceeds it. Certification
   fails a connector that declares a limit below a minimum.
 - **Only what both ends speak is decoded**: metadata version V5, little-endian schemas, no

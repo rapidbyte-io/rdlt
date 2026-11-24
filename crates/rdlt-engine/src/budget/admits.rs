@@ -10,11 +10,11 @@ use std::num::NonZeroUsize;
 
 use rdlt_connector::cost::{JSON_CHARGE, array_bytes, view_buffer_bytes};
 use rdlt_wire::Limits;
-use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES};
+use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_CURSOR_BYTES, MIN_DICTIONARY_BYTES};
 
 use super::Shares;
 use crate::cost::flags_bytes;
-use crate::limits::{COLUMN_RECORD, SCHEMA_KEPT};
+use crate::limits::{COLUMN_RECORD, CURSOR_SHARE, SCHEMA_KEPT};
 
 /// The limits on what a read sends that a budget of `shares`, read by `readers` reads at once at
 /// most, admits: a connector that keeps to them is refused nothing for the budget's sake but
@@ -80,12 +80,27 @@ pub(crate) fn admitted(shares: Shares, readers: usize) -> Limits {
         state_bytes: decoded(Class::State),
         control_message_bytes: decoded(Class::Control),
         json_push_bytes: shares.intake.saturating_sub(MESSAGE_ROOM) / JSON_CHARGE,
-        cursor_bytes: shares.cursors / readers.saturating_add(1).saturating_mul(2),
+        cursor_bytes: shares.cursors / cursor_slots(readers),
         schema_bytes,
         dictionary_bytes: kept / 2,
         ..defaults
     }
     .lesser(&defaults)
+}
+
+/// Cursors the cursors' share holds at once for `readers` reads at once: each read's waiting
+/// for a commit and its answer to a barrier, and one more of each.
+fn cursor_slots(readers: u64) -> u64 {
+    readers.saturating_add(1).saturating_mul(2)
+}
+
+/// Bytes: the least budget whose cursors' share holds a cursor of the protocol's least,
+/// [`MIN_CURSOR_BYTES`], in each of the slots `readers` reads at once take of it.
+pub(crate) fn cursors_least(readers: usize) -> u64 {
+    let readers = u64::try_from(readers).unwrap_or(u64::MAX).max(1);
+    MIN_CURSOR_BYTES
+        .saturating_mul(cursor_slots(readers))
+        .saturating_mul(CURSOR_SHARE)
 }
 
 /// Bytes a message of `class` holds decoded for each byte it takes on the wire.
@@ -147,17 +162,20 @@ pub(crate) fn kept(shares: Shares, readers: usize) -> u64 {
 pub(crate) const HALVED: usize = 24;
 
 /// Bytes: the least budget from which every budget upward admits what the protocol lets no peer
-/// go below, a frame of [`rdlt_wire::limits::MIN_FRAME_BYTES`] among them, read by `readers`
-/// reads at once, while the budget a byte below does not.
+/// go below, a frame of [`rdlt_wire::limits::MIN_FRAME_BYTES`] and a cursor of
+/// [`MIN_CURSOR_BYTES`] among them, read by `readers` reads at once, while the budget a byte
+/// below does not.
 ///
 /// A part holds twice the least dictionary wherever the share holds one, so the dictionaries
-/// never set it: a frame does. What a frame may take does not grow with the budget byte by byte:
-/// it is what pushes may take less what a read keeps, or half a request less what a row of the
-/// widest table takes beside its values, and each falls where the share it subtracts, or the
-/// columns a schema may have, grows by its rounding. So a budget may admit a peer where one a few
-/// bytes larger does not, and halving ends beside whichever of those changes its steps meet: up
-/// to [`HALVED`] reads at once it meets the last. More reads each keep no more, which leaves a
-/// frame no less.
+/// never set it: a frame does, or the cursors. What a frame may take does not grow with the
+/// budget byte by byte: it is what pushes may take less what a read keeps, or half a request
+/// less what a row of the widest table takes beside its values, and each falls where the share
+/// it subtracts, or the columns a schema may have, grows by its rounding. So a budget may admit a
+/// peer where one a few bytes larger does not, and halving ends beside whichever of those changes
+/// its steps meet: up to [`HALVED`] reads at once it meets the last. More reads each keep no
+/// more, which leaves a frame no less; but they divide the cursors' share among more slots, so
+/// from as many reads as the least for a frame holds slots of the least cursor for, the cursors
+/// set the least, [`cursors_least`], and it grows with the reads.
 pub(crate) fn least(readers: usize) -> u64 {
     let halved = readers.clamp(1, HALVED);
     let admits = |capacity: u64| admitted(Shares::of(capacity), halved).admit_peer().is_ok();
@@ -170,5 +188,5 @@ pub(crate) fn least(readers: usize) -> u64 {
             low = middle + 1;
         }
     }
-    low
+    low.max(cursors_least(readers))
 }

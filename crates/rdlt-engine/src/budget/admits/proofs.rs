@@ -2,10 +2,11 @@
 //! every budget and count of reads within each proof's bound.
 
 use rdlt_connector::cost::json_charge;
+use rdlt_connector::limits::MAX_PLAN_PARTITIONS;
 use rdlt_wire::Limits;
-use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_DICTIONARY_BYTES};
+use rdlt_wire::limits::{Class, MESSAGE_ROOM, MIN_CURSOR_BYTES, MIN_DICTIONARY_BYTES};
 
-use super::{HALVED, admitted, kept, least, parts, pushed_arrays, row_overhead};
+use super::{HALVED, admitted, cursors_least, kept, least, parts, pushed_arrays, row_overhead};
 use crate::budget::Shares;
 use crate::limits::{COLUMN_RECORD, SCHEMA_KEPT};
 
@@ -89,4 +90,21 @@ fn every_budget_from_the_least_up_admits_a_peer() {
     kani::assume(capacity >= least);
     assert_eq!(admits(capacity), Ok(()));
     assert!(admits(least - 1).is_err());
+}
+
+/// A budget's cursor limit holds the protocol's least cursor exactly from the least budget for
+/// the cursors of its reads up: the memory a configuration's partitions are accepted with admits a
+/// cursor of the protocol's least.
+///
+/// Bound: every capacity, read by 1 to `MAX_PLAN_PARTITIONS` reads at once.
+#[kani::proof]
+#[kani::unwind(9)]
+fn the_cursor_limit_holds_the_least_cursor_exactly_from_the_cursors_least_budget_up() {
+    let capacity = kani::any::<u64>();
+    let readers = kani::any_where(|readers: &usize| (1..=MAX_PLAN_PARTITIONS).contains(readers));
+    let limit = admitted(Shares::of(capacity), readers).cursor_bytes;
+    assert_eq!(
+        limit >= MIN_CURSOR_BYTES,
+        capacity >= cursors_least(readers)
+    );
 }

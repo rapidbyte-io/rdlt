@@ -17,8 +17,9 @@ pub(super) const REPLAN: Duration = Duration::from_millis(250);
 
 /// The engine's configuration, drawn from `rng`.
 ///
-/// Its memory budget is between the least an engine takes, whatever its partitions, and twice
-/// that: small enough that a source pressing on it, as [`pressed`] draws, fills its shares.
+/// Its memory budget is between the least an engine reading one partition takes, which covers
+/// the few a world reads at once, and twice that: small enough that a source pressing on it, as
+/// [`pressed`] draws, fills its shares.
 ///
 /// A run reads at least one partition more at once than the `endless` partitions it follows
 /// without end at most, which hold their places for as long as it runs, and exactly one more where

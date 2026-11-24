@@ -101,7 +101,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   |---|---|---|---|---|
   | frame bytes | what pushes may take less what a read keeps, `MESSAGE_ROOM` and the arrays of a batch of every column, two a column, with a view's data buffer a column, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 29,345,742 | 64 MiB |
   | json push bytes | a third of what pushes may take less `MESSAGE_ROOM` | 5,001,772 | 34,952,448 | 64 MiB |
-  | cursor bytes | the cursors' share over twice one more than the partitions | 17,653 | 123,361 | 4 MiB |
+  | cursor bytes | the cursors' share over twice one more than the partitions, which the least memory keeps at 4,096 at least | 17,653 | 123,361 | 4 MiB |
   | dictionary bytes | half of what a read keeps | 300,111 | 2,097,152 | 64 MiB |
   | schema bytes | a sixth of the other half, for the message and what the decoder keeps for the schema it decodes to, under five times the message | 50,018 | 349,525 | 4 MiB |
   | schema columns | the tables' share over half a kilobyte a column, and schema bytes over 56 a column | 893 | 6,241 | 10,000 |
@@ -111,7 +111,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
 
   - **Cursors.** Every partition may hold a cursor waiting for a commit and a barrier's answer
     at once, with room for one more: a barrier's answers always fit, so a source that keeps to
-    its cursor limit never waits on a barrier for room.
+    its cursor limit never waits on a barrier for room. The protocol lets no peer set a cursor
+    limit below 4,096 bytes (`MIN_CURSOR_BYTES`), so every source can say where it stands: a
+    position of a few fields fits, and so does one that names a file's path, an object's key (up
+    to 1,024 bytes in the common object stores) or a page's token beside its offset.
   - **Rows.** A frame is at most half a request less a row's null in each column, unchanged
     flags over every column as text, the metadata lowering adds and the arrays of the piece the
     row is alone, two a column and sixteen of metadata, so its decode, twice its bytes, is charged
@@ -149,23 +152,27 @@ budget before it is held, or bounded by a limit with a typed refusal.
   twice its text (`json_exceeds_budget`, ADR 0040). A megabyte of JSON records, each naming one
   of three hundred keys, is refused at 40 MiB, where a JSON push may be 5.5 MB.
 - **The least memory.** A budget whose derived frame limit is below the protocol's least frame
-  (`MIN_FRAME_BYTES`, 4 MiB), or whose dictionary limit is below the protocol's least
-  (`MIN_DICTIONARY_BYTES`, 256 KiB), is refused when the engine's configuration is built, with
+  (`MIN_FRAME_BYTES`, 4 MiB), whose dictionary limit is below the protocol's least
+  (`MIN_DICTIONARY_BYTES`, 256 KiB), or whose cursor limit is below the protocol's least
+  (`MIN_CURSOR_BYTES`, 4 KiB), is refused when the engine's configuration is built, with
   `memory_below_minimum` naming the least memory from which every memory up admits it:
-  38,414,264 bytes at the default sixteen partitions, 37,810,920 from eighteen up and 50,060,952
-  at one (`EngineConfig::least_memory`). Half a request for lowering must hold a frame and the
-  row beside it, so the least is about nine frames at sixteen partitions; fewer partitions each
-  keep more, so a schema may have more columns and the row beside a frame takes more, which
-  raises the least to 50,060,952 from one to six partitions. A part holds twice the least
-  dictionary wherever the share holds one, so the dictionaries never set it, and more partitions
-  need no more memory: at the least, the share holds eighteen parts, and the reads that are not
-  followed read no more at once than the parts. Partitions above 16,384, the most an attempt
-  reads at once (`MAX_PLAN_PARTITIONS`), are refused when the configuration is built, with
-  `config_invalid`.
-- **A peer's dictionary limit has a least.** A handshake whose limits set a dictionary limit
-  below `MIN_DICTIONARY_BYTES`, none included, is refused at either end with
-  `limit_below_minimum`, as any limit below its least is; a handshake that sets no limits at
-  all keeps the protocol's defaults.
+  38,414,264 bytes at the default sixteen partitions, 37,810,920 from eighteen to seventy-one
+  and 50,060,952 at one (`EngineConfig::least_memory`). Half a request for lowering must hold a
+  frame and the row beside it, so the least is about nine frames at sixteen partitions; fewer
+  partitions each keep more, so a schema may have more columns and the row beside a frame takes
+  more, which raises the least to 50,060,952 from one to six partitions. A part holds twice the
+  least dictionary wherever the share holds one, so the dictionaries never set it, and more
+  partitions need no more memory for their reads: at the least, the share holds eighteen parts,
+  and the reads that are not followed read no more at once than the parts. They need more for
+  their cursors, whose share is divided among two slots a partition and two more: from
+  seventy-two partitions a cursor of the protocol's least in each sets the least memory, 512 KiB
+  a partition, so the default 256 MiB reads 511 partitions at most, 1,024 need 537,395,200 bytes
+  and 16,384 need 8,590,458,880. Partitions above 16,384, the most an attempt reads at once
+  (`MAX_PLAN_PARTITIONS`), are refused when the configuration is built, with `config_invalid`.
+- **A peer's dictionary and cursor limits have a least.** A handshake whose limits set a
+  dictionary limit below `MIN_DICTIONARY_BYTES`, none included, or a cursor limit below
+  `MIN_CURSOR_BYTES`, is refused at either end with `limit_below_minimum`, as any limit below its
+  least is; a handshake that sets no limits at all keeps the protocol's defaults.
 - **One cost model** (`rdlt_connector::cost`). A batch has two measures.
   - **Held**: the bytes of every allocation the batch reaches, validity, data, child and
     dictionary buffers alike, each counted once however many arrays or slices share it. A slice
@@ -707,6 +714,10 @@ admitted, and what a remote connector's calls hold in transport.
   observation, a build again and the reservation it plans.
 - Checkpoints wait for room in the cursors' share. A source whose cursors are megabytes commits
   more often, and one whose cursor is beyond the share cannot be loaded under that budget.
+- Reading many partitions at once takes memory for their cursors even where each cursor is a
+  few bytes: from seventy-two partitions, 512 KiB of memory a partition. A configuration with
+  less is refused when it is built, naming the memory that holds them, rather than telling its
+  sources cursors of a few hundred bytes, or a few, which a cursor naming a path passes.
 - A batch decoded from a frame is charged for the dictionaries its keys name, which the host
   also charges while the decoder holds them: both hold them, and for as long as both do they
   are charged twice.

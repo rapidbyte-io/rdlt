@@ -11,6 +11,7 @@ use rdlt_connector::source_factory;
 use rdlt_connector_reference::MemorySource;
 use rdlt_host::Options;
 use rdlt_wire::Limits;
+use rdlt_wire::limits::MIN_CURSOR_BYTES;
 
 use fake::{BROKEN, Fault, served};
 
@@ -82,7 +83,7 @@ async fn limits_this_host_keeps_below_the_connectors_are_not_exceeded() {
     let options = Options {
         limits: Limits {
             config_bytes: 1024,
-            cursor_bytes: 16,
+            cursor_bytes: MIN_CURSOR_BYTES,
             ..Limits::default()
         },
         ..Options::default()
