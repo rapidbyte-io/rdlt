@@ -3,14 +3,15 @@
 
 use rdlt_connector::{COMMIT_STALE, CommitMeta, ConnectorErrorKind, Receipt, SegmentId};
 
-use super::owned::{ids, meta, open, refusal, stage, store, table};
+use super::owned::{ids, meta, refusal, stage, store, table};
+use crate::fixtures::open_as;
 
 #[tokio::test]
 async fn the_landed_commit_sent_again_is_answered_and_an_overtaken_one_refused() {
     const COMMITS: u64 = 5;
     let destination = store("landed-load").await;
     let orders = table("orders", "orders", None);
-    let mut session = open(destination.as_ref(), "p").await;
+    let mut session = open_as(destination.as_ref(), "p").await;
     let mut sent: Vec<(CommitMeta, Receipt)> = Vec::new();
     for commit in 1..=COMMITS {
         let id = i64::try_from(commit).unwrap();
@@ -47,11 +48,11 @@ async fn the_landed_commit_sent_again_is_answered_and_an_overtaken_one_refused()
 async fn the_landed_commit_is_answered_from_a_newer_session_which_finds_it_landed() {
     let destination = store("landed-sessions").await;
     let orders = table("orders", "orders", None);
-    let mut first = open(destination.as_ref(), "p").await;
+    let mut first = open_as(destination.as_ref(), "p").await;
     stage(&mut first, &orders, 1, &[1]).await;
     let sent = meta(&first, 1, &[1]);
     let receipt = first.session.commit(&sent).await.expect("the commit lands");
-    let mut newer = open(destination.as_ref(), "p").await;
+    let mut newer = open_as(destination.as_ref(), "p").await;
     assert_eq!(newer.landed.as_ref(), Some(&receipt));
     stage(&mut newer, &orders, 2, &[-1]).await;
     let again = CommitMeta {
@@ -80,7 +81,7 @@ async fn the_landed_commit_is_answered_from_a_newer_session_which_finds_it_lande
 async fn a_commit_naming_every_segment_publishes_what_was_staged_without_walking_each_id() {
     let destination = store("landed-wide").await;
     let orders = table("orders", "orders", None);
-    let mut session = open(destination.as_ref(), "p").await;
+    let mut session = open_as(destination.as_ref(), "p").await;
     stage(&mut session, &orders, 7, &[1, 2]).await;
     let every = rdlt_connector::SegmentSet::try_from(vec![rdlt_connector::SegmentRange {
         first: SegmentId(0),

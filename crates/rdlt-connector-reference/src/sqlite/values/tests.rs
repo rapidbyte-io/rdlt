@@ -14,7 +14,7 @@ use arrow_array::{
     UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow_schema::{Field, Schema};
-use rdlt_connector::sqlgen::Statement;
+use rdlt_connector::sqlgen::{Sqlite, Statement};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use rusqlite::Connection;
 use rusqlite::types::Value;
@@ -347,20 +347,11 @@ fn a_float_sqlite_would_change_is_refused_where_its_row_is_staged() {
     assert_eq!(bits, exact.map(f64::to_bits));
 }
 
-#[test]
-fn a_column_is_staged_only_into_a_column_declared_for_its_values() {
-    use rdlt_connector::sqlgen::Column;
-    let declared = ["BOOLEAN", "INTEGER", "REAL", "TEXT", "BLOB"];
-    let columns: Vec<Column> = declared
-        .iter()
-        .map(|declared| Column {
-            name: declared.to_lowercase(),
-            declared: (*declared).to_owned(),
-        })
-        .collect();
+/// A column of each type the destination stores, with the type a column holding it is declared.
+fn stored() -> [(&'static str, ArrayRef); 16] {
     let mut text = StringDictionaryBuilder::<Int32Type>::new();
     text.append_value("a");
-    let written: [(&str, ArrayRef); 16] = [
+    [
         ("BOOLEAN", Arc::new(BooleanArray::from(vec![true]))),
         ("INTEGER", Arc::new(Int8Array::from(vec![1]))),
         ("INTEGER", Arc::new(Int16Array::from(vec![1]))),
@@ -383,27 +374,79 @@ fn a_column_is_staged_only_into_a_column_declared_for_its_values() {
             "BLOB",
             Arc::new(FixedSizeBinaryArray::try_from_iter([[1_u8]].into_iter()).unwrap()),
         ),
-    ];
+    ]
+}
+
+#[test]
+fn a_column_is_staged_only_into_a_column_declared_for_its_values() {
+    use rdlt_connector::sqlgen::Column;
+    let declared = ["BOOLEAN", "INTEGER", "REAL", "TEXT", "BLOB"];
+    let columns: Vec<Column> = declared
+        .iter()
+        .map(|declared| Column {
+            name: declared.to_lowercase(),
+            declared: (*declared).to_owned(),
+        })
+        .collect();
+    let written = stored();
     let batch = |name: &str, array: &ArrayRef| {
         let schema = Schema::new(vec![Field::new(name, array.data_type().clone(), true)]);
         RecordBatch::try_new(Arc::new(schema), vec![Arc::clone(array)]).unwrap()
     };
+    let classed = |name: &str, array: &ArrayRef| {
+        super::classed(&Sqlite, &changes(), &columns, &batch(name, array))
+    };
     for (holds, array) in &written {
         for column in &columns {
-            let taken = super::classed("t", &columns, &batch(&column.name, array));
-            if column.declared == *holds {
-                taken.unwrap_or_else(|error| panic!("{array:?} into {column:?}: {error}"));
-            } else {
-                let refused = taken.expect_err("a column of other values is refused");
-                assert_eq!(refused.kind(), ConnectorErrorKind::Data, "{array:?}");
+            // Names compare as SQLite folds them.
+            for name in [column.name.clone(), column.name.to_uppercase()] {
+                let taken = classed(&name, array);
+                if column.declared == *holds {
+                    taken.unwrap_or_else(|error| panic!("{array:?} into {name}: {error}"));
+                } else {
+                    let refused = taken.expect_err("a column of other values is refused");
+                    let kind = (refused.kind(), refused.code());
+                    assert_eq!(
+                        kind,
+                        (ConnectorErrorKind::Data, None),
+                        "{array:?} into {name}"
+                    );
+                }
             }
         }
-        // A column the table lacks is left to the staging, which refuses it.
-        super::classed("t", &columns, &batch("other", array)).unwrap();
+        let missing = classed("other", array).expect_err("a column the table lacks is refused");
+        let kind = (missing.kind(), missing.code());
+        assert_eq!(kind, (ConnectorErrorKind::Data, Some("column_missing")));
     }
-    // Nulls fit any column.
+    // Nulls fit any column, and a change stream's op and flags are none of the table's.
     let nulls: ArrayRef = Arc::new(NullArray::new(1));
-    for column in &columns {
-        super::classed("t", &columns, &batch(&column.name, &nulls)).unwrap();
+    for name in columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .chain(["op", "UNCHANGED"])
+    {
+        classed(name, &nulls).unwrap();
+    }
+}
+
+/// A change stream's table, its op and unchanged flags named `op` and `unchanged`.
+fn changes() -> rdlt_connector::TableRef {
+    use rdlt_connector::{ChangeColumns, Deletion, MergeKey, SchemaVersion, TablePath};
+    rdlt_connector::TableRef {
+        path: TablePath::new(["t"]).unwrap(),
+        name: "t".into(),
+        version: SchemaVersion(1),
+        generation: None,
+        merge: Some(MergeKey {
+            columns: vec!["integer".into()],
+            seq: "blob".into(),
+            root: None,
+            changes: Some(ChangeColumns {
+                op: "op".into(),
+                unchanged: Some("unchanged".into()),
+                deletion: Deletion::Hard,
+            }),
+            history: None,
+        }),
     }
 }
