@@ -73,6 +73,8 @@ impl SourceConnector for PokeApi {
 }
 
 /// Where a stream resumes: the list offset its next page starts at.
+///
+/// An offset keeps its place only in a list that grows at its end alone.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Position {
     offset: u64,
