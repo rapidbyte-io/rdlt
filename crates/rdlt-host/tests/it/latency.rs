@@ -22,7 +22,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::time::Instant;
 
 use crate::flow::Blobs;
-use crate::sessions::{context, table};
+use crate::sessions::{context, created, table};
 use crate::support::served;
 
 /// How long the distant link takes to carry bytes one way.
@@ -102,6 +102,8 @@ async fn write(link: Link, store: &str) -> Duration {
         .open(&context())
         .await
         .expect("the session opens");
+    let create = opened.session.apply_schema(&created()).await;
+    create.expect("the table is created");
     let mut writer = opened
         .session
         .writer(&table())

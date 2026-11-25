@@ -228,6 +228,15 @@ async fn a_writer_of_a_table_dropped_since_stages_nothing() {
     let destination = store("owned-dropped").await;
     let orders = table("orders", "orders", None);
     let mut session = open(destination.as_ref(), "a").await;
+    let create = TableChange::Create {
+        table: orders.clone(),
+        schema: TableSchema::from_arrow(&rows(&[1]).schema()).expect("a schema"),
+    };
+    session
+        .session
+        .apply_schema(&create)
+        .await
+        .expect("the table is created");
     let mut writer = session
         .session
         .writer(&orders)
@@ -295,4 +304,62 @@ async fn a_generation_finished_for_a_table_dropped_since_creates_nothing() {
         .await
         .expect("the commit lands");
     assert_eq!(ids("owned-finished", "orders"), [5]);
+}
+
+#[tokio::test]
+async fn a_writer_or_a_change_of_a_table_never_created_claims_nothing() {
+    use rdlt_connector::{Field, Fields, LogicalType};
+    let destination = store("owned-never-created").await;
+    let mut session = open(destination.as_ref(), "p").await;
+    let ghost = table("ghost", "ghost", None);
+    let unowned = (ConnectorErrorKind::Config, Some("table_unowned".to_owned()));
+    let generation = TableRef {
+        generation: Some(GenerationId(4)),
+        ..ghost.clone()
+    };
+    for written in [
+        ghost.clone(),
+        table("ghost", "ghost", Some("id")),
+        generation,
+    ] {
+        let writer = session.session.writer(&written).await.map(drop);
+        assert_eq!(refusal(writer), unowned, "{written:?}");
+    }
+    let added = TableChange::AddColumn {
+        table: ghost.clone(),
+        field: Field::new("more", LogicalType::Utf8, true),
+    };
+    let widened = TableChange::Widen {
+        table: ghost.clone(),
+        column: "id".into(),
+        from: LogicalType::Int32,
+        to: LogicalType::Int64,
+    };
+    for change in [added, widened] {
+        let changed = session.session.apply_schema(&change).await;
+        assert_eq!(refusal(changed), unowned, "{change:?}");
+    }
+    // A creation refused, of a type out of canonical form, claims nothing either.
+    let unsorted = Fields::new(vec![
+        Field::new("b", LogicalType::Int64, true),
+        Field::new("a", LogicalType::Int64, true),
+    ])
+    .expect("valid fields");
+    let column = Field::new("meta", LogicalType::Struct(unsorted), true);
+    let refused = TableChange::Create {
+        table: ghost.clone(),
+        schema: TableSchema::new(vec![column]).expect("a schema"),
+    };
+    let created = session.session.apply_schema(&refused).await;
+    assert_eq!(refusal(created).0, ConnectorErrorKind::Data);
+    assert!(rdlt_connector_reference::tables("owned-never-created").is_empty());
+    // Any pipeline may create the table, and load it.
+    let mut other = open(destination.as_ref(), "q").await;
+    stage(&mut other, &ghost, 1, &[7]).await;
+    other
+        .session
+        .commit(&meta(&other, 1, &[1]))
+        .await
+        .expect("the load lands");
+    assert_eq!(ids("owned-never-created", "ghost"), [7]);
 }

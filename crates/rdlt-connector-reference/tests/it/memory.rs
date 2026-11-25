@@ -93,6 +93,7 @@ async fn opening_one_pipeline_keeps_another_pipelines_staging() {
         destination.open(&open_context("second")).await.unwrap();
     }
     let mut first = destination.open(&open_context("first")).await.unwrap();
+    created(&mut first, &table).await;
     let mut writer = first.session.writer(&table).await.unwrap();
     let batch =
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2])) as _)]).unwrap();
@@ -163,12 +164,27 @@ fn ids(batches: &[RecordBatch]) -> Vec<i64> {
         .collect()
 }
 
+/// Creates `table`, of one column, `id`, in `session`.
+async fn created(session: &mut OpenedSession, table: &TableRef) {
+    let create = TableChange::Create {
+        table: table.clone(),
+        schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
+            .expect("a valid schema"),
+    };
+    session
+        .session
+        .apply_schema(&create)
+        .await
+        .expect("the table is created");
+}
+
 async fn stage(session: &mut OpenedSession, table: &TableRef, segment: u64, ids: Vec<i64>) {
+    created(session, table).await;
     let mut writer = session
         .session
         .writer(table)
         .await
-        .expect("the memory destination creates table writers");
+        .expect("a table writer opens");
     let batch = RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(ids)) as _)])
         .expect("one column makes a batch");
     writer
@@ -267,8 +283,8 @@ async fn schema_changes_follow_the_table_and_applying_them_again_changes_nothing
     };
     let error = opened.session.apply_schema(&add).await.unwrap_err();
     assert_eq!(
-        error.kind(),
-        ConnectorErrorKind::Data,
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Config, Some("table_unowned")),
         "the table does not exist yet"
     );
     let create = |fields| TableChange::Create {
@@ -404,7 +420,7 @@ async fn merge_commit(opened: &mut OpenedSession, segment: u64, batch: RecordBat
         .session
         .writer(&merge_table())
         .await
-        .expect("the memory destination creates table writers");
+        .expect("a table writer opens");
     writer
         .write(SegmentId(segment), batch)
         .await
@@ -537,6 +553,7 @@ async fn a_memory_writer_s_flush_and_its_commit_count_the_bytes_it_staged() {
         .await
         .expect("the session opens");
     let table = table_ref("flushed");
+    created(&mut session, &table).await;
     let mut writer = session
         .session
         .writer(&table)

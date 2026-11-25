@@ -1,9 +1,9 @@
 //! History tables merge into their table: a replace generation of one is refused.
 
 use rdlt_connector::{
-    ConnectContext, ConnectorErrorKind, Destination, DestinationConnector, GenerationId,
-    HistoryColumns, MergeKey, OpenContext, PipelineId, SchemaVersion, TablePath, TableRef,
-    destination_factory,
+    ConnectContext, ConnectorErrorKind, Destination, DestinationConnector, Field, GenerationId,
+    HistoryColumns, LogicalType, MergeKey, OpenContext, PipelineId, SchemaVersion, TableChange,
+    TablePath, TableRef, TableSchema, destination_factory,
 };
 use rdlt_connector_reference::{FilesDestination, MemoryDestination};
 use serde_json::json;
@@ -41,6 +41,21 @@ async fn writers<C: DestinationConnector>(
         pipeline: PipelineId::parse("history").expect("valid pipeline id"),
     };
     let mut opened = destination.open(&context).await.expect("a session opens");
+    let columns = [
+        ("id", LogicalType::Int64),
+        ("seq", LogicalType::Binary),
+        ("valid_from", LogicalType::Int64),
+        ("valid_to", LogicalType::Int64),
+        ("is_current", LogicalType::Bool),
+        ("row_hash", LogicalType::Binary),
+    ];
+    let schema = columns.map(|(name, logical)| Field::new(name, logical, true));
+    let create = TableChange::Create {
+        table: table(None),
+        schema: TableSchema::new(schema.into()).expect("a valid schema"),
+    };
+    let created = opened.session.apply_schema(&create).await;
+    created.expect("the table is created");
     let merged = opened.session.writer(&table(None)).await.is_ok();
     let generation = opened.session.writer(&table(Some(GenerationId(1)))).await;
     (merged, generation.err().map(|error| error.kind()))
