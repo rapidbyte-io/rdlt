@@ -100,7 +100,7 @@ impl Session for FilesSession {
         let (location, name) = (self.location.clone(), table.name.clone());
         blocking(move || {
             let wait = location.lock_wait;
-            tables::locked(&location.rdlt, &name, wait, || claim(&location, &name))
+            tables::locked(&location.rdlt, &name, wait, || owned(&location, &name))
         })
         .await?;
         self.learn(table);
@@ -159,44 +159,84 @@ fn changed_under_lock(
     let checked = fitted::fits(location, shared, change)?;
     // Claimed and changed under one lock, so no release lands between them.
     tables::locked(rdlt, name, location.lock_wait, || {
-        claim(location, name)?;
-        tables::update(rdlt, name, |current| {
+        let claimed = match change {
+            TableChange::Create { .. } => claim(location, name)?,
+            TableChange::AddColumn { .. } | TableChange::Widen { .. } => {
+                owned(location, name)?;
+                false
+            }
+        };
+        let updated = tables::update(rdlt, name, |current| {
             let next = changed(current, change)?;
             if let Some(current) = current {
                 checked.stands(location, shared, (name, current, &next))?;
             }
             Ok((current != Some(&next)).then_some(next))
-        })
+        });
+        // A creation refused claims nothing, and answers its refusal whatever the release does:
+        // a release that fails is the refusal's cause only where the refusal has none of its own.
+        if claimed && let Err(refused) = updated {
+            let released = tables::release_held(rdlt, name, &location.pipeline);
+            return Err(match released {
+                Err(release) if std::error::Error::source(&refused).is_none() => {
+                    refused.with_source(release)
+                }
+                _ => refused,
+            });
+        }
+        updated
     })
 }
 
-/// Claims the table `name` for `location`'s pipeline where no pipeline owns it; another
-/// pipeline's table is refused as `table_owned`, and a claim by a session a newer one fenced as
-/// fenced, since a drop may have released the table from it.
+/// Claims the table `name` for `location`'s pipeline where no pipeline owns it, as only a
+/// creation does, and returns whether it did.
 ///
-/// The catalog is outside the manifest, so the session is checked again once it claimed: a
-/// claim a drop overtook is undone. The caller holds the catalog's lock.
-fn claim(location: &Location, name: &str) -> Result<()> {
+/// Another pipeline's table is refused as `table_owned`, and a claim by a session a newer one
+/// fenced as fenced, since a drop may have released the table from it. The catalog is outside
+/// the manifest, so the session is checked again once it claimed: a claim a drop overtook is
+/// undone. The caller holds the catalog's lock.
+fn claim(location: &Location, name: &str) -> Result<bool> {
     let (rdlt, pipeline) = (&location.rdlt, &location.pipeline);
     let unowned = tables::owner(rdlt, name)?.is_none();
-    let fenced = || -> Result<Option<ConnectorError>> {
-        let epoch = manifest::latest(&location.dir)?.map(|manifest| manifest.epoch);
-        Ok((epoch != Some(location.epoch)).then(|| {
-            ConnectorError::fenced(format!(
-                "pipeline {pipeline} has a session newer than epoch {}",
-                location.epoch
-            ))
-        }))
-    };
-    if unowned && let Some(error) = fenced()? {
+    if unowned && let Some(error) = fenced(location)? {
         return Err(error);
     }
     tables::claim(rdlt, name, pipeline)?;
-    if unowned && let Some(error) = fenced()? {
+    if unowned && let Some(error) = fenced(location)? {
         tables::release_held(rdlt, name, pipeline)?;
         return Err(error);
     }
-    Ok(())
+    Ok(unowned)
+}
+
+/// Refuses the table `name` to `location`'s pipeline, for a table writer or a change other than
+/// its creation, unless the pipeline owns it.
+///
+/// One no pipeline owns is refused as `table_unowned`, or to a session a newer one fenced as
+/// fenced, since a drop may have released the table from it; another pipeline's as
+/// `table_owned`. The caller holds the catalog's lock.
+fn owned(location: &Location, name: &str) -> Result<()> {
+    match tables::owner(&location.rdlt, name)? {
+        Some(owner) if owner == location.pipeline.as_str() => Ok(()),
+        Some(owner) => Err(ConnectorError::table_owned(name, &owner)),
+        None => Err(fenced(location)?.unwrap_or_else(|| {
+            ConnectorError::config(format!(
+                "table {name} belongs to no pipeline, so no pipeline's session changes it"
+            ))
+            .with_code("table_unowned")
+        })),
+    }
+}
+
+/// The error for `location`'s session where a newer session of its pipeline opened since.
+fn fenced(location: &Location) -> Result<Option<ConnectorError>> {
+    let epoch = manifest::latest(&location.dir)?.map(|manifest| manifest.epoch);
+    Ok((epoch != Some(location.epoch)).then(|| {
+        ConnectorError::fenced(format!(
+            "pipeline {} has a session newer than epoch {}",
+            location.pipeline, location.epoch
+        ))
+    }))
 }
 
 impl Location {
