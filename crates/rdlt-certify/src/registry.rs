@@ -155,8 +155,9 @@ clause |
 | 2 | no clause failed, yet a role's certification is incomplete |
 | 64 | the command line was wrong: an option, the configuration's JSON, the endpoint, or a \
 `--timeout` further ahead than the clock holds |
-| 74 | a file named could not be read, the connector's binary is missing or not executable, or \
-a connector the certification spawned was not seen to stop |
+| 74 | a file named could not be read, the connector's binary is missing or not executable, a \
+connector the certification spawned was not seen to stop, or the report could not be written, \
+or off a terminal not within a few seconds |
 | 130, 143, 129, 131 | the certification was interrupted (`SIGINT`), asked to terminate \
 (`SIGTERM`), hung up on (`SIGHUP`) or asked to quit (`SIGQUIT`): the connectors it spawned are \
 stopped first, and killed at once on a second signal |

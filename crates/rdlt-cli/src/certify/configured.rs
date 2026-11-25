@@ -36,18 +36,20 @@ pub(super) fn config(args: &CertifyArgs, host: &HostArgs) -> Result<serde_json::
         (read, path.display().to_string())
     };
     let text =
-        read.map_err(|error| Ended(Exit::Io, format!("reading {source} failed: {error}")))?;
+        read.map_err(|error| Ended::Failed(Exit::Io, format!("reading {source} failed: {error}")))?;
     // What is wrong with it is said without quoting it.
     let unusable = |error: rdlt_host::SecretError| {
         let cause = std::error::Error::source(&error);
         let cause = cause.map(|cause| format!(": {cause}")).unwrap_or_default();
         let message = format!("the configuration in {source} cannot be used: {error}{cause}");
-        Ended(Exit::Usage, message)
+        Ended::Failed(Exit::Usage, message)
     };
     let held = rdlt_host::Config::parse(text).map_err(&unusable)?;
     let resolving = tokio::runtime::Builder::new_current_thread()
         .build()
-        .map_err(|error| Ended(Exit::Io, format!("starting the runtime failed: {error}")))?;
+        .map_err(|error| {
+            Ended::Failed(Exit::Io, format!("starting the runtime failed: {error}"))
+        })?;
     let secrets = rdlt_host::Secrets::new()
         .allow_env(host.allow_env.iter().cloned())
         .allow_files(host.allow_files.iter().cloned());

@@ -39,9 +39,10 @@ impl Session {
     /// A session bounded by `until`, hearing signals from here on: one ends the certification,
     /// which then stops what it spawned.
     pub(super) fn start(until: Option<Instant>) -> Result<Self, Ended> {
-        let failed = |error| Ended(Exit::Io, format!("starting the runtime failed: {error}"));
+        let failed =
+            |error| Ended::Failed(Exit::Io, format!("starting the runtime failed: {error}"));
         let cores = rdlt::Cores::try_from_host().map_err(|error| {
-            Ended(
+            Ended::Failed(
                 Exit::Io,
                 format!("the host's count of cores is unknown: {error}"),
             )
@@ -60,7 +61,7 @@ impl Session {
         let interrupts = {
             let _signals = signals.enter();
             Interrupts::listen()
-                .map_err(|error| Ended(Exit::Io, format!("no signal is heard: {error}")))?
+                .map_err(|error| Ended::Failed(Exit::Io, format!("no signal is heard: {error}")))?
         };
         Ok(Self {
             runtime,
@@ -132,7 +133,7 @@ impl Session {
 /// The end of a certification that was interrupted, or asked to terminate, with the exit
 /// `status` a process so ended has.
 fn interrupted(status: i32) -> Ended {
-    Ended(
+    Ended::Failed(
         Exit::Signalled(status),
         "interrupted: nothing more is certified".to_owned(),
     )
@@ -140,7 +141,7 @@ fn interrupted(status: i32) -> Ended {
 
 /// The exit status of the signal that ended a certification with `ended`, if one did.
 pub(super) fn signalled(ended: &Ended) -> Option<i32> {
-    match ended.0 {
+    match ended.exit() {
         Exit::Signalled(status) => Some(status),
         _ => None,
     }
@@ -157,18 +158,18 @@ pub(super) fn ending<T>(
     stopped: Result<(), Lingering>,
     heard: Option<i32>,
 ) -> Result<T, Ended> {
-    let Ended(code, message) = match (certified, heard) {
+    let ended = match (certified, heard) {
         (Err(ended), Some(status)) if signalled(&ended).is_some() => interrupted(status),
         (Err(ended), _) => ended,
         (Ok(_), Some(status)) => interrupted(status),
         (Ok(reports), None) => match stopped {
             Ok(()) => return Ok(reports),
-            Err(lingering) => return Err(Ended(Exit::Io, lingering.to_string())),
+            Err(lingering) => return Err(Ended::Failed(Exit::Io, lingering.to_string())),
         },
     };
     match stopped {
-        Ok(()) => Err(Ended(code, message)),
-        Err(lingering) => Err(Ended(code, format!("{message}; {lingering}"))),
+        Ok(()) => Err(ended),
+        Err(lingering) => Err(ended.and(&lingering)),
     }
 }
 

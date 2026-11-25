@@ -693,6 +693,54 @@ async fn an_output_that_cannot_be_written_exits_seventy_four() {
     assert_eq!(status.code(), Some(74));
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_to_a_pipe_nobody_reads_exits_seventy_four_within_its_bound() {
+    use tokio::io::AsyncWriteExt as _;
+    let binary = example("serve_reference");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    // A pipe that holds less than the report, held open and never read.
+    let (reader, writer) = std::io::pipe().expect("a pipe");
+    nix::fcntl::fcntl(&writer, nix::fcntl::FcntlArg::F_SETPIPE_SZ(4096)).expect("the pipe shrinks");
+    // A configuration the destination refuses: every clause fails at once, and their report is
+    // more than the pipe holds.
+    let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt"))
+        .args([
+            "certify",
+            binary,
+            "--role",
+            "destination",
+            "--config-file",
+            "-",
+            "--trust-binaries",
+            "--env",
+            "LLVM_PROFILE_FILE",
+            "--output",
+            "json",
+        ])
+        .args(WATCH)
+        .env(
+            "LLVM_PROFILE_FILE",
+            std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(writer)
+        .stderr(std::process::Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("rdlt certify runs");
+    guarded(&certifying);
+    let mut stdin = certifying.stdin.take().expect("its input is piped");
+    stdin.write_all(USERS.as_bytes()).await.ok();
+    drop(stdin);
+    let status = tokio::time::timeout(CERTIFYING, certifying.wait())
+        .await
+        .expect("rdlt certify ends within its bound")
+        .expect("rdlt certify ends");
+    assert_eq!(status.code(), Some(74));
+    drop(reader);
+}
+
 #[tokio::test]
 async fn the_clauses_print_as_the_registry_documents_them() {
     let output = certify(&["--clauses"]).await;
