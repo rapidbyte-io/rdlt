@@ -67,7 +67,10 @@ class PokeApiConfig(Config):
 
 
 class Position(Cursor):
-    """Where a stream resumes: the list offset its next page starts at."""
+    """Where a stream resumes: the list offset its next page starts at.
+
+    An offset keeps its place only in a list that grows at its end alone.
+    """
 
     offset: int = 0
 
