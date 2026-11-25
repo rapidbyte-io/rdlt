@@ -1345,6 +1345,56 @@ def test_an_async_read_on_a_loop_that_cannot_watch_a_socket_fails_rather_than_wa
     assert engine.sent == []
 
 
+class _SendError(Exception):
+    """What reading the rest of an item raised in a test."""
+
+
+class _SendPanic(BaseException):
+    """What reading the rest of an item raised in a test, no `Exception`, as a panic beneath is."""
+
+
+class _Unsendable(_Engine):
+    """An engine whose push of the rest of an item fails, raising `raised`, once room has come."""
+
+    def __init__(self, raised: type[BaseException]) -> None:
+        super().__init__()
+        self._raised = raised
+
+    def resume(self) -> bool | None:
+        if not self.room:
+            return None
+        raise self._raised
+
+
+@pytest.mark.parametrize("raised", [_SendPanic, _SendError], ids=["a-panic", "an-exception"])
+def test_what_fails_an_async_read_s_waiting_push_fails_the_yield_it_serves(
+    raised: type[BaseException], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_native, "Notice", _Notice)
+
+    async def reading(ctx: StreamContext, engine: _Engine) -> AsyncIterator[object]:
+        async def opening() -> None:
+            engine.room = True
+            # Said once the push has failed: nothing more is sent, and the yield does not pass.
+            await asyncio.sleep(0)
+            ctx.replan()
+
+        opened = asyncio.create_task(opening())
+        yield {"n": 1}
+        await opened
+        yield {"n": 2}
+
+    engine = _Unsendable(raised)
+    ctx = StreamContext(cast("_native.StreamContext", engine))
+    read = _reading.pushed(reading(ctx, engine), cast("_reading.Out", engine), engine)
+    try:
+        with pytest.raises(raised):
+            asyncio.run(asyncio.wait_for(read, timeout=5))
+    finally:
+        engine.close()
+    assert engine.sent == []
+
+
 def test_an_async_read_s_notices_leave_its_event_loop_running_while_the_engine_is_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
