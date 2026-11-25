@@ -97,7 +97,8 @@ pub(super) fn read(rdlt: &Dir, name: &str) -> Result<Option<TableSchema>> {
 /// the new ones, or `None` to change nothing.
 ///
 /// When another change lands first, `change` runs again on the columns that change left, a
-/// bounded number of times.
+/// bounded number of times. A change that changes nothing makes the catalog's entries durable
+/// before it answers, since it may repeat one whose process died between its link and its sync.
 pub(super) fn update(
     rdlt: &Dir,
     name: &str,
@@ -107,6 +108,9 @@ pub(super) fn update(
         let current = latest(rdlt, name)?;
         let version = current.as_ref().map_or(0, |(version, _)| *version);
         let Some(next) = change(current.as_ref().map(|(_, schema)| schema))? else {
+            if let Some(dir) = catalog(rdlt, name)? {
+                dir.sync().map_err(io::failed("syncing", dir.path()))?;
+            }
             return Ok(Some(()));
         };
         let Some(version) = version.checked_add(1) else {
