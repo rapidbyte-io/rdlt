@@ -56,25 +56,30 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   cancelled, as `asyncio.wait_for` does at its timeout.
 - **A row lands as its JSON says, as a Rust read's `rows` do.** A dict a read yields is written as
   JSON in Rust, and the engine types it as it types any source's JSON: `None` is null, the one
-  missing value; a bool, text and a finite float are themselves; an integer is exact at any width;
-  a date, datetime or time is the text its `isoformat()` answers, and a UUID its hyphenated text.
-  A `Decimal` is the text of its exact digits, read through `Decimal` itself, since JSON has no
-  decimal and the engine reads a number with a fraction as a 64-bit float. A whole one is text
-  too, though an `Int64` or a `Decimal(p, 0)` would hold it, so a column's type never follows a
-  value's exponent; `5`, `5.0` and `5E+0` are three texts, and so three merge keys. A decimal
-  type a stream declares or a hint gives does not read that text: the text goes where any value
-  its column cannot hold goes. A float or `Decimal` that is not finite, a date or time that is
-  not equal to itself by its own `__eq__`, as pandas' `NaT` is, and a value of any other type
-  fail the read, each with a code of its own, so no value lands as another. A typed decimal,
-  temporal or binary column is yielded as Arrow, which lands as its types say, as a Rust read
-  pushes a batch for one; Arrow is held where it lies, so the author must not write again into a
-  buffer a read yielded, which the engine may still hold. A pyarrow chunked array of structs holding
-  a null entry fails the read, as a batch's struct array holding one does. Another library's
-  stream of struct arrays is read as batches whose own nulls arrow-rs's reader drops, and the
-  extension reads no stream itself (ADR 0048), so a null entry of one lands as a row of what its
-  fields hold there. pyarrow's reader refuses such a stream, but reading every stream through it
-  would import every batch twice, and hold every library's stream to what the installed pyarrow
-  can import.
+  missing value; a bool, text and a finite float are themselves; an integer is exact at any width; a
+  date, datetime or time is the text its `isoformat()` answers, and a UUID its hyphenated text. A
+  `Decimal` is the text of its exact digits, read through `Decimal` itself, since JSON has no
+  decimal and the engine reads a number with a fraction as a 64-bit float. A whole one is text too,
+  though an `Int64` or a `Decimal(p, 0)` would hold it, so a column's type never follows a value's
+  exponent; `5`, `5.0` and `5E+0` are three texts, and so three merge keys. A decimal type a stream
+  declares or a hint gives does not read that text: the text goes where any value its column cannot
+  hold goes. A float or `Decimal` that is not finite, a date or time that is not equal to itself by
+  its own `__eq__`, as pandas' `NaT` is, and a value of any other type fail the read, each with a
+  code of its own, so no value lands as another. A typed decimal, temporal or binary column is
+  yielded as Arrow, which lands as its types say, as a Rust read pushes a batch for one; Arrow is
+  held where it lies, so the author must not write again into a buffer a read yielded, which the
+  engine may still hold. Arrow that crosses into Rust, a read's batches and streams, a transform's
+  answers, the merge kit's arguments and what a destination reads back, is checked against its types
+  as it is imported, its offsets, text, dictionary keys and children, in one pass and with no copy,
+  so a buffer that breaks them fails where it crosses rather than reach the engine. The interface
+  carries no buffer's length: a reader takes each buffer to be as long as the array's length and
+  type say, a values buffer as long as its last offset says, so a buffer shorter than that goes
+  unseen, here as by any reader. A pyarrow chunked array of structs holding a null entry fails the
+  read, as a batch's struct array holding one does. Another library's stream of struct arrays is
+  read as batches whose own nulls arrow-rs's reader drops, and the extension reads no stream itself
+  (ADR 0048), so a null entry of one lands as a row of what its fields hold there. pyarrow's reader
+  refuses such a stream, but reading every stream through it would import every batch twice, and
+  hold every library's stream to what the installed pyarrow can import.
 - **Exceptions cross whole.** A Python exception becomes the connector's or the transform's
   error: its type and message, shown and bounded as connector text, with its traceback as its
   cause. A connector says what kind of failure it met by raising `rdlt.connector.ConnectorError`

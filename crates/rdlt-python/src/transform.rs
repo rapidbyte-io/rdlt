@@ -7,14 +7,12 @@ mod tests;
 use std::sync::Arc;
 
 use arrow_array::{BooleanArray, RecordBatch};
-use arrow_data::ArrayData;
-use arrow_pyarrow::FromPyArrow as _;
 use arrow_schema::{DataType, Schema, SchemaRef};
 use pyo3::types::{PyAnyMethods as _, PyTuple};
 use pyo3::{Bound, IntoPyObject as _, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
 use rdlt::TransformError;
 
-use crate::arrow::{NativeBatch, imported, schema_from_pyarrow};
+use crate::arrow::{NativeBatch, array_of, batch_of, imported, schema_from_pyarrow};
 use crate::calls;
 use crate::errors::Failure;
 
@@ -107,8 +105,8 @@ impl rdlt::Transform for PythonTransform {
 
     fn keep(&self, batch: &RecordBatch) -> Result<BooleanArray, TransformError> {
         self.called(batch, |exported| {
-            let data = imported(exported, ArrayData::from_pyarrow_bound)
-                .map_err(|error| failed(exported.py(), &error))?;
+            let data =
+                imported(exported, array_of).map_err(|error| failed(exported.py(), &error))?;
             if data.data_type() != &DataType::Boolean {
                 return Err(TransformError::new(format!(
                     "a filter answered a mask of {}, not of booleans",
@@ -124,8 +122,7 @@ impl rdlt::Transform for PythonTransform {
             return Ok(batch);
         }
         self.called(&batch, |exported| {
-            imported(exported, RecordBatch::from_pyarrow_bound)
-                .map_err(|error| failed(exported.py(), &error))
+            imported(exported, batch_of).map_err(|error| failed(exported.py(), &error))
         })
     }
 

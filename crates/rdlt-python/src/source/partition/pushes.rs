@@ -3,11 +3,10 @@
 //! filled.
 
 use arrow_array::RecordBatch;
-use arrow_array::ffi_stream::ArrowArrayStreamReader;
 use pyo3::{Bound, PyAny, Python};
 use rdlt_connector::ConnectorError;
 
-use crate::arrow::{Produced, produced};
+use crate::arrow::{Batches, Produced, produced};
 use crate::errors::Failure;
 use crate::json::{self, JsonLimits};
 use crate::source::context::{NativeChanges, NativeCheckpoint};
@@ -19,7 +18,7 @@ pub(crate) enum Pushes {
     One(Option<Pushed>),
     /// An Arrow stream, read a batch at a time, each batch the push the function makes of it: a
     /// batch, or a change batch.
-    Stream(ArrowArrayStreamReader, fn(RecordBatch) -> Pushed),
+    Stream(Batches, fn(RecordBatch) -> Pushed),
     /// Rows, written as JSON a push at a time.
     Rows(json::Rows),
 }
@@ -67,8 +66,8 @@ impl Pushes {
     ///
     /// # Errors
     ///
-    /// The failure the read ends with: a stream that yielded an error, or a row that cannot be
-    /// written.
+    /// The failure the read ends with: a stream that yielded an error or a batch that breaks its
+    /// types, or a row that cannot be written.
     pub(crate) fn next(&mut self, py: Python<'_>) -> Result<Option<Pushed>, ConnectorError> {
         match self {
             Self::One(push) => Ok(push.take()),

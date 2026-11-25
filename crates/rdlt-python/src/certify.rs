@@ -5,8 +5,6 @@ mod tests;
 
 use std::path::PathBuf;
 
-use arrow_array::RecordBatch;
-use arrow_pyarrow::FromPyArrow as _;
 use pyo3::exceptions::PyValueError;
 use pyo3::{Bound, FromPyObject, PyAny, PyErr, Python, pyfunction};
 use rdlt_certify::{
@@ -21,7 +19,7 @@ use crate::destination::NativeDestinationFactory;
 use crate::host::TlsFiles;
 use crate::source::NativeSourceFactory;
 use crate::transform::NativeTransform;
-use crate::{errors, runtime};
+use crate::{arrow, errors, runtime};
 
 /// A connector listening at an endpoint over mutual TLS, as `rdlt.testing` names one: its id, its
 /// endpoint, and `rdlt.Tls`'s files, the host's identity and the CA its certificate chains to.
@@ -247,7 +245,7 @@ pub(crate) fn certify_transform(
 ) -> Result<String, PyErr> {
     let batches = inputs
         .iter()
-        .map(RecordBatch::from_pyarrow_bound)
+        .map(arrow::batch_of)
         .collect::<Result<Vec<_>, PyErr>>()?;
     let transform = transform.transform();
     let report = runtime::wait(py, async move {
