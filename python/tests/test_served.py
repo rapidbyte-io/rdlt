@@ -25,6 +25,7 @@ from tests.connectors import pysqlite
 from tests.connectors.both import BothDestination, BothSource
 from tests.connectors.tickets import Tickets
 from tests.launchers import TESTS, both_launcher, launcher, pysqlite_launcher, tickets_launcher
+from tests.sandboxes import NO_SANDBOX, without_sandbox
 
 
 @pytest.fixture
@@ -58,6 +59,32 @@ def test_a_host_spawns_and_loads_a_served_python_connector(
     assert built.build(host).run().report.rows == 40
     with sqlite3.connect(tmp_path / "out.db") as database:
         assert database.execute('SELECT count(*) FROM "tickets"').fetchone() == (40,)
+
+
+def test_a_host_spawns_a_python_connector_installed_as_a_directory_in_its_sandbox(
+    tmp_path: Path, connectors: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    tree = tmp_path_factory.mktemp("installed") / "rdlt-connector-tickets"
+    tickets_launcher(tree / "bin").rename(tree / "bin" / "rdlt-connector")
+    # These stand in for an installed tree's own environment: the interpreter's installation, and
+    # the environment with the package and the connector's module.
+    held = [sys.base_prefix, sys.prefix, TESTS]
+    host = rdlt.Host(
+        connectors=[connectors, tree.parent], writable=[tmp_path], always_readable=held
+    )
+    built = rdlt.pipeline(
+        "sandboxed",
+        source=rdlt.Connector("io.example.tickets", config={"pages": 4, "token": "t0ken"}),
+        destination=into_sqlite(tmp_path),
+        streams=[rdlt.stream("tickets", read="incremental")],
+    )
+    try:
+        placed = built.build(host)
+    except rdlt.Error as refused:
+        if refused.code not in NO_SANDBOX:
+            raise
+        without_sandbox(str(refused))
+    assert placed.run().report.rows == 40
 
 
 def test_a_host_spawns_and_loads_into_a_served_python_destination(
