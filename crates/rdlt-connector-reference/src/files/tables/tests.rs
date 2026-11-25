@@ -120,6 +120,68 @@ fn a_change_that_changes_nothing_writes_nothing() {
 }
 
 #[test]
+fn a_change_the_catalog_holds_already_makes_the_catalog_durable_before_it_answers() {
+    use crate::rooted::trace::{self, Step};
+    let added = |current: Option<&TableSchema>| {
+        let next = with(None, "a");
+        Ok((current != Some(&next)).then_some(next))
+    };
+    let (_root, rdlt) = private();
+    trace::clear();
+    update(&rdlt, "t", added).unwrap();
+    let linked = trace::steps()
+        .iter()
+        .position(|step| matches!(step, Step::Link(_)))
+        .expect("the change links its version");
+    // A process that dies between the link and the sync, then the change made again.
+    let (root, rdlt) = private();
+    trace::crash_at(linked + 1);
+    update(&rdlt, "t", added).expect_err("the process dies before the sync");
+    trace::clear();
+    update(&rdlt, "t", added).unwrap();
+    let catalog = root.path().join("tables").join("t");
+    assert_eq!(trace::synced(), [catalog]);
+    assert_eq!(names(&rdlt), ["a"]);
+    trace::clear();
+}
+
+#[test]
+fn a_creation_that_dies_once_its_owner_file_is_linked_makes_the_catalog_durable_when_repeated() {
+    use crate::rooted::trace::{self, Step};
+    let added = |current: Option<&TableSchema>| {
+        let next = with(None, "a");
+        Ok((current != Some(&next)).then_some(next))
+    };
+    // A creation claims, then changes, under its table's lock.
+    let created = |rdlt: &Dir| {
+        claim(rdlt, "t", &pipeline("p"))?;
+        update(rdlt, "t", added)
+    };
+    let (_root, rdlt) = private();
+    trace::clear();
+    created(&rdlt).unwrap();
+    let steps = trace::steps();
+    let linked = steps
+        .iter()
+        .position(|step| matches!(step, Step::Link(path) if path.ends_with("owner")))
+        .expect("the creation links its owner file");
+    // A process that dies at each step after the owner file's link, then the creation again.
+    for died in linked + 1..steps.len() {
+        let (root, rdlt) = private();
+        trace::crash_at(died);
+        // The process dies there, or at a removal of a temporary whose failure nothing hears.
+        let _outcome = created(&rdlt);
+        trace::clear();
+        created(&rdlt).unwrap();
+        let catalog = root.path().join("tables").join("t");
+        assert!(trace::synced().contains(&catalog), "died at step {died}");
+        assert_eq!(owner(&rdlt, "t").unwrap().as_deref(), Some("p"));
+        assert_eq!(names(&rdlt), ["a"]);
+    }
+    trace::clear();
+}
+
+#[test]
 fn superseded_catalog_versions_are_removed_but_the_most_recent() {
     let (root, rdlt) = private();
     for column in 0..20 {
