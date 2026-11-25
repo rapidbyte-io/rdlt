@@ -64,12 +64,14 @@ landed key must hold across a database's transactions and a file system's operat
   beyond the signed range, so a destination that narrows ids fails certification.
 - **SQLite stores storage classes.** Columns are declared `BOOLEAN`, `INTEGER`, `REAL`, `TEXT` or
   `BLOB`, so widening within the integer or float family changes nothing, and the engine lowers
-  every other type to text. Identifiers fold to lower case, since SQLite compares them without
-  case. `IdentifierRules` has `reserved_table_prefixes`, and the engine prefixes a table
-  identifier with `_` until it starts with none of them: SQLite reserves `_rdlt_`, which every
-  `sqlgen` table starts with, and `sqlite_`, which SQLite keeps for itself, and reserves the
-  staging columns' names as words. Calls run on the blocking pool, each in an
-  immediate transaction.
+  every other type to text. A flush refuses a column of values its table's column is not declared
+  for, before any row is bound, since SQLite's affinity would store text as a number or keep it as
+  text in a number's column; a read gives a value of another class than its column's as an internal
+  error, never as a null. Identifiers fold to lower case, since SQLite compares them without case.
+  `IdentifierRules` has `reserved_table_prefixes`, and the engine prefixes a table identifier with
+  `_` until it starts with none of them: SQLite reserves `_rdlt_`, which every `sqlgen` table starts
+  with, and `sqlite_`, which SQLite keeps for itself, and reserves the staging columns' names as
+  words. Calls run on the blocking pool, each in an immediate transaction.
 - **Manifests are created exclusively.** The files destination publishes a commit by creating
   the pipeline's next manifest version with a hard link, which fails if another session created
   it first: the conditional put on a local filesystem. Opening creates a version with the next
