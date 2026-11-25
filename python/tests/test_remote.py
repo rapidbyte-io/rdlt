@@ -97,6 +97,39 @@ def test_a_class_served_as_it_is_answers_no_probe_at_its_endpoint(tmp_path: Path
     assert told.outcome == "inapplicable", told
 
 
+UNSERVED = """
+import rdlt
+from rdlt.testing import certify_source
+
+test_certify = certify_source(
+    rdlt.Connector("io.example.pysqlite", endpoint={endpoint!r}),
+    config={{"path": {path!r}}},
+    remote=rdlt.Tls(cert={cert!r}, key={key!r}, ca={ca!r}),
+)
+"""
+
+
+def test_a_certification_of_a_role_the_connector_does_not_serve_fails_having_certified_nothing(
+    tmp_path: Path, pytester: pytest.Pytester
+) -> None:
+    found = pki(tmp_path)
+    with listening(found, "tests.connectors.pysqlite", "PySqlite") as endpoint:
+        tls = found.host
+        module = UNSERVED.format(
+            endpoint=endpoint,
+            path=str(tmp_path / "unserved.db"),
+            cert=str(tls.cert),
+            key=str(tls.key),
+            ca=str(tls.ca),
+        )
+        pytester.makepyfile(test_unserved=module)
+        result = pytester.runpytest_subprocess("-v")
+    result.stdout.fnmatch_lines(["*test_certify[[]P-HANDSHAKE[]] SKIPPED*"])
+    result.stdout.fnmatch_lines(["*test_certify[[]verdict[]] FAILED*"])
+    result.stdout.fnmatch_lines(["*is incomplete: 0 passed*", "*nothing was certified*"])
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+
+
 @pytest.mark.parametrize(
     "reference",
     [

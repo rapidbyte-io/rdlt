@@ -99,7 +99,7 @@ pub(crate) fn clauses(role: &str) -> Result<Vec<(String, String)>, PyErr> {
         .collect())
 }
 
-/// `report` as the JSON `rdlt.testing` reads.
+/// `report` as the JSON `rdlt.testing` reads, its verdict among it.
 fn reported(report: &Report) -> String {
     let results: Vec<serde_json::Value> = report
         .results
@@ -120,7 +120,12 @@ fn reported(report: &Report) -> String {
             })
         })
         .collect();
-    serde_json::json!({ "connector": report.connector, "results": results }).to_string()
+    serde_json::json!({
+        "connector": report.connector,
+        "results": results,
+        "verdict": report.verdict().as_str(),
+    })
+    .to_string()
 }
 
 /// Certifies `source`: the source a factory makes, served in this process over a socket pair and

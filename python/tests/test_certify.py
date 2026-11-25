@@ -84,6 +84,7 @@ def test_each_clause_is_a_test_of_its_own(pytester: pytest.Pytester) -> None:
     result = pytester.runpytest_subprocess("-v")
     result.stdout.fnmatch_lines(["*test_certify[[]S-RESUME[]] PASSED*"])
     result.stdout.fnmatch_lines(["*test_certify[[]K-SOURCE[]] PASSED*"])
+    result.stdout.fnmatch_lines(["*test_certify[[]verdict[]] PASSED*"])
     # The tickets connector tells nothing of where it stands outside the engine.
     result.stdout.fnmatch_lines(["*test_certify[[]S-ACK[]] SKIPPED*"])
     assert result.ret == pytest.ExitCode.OK
@@ -125,6 +126,7 @@ def test_a_launcher_s_kill_clause_kills_the_installed_connector(tmp_path: Path) 
     assert killed.note is not None
     assert killed.note.startswith("killed: "), killed
     assert outcomes(certification) == {"passed": SOURCE_PASSED, "inapplicable": SOURCE_UNTOLD}
+    assert certification.report().verdict == "passed"
 
 
 def test_a_source_that_tells_where_it_stands_passes_every_source_clause(tmp_path: Path) -> None:

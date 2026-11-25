@@ -114,12 +114,17 @@ fn a_python_transform_is_held_to_pass_the_keys_and_the_change_time_it_is_given()
                 .iter()
                 .find(|result| result["clause"] == "T-KEYS")
                 .unwrap();
-            keyed["outcome"].as_str().unwrap().to_owned()
+            let outcome = keyed["outcome"].as_str().unwrap().to_owned();
+            (outcome, report["verdict"].as_str().unwrap().to_owned())
         };
-        assert_eq!(held(&[], None), "inapplicable");
-        assert_eq!(held(&["id"], None), "passed");
-        assert_eq!(held(&["id"], Some("at")), "failed");
-        assert_eq!(held(&[], Some("at")), "failed");
+        assert_eq!(held(&[], None).0, "inapplicable");
+        assert_eq!(held(&["id"], None).0, "passed");
+        // A clause that fails fails the report, as its verdict says.
+        assert_eq!(
+            held(&["id"], Some("at")),
+            ("failed".into(), "failed".into())
+        );
+        assert_eq!(held(&[], Some("at")).0, "failed");
     });
 }
 
