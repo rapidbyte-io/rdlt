@@ -6,15 +6,18 @@ mod tests;
 
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_connector::wire::{Invalid, TRANSPORT, v1};
-use rdlt_connector::{BoxFuture, ConnectorError, ConnectorErrorKind, ConnectorId, Role};
+use rdlt_connector::{
+    BoxFuture, ConnectorError, ConnectorErrorKind, ConnectorId, ConnectorSpec, Role,
+};
 use rdlt_host::remote::{CONNECTOR_LOST, Client, DEADLINE_EXCEEDED, client};
 use rdlt_host::{
-    Connection, ConnectorRef, Local, Options, ReadWindow, Redactions, Remote, Stream, Witness,
+    Connection, ConnectorRef, Digest, Local, Options, ReadWindow, Redactions, Remote, Stream,
+    Witness,
 };
 use rdlt_wire::Limits;
 use rdlt_wire::tonic::{Response, Status};
@@ -32,6 +35,10 @@ const KILL_FLOOR: u64 = 65_536;
 const BARRIER_FLOOR: u64 = 1;
 
 /// A connector to certify, and how to reach it.
+///
+/// From its first connection as a role on, a target holds its connector to the version that role
+/// answered and, spawned on Linux, to one binary ([`Held`]): a later connection of another, in
+/// any certification made through it, fails the clause it is made in.
 #[derive(Debug)]
 pub struct Target {
     reach: Reach,
@@ -43,6 +50,40 @@ pub struct Target {
     killed: Option<Box<Target>>,
     /// The secrets the connector was sent: nothing it says is shown with one in it.
     pub(crate) redactions: Redactions,
+    /// What the certification found the connector to be, which every later connection is held
+    /// to.
+    holding: Holding,
+}
+
+/// What a certification held its connector to as a role: the version its first connection as the
+/// role answered, and the digest of the binary its first spawn ran, where it spawned one on a
+/// platform that checks one, Linux; every connection after was refused as another connector unless
+/// it was the same.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    /// The connector's version, as its spec declared it.
+    pub version: Option<String>,
+    /// The SHA-256 digest of the connector's binary.
+    pub digest: Option<Digest>,
+}
+
+/// What a certification holds its connector to, once it has found it: a version for each role,
+/// as a binary may serve a source and a destination of their own versions, and one binary.
+#[derive(Debug, Default)]
+struct Holding {
+    source: OnceLock<String>,
+    destination: OnceLock<String>,
+    digest: OnceLock<Digest>,
+}
+
+impl Holding {
+    /// The version `role` is held to, once it is.
+    fn version(&self, role: Role) -> &OnceLock<String> {
+        match role {
+            Role::Source => &self.source,
+            Role::Destination => &self.destination,
+        }
+    }
 }
 
 enum Reach {
@@ -131,6 +172,7 @@ impl Target {
             credit_watch: None,
             killed: None,
             redactions: Redactions::new(),
+            holding: Holding::default(),
         }
     }
 
@@ -217,6 +259,48 @@ impl Target {
         self.options.heartbeat
     }
 
+    /// What the certification held the connector to so far as `role`: its version and, where
+    /// spawned, its binary's digest.
+    pub fn held(&self, role: Role) -> Held {
+        Held {
+            version: self.holding.version(role).get().cloned(),
+            digest: self.holding.digest.get().copied(),
+        }
+    }
+
+    /// Holds the connector, as `role`, to `version` from now on, where it holds it to none yet;
+    /// an error coded `version_mismatch` where it holds it to another.
+    pub(crate) fn hold_version(&self, role: Role, version: &str) -> Result<(), ConnectorError> {
+        let held = self
+            .holding
+            .version(role)
+            .get_or_init(|| version.to_owned());
+        if held == version {
+            return Ok(());
+        }
+        let message = format!(
+            "the connector answered as version {version}, not {held}, the version its \
+             certification began with"
+        );
+        Err(ConnectorError::config(message).with_code("version_mismatch"))
+    }
+
+    /// Holds every later spawn of the connector to the binary of `digest`, where it holds them to
+    /// none yet.
+    pub(crate) fn hold_digest(&self, digest: Option<Digest>) {
+        if let Some(digest) = digest {
+            self.holding.digest.get_or_init(|| digest);
+        }
+    }
+
+    /// `reference`, holding a spawn to the digest the certification holds the connector's binary
+    /// to, where the reference requires none of its own.
+    fn held_to(&self, reference: &ConnectorRef) -> ConnectorRef {
+        let mut reference = reference.clone();
+        reference.digest = reference.digest.or(self.holding.digest.get().copied());
+        reference
+    }
+
     /// What the target is, for a report that could not learn the connector's id.
     pub fn describe(&self) -> String {
         match &self.reach {
@@ -254,16 +338,16 @@ impl Target {
                     .map(|wire| (wire, None))
                     .map_err(|error| unreachable(&error))
             }
-            Reach::Spawned { local, reference } => local
-                .clone()
-                .redactions(self.redactions.clone())
-                .wire(reference)
-                .await
-                .map(|wire| {
-                    let witness = wire.witness();
-                    (Box::new(wire) as Box<dyn Stream>, witness)
-                })
-                .map_err(|error| unreachable(&error)),
+            Reach::Spawned { local, reference } => {
+                let local = local.clone().redactions(self.redactions.clone());
+                let wire = local
+                    .wire(&self.held_to(reference))
+                    .await
+                    .map_err(|error| unreachable(&error))?;
+                self.hold_digest(wire.digest());
+                let witness = wire.witness();
+                Ok((Box::new(wire) as Box<dyn Stream>, witness))
+            }
             Reach::Listening { remote, reference } => remote
                 .wire(reference)
                 .await
@@ -286,7 +370,8 @@ impl Target {
         }
     }
 
-    /// A fresh connection to the connector, handshaken as `role` with `config`.
+    /// A fresh connection to the connector, handshaken as `role` with `config`, of the version
+    /// the certification holds it to.
     pub(crate) async fn connect(
         &self,
         role: Role,
@@ -305,7 +390,7 @@ impl Target {
         let (wire, witness) = self.witnessed().await?;
         let redactions = self.redactions.clone();
         let connected = Connection::connect(wire, role, config, *options, redactions).await;
-        match (connected, witness) {
+        let connection = match (connected, witness) {
             // A spawned connector whose transport failed most likely ended: say what it said.
             (Err(error), Some(witness))
                 if matches!(error.code(), Some(CONNECTOR_LOST | TRANSPORT)) =>
@@ -313,7 +398,9 @@ impl Target {
                 Err(error.with_source(witness.last_words(LAST_WORDS).await))
             }
             (connected, _) => connected,
-        }
+        }?;
+        self.hold_version(role, &connection.connector_spec()?.version)?;
+        Ok(connection)
     }
 
     /// The error `status` carries, its texts scrubbed of what the connector was sent before they
@@ -364,8 +451,9 @@ impl Target {
     }
 
     /// A provider placing the connector as an engine's placement does, supervised, so a lost one
-    /// is started or reached again, killed by `kills`; and the reference to it, as `id`, which
-    /// its handshake answered.
+    /// is started or reached again, killed by `kills`; and the reference to it: the connector
+    /// `spec` names, of its version, which every start's handshake must answer, and of the
+    /// binary the certification holds this target to.
     ///
     /// A spawned connector is killed outright; one reached otherwise has its connections cut. A
     /// source's credit opens at [`KILL_FLOOR`] and grows to two of its frames, so it runs little
@@ -373,20 +461,31 @@ impl Target {
     /// engine admits within.
     pub(crate) fn provider(
         &self,
-        id: &ConnectorId,
+        spec: &ConnectorSpec,
         kills: &rdlt_host::Kills,
         admitted: &Limits,
     ) -> (Box<dyn rdlt_host::Provider>, ConnectorRef) {
         let reference = |from: Option<&ConnectorRef>| ConnectorRef {
-            id: id.clone(),
+            id: spec.id.clone(),
             version_req: None,
             path: from.and_then(|reference| reference.path.clone()),
             endpoint: from.and_then(|reference| reference.endpoint.clone()),
-            digest: from.and_then(|reference| reference.digest),
+            digest: from.and_then(|reference| reference.digest).or(self
+                .holding
+                .digest
+                .get()
+                .copied()),
             isolation: from.and_then(|reference| reference.isolation),
             access: from
                 .map(|reference| reference.access.clone())
                 .unwrap_or_default(),
+        };
+        // A version that is no semantic version is no requirement a reference can hold: such a
+        // connector's starts are held to its id alone.
+        let reference = |from: Option<&ConnectorRef>| {
+            reference(from)
+                .exactly(&spec.version)
+                .unwrap_or_else(|_| reference(from))
         };
         let options = self.killing(admitted);
         match &self.reach {

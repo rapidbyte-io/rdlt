@@ -2,7 +2,7 @@
 source: crates/rdlt-cli/tests/it/certify.rs
 expression: "String::from_utf8_lossy(&certified.stdout)"
 ---
-certification of io.rapidbyte.memory
+certification of io.rapidbyte.memory 0.0.0
   pass P-HANDSHAKE
   pass P-ORDER
   n/a  P-ROLE: the connector serves the destination role too

@@ -39,7 +39,7 @@ pub use rdlt_connector::testing::{
 pub use rdlt_host::{ConnectorRef, Endpoint, Identity, Remote};
 pub use registry::{Family, clauses, markdown};
 pub use report::{json, line, plain};
-pub use target::Target;
+pub use target::{Held, Target};
 pub use transform::{TRANSFORM_CLAUSES, TransformInputs, certify_transform};
 
 use rdlt_connector::Role;
@@ -76,8 +76,8 @@ pub async fn certify_source_observed(
                 certify_source_factory_wired(&factory, &wired, config.clone(), observed);
             let mut report = certifying.await;
             report.results.splice(0..0, protocol);
-            let id = &SourceFactory::spec(&factory).id;
-            let killed = kill::source(target.killed(), id, &config).await;
+            let spec = SourceFactory::spec(&factory);
+            let killed = kill::source(target.killed(), spec, &config).await;
             observed.tell(killed.clone());
             report.results.push(killed);
             report
@@ -158,8 +158,8 @@ pub async fn certify_destination_observed(
                 certify_destination_factory_observed(&factory, config.clone(), probe, observed);
             let mut report = certifying.await;
             report.results.splice(0..0, protocol);
-            let id = &DestinationFactory::spec(&factory).id;
-            let killed = kill::destination(target.killed(), id, &config, probe).await;
+            let spec = DestinationFactory::spec(&factory);
+            let killed = kill::destination(target.killed(), spec, &config, probe).await;
             observed.tell(killed.clone());
             report.results.push(killed);
             report
