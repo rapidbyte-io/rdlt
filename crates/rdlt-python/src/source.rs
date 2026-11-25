@@ -22,6 +22,7 @@ use rdlt_connector::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
+use tokio::sync::oneshot;
 
 use crate::calls;
 use crate::errors::Failure;
@@ -293,6 +294,8 @@ impl ReadStream<PythonSource> for PythonStream {
         let (context, due) = NativeStreamContext::new(partition, Told::of(out));
         due.set(out.checkpoint_due());
         let name = format!("rdlt-read-{}", self.spec.name());
+        // Dropped once the read's thread has returned.
+        let (returning, returned) = oneshot::channel::<()>();
         let mut reading = Reading::start(
             &name,
             Arc::clone(&self.stream),
@@ -300,6 +303,7 @@ impl ReadStream<PythonSource> for PythonStream {
             cursor,
             context,
             limits,
+            returning,
         )
         .map_err(|error| {
             ConnectorError::internal(format!("a partition's read was not begun: {error}"))
@@ -308,10 +312,9 @@ impl ReadStream<PythonSource> for PythonStream {
         let mut refresh = tokio::time::interval(DUE_REFRESH);
         loop {
             let pushed = tokio::select! {
-                // A stop wins: the read ends, and its daemon thread goes back to waiting at
-                // its next push.
+                // A stop wins.
                 biased;
-                () = out.stopped() => return Ok(()),
+                () = out.stopped() => break,
                 pushed = reading.next() => pushed,
                 _ = refresh.tick() => {
                     due.set(out.checkpoint_due());
@@ -334,6 +337,12 @@ impl ReadStream<PythonSource> for PythonStream {
             }
             due.set(out.checkpoint_due());
         }
+        // A stopped read is let go, which its thread is told, a sync read at its next yield and an
+        // async one where it waits, and it ends once its thread has, as a Rust read ends when its
+        // code returns: how long that may take is its caller's to bound.
+        drop(reading);
+        returned.await.ok();
+        Ok(())
     }
 }
 

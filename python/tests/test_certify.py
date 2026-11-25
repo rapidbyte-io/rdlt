@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import textwrap
+import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, cast
@@ -13,7 +14,7 @@ import pyarrow.compute as pc
 import pytest
 
 import rdlt
-from rdlt.connector import Config, Cursor, checkpoint, source, stream
+from rdlt.connector import Config, Cursor, StreamContext, checkpoint, source, stream
 from rdlt.testing import certify_source, certify_transform
 from tests.clauses import KILLED_PAGES, SOURCE_PASSED, SOURCE_UNTOLD, outcomes
 from tests.connectors.inbox import Inbox
@@ -170,6 +171,32 @@ class _Stuck:
 def test_a_source_whose_position_does_not_move_where_it_is_told_fails_s_ack() -> None:
     certification = certify_source(_Stuck, config={"pages": 6})
     assert certification.result("S-ACK").outcome == "failed"
+
+
+@source(id="io.example.deaf", config=_Pages, version="1.0.0")
+class _Deaf:
+    """A source whose following read waits for data without asking whether it was stopped."""
+
+    def __init__(self, config: _Pages) -> None:
+        self.pages = config.pages
+
+    def check(self) -> None:
+        """Nothing to check."""
+
+    @stream(primary_key=["id"], cursor=_Offset)
+    def rows(self, start: _Offset, ctx: StreamContext) -> Iterator[object]:
+        for page in range(start.next, self.pages):
+            yield [{"id": page}]
+            yield checkpoint(_Offset(next=page + 1))
+        if ctx.follows:
+            # Longer than S-STOP's window, and short enough not to hold back the clauses after.
+            threading.Event().wait(8)
+
+
+def test_a_source_whose_following_read_does_not_hear_its_stop_fails_s_stop() -> None:
+    certification = certify_source(_Deaf, config={"pages": 2})
+    stopped = certification.result("S-STOP")
+    assert stopped.outcome == "failed", stopped
 
 
 def test_a_certification_keeps_the_connector_it_certifies() -> None:
