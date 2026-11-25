@@ -9,9 +9,10 @@ use crate::error::{Error, codes};
 ///
 /// A following run under a policy with no interval commits too as it plans its streams again,
 /// where reads that ended wait: their partitions are read again, and those its plans dropped are
-/// tracked no more, only once their ends commit. A running read's checkpoints still wait for the
-/// rows or bytes, so a quiet followed partition's tail, and its source's cursor, stay uncommitted
-/// until they are reached; setting `every` bounds that wait.
+/// tracked no more, only once their ends commit. A running read's checkpoints make no commit due
+/// themselves, so a quiet followed partition's tail, and its source's cursor, may stay
+/// uncommitted until the rows or bytes are reached or another read's end makes a commit due;
+/// setting `every` bounds that wait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommitPolicy {
     every: Option<Duration>,

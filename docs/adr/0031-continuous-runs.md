@@ -73,10 +73,11 @@ they are built apart.
   are never sure to come in a following run, whose source may be quiet, and a timer the operator
   never set would commit a busy stream more often than the rows or bytes the policy allows: the
   commit is tied to the ends that wait for it, at most one a re-plan. A running read's
-  checkpoints still wait for the rows or bytes, so a quiet followed partition's tail, and the
-  cursor its source keeps, stay uncommitted until they come; an operator bounds that wait by
-  setting `every`. Under a policy with an interval the policy alone decides when a following run
-  commits, and an end waits for it.
+  checkpoints make no commit due themselves: the commit an end makes due takes them, but a quiet
+  followed partition's tail, and the cursor its source keeps, may otherwise stay uncommitted
+  until the rows or bytes come; an operator bounds that wait by setting `every`. Under a policy
+  with an interval the policy alone decides when a following run commits, and an end waits for
+  it.
 - **Read slots.** In a following run an unbounded partition's read holds a read slot for as long as
   the run, as every read holds one, and keeps what it keeps from the parts of the reads' share no
   other read holds, never the last, where each other read holds a whole part (ADR 0039). A run

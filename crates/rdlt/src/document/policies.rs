@@ -12,8 +12,9 @@ use super::units::{self, SizeText, SpanText};
 ///
 /// A run that follows its source with no `every` commits too as it plans its streams again,
 /// where reads that ended wait: their partitions are read again once their ends commit. A running
-/// read's checkpoints still wait for the rows or bytes, so a quiet followed partition's tail stays
-/// uncommitted until they are reached; setting `every` bounds that wait.
+/// read's checkpoints make no commit due themselves, so a quiet followed partition's tail may stay
+/// uncommitted until the rows or bytes are reached or another read's end makes a commit due;
+/// setting `every` bounds that wait.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
