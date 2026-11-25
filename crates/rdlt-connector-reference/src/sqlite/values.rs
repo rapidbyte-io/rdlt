@@ -12,7 +12,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use rdlt_connector::sqlgen::{Column, SqlDialect, Statement};
-use rdlt_connector::{ConnectorError, Result};
+use rdlt_connector::{COLUMN_MISSING, ConnectorError, Result, TableRef};
 use rusqlite::Connection;
 use rusqlite::types::{ToSqlOutput, Value, ValueRef};
 
@@ -62,21 +62,50 @@ pub(super) fn stage(
     Ok(())
 }
 
-/// Refuses `batch`, written to the table `table` whose columns are `columns`, where one of its
-/// columns holds values the table's column of its name is not declared for, as text in an
-/// integer column or a number in a boolean one: a `Data` error, before any row is bound.
+/// Refuses `batch`, written to `table` whose columns are `columns`, where one of its columns is
+/// none of the table's, a change stream's op and unchanged flags apart, or holds values the
+/// table's column of its name is not declared for, as text in an integer column or a number in a
+/// boolean one: a `Data` error, before any row is bound.
 ///
-/// A column of nulls fits any column, a dictionary is the values it stands for, and a column the
-/// table lacks or of a type the destination does not store is refused where its rows are staged.
-pub(super) fn classed(table: &str, columns: &[Column], batch: &RecordBatch) -> Result<()> {
+/// Names compare as `dialect` folds them. A column the table lacks is coded `column_missing`. A
+/// column of nulls fits any column, a dictionary is the values it stands for, and a type the
+/// destination does not store is refused where its rows are staged.
+pub(super) fn classed(
+    dialect: &impl SqlDialect,
+    table: &TableRef,
+    columns: &[Column],
+    batch: &RecordBatch,
+) -> Result<()> {
+    let changes = table.merge.as_ref().and_then(|key| key.changes.as_ref());
+    let flags: Vec<String> = changes
+        .into_iter()
+        .flat_map(|changes| [Some(&*changes.op), changes.unchanged.as_deref()])
+        .flatten()
+        .map(|flag| dialect.folds(flag))
+        .collect();
     for field in batch.schema_ref().fields() {
-        let column = columns.iter().find(|column| column.name == *field.name());
-        let (Some(column), Some(stored)) = (column, declared(field.data_type())) else {
+        let name = dialect.folds(field.name());
+        let Some(column) = columns
+            .iter()
+            .find(|column| dialect.folds(&column.name) == name)
+        else {
+            if flags.contains(&name) {
+                continue;
+            }
+            return Err(ConnectorError::data(format!(
+                "table {}: a batch holds column {}, which the table lacks",
+                table.name,
+                field.name()
+            ))
+            .with_code(COLUMN_MISSING));
+        };
+        let Some(stored) = declared(field.data_type()) else {
             continue;
         };
         if !stored.eq_ignore_ascii_case(&column.declared) {
             return Err(ConnectorError::data(format!(
-                "table {table}: column {} is declared {}, and a batch holds it as {}",
+                "table {}: column {} is declared {}, and a batch holds it as {}",
+                table.name,
                 column.name,
                 column.declared,
                 field.data_type()

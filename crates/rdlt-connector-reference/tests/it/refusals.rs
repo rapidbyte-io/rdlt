@@ -1,5 +1,6 @@
-//! A written batch a merge table cannot take is refused where it is staged, under the same code
-//! by the memory, the SQLite and the files destinations.
+//! A written batch a table cannot take, one of a column the table lacks or one a merge table
+//! cannot merge, is refused where it is staged, under the same code by the memory, the SQLite
+//! and the files destinations.
 
 use std::sync::Arc;
 
@@ -265,5 +266,41 @@ async fn a_batch_a_merge_table_takes_is_staged() {
             let refused = flushed(destination.as_ref(), written, *history).await;
             assert_eq!(refused, None, "case {case} on {name}");
         }
+    }
+}
+
+#[tokio::test]
+async fn a_batch_of_a_column_its_table_lacks_is_refused_alike_and_publishes_nothing() {
+    use crate::fixtures::{meta, open_as, table};
+    let directory = crate::fixtures::tempdir().expect("a temporary directory");
+    let table = table("t");
+    let ids = Schema::new(vec![ArrowField::new("id", DataType::Int64, true)]);
+    let batch = RecordBatch::try_from_iter([
+        ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+        ("extra", Arc::new(StringArray::from(vec!["a"])) as ArrayRef),
+    ])
+    .expect("a valid batch");
+    for (name, destination) in destinations(directory.path(), 200).await {
+        let mut opened = open_as(destination.as_ref(), "p").await;
+        let create = TableChange::Create {
+            table: table.clone(),
+            schema: TableSchema::from_arrow(&ids).expect("a schema"),
+        };
+        opened.session.apply_schema(&create).await.expect("created");
+        let mut writer = opened.session.writer(&table).await.expect("a table writer");
+        writer
+            .write(SegmentId(1), batch.clone())
+            .await
+            .expect("buffers");
+        let refused = writer.flush().await.expect_err("the flush is refused");
+        let kind = (refused.kind(), refused.code());
+        assert_eq!(
+            kind,
+            (ConnectorErrorKind::Data, Some("column_missing")),
+            "{name}"
+        );
+        let commit = opened.session.commit(&meta(&opened, 1, &[1])).await;
+        let receipt = commit.expect("the commit lands");
+        assert_eq!(receipt.rows, 0, "{name}");
     }
 }

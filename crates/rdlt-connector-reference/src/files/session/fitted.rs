@@ -12,27 +12,33 @@ use rdlt_connector::prelude::*;
 use rdlt_connector::{ConnectorErrorKind, LogicalType, SCHEMA_CONFLICT, SegmentId, TableSchema};
 
 use super::{Location, Shared};
-use crate::columns::changed;
+use crate::columns::{changed, written};
 use crate::files::format::FileFormat;
 use crate::files::manifest::{self, Listed, TableFiles};
 use crate::files::tables;
 
-/// Refuses the `buffered` batches of `table` where it is a merge table and one of them holds a
-/// row its merge cannot take, under the code the merge would refuse it with, so nothing of a
-/// flush is staged that its commit would fail on.
+/// Refuses the `buffered` batches of `table` where one of them holds a column its catalog lacks
+/// or a value its column's type cannot hold, as [`written`] says, or, of a merge table, a row its
+/// merge cannot take, under the code the merge would refuse it with, so nothing of a flush is
+/// staged that its commit would fail on.
 pub(super) fn admitted(
     location: &Location,
     table: &TableRef,
     buffered: &[(SegmentId, RecordBatch)],
 ) -> Result<()> {
-    let Some(key) = &table.merge else {
-        return Ok(());
+    let Some(stored) = tables::read(&location.rdlt, &table.name)? else {
+        return Err(ConnectorError::data(format!(
+            "table {} does not exist",
+            table.name
+        )));
     };
-    let stored = tables::read(&location.rdlt, &table.name)?;
-    let stored = stored.map(|schema| Arc::new(schema.to_arrow()));
+    let stored = Arc::new(stored.to_arrow());
     for (_, batch) in buffered {
-        merge::admitted(batch, stored.as_ref(), key)
-            .map_err(|error| merge::failed("staging rows", error))?;
+        written(&table.name, &stored, table.merge.as_ref(), batch)?;
+        if let Some(key) = &table.merge {
+            merge::admitted(batch, Some(&stored), key)
+                .map_err(|error| merge::failed("staging rows", error))?;
+        }
     }
     Ok(())
 }
