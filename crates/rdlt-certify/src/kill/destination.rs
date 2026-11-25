@@ -9,7 +9,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use rdlt_connector::testing::{Probe, Reason, read_back_integers};
 use rdlt_connector::{
-    ConnectContext, ConnectorId, Destination, PipelineId, Source, StreamName, WriteModes,
+    ConnectContext, ConnectorSpec, Destination, PipelineId, Source, StreamName, WriteModes,
     source_factory,
 };
 use rdlt_connector_reference::GeneratorSource;
@@ -25,11 +25,11 @@ use crate::target::Target;
 /// kill point counts starts, so rows are left to write at every point.
 pub(super) const ROWS: u64 = 2000;
 
-/// `K-DESTINATION` against the destination `target` reaches, which answers to `id`, with
+/// `K-DESTINATION` against the destination `target` reaches, which answers as `spec` says, with
 /// `config`, reading what it published through `probe`.
 pub(crate) async fn exactly_once(
     target: &Target,
-    id: &ConnectorId,
+    spec: &ConnectorSpec,
     config: &serde_json::Value,
     probe: &dyn Probe,
 ) -> Loaded {
@@ -38,7 +38,7 @@ pub(crate) async fn exactly_once(
         return Loaded::Unobserved(reason.to_owned());
     }
     super::proven(target.chosen_seed(), super::run(), |run, seed| async move {
-        match loaded(target, id, config, probe, run, seed).await {
+        match loaded(target, spec, config, probe, run, seed).await {
             Ok(loaded) => loaded,
             Err(Violation(reason)) => Loaded::Broken(format!("{reason} (kill seed {seed})")),
         }
@@ -48,14 +48,14 @@ pub(crate) async fn exactly_once(
 
 async fn loaded(
     target: &Target,
-    id: &ConnectorId,
+    spec: &ConnectorSpec,
     config: &serde_json::Value,
     probe: &dyn Probe,
     run: u64,
     seed: u64,
 ) -> Result<Loaded, Violation> {
     let kills = Kills::new();
-    let (provider, reference) = target.provider(id, &kills, &super::limits()?);
+    let (provider, reference) = target.provider(spec, &kills, &super::limits()?);
     let placed = provider
         .destination(&reference, config)
         .await
@@ -63,6 +63,8 @@ async fn loaded(
             let described = crate::connect::described(&error);
             format!("the destination could not be placed: {described}")
         })?;
+    target.hold_digest(placed.digest);
+    super::placed_as(spec, &placed.spec, "destination")?;
     let destination: Arc<dyn Destination> = Arc::from(placed.connector);
     let mode = match written(destination.capabilities().write_modes) {
         Ok(mode) => mode,

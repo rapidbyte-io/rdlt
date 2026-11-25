@@ -1,6 +1,7 @@
 use rdlt_connector::testing::{Clause, ClauseResult, Outcome, Report};
 
 use super::plain;
+use crate::target::Held;
 
 const CLAUSE: Clause = Clause {
     id: "S-CHECK",
@@ -20,7 +21,7 @@ fn a_connectors_words_reach_the_terminal_as_text_and_on_their_own_line() {
             note: None,
         }],
     };
-    let shown = plain(&report);
+    let shown = plain(&report, &Held::default());
     // The connector, its clause, and the verdict.
     assert_eq!(shown.lines().count(), 3, "{shown}");
     assert!(
@@ -69,7 +70,7 @@ fn a_report_without_controls_reads_as_its_display() {
             },
         ],
     };
-    assert_eq!(plain(&report), report.to_string());
+    assert_eq!(plain(&report, &Held::default()), report.to_string());
 }
 
 #[test]
@@ -105,7 +106,7 @@ fn a_report_as_json_says_its_verdict_and_how_each_clause_fared() {
             connector: "io.rapidbyte.memory".to_owned(),
             results: vec![result(outcome)],
         };
-        let json = super::json(&report);
+        let json = super::json(&report, &Held::default());
         assert_eq!(json["connector"], "io.rapidbyte.memory");
         assert_eq!(json["verdict"], verdict);
         assert_eq!(json["passed"], verdict == "passed");
@@ -127,12 +128,12 @@ fn a_clause_that_passed_says_what_it_passed_on_where_it_is_noted() {
         connector: "io.rapidbyte.memory".to_owned(),
         results: vec![result(None), result(Some("cut\u{1b}[2J"))],
     };
-    let shown = plain(&report);
+    let shown = plain(&report, &Held::default());
     let lines: Vec<&str> = shown.lines().collect();
     assert_eq!(lines[1], "  pass S-CHECK");
     // What is noted is shown, not obeyed, as a reason is.
     assert!(lines[2].starts_with("  pass S-CHECK (cut") && !lines[2].contains('\u{1b}'));
-    let json = super::json(&report);
+    let json = super::json(&report, &Held::default());
     assert_eq!(json["clauses"][0]["note"], serde_json::Value::Null);
     assert_eq!(json["clauses"][1]["note"], r"cut\u{1b}[2J");
 }
@@ -169,12 +170,12 @@ fn plain_text(text: &str) -> bool {
 #[test]
 fn a_connectors_words_deceive_no_reader_of_the_plain_report_its_display_or_its_json() {
     let report = hostile_report();
-    let shown = plain(&report);
+    let shown = plain(&report, &Held::default());
     assert!(plain_text(&shown), "{shown:?}");
     // The connector, four clauses and the verdict: no reason drew a line of its own.
     assert_eq!(shown.lines().count(), 6, "{shown}");
     assert_eq!(report.to_string(), shown);
-    let json = super::json(&report).to_string();
+    let json = super::json(&report, &Held::default()).to_string();
     assert!(plain_text(&json), "{json:?}");
     // What the document says the connector said is what the plain report shows.
     let back: serde_json::Value = serde_json::from_str(&json).expect("the report parses");
@@ -198,8 +199,39 @@ fn a_reason_longer_than_its_limit_is_cut_in_every_form_of_the_report() {
         }],
     };
     let limit = rdlt_connector::testing::REASON_BYTES;
-    for line in plain(&report).lines() {
+    for line in plain(&report, &Held::default()).lines() {
         assert!(line.len() <= limit + 128, "{}", line.len());
     }
-    assert!(super::json(&report).to_string().len() <= 2 * limit + 512);
+    assert!(super::json(&report, &Held::default()).to_string().len() <= 2 * limit + 512);
+}
+
+#[test]
+fn a_report_names_the_version_and_binary_its_certification_held_the_connector_to() {
+    let report = Report {
+        connector: "io.rapidbyte.memory".to_owned(),
+        results: vec![ClauseResult {
+            clause: CLAUSE,
+            outcome: Outcome::Passed,
+            note: None,
+        }],
+    };
+    let held = Held {
+        version: Some("0.2.0".to_owned()),
+        digest: Some(rdlt_host::Digest([0xab; 32])),
+    };
+    let digest = "ab".repeat(32);
+    let heading = format!("certification of io.rapidbyte.memory 0.2.0, binary sha256:{digest}");
+    assert_eq!(plain(&report, &held).lines().next(), Some(heading.as_str()));
+    let json = super::json(&report, &held);
+    assert_eq!(json["version"], "0.2.0");
+    assert_eq!(json["digest"], digest.as_str());
+    let unheld = super::json(&report, &Held::default());
+    assert!(unheld["version"].is_null() && unheld["digest"].is_null());
+    assert_eq!(plain(&report, &Held::default()), report.to_string());
+    // A version is the connector's own word: shown, not obeyed.
+    let held = Held {
+        version: Some("1\u{1b}[2J".to_owned()),
+        digest: None,
+    };
+    assert!(!plain(&report, &held).contains('\u{1b}'));
 }
