@@ -6,6 +6,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::{BinaryArray, Int64Array, RecordBatch, StringArray};
 
 use super::identifiers::Identifiers;
+use super::sequences::sequence;
 use super::{Bench, commit, meta};
 use crate::change::SEQ_COLUMN;
 use crate::commit::{ChildTable, CommitMeta};
@@ -19,10 +20,11 @@ use crate::testing::reason::Listed;
 use crate::testing::{Violation, bounded_call};
 use crate::types::{Field, LogicalType};
 
-/// A root row: its key, its id's byte and its sequence's last byte.
+/// A root row: its key, its id's byte and its sequence's ordinal.
 type Root = (i64, u8, u8);
 
-/// A child row: its value, its root's id byte and the sequence of the root row it came from.
+/// A child row: its value, its root's id byte and the sequence's ordinal of the root row it came
+/// from.
 type Child = (&'static str, u8, u8);
 
 impl Bench<'_> {
@@ -218,7 +220,7 @@ fn bytes(byte: u8) -> Vec<u8> {
 fn root_batch(names: &Identifiers, rows: &[Root]) -> RecordBatch {
     let keys: Int64Array = rows.iter().map(|row| row.0).collect();
     let ids = BinaryArray::from_iter_values(rows.iter().map(|row| bytes(row.1)));
-    let seqs = BinaryArray::from_iter_values(rows.iter().map(|row| bytes(row.2)));
+    let seqs = BinaryArray::from_iter_values(rows.iter().map(|row| sequence(row.2)));
     RecordBatch::try_from_iter([
         (names.column("id"), Arc::new(keys) as _),
         (names.column(ID_COLUMN), Arc::new(ids) as _),
@@ -230,7 +232,7 @@ fn root_batch(names: &Identifiers, rows: &[Root]) -> RecordBatch {
 fn child_batch(names: &Identifiers, rows: &[Child]) -> RecordBatch {
     let values: StringArray = rows.iter().map(|row| Some(row.0)).collect();
     let roots = BinaryArray::from_iter_values(rows.iter().map(|row| bytes(row.1)));
-    let seqs = BinaryArray::from_iter_values(rows.iter().map(|row| bytes(row.2)));
+    let seqs = BinaryArray::from_iter_values(rows.iter().map(|row| sequence(row.2)));
     RecordBatch::try_from_iter([
         (names.column("value"), Arc::new(values) as _),
         (names.column(ROOT_ID_COLUMN), Arc::new(roots) as _),

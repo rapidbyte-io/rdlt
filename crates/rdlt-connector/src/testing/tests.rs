@@ -754,6 +754,9 @@ struct VaultConfig {
     merge_keeps_first: bool,
     /// Keeps the last row of each key a merge meets, whatever its sequence.
     merge_keeps_last: bool,
+    /// Stores a sequence as its last eight bytes, the row's, with the segment's zeroed, as a
+    /// destination that keeps it as an integer of those does.
+    seq_low_half: bool,
     refuse_repeated_changes: bool,
     ignore_added_columns: bool,
     refuse_widening: bool,
@@ -1787,6 +1790,10 @@ impl VaultWriter {
         } else {
             batch
         };
+        let batch = match &self.merge {
+            Some(key) if self.config.seq_low_half => low_halves(&batch, &key.seq),
+            _ => batch,
+        };
         if self.config.lose_writers {
             for ((pipeline, _), staged) in &mut store.staged {
                 if *pipeline == self.pipeline {
@@ -1824,6 +1831,29 @@ impl VaultWriter {
         let schema = Arc::new(arrow_schema::Schema::new(fields));
         RecordBatch::try_new(schema, batch.columns().to_vec()).expect("same columns")
     }
+}
+
+/// `batch` with each sequence in `column` cut to its last eight bytes, the others zeroed.
+fn low_halves(batch: &RecordBatch, column: &str) -> RecordBatch {
+    let Ok(index) = batch.schema().index_of(column) else {
+        return batch.clone();
+    };
+    let cut: arrow_array::BinaryArray = batch
+        .column(index)
+        .as_binary::<i32>()
+        .iter()
+        .map(|seq| {
+            seq.map(|seq| {
+                let mut cut = seq.to_vec();
+                let segment = cut.len().saturating_sub(8);
+                cut[..segment].fill(0);
+                cut
+            })
+        })
+        .collect();
+    let mut columns = batch.columns().to_vec();
+    columns[index] = Arc::new(cut);
+    RecordBatch::try_new(batch.schema(), columns).expect("the same columns")
 }
 
 impl TableWriter for VaultWriter {
@@ -2453,6 +2483,10 @@ const BROKEN: &[(&str, &[&str])] = &[
     ),
     ("merge_keeps_first", &["D-MERGE"]),
     ("merge_keeps_last", &["D-MERGE"]),
+    (
+        "seq_low_half",
+        &["D-MERGE", "D-DELETE", "D-TRUNCATE", "D-HIST", "D-CHILDREN"],
+    ),
     ("refuse_repeated_changes", &["D-SCHEMA"]),
     ("ignore_added_columns", &["D-SCHEMA"]),
     ("accept_conflicts", &["D-SCHEMA"]),
