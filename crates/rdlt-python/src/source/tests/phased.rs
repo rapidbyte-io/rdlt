@@ -9,7 +9,7 @@ use crate::runtime;
 /// A stream `rows` read as changes, which plans with the Python function `plan` and reads with
 /// `read`, both defined before it.
 const ROWS: &str = "\
-stream = types.SimpleNamespace(read=read, plan=plan, spec=json.dumps({
+stream = types.SimpleNamespace(read=read, cursor=object, plan=plan, spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': ['id'], 'read_modes': ['cdc'],
              'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': True, 'stated': False, 'committed': False, 'acknowledged': False,

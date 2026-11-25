@@ -589,7 +589,15 @@ def test_a_stream_tells_where_it_stands_in_its_own_cursor_type_or_none() -> None
         del since
         yield from ()
 
-    standing: dict[str, object] = {"eu": _Since(after=3), "us": None, "asia": {"after": 3}}
+    class Later(_Since):
+        """A subclass of the stream's cursor, which is no cursor of its class itself."""
+
+    standing: dict[str, object] = {
+        "eu": _Since(after=3),
+        "us": None,
+        "asia": {"after": 3},
+        "apac": Later(after=3),
+    }
     users = Stream(
         StreamSpec("users"),
         read,
@@ -603,8 +611,9 @@ def test_a_stream_tells_where_it_stands_in_its_own_cursor_type_or_none() -> None
     )
     assert json.loads(users.acknowledged("eu") or "") == {"after": 3}
     assert users.acknowledged("us") is None
-    with pytest.raises(TypeError, match="_Since"):
-        users.acknowledged("asia")
+    for refused in ["asia", "apac"]:
+        with pytest.raises(TypeError, match="_Since"):
+            users.acknowledged(refused)
 
 
 def test_a_stream_without_a_cursor_cannot_say_where_it_stands() -> None:
@@ -639,6 +648,48 @@ def test_a_cursor_committed_in_another_format_fails_the_read_coded_cursor_versio
         bumped.build(placed).run()
     assert raised.value.report().connector_code == "cursor_version"
     assert rows_of(tmp_path, "users") == [(0,), (1,), (2,)]
+
+
+class _Offset(Cursor):
+    next: int = 0
+
+
+def _users_checkpointing(made: Callable[[int], Cursor]) -> ReadStream:
+    @stream(name="users", cursor=_Since)
+    def users(since: _Since) -> Iterator[object]:
+        for n in range(since.after + 1, 3):
+            yield {"id": n}
+        yield checkpoint(made(2))
+
+    return cast("ReadStream", users)
+
+
+def test_a_checkpoint_of_another_cursor_type_fails_its_read_and_commits_nothing(
+    tmp_path: Path, connectors: Path
+) -> None:
+    placed = host(tmp_path, connectors)
+    slipped = _users_checkpointing(lambda n: _Offset(next=n + 1))
+    first = rdlt.pipeline("slipped", source=slipped, destination=into_sqlite(tmp_path))
+    with pytest.raises(rdlt.SourceError) as raised:
+        first.build(placed).run()
+    assert raised.value.report().connector_code == "type_error"
+    # Nothing of it was committed: a read with the stream's own cursor runs from the start.
+    kept = _users_checkpointing(lambda n: _Since(after=n))
+    again = rdlt.pipeline("slipped", source=kept, destination=into_sqlite(tmp_path))
+    assert again.build(placed).run().report.rows == 3
+    assert again.build(placed).run().report.rows == 0
+
+
+def test_a_stream_without_a_cursor_yields_no_checkpoint(tmp_path: Path, connectors: Path) -> None:
+    @stream()
+    def users() -> Iterator[object]:
+        yield {"id": 1}
+        yield checkpoint(_Since(after=1))
+
+    built = rdlt.pipeline("uncursored", source=users, destination=into_sqlite(tmp_path))
+    with pytest.raises(rdlt.SourceError) as raised:
+        built.build(host(tmp_path, connectors)).run()
+    assert raised.value.report().connector_code == "type_error"
 
 
 @pytest.mark.parametrize("version", [-1, 2**16, True, 2.0, "2"])

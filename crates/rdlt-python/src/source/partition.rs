@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use parking_lot::Mutex;
-use pyo3::types::PyAnyMethods as _;
+use pyo3::types::{PyAnyMethods as _, PyType};
 use pyo3::{Bound, IntoPyObject as _, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
 use rdlt_connector::{ConnectorError, Headroom};
 use serde_json::value::RawValue;
@@ -101,7 +101,8 @@ pub(crate) struct Reading {
 
 impl Reading {
     /// Starts reading, on a daemon thread named `name` meanwhile, what
-    /// `stream.read(partition, cursor, context)` returns: an iterator or an async iterator.
+    /// `stream.read(partition, cursor, context)` returns: an iterator or an async iterator, whose
+    /// checkpoints are of the class `stream.cursor` names.
     ///
     /// Nothing here takes the GIL or waits.
     ///
@@ -121,16 +122,19 @@ impl Reading {
         let told = Arc::new(AtomicBool::new(false));
         let outlet = context.outlet().clone();
         outlet.open(sent);
-        let out = PartitionOut {
-            sent: outlet.clone(),
-            limits,
-            told: Arc::clone(&told),
-            room: Mutex::default(),
-        };
-        let unread = (outlet, Arc::clone(&told));
+        let unread = (outlet.clone(), Arc::clone(&told));
+        let saying = Arc::clone(&told);
         let name = name.to_owned();
         calls::start(
             move |py| {
+                let of = stream.bind(py).getattr(intern!(py, "cursor"))?.extract()?;
+                let out = PartitionOut {
+                    sent: outlet,
+                    limits,
+                    told: saying,
+                    cursor: of,
+                    room: Mutex::default(),
+                };
                 let context = Py::new(py, context)?;
                 let out = Py::new(py, out)?;
                 let read = calls::reading(py)?.getattr(intern!(py, "read"))?;
@@ -169,13 +173,15 @@ pub(crate) fn send(py: Python<'_>, sent: &mpsc::Sender<Pushed>, pushed: Pushed) 
     py.detach(|| sent.blocking_send(pushed).is_ok())
 }
 
-/// What a partition's thread pushes to: its read's channel, the limits a read keeps within, and
-/// what an async read has waiting for room.
+/// What a partition's thread pushes to: its read's channel, the limits a read keeps within, the
+/// class its checkpoints' cursors are, and what an async read has waiting for room.
 #[pyclass(module = "rdlt._native", name = "PartitionOut", frozen)]
 pub(crate) struct PartitionOut {
     sent: Outlet,
     limits: JsonLimits,
     told: Arc<AtomicBool>,
+    /// The stream's cursor class, none where it declares no cursor.
+    cursor: Option<Py<PyType>>,
     /// Locked only by the read's own thread, for Rust alone: nothing under it runs Python.
     room: Mutex<Room>,
 }
@@ -188,7 +194,8 @@ impl PartitionOut {
         let Some(sent) = self.sent.sender() else {
             return false;
         };
-        pushed(py, item, self.limits, &sent)
+        let cursor = self.cursor.as_ref().map(|cursor| cursor.bind(py));
+        pushed(py, item, self.limits, cursor, &sent)
     }
 
     /// Sends what an async read yielded without waiting for the engine: true once all of it is
@@ -200,7 +207,8 @@ impl PartitionOut {
         let Some(sender) = self.sent.sender() else {
             return Some(false);
         };
-        match Pushes::of(py, item, self.limits) {
+        let cursor = self.cursor.as_ref().map(|cursor| cursor.bind(py));
+        match Pushes::of(py, item, self.limits, cursor) {
             Ok(pushes) => self.sending(py, &sender, pushes),
             Err(error) => Some(self.fail(py, &sender, error)),
         }
@@ -363,9 +371,10 @@ fn pushed(
     py: Python<'_>,
     item: &Bound<'_, PyAny>,
     limits: JsonLimits,
+    cursor: Option<&Bound<'_, PyType>>,
     sent: &mpsc::Sender<Pushed>,
 ) -> bool {
-    let mut pushes = match Pushes::of(py, item, limits) {
+    let mut pushes = match Pushes::of(py, item, limits, cursor) {
         Ok(pushes) => pushes,
         Err(error) => {
             send(py, sent, Pushed::Failed(error));

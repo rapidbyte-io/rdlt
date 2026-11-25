@@ -256,6 +256,11 @@ def checkpoint(cursor: Cursor) -> _native.Checkpoint:
 
     Read `full`, everything a read yields commits. Read incrementally, a partition that never ends,
     as a stream without `partitions` reads, commits only what is yielded before its last checkpoint,
-    and the next run reads the rest again from there, so its read ends on a checkpoint.
+    and the next run reads the rest again from there, so its read ends on a checkpoint. `cursor` is
+    the stream's cursor, of its class itself, as a Rust read's emitter takes exactly its stream's:
+    one of another class, a subclass included, or any a stream without a cursor yields, fails the
+    read as it is yielded, coded `type_error`. A checkpoint also seals a segment, which bounds what
+    a run holds at once, so a stream that seals segments, read in full alone or not, declares a
+    cursor.
     """
-    return _native.Checkpoint(cursor.model_dump_json())
+    return _native.Checkpoint(cursor.model_dump_json(), type(cursor))

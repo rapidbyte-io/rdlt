@@ -93,6 +93,11 @@ class _Stream(Protocol):
         """The stream's description, as JSON."""
         ...
 
+    @property
+    def cursor(self) -> type | None:
+        """The class of the stream's cursor, which each of its checkpoints is; none without one."""
+        ...
+
     def plan(
         self,
         phase: int,
