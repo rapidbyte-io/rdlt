@@ -817,6 +817,9 @@ struct VaultConfig {
     history_hashes_its_own_way: bool,
     /// Swaps in only the first generation a commit finishes.
     finish_one_generation: bool,
+    /// Keeps the rows a session commits into a generation with that session: the pipeline's next
+    /// open drops them, so a generation a newer session finishes holds only its own.
+    generations_per_session: bool,
     /// Publishes its columns under lower-case names, though it declares it keeps case.
     fold_names: bool,
     /// Publishes one column of those whose names differ only in ASCII case, though it declares
@@ -1271,6 +1274,15 @@ impl DestinationConnector for Vault {
             *epoch += 1;
             *epoch
         };
+        if self.config.generations_per_session {
+            let mut store = self.stores.shared.lock();
+            let VaultStore {
+                generations,
+                owners,
+                ..
+            } = &mut *store;
+            generations.retain(|(table, _), _| owners.get(table) != Some(&context.pipeline));
+        }
         let state = self
             .config
             .state_store(&self.stores)
@@ -2460,11 +2472,14 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("shared_state", &["D-STATE"]),
     ("forget_state", &["D-STATE"]),
     ("ignore_deletes", &["D-STATE"]),
-    ("keep_staging", &["D-DISCARD"]),
+    ("keep_staging", &["D-DISCARD", "D-REPLACE"]),
     ("keep_abandoned", &["D-DISCARD"]),
     ("no_fence", &["D-FENCE"]),
     ("wrong_fence_kind", &["D-DROP", "D-FENCE"]),
-    ("publish_all", &["D-COMMIT", "D-RETRY", "D-DISCARD"]),
+    (
+        "publish_all",
+        &["D-COMMIT", "D-RETRY", "D-DISCARD", "D-REPLACE"],
+    ),
     (
         "blank_names",
         &[
@@ -2534,6 +2549,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("children_merge_by_key", &["D-CHILDREN"]),
     ("ignore_child_tables", &["D-CHILDREN"]),
     ("finish_one_generation", &["D-REPLACE"]),
+    ("generations_per_session", &["D-REPLACE"]),
     ("ignore_seq_guard", &["D-MERGE", "D-DELETE", "D-TRUNCATE"]),
     ("forget_tombstones", &["D-DELETE", "D-TRUNCATE"]),
     ("truncate_everything", &["D-TRUNCATE"]),

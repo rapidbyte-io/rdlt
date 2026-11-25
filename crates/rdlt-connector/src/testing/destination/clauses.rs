@@ -57,7 +57,8 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "D-REPLACE",
-        statement: "a replace generation stays hidden until the commit that finishes it swaps it in",
+        statement: "a replace generation stays hidden until the commit that finishes it swaps it \
+                    in, with every row its pipeline's sessions committed into it",
         unless: "the destination cannot replace",
     },
     Clause {
