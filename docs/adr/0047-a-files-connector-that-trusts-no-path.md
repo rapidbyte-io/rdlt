@@ -162,9 +162,10 @@ when it is read and never written in a form its reader refuses.
   what it was read from. A dictionary inside a map, a union, a run-end column or a list view
   is not written as its values, and files that hold one merge with none. A merge that fails
   leaves the list as it was and removes what it wrote; the commit goes on, and the next
-  commit tries again, at the cost of opening and reading those files once more. Each commit
-  opens the files it may merge to compare their schemas, and a commit answered as the landed
-  one walks its session's staged tree: both are bounded by the list.
+  commit tries again, at the cost of opening and reading those files once more. A merge holds
+  one of its files open at a time, so no count of files a commit adds exhausts the process's
+  descriptors. Each commit opens the files it may merge to compare their schemas, and a commit
+  answered as the landed one walks its session's staged tree: both are bounded by the list.
 - **A merge table's files hold the columns their rows hold.** A merge gives the destination
   its rows as batches of the columns they hold, as ADR 0049 says, and each is written under
   those columns: JSON lines, which name their own columns, as one file, and Arrow, where a
