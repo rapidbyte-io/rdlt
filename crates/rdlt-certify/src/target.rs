@@ -202,6 +202,11 @@ impl Target {
         self.options.limits
     }
 
+    /// How often this host pings the connector it reaches.
+    pub(crate) fn heartbeat(&self) -> Duration {
+        self.options.heartbeat
+    }
+
     /// What the target is, for a report that could not learn the connector's id.
     pub fn describe(&self) -> String {
         match &self.reach {
