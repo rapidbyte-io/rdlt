@@ -11,7 +11,6 @@ mod turns;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use arrow_pyarrow::FromPyArrow as _;
 use bytes::Bytes;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::{PyAnyMethods as _, PyTuple};
@@ -25,7 +24,7 @@ use rdlt_connector::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::arrow::{NativeBatch, imported};
+use crate::arrow::{NativeBatch, batch_of, imported};
 use crate::source::called;
 use turns::Turns;
 
@@ -289,7 +288,7 @@ impl ReadBack for PythonDestination {
             |answered| {
                 answered
                     .try_iter()?
-                    .map(|exported| imported(&exported?, RecordBatch::from_pyarrow_bound))
+                    .map(|exported| imported(&exported?, batch_of))
                     .collect()
             },
         )

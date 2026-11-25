@@ -157,7 +157,10 @@ def stream(
     `pyarrow.Table.from_pylist(rows)` types `Decimal`s as decimals of the precision and scale they
     need, and a pandas frame yielded as it is, `yield df`, lands its NaN, `NaT` and `NA` as nulls
     in columns of its own types. Arrow is read where it lies, not copied, and the engine may hold
-    it after the read moves on: never write again into a buffer a read yielded. A pyarrow
+    it after the read moves on: never write again into a buffer a read yielded. It is checked
+    against its types as it is read, so a buffer that breaks them, as text that is no UTF-8 or a
+    dictionary key past its dictionary, fails the read, coded `value_error` in a batch and
+    `arrow_stream` in a stream. A pyarrow
     chunked array of structs holding a null entry, as a table's struct column, fails the read;
     another library's stream of struct arrays is read as batches, whose own nulls are not seen,
     so a null entry lands as a row of what its fields hold there: yield a table, not its column.
