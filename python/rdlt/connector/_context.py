@@ -174,7 +174,11 @@ class StreamContext:
         self._native = native
 
     def checkpoint_due(self) -> bool:
-        """Whether the engine waits for a checkpoint at the read's next safe point."""
+        """Whether the engine waits for a checkpoint at the read's next safe point.
+
+        The engine asks only a stream that declares `Checkpointing.ON_DEMAND`: for any other, this
+        is always false.
+        """
         return self._native.checkpoint_due()
 
     @property

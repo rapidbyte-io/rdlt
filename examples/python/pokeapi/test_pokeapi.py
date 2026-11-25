@@ -82,11 +82,11 @@ def test_the_source_passes_every_clause_that_applies_to_it(serve: Serve, tmp_pat
     assert by_outcome == {
         "passed": [
             *("P-HANDSHAKE", "P-ORDER", "P-ROLE", "P-LIMITS", "P-HEARTBEAT", "P-MALFORMED"),
-            *("P-CREDIT", "S-CHECK", "S-DISCOVER", "S-PLAN", "S-RESUME", "S-STOP", "S-BARRIER"),
-            "K-SOURCE",
+            *("P-CREDIT", "S-CHECK", "S-DISCOVER", "S-PLAN", "S-RESUME", "S-STOP", "K-SOURCE"),
         ],
-        # Its one partition never ends, and it keeps no position outside the engine.
-        "inapplicable": ["S-PARTITION", "S-ACK"],
+        # Its one partition never ends, it checkpoints at its own points alone, and it keeps no
+        # position outside the engine.
+        "inapplicable": ["S-PARTITION", "S-BARRIER", "S-ACK"],
     }
     assert len(results) == sum(map(len, by_outcome.values()))
 

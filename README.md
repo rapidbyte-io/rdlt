@@ -335,7 +335,9 @@ or `False` where `None` is, fails the call, naming the method.
   `spec()` is: its name, or a `rdlt.StreamName` within a namespace, such as a database schema; its
   `schema=`, any Arrow schema, anything with `__arrow_c_schema__`, refused where it is declared
   where Rust has no table schema for it, as an interval or a union; its `read_modes=`, full and
-  incremental where it has a cursor unless given; and its `change_time=` column.
+  incremental where it has a cursor unless given; its `checkpointing=`, at its own points unless
+  `Checkpointing.ON_DEMAND` says it also answers the barrier `ctx.checkpoint_due()` tells of; and
+  its `change_time=` column.
 - **Partitions.** A stream's `partitions` may answer a `Partition(id, unbounded=True)` that never
   ends, which `ctx.partition` then names. Where it names `state`, it is told the stream's
   committed `StreamState`: its phase, each partition's cursor or `PartitionState.DONE`, the

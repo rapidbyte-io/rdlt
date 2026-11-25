@@ -19,7 +19,16 @@ import pyarrow as pa
 import pydantic
 
 import rdlt
-from rdlt.connector import Config, Cursor, ReadStream, StreamContext, checkpoint, source, stream
+from rdlt.connector import (
+    Checkpointing,
+    Config,
+    Cursor,
+    ReadStream,
+    StreamContext,
+    checkpoint,
+    source,
+    stream,
+)
 
 PAGE = 10
 """Rows a batch holds."""
@@ -90,7 +99,12 @@ class Tables:
         name = table if schema == MAIN else rdlt.StreamName(table, namespace=schema)
         read = partial(self.rows, f'"{schema}"."{table}"', key, arrow)
         made: ReadStream = stream(
-            name, primary_key=key, cursor=cursor, schema=arrow, partitions=lambda: ["rows"]
+            name,
+            primary_key=key,
+            cursor=cursor,
+            schema=arrow,
+            checkpointing=Checkpointing.ON_DEMAND,
+            partitions=lambda: ["rows"],
         )(read)
         return made
 

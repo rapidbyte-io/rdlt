@@ -161,18 +161,12 @@ class PokeApi:
         Each page is followed by its checkpoint. The read ends where `rows` makes none, as where
         the engine asked the read to stop.
         """
-        before = after
         for entries, position in self.pages(resource, after, ctx):
             made = rows(entries)
             if made is None:
                 return
-            # A read that names `ctx` checkpoints on demand: a barrier the engine raised is
-            # answered before the page, where the last one ended.
-            if ctx.checkpoint_due():
-                yield checkpoint(before)
             yield made
             yield checkpoint(position)
-            before = position
 
     def details(self, entries: list[Entry], ctx: StreamContext) -> list[object] | None:
         """Each entry's pokemon, read in full, or none where the engine asked the read to stop."""

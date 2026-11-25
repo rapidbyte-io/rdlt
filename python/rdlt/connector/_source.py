@@ -12,7 +12,7 @@ from rdlt.connector._config import Config
 from rdlt.connector._context import Partition, PartitionPlan, StreamState
 from rdlt.connector._cursor import Cursor
 from rdlt.connector._declared import declare, declared_as
-from rdlt.connector._spec import Checkpointing, ReadWord, StreamSpec
+from rdlt.connector._spec import Checkpointing, CheckpointingWord, ReadWord, StreamSpec
 from rdlt.connector._streams import Committed
 from rdlt.model import ReadMode, StreamName
 
@@ -104,6 +104,7 @@ def stream(
     cursor_version: int = 1,
     schema: object = None,
     read_modes: Sequence[ReadMode | ReadWord] | None = None,
+    checkpointing: Checkpointing | CheckpointingWord = Checkpointing.NATURAL,
     change_time: str | None = None,
     partitions: _PartitionsOf | None = None,
     plan: _PlanOf | None = None,
@@ -165,9 +166,11 @@ def stream(
     `__arrow_c_schema__`, is its declared schema, as `with_schema` declares it, refused here where
     Rust cannot take it. `read_modes` are how it can be read, `ReadMode`s or their names, as
     `with_read_modes` replaces them: full, and incremental where it has a cursor, unless given; a
-    stream without a cursor is read only in full. `change_time` names the top-level column
-    holding each change's source commit time, as `with_change_time` does. It checkpoints on demand
-    where it names `ctx`, and at its own points otherwise.
+    stream without a cursor is read only in full. `checkpointing` says when it checkpoints, a
+    `Checkpointing` or its name, as `with_checkpointing` does: at its own points alone unless
+    given, and `ON_DEMAND` also at its next safe point once `ctx.checkpoint_due()` says the engine
+    asks, a promise a stream keeps only with a cursor and `ctx`. `change_time` names the top-level
+    column holding each change's source commit time, as `with_change_time` does.
 
     `plan`, called as `partitions` is or a method's name, answers a whole `PartitionPlan`, as a
     Rust stream's `plan` overrides its `partitions`, so a stream names one of the two. A stream
@@ -209,10 +212,11 @@ def stream(
 
     Raises:
         TypeError: it names `plan` and `partitions`, either without a `ctx` parameter, says where
-            it stands with no cursor, reads incrementally or as changes with none, has no name, or
-            `schema` is no Arrow schema.
-        ValueError: `cursor_version` is no `u16`, a read mode is none of `ReadMode`'s, or
-            `schema` is one Rust cannot take.
+            it stands with no cursor, reads incrementally or as changes with none, checkpoints on
+            demand without a cursor or a `ctx` parameter, has no name, or `schema` is no Arrow
+            schema.
+        ValueError: `cursor_version` is no `u16`, a read mode is none of `ReadMode`'s,
+            `checkpointing` none of `Checkpointing`'s, or `schema` is one Rust cannot take.
     """
 
     def made(function: Callable[..., Any]) -> ReadStream:
@@ -246,10 +250,17 @@ def stream(
             schema=schema,
             primary_key=primary_key,
             read_modes=default if read_modes is None else read_modes,
-            checkpointing=Checkpointing.ON_DEMAND if takes_context else Checkpointing.NATURAL,
+            checkpointing=checkpointing,
             replayable=replayable,
             change_time=change_time,
         )
+        if spec.checkpointing is Checkpointing.ON_DEMAND and (cursor is None or not takes_context):
+            needs = "a cursor" if cursor is None else "a ctx parameter"
+            message = (
+                f"stream {shown!r}: checkpointing=on_demand answers the engine with a checkpoint "
+                f"once ctx.checkpoint_due() says, which needs {needs}"
+            )
+            raise TypeError(message)
         cursored = [mode for mode in spec.read_modes if mode is not ReadMode.FULL]
         if cursored and cursor is None:
             message = (

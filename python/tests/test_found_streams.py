@@ -21,6 +21,7 @@ from rdlt.connector import (
     Cursor,
     InvalidConfig,
     ReadStream,
+    StreamContext,
     StreamSpec,
     source,
     stream,
@@ -430,6 +431,38 @@ def test_a_spec_says_when_it_checkpoints_by_a_member_or_its_name(given: object) 
     assert spec.checkpointing is Checkpointing.ON_DEMAND
     with pytest.raises(ValueError, match="sometimes"):
         StreamSpec("users", checkpointing="sometimes")  # pyright: ignore[reportArgumentType]
+
+
+def test_a_stream_checkpoints_on_demand_only_where_it_says_so() -> None:
+    # Naming `ctx` to ask whether the read was stopped promises no checkpoint when asked.
+    @stream(cursor=_Since)
+    def told(since: _Since, ctx: StreamContext) -> Iterator[object]:
+        del since, ctx
+        yield {"id": 1}
+
+    @stream(cursor=_Since, checkpointing="on_demand")
+    def asked(since: _Since, ctx: StreamContext) -> Iterator[object]:
+        del since, ctx
+        yield {"id": 1}
+
+    assert told.spec.checkpointing is Checkpointing.NATURAL
+    assert asked.spec.checkpointing is Checkpointing.ON_DEMAND
+
+
+def test_a_stream_that_cannot_answer_when_asked_does_not_say_it_checkpoints_on_demand() -> None:
+    with pytest.raises(TypeError, match="needs a cursor"):
+
+        @stream(checkpointing=Checkpointing.ON_DEMAND)
+        def uncursored(ctx: StreamContext) -> Iterator[object]:
+            del ctx
+            yield {"id": 1}
+
+    with pytest.raises(TypeError, match="needs a ctx parameter"):
+
+        @stream(cursor=_Since, checkpointing=Checkpointing.ON_DEMAND)
+        def untold(since: _Since) -> Iterator[object]:
+            del since
+            yield {"id": 1}
 
 
 @source(id="io.example.by-name", config=Config, version="1.0.0")
