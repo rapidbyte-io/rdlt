@@ -17,7 +17,9 @@ use rdlt_connector::{
     SchemaVersion, SegmentId, SegmentSet, SourceEvent, StreamName, TableChange, TablePath,
     TableRef, TableSchema, destination_factory, partition_channel, source_factory,
 };
-use rdlt_connector_reference::{MemoryDestination, MemorySource, published, schema};
+use rdlt_connector_reference::{
+    MemoryDestination, MemorySource, forget, published, schema, tables,
+};
 use serde_json::json;
 
 #[tokio::test]
@@ -117,6 +119,33 @@ async fn opening_one_pipeline_keeps_another_pipelines_staging() {
             .map(RecordBatch::num_rows)
             .sum::<usize>(),
         2
+    );
+}
+
+#[tokio::test]
+async fn a_forgotten_store_leaves_the_process_and_a_later_connection_finds_it_empty() {
+    let factory = destination_factory::<MemoryDestination>();
+    let config = || json!({ "store": "forgotten" });
+    let destination = factory
+        .connect(config(), ConnectContext::new())
+        .await
+        .unwrap();
+    let mut opened = destination.open(&open_context("forgetting")).await.unwrap();
+    let table = table_ref("t");
+    stage(&mut opened, &table, 1, vec![1, 2]).await;
+    let meta = commit_meta(&opened, 1, &[1]);
+    opened.session.commit(&meta).await.unwrap();
+    assert_eq!(tables("forgotten"), ["t"]);
+    forget("forgotten");
+    assert!(tables("forgotten").is_empty());
+    let later = factory
+        .connect(config(), ConnectContext::new())
+        .await
+        .unwrap();
+    let opened = later.open(&open_context("forgetting")).await.unwrap();
+    assert!(
+        opened.landed.is_none(),
+        "a later connection finds no commit landed"
     );
 }
 
