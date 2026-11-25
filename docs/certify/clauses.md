@@ -52,7 +52,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `P-ORDER` | a call before the handshake or before the configuration, and a second handshake or configuration, are refused with typed errors | — |
 | `P-ROLE` | a role the connector does not serve is refused as unsupported | the connector serves both roles |
 | `P-LIMITS` | a configuration, a source's cursor or a destination's batch frame beyond the connector's limit is refused with `limit_exceeded` | the connector declares no limit this host can exceed |
-| `P-HEARTBEAT` | each heartbeat is answered with its sequence number, in order | — |
+| `P-HEARTBEAT` | each heartbeat is answered with its sequence number, in order, while the stream of heartbeats stays open | — |
 | `P-MALFORMED` | a call the connector cannot read, or a frame it cannot decode, is refused with a typed error, and the connection serves on | — |
 | `P-CREDIT` | a read sends nothing more once its credit is spent, until more is granted | the connector is certified as a destination, which grants credit and spends none |
 
@@ -130,6 +130,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 - The destination clauses name their tables and columns within the destination's identifier rules, as the engine's names are: folded, lengthened with `_` past a reserved word, and a table's name that is longer than the rules allow cut to `certify_` and a digest of it. Rules that reserve every form of a column's name, or a prefix or word of `certify_`, leave every clause that names one unobserved: all but `D-CHECK` and `D-STATE`.
 - A spawned connector leads a process group the certifier stops, then kills, when the certification ends, is cut at its timeout, panics, or hears a signal. A member that left the group is not reached, and neither is anything when the certifier is killed outright.
 - `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times, or four times the watch `--credit-watch` chooses: a source that ignores credit and sends less often than that is not told from one that waits.
+- `P-HEARTBEAT` sends five heartbeats, each once the heartbeat before it was answered, and waits for each answer as long as the host waits between its own heartbeats, 5 s.
 
 ## What certification cannot show
 

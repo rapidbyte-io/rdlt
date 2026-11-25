@@ -52,7 +52,8 @@ pub const PROTOCOL_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "P-HEARTBEAT",
-        statement: "each heartbeat is answered with its sequence number, in order",
+        statement: "each heartbeat is answered with its sequence number, in order, while the \
+                    stream of heartbeats stays open",
         unless: "",
     },
     Clause {

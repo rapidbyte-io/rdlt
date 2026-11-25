@@ -228,6 +228,8 @@ group is not reached, and neither is anything when the certifier is killed outri
 - `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times, \
 or four times the watch `--credit-watch` chooses: a source that ignores credit and sends less \
 often than that is not told from one that waits.
+- `P-HEARTBEAT` sends five heartbeats, each once the heartbeat before it was answered, and waits \
+for each answer as long as the host waits between its own heartbeats, 5 s.
 
 ## What certification cannot show
 

@@ -74,6 +74,9 @@ pub(crate) enum Fault {
     Lingering,
     /// It answers no heartbeat.
     Mute,
+    /// It answers its heartbeats only once their stream ends, as a handler that reads them all
+    /// first does: a host never ends it.
+    AtEnd,
     /// It answers no handshake, though its connection lives on.
     Deaf,
     /// As a destination, it keeps to identifiers of 32 bytes, which breaks no clause.
@@ -95,7 +98,7 @@ pub(crate) enum Fault {
 }
 
 /// The clause each fault breaks.
-pub(crate) const BROKEN: [(Fault, &str); 16] = [
+pub(crate) const BROKEN: [(Fault, &str); 17] = [
     (Fault::AnyVersion, "P-HANDSHAKE"),
     (Fault::MistypedVersion, "P-HANDSHAKE"),
     (Fault::Limitless, "P-HANDSHAKE"),
@@ -104,6 +107,7 @@ pub(crate) const BROKEN: [(Fault, &str); 16] = [
     (Fault::EveryRole, "P-ROLE"),
     (Fault::Unlimited, "P-LIMITS"),
     (Fault::EchoAhead, "P-HEARTBEAT"),
+    (Fault::AtEnd, "P-HEARTBEAT"),
     (Fault::Lenient, "P-MALFORMED"),
     (Fault::Greedy, "P-CREDIT"),
     (Fault::Paced, "P-CREDIT"),
@@ -513,6 +517,18 @@ impl Connector for Fake {
         let answers: Answer<v1::Pong> = match self.fault {
             Fault::Lingering => Box::pin(pongs.chain(tokio_stream::pending())),
             Fault::Mute => Box::pin(tokio_stream::pending()),
+            Fault::AtEnd => {
+                let (answers, answered) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let pongs: Vec<_> = pongs.collect().await;
+                    for pong in pongs {
+                        if answers.send(pong).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                Box::pin(ReceiverStream::new(answered))
+            }
             _ => Box::pin(pongs),
         };
         Ok(Response::new(answers))

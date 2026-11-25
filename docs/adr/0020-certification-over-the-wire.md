@@ -43,7 +43,10 @@ clauses are ADR 0022's.
   - `P-LIMITS`: a configuration beyond the connector's limit is refused with `limit_exceeded`.
     A limit beyond the largest configuration this host sends is never met, and is not exceeded:
     the clause is inapplicable, rather than let a connector size this process's memory;
-  - `P-HEARTBEAT`: each heartbeat is answered with its sequence number, in order;
+  - `P-HEARTBEAT`: each heartbeat is answered with its sequence number, in order, while the
+    stream of heartbeats stays open. Each goes once the heartbeat before it was answered, within
+    the host's own heartbeat interval, as a host's do, which never ends the stream: a connector
+    that answers only once the stream ends is lost by every host;
   - `P-MALFORMED`: a read or write that does not begin with its start is refused, typed, and the
     connection serves on;
   - `P-CREDIT`: a read sends nothing more once its credit is spent, until more is granted. One
