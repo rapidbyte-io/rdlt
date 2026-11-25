@@ -82,7 +82,7 @@ expression: schema
     },
     "Commit": {
       "additionalProperties": false,
-      "description": "When a run commits: whichever threshold it reaches first.\n\nA run that follows its source with no `every` commits too as it plans its streams again,\nwhere reads that ended wait: their partitions are read again once their ends commit. A running\nread's checkpoints still wait for the rows or bytes, so a quiet followed partition's tail stays\nuncommitted until they are reached; setting `every` bounds that wait.",
+      "description": "When a run commits: whichever threshold it reaches first.\n\nA run that follows its source with no `every` commits too as it plans its streams again,\nwhere reads that ended wait: their partitions are read again once their ends commit. A running\nread's checkpoints make no commit due themselves, so a quiet followed partition's tail may stay\nuncommitted until the rows or bytes are reached or another read's end makes a commit due;\nsetting `every` bounds that wait.",
       "properties": {
         "bytes": {
           "anyOf": [
