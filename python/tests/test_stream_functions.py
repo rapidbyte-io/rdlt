@@ -406,6 +406,29 @@ def test_a_following_read_that_waits_for_data_ends_once_it_is_asked_to_stop(
     assert rows_of(tmp_path, "users") == [(0,)]
 
 
+def test_an_async_read_waiting_for_data_is_cancelled_where_its_read_ends(
+    tmp_path: Path, connectors: Path
+) -> None:
+    ended = threading.Event()
+
+    @stream(primary_key="id", cursor=_Since)
+    async def users(since: _Since) -> AsyncIterator[object]:
+        yield {"id": since.after + 1}
+        yield checkpoint(_Since(after=since.after + 1))
+        try:
+            # A queue that stays idle, which the read waits on without asking whether it stopped.
+            await asyncio.Event().wait()
+        finally:
+            ended.set()
+
+    built = rdlt.pipeline(
+        "idle", source=users, destination=into_sqlite(tmp_path), until=timedelta(seconds=1)
+    )
+    built.build(host(tmp_path, connectors)).run()
+    assert ended.wait(10), "the read went on waiting after its run"
+    assert rows_of(tmp_path, "users") == [(0,)]
+
+
 def test_an_async_read_s_lag_goes_through_its_router_and_is_totalled_in_the_report(
     tmp_path: Path, connectors: Path
 ) -> None:
@@ -1245,6 +1268,9 @@ class _Engine:
         with contextlib.suppress(BlockingIOError):
             self._watched.recv(64)
 
+    def gone(self) -> bool:
+        return False
+
     def close(self) -> None:
         self._watched.close()
         self._rung.close()
@@ -1272,6 +1298,77 @@ def test_an_async_read_leaves_its_event_loop_running_while_the_engine_is_full() 
         await opened
 
     assert _routed(reading) == [{"n": 1}]
+
+
+class _LetGo(_Engine):
+    """An engine that lets its read go when told, waking its loop as the native side does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._let_go = False
+
+    def gone(self) -> bool:
+        return self._let_go
+
+    def let_go(self) -> None:
+        self._let_go = True
+        self._rung.send(b"\0")
+
+
+def test_an_async_read_the_engine_lets_go_is_cancelled_where_it_waits() -> None:
+    ended: list[str] = []
+
+    async def reading(_ctx: StreamContext, engine: _Engine) -> AsyncIterator[object]:
+        engine.room = True
+        yield {"n": 1}
+        try:
+            cast("_LetGo", engine).let_go()
+            await asyncio.Event().wait()
+        finally:
+            ended.append("its finally ran")
+
+    engine = _LetGo()
+    ctx = StreamContext(cast("_native.StreamContext", engine))
+    read = _reading.pushed(reading(ctx, engine), cast("_reading.Out", engine), engine)
+    try:
+        asyncio.run(asyncio.wait_for(read, timeout=30))
+    finally:
+        engine.close()
+    assert engine.sent == [{"n": 1}]
+    assert ended == ["its finally ran"]
+
+
+class _GoneAtYield(_Engine):
+    """An engine that let its read go before its first yield, its loop woken to see it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rung.send(b"\0")
+
+    def send(self, item: object) -> bool | None:
+        return False
+
+    def gone(self) -> bool:
+        return True
+
+
+def test_an_async_read_whose_yield_finds_it_gone_cleans_up_whole() -> None:
+    cleaned: list[str] = []
+
+    async def reading() -> AsyncIterator[object]:
+        try:
+            yield {"n": 1}
+        finally:
+            await asyncio.sleep(0)
+            cleaned.append("cleaned up")
+
+    engine = _GoneAtYield()
+    read = _reading.pushed(reading(), cast("_reading.Out", engine), engine)
+    try:
+        asyncio.run(asyncio.wait_for(read, timeout=30))
+    finally:
+        engine.close()
+    assert cleaned == ["cleaned up"]
 
 
 class _Gone(_Engine):

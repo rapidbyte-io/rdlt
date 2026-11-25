@@ -849,3 +849,86 @@ fn an_incremental_read_that_pushes_nothing_ends_clean() {
         assert_eq!(error, None);
     });
 }
+
+/// A stream whose first read waits for `builtins.release`, and which records in `builtins.reads`
+/// as each read begins and returns.
+const RELEASED: &str = "\
+import builtins
+builtins.release = threading.Event()
+builtins.reads = []
+def read(partition, cursor, context):
+    builtins.reads.append('began')
+    if len(builtins.reads) == 1:
+        builtins.release.wait(30)
+    builtins.reads.append('returned')
+    yield {'n': 1}
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+streams = [stream]";
+
+/// What `builtins.reads` holds.
+fn reads() -> Vec<String> {
+    embedded::with(|py| {
+        py.eval(c"list(__import__('builtins').reads)", None, None)
+            .unwrap()
+            .extract()
+            .unwrap()
+    })
+}
+
+/// Lets go of `builtins.release`.
+fn released() {
+    embedded::with(|py| {
+        py.run(c"__import__('builtins').release.set()", None, None)
+            .unwrap();
+    });
+}
+
+/// Drives `read`, a read of `RELEASED`, until its generator has begun, within 30 s.
+async fn begun<F: Future + Unpin>(read: &mut F) {
+    let waited = tokio::time::timeout(Duration::from_secs(30), async {
+        while reads().is_empty() {
+            tokio::select! {
+                biased;
+                _ = &mut *read => panic!("the read ended before its generator began"),
+                () = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
+    });
+    waited.await.expect("the read began within 30 s");
+}
+
+/// A read of `rows`'s one partition.
+fn request() -> ReadRequest {
+    ReadRequest::new(StreamName::new("rows").unwrap(), Partition::single(), None)
+}
+
+#[test]
+fn a_stopped_read_ends_once_its_thread_has_returned() {
+    embedded::with(|py| {
+        let source_factory = factory(py, RELEASED).factory();
+        let runtime = runtime::get(py).unwrap();
+        py.detach(|| {
+            runtime.block_on(async {
+                let source = source_factory
+                    .connect(serde_json::json!({}), ConnectContext::new())
+                    .await
+                    .unwrap();
+                let (sink, feed) = partition_channel(std::num::NonZeroUsize::MIN);
+                let mut read = source.read(request(), sink);
+                begun(&mut read).await;
+                feed.stop();
+                let early = tokio::time::timeout(Duration::from_millis(500), &mut read).await;
+                assert!(
+                    early.is_err(),
+                    "a stopped read ends once its thread has, not before"
+                );
+                released();
+                let ended = tokio::time::timeout(Duration::from_secs(30), read).await;
+                ended.expect("within 30 s").unwrap();
+            });
+        });
+        assert_eq!(reads(), ["began", "returned"]);
+    });
+}

@@ -189,7 +189,14 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   `yield checkpoint(cursor)`; one that yields rows and no checkpoint after any fails
   `checkpoint_missing`, since none of them could land. Any other partition a stream declares ends: a
   read that ends on rows finishes it, and one that ends on a checkpoint leaves it there. A stream
-  without a cursor is read whole every run.
+  without a cursor is read whole every run. A read the engine ends, by a stop or by letting it go,
+  is told at once: its channel closes, so a sync read, which nothing can interrupt, finds it at its
+  next yield, one that pushes nothing included, or by asking `ctx.stopped()`, and an async read is
+  cancelled where it waits, as asyncio cancels a task, its `finally` blocks running then, and ends
+  as a read whose last yield found it gone. A stopped read ends once its thread has returned, as a
+  Rust read's future ends when its code does, so its caller bounds the wait, the engine by its stop
+  wait and certification's `S-STOP` by its window, and a sync read that never yields or asks holds
+  its stop until then.
 - **Served mode is the Rust `serve`**, inside the extension, with a connector binary's flags and the
   GIL released while it serves: `serve` takes a source class, a destination class or one of each,
   whose roles one process serves, as `Served` does. A served connector's code runs on Python's

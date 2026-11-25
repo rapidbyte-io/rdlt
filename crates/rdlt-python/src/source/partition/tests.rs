@@ -37,7 +37,7 @@ fn started(py: Python<'_>, body: &str) -> Reading {
     let (context, _due) = NativeStreamContext::new(&Partition::single(), Told::default());
     let stream = Arc::new(stream(py, body));
     let whole = "whole".to_owned();
-    Reading::start("rdlt-test", stream, whole, None, context, LIMITS).expect("it starts")
+    Reading::start("rdlt-test", stream, whole, None, context, LIMITS, ()).expect("it starts")
 }
 
 fn drained(py: Python<'_>, mut reading: Reading) -> Vec<Pushed> {
@@ -209,6 +209,7 @@ fn a_thread_that_ends_without_saying_how_fails_the_read() {
         let reading = Reading {
             received,
             told: Arc::new(AtomicBool::new(false)),
+            outlet: super::Outlet::default(),
         };
         let pushed = drained(py, reading);
         let [Pushed::Failed(error)] = &pushed[..] else {
@@ -298,6 +299,67 @@ fn a_stopped_read_returns_while_its_generator_is_blocked() {
             closed,
             "the generator was not closed once its read had gone"
         );
+    });
+}
+
+/// Whether the read `body` defines, once its first push is taken, it says it waits by setting
+/// `builtins.waiting`, and the read is dropped, as the engine drops a read it lets go, says it
+/// ended, by setting `builtins.ended`, within 10 s.
+fn ends_once_let_go(py: Python<'_>, body: &str) -> bool {
+    py.run(
+        c"import builtins, threading; builtins.ended = threading.Event(); builtins.waiting = threading.Event()",
+        None,
+        None,
+    )
+    .unwrap();
+    let reading = started(py, body);
+    let runtime = runtime::get(py).unwrap();
+    py.detach(|| {
+        runtime.block_on(async move {
+            let mut reading = reading;
+            let first = tokio::time::timeout(Duration::from_secs(30), reading.next());
+            assert!(matches!(
+                first.await.expect("within 30 s"),
+                Some(Pushed::Json(_))
+            ));
+            let waiting = embedded::with(|py| {
+                py.eval(c"__import__('builtins').waiting.wait(10)", None, None)
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            });
+            assert!(waiting, "the read waits");
+        });
+    });
+    py.detach(|| {
+        embedded::with(|py| {
+            py.eval(c"__import__('builtins').ended.wait(10)", None, None)
+                .unwrap()
+                .extract::<bool>()
+                .unwrap()
+        })
+    })
+}
+
+#[test]
+fn an_async_read_waiting_where_no_yield_comes_is_cancelled_once_let_go() {
+    embedded::with(|py| {
+        let ended = ends_once_let_go(
+            py,
+            "import asyncio, builtins\nasync def read(p, c, x):\n    yield {'n': 1}\n    await asyncio.sleep(0)\n    try:\n        builtins.waiting.set()\n        await asyncio.Event().wait()\n    finally:\n        builtins.ended.set()",
+        );
+        assert!(ended, "the async read went on waiting once let go");
+    });
+}
+
+#[test]
+fn a_sync_read_whose_yields_push_nothing_finds_it_was_let_go() {
+    embedded::with(|py| {
+        let ended = ends_once_let_go(
+            py,
+            "import builtins, time\ndef read(p, c, x):\n    yield {'n': 1}\n    builtins.waiting.set()\n    try:\n        while True:\n            time.sleep(0.005)\n            yield []\n    finally:\n        builtins.ended.set()",
+        );
+        assert!(ended, "the sync read went on yielding once let go");
     });
 }
 
@@ -733,7 +795,7 @@ fn started_within(py: Python<'_>, body: &str, limits: JsonLimits) -> Reading {
     let (context, _due) = NativeStreamContext::new(&Partition::single(), Told::default());
     let stream = Arc::new(stream(py, body));
     let whole = "whole".to_owned();
-    Reading::start("rdlt-test", stream, whole, None, context, limits).expect("it starts")
+    Reading::start("rdlt-test", stream, whole, None, context, limits, ()).expect("it starts")
 }
 
 /// What `builtins.<name>` holds, read from this thread.
@@ -1224,6 +1286,25 @@ async def read(p, c, x):
             );
         }
         assert!(left.is_empty(), "descriptors left open: {left:?}");
+    });
+}
+
+#[test]
+fn an_async_read_s_socket_closes_as_it_ends_whatever_keeps_its_context() {
+    embedded::with(|py| {
+        let warming = "async def read(p, c, x):\n    yield {'n': 1}";
+        drop(drained(py, started(py, warming)));
+        let before = descriptors();
+        let keeping =
+            "import builtins\nasync def read(p, c, x):\n    builtins.kept = x\n    yield {'n': 1}";
+        drop(drained(py, started(py, keeping)));
+        assert!(
+            descriptors_back_to(py, before),
+            "{} descriptors left open",
+            descriptors() - before
+        );
+        py.run(c"del __import__('builtins').kept", None, None)
+            .unwrap();
     });
 }
 

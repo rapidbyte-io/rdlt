@@ -213,9 +213,10 @@ class StreamContext:
     def stopped(self) -> bool:
         """Whether the engine asked the read to stop, or stopped listening.
 
-        A read that waits for data, as one following its partition does, asks between its waits
-        and returns, as a Rust read selects on its emitter's `stopped()`: its thread then ends
-        with the run, rather than at its next yield.
+        A sync read that waits for data, as one following its partition does, asks between its
+        waits and returns, as a Rust read selects on its emitter's `stopped()`: its thread then
+        ends with the run, rather than at its next yield. An async read need not ask: it is
+        cancelled where it waits once the engine has let it go, as asyncio cancels any task.
         """
         return self._native.stopped()
 
