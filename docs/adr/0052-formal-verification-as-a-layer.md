@@ -290,13 +290,14 @@ A formal layer is added to the layers of its class, never in place of one.
   holds it, in a run with neither faults nor disruptions, in the engine's process on the single
   thread, that succeeded in one attempt: no partition of a followed stream its source names waits
   longer for a read, from its plan's answer or, where no plan has named it since, from when the
-  source named it, than the engine's timers allow, three re-plan intervals, the policy's interval
-  and two barrier waits, and none its plans dropped is held, past that, short of a checkpoint the
-  engine took from its read; so a run that stops planning fails it too. The seed's reach `KeptUp`
-  says the bound was shorter than the run. It holds again at each phase's end, where every partition
-  is named again and every row must land. `removed_drains` holds, in the engine's process, that an
-  undisturbed run that succeeded in one attempt, with every run beside it, commits every checkpoint
-  the engine took from a read of a partition its plans dropped. Beside them, the engine's tests
+  source named it, than the engine's timers allow, three re-plan intervals, two of the policy's
+  intervals and two barrier waits, and none its plans dropped is held, past that, short of a
+  checkpoint the engine took from its read; so a run that stops planning fails it too. The seed's
+  reach `KeptUp` says the bound was shorter than the run. It holds again at each phase's end, where
+  every partition is named again and every row must land. `removed_drains` holds, in the engine's
+  process, that an undisturbed run that succeeded in one attempt, with every run beside it, commits
+  every checkpoint the engine took from a read of a partition its plans dropped. Beside them, the
+  engine's tests
   `a_following_run_starts_the_partitions_its_source_adds`,
   `a_following_run_reads_a_bounded_stream_again_as_it_grows`,
   `a_run_for_a_while_follows_its_source_and_loads_each_message_once` and
