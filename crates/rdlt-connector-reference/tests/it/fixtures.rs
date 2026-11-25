@@ -55,7 +55,15 @@ pub(crate) fn context() -> OpenContext {
 }
 
 pub(crate) async fn open(destination: &dyn Destination) -> OpenedSession {
-    destination.open(&context()).await.expect("the root opens")
+    open_as(destination, PIPELINE).await
+}
+
+/// A session of the pipeline `pipeline` of `destination`.
+pub(crate) async fn open_as(destination: &dyn Destination, pipeline: &str) -> OpenedSession {
+    let context = OpenContext {
+        pipeline: PipelineId::parse(pipeline).expect("a valid pipeline id"),
+    };
+    destination.open(&context).await.expect("the session opens")
 }
 
 /// The append table `name`.

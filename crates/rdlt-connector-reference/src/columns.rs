@@ -1,8 +1,43 @@
-//! How a reference destination keeps a table's columns as schema changes arrive.
+//! How a reference destination keeps a table's columns as schema changes arrive, and holds
+//! what its table writers stage to them.
 
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
+use rdlt_connector::merge;
 use rdlt_connector::{
-    ConnectorError, Field, LogicalType, Result, SCHEMA_CONFLICT, TableChange, TableSchema,
+    COLUMN_MISSING, ConnectorError, Field, LogicalType, MergeKey, Result, SCHEMA_CONFLICT,
+    TableChange, TableSchema,
 };
+
+/// Refuses `batch`, written for the table `name` whose columns are `stored`, unless each of its
+/// columns is one of the table's at a type the column holds, the op and unchanged flags of a
+/// change stream merged by `key` apart.
+///
+/// A column the table lacks is a `Data` error coded `column_missing`, and a value its column's
+/// type cannot hold one under the merge's codes.
+pub(crate) fn written(
+    name: &str,
+    stored: &SchemaRef,
+    key: Option<&MergeKey>,
+    batch: &RecordBatch,
+) -> Result<()> {
+    let changes = key.and_then(|key| key.changes.as_ref());
+    let flag = |column: &str| {
+        changes.is_some_and(|changes| {
+            *changes.op == *column || changes.unchanged.as_deref() == Some(column)
+        })
+    };
+    let fields = batch.schema_ref().fields();
+    let lacked = fields
+        .iter()
+        .map(|field| field.name())
+        .find(|column| stored.column_with_name(column).is_none() && !flag(column));
+    if let Some(column) = lacked {
+        let message = format!("table {name} has no column {column}, which a batch holds");
+        return Err(ConnectorError::data(message).with_code(COLUMN_MISSING));
+    }
+    merge::holds([batch], stored).map_err(|error| merge::failed("staging rows", error))
+}
 
 /// The columns of a table that has `schema` once `change` applies to it; `None` is a table that
 /// does not exist yet.

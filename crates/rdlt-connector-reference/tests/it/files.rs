@@ -291,17 +291,6 @@ async fn the_files_source_reads_every_row_of_both_formats() {
     }
 }
 
-/// A session of the pipeline `name` of `destination`.
-async fn opened_as(
-    destination: &dyn rdlt_connector::Destination,
-    name: &str,
-) -> rdlt_connector::OpenedSession {
-    let context = rdlt_connector::OpenContext {
-        pipeline: rdlt_connector::PipelineId::parse(name).expect("a valid pipeline id"),
-    };
-    destination.open(&context).await.expect("the session opens")
-}
-
 #[tokio::test]
 async fn a_writer_or_a_change_of_a_table_never_created_claims_nothing() {
     use rdlt_connector::{Field, Fields, GenerationId, LogicalType};
@@ -354,7 +343,7 @@ async fn a_writer_or_a_change_of_a_table_never_created_claims_nothing() {
     let catalogs = root.path().join("_rdlt").join("tables");
     assert!(crate::fixtures::dirs_under(&catalogs).is_empty());
     // Any pipeline may create the table, and load it.
-    let mut other = opened_as(destination.as_ref(), "other").await;
+    let mut other = crate::fixtures::open_as(destination.as_ref(), "other").await;
     let (schema, batch) = ids(&[7]);
     stage(&mut other, &ghost, &schema, batch, 1).await;
     other.session.commit(&meta(&other, 1, &[1])).await.unwrap();
@@ -369,7 +358,7 @@ async fn a_table_another_pipeline_created_is_theirs_and_keeps_through_a_creation
     let (destination, reader) = crate::fixtures::connect_with(root.path(), json!({})).await;
     let mut opened = open(destination.as_ref()).await;
     let theirs = table("theirs");
-    let mut other = opened_as(destination.as_ref(), "other").await;
+    let mut other = crate::fixtures::open_as(destination.as_ref(), "other").await;
     let (schema, batch) = ids(&[7]);
     stage(&mut other, &theirs, &schema, batch, 1).await;
     other.session.commit(&meta(&other, 1, &[1])).await.unwrap();

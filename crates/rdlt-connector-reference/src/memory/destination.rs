@@ -454,9 +454,7 @@ impl TableWriter for MemoryWriter {
         store.owned(&self.pipeline, &self.table)?;
         let table = store.tables.entry(self.table.clone()).or_default();
         // Nothing of a flush is staged where a batch of it is refused.
-        for (_, batch) in &self.buffered {
-            table.admits(batch)?;
-        }
+        table.admits(&self.table, &self.buffered)?;
         let mut stats = WriteStats::default();
         for (segment, batch) in self.buffered.drain(..) {
             stats.rows += count(batch.num_rows());

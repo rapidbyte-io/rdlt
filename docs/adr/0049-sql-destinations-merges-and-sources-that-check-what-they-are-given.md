@@ -178,6 +178,13 @@ generated sources each take something as given unless they check it:
     one there. A tombstone is no row, but it counts as one where the change is to its key or
     sequence, which its line holds. The change is checked again under the table's lock, as a
     change of a column's type is.
+- **A table writer stages only its table's columns, at types they hold.** The memory, SQLite and
+  files destinations refuse at the flush, before anything is staged, a batch holding a column
+  the table lacks, a change stream's op and flags apart, as a `Data` error coded
+  `column_missing`, SQLite comparing names as it folds them. A value its column's type cannot
+  hold is refused under the merge's codes below, and SQLite refuses a column of values its
+  column is not declared for (ADR 0006). Nulls are not checked here: a change stream's written
+  batches hold them in any column.
 - **A schema change the held rows do not fit is refused where it is applied.** The memory
   destination converts what a table holds, its rows, generations and tombstones, before a
   column takes a type, and refuses the change as `schema_conflict`: the table stays at the

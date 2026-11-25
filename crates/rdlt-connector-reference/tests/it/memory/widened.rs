@@ -14,7 +14,8 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::published;
 
-use super::owned::{meta, open, store};
+use super::owned::{meta, store};
+use crate::fixtures::open_as;
 
 fn seq(value: u8) -> Vec<u8> {
     let mut seq = vec![0; 16];
@@ -61,7 +62,7 @@ async fn staged(session: &mut OpenedSession, segment: u64, id: i64, until: Array
 /// another row at the unit the column then has; returns the widen's outcome.
 async fn widened(store_name: &str, stored: i64) -> Result<(), rdlt_connector::ConnectorError> {
     let destination = store(store_name).await;
-    let mut session = open(destination.as_ref(), "p").await;
+    let mut session = open_as(destination.as_ref(), "p").await;
     let seconds = LogicalType::Timestamp(TimeUnit::Second, None);
     let nanos = LogicalType::Timestamp(TimeUnit::Nanosecond, None);
     let create = TableChange::Create {
@@ -175,7 +176,7 @@ async fn a_table_that_holds_tombstones_takes_a_widen_whatever_its_sequence_is() 
     for (case, kind) in kinds.into_iter().enumerate() {
         let name = format!("widened-over-a-tombstone-{case}");
         let destination = store(&name).await;
-        let mut session = open(destination.as_ref(), "p").await;
+        let mut session = open_as(destination.as_ref(), "p").await;
         let create = TableChange::Create {
             table: changes(),
             schema: TableSchema::new(vec![
@@ -229,7 +230,7 @@ async fn a_table_that_holds_tombstones_takes_a_widen_whatever_its_sequence_is() 
 #[tokio::test]
 async fn a_widen_a_staged_value_does_not_fit_is_refused() {
     let destination = store("widened-staged").await;
-    let mut session = open(destination.as_ref(), "p").await;
+    let mut session = open_as(destination.as_ref(), "p").await;
     let seconds = LogicalType::Timestamp(TimeUnit::Second, None);
     let create = TableChange::Create {
         table: events(),
@@ -330,7 +331,7 @@ async fn to_json(
     Vec<(i64, Option<String>)>,
 ) {
     let destination = store(store_name).await;
-    let mut session = open(destination.as_ref(), "p").await;
+    let mut session = open_as(destination.as_ref(), "p").await;
     let create = TableChange::Create {
         table: events(),
         schema: TableSchema::new(vec![
@@ -472,7 +473,7 @@ async fn text_the_engine_rendered_a_type_as_becomes_that_type_s_json_when_it_wid
     for (case, (logical, text, json)) in cases.into_iter().enumerate() {
         let name = format!("widened-lowered-{case}");
         let destination = store(&name).await;
-        let mut session = open(destination.as_ref(), "p").await;
+        let mut session = open_as(destination.as_ref(), "p").await;
         let create = TableChange::Create {
             table: events(),
             schema: TableSchema::new(vec![

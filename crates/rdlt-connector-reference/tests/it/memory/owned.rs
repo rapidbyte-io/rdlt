@@ -7,25 +7,19 @@ use arrow_array::types::Int64Type;
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
 use rdlt_connector::{
     ChildTable, CommitKey, CommitMeta, ConnectContext, ConnectorError, ConnectorErrorKind,
-    Destination, DroppedTable, GenerationId, MergeKey, OpenContext, OpenedSession, PipelineId,
-    RootKey, SchemaVersion, SegmentId, TableChange, TablePath, TableRef, TableSchema,
-    destination_factory,
+    Destination, DroppedTable, GenerationId, MergeKey, OpenedSession, RootKey, SchemaVersion,
+    SegmentId, TableChange, TablePath, TableRef, TableSchema, destination_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, published};
 use serde_json::json;
+
+use crate::fixtures::open_as;
 
 pub(super) async fn store(name: &str) -> Box<dyn Destination> {
     destination_factory::<MemoryDestination>()
         .connect(json!({ "store": name }), ConnectContext::new())
         .await
         .expect("the memory destination connects")
-}
-
-pub(super) async fn open(destination: &dyn Destination, pipeline: &str) -> OpenedSession {
-    let context = OpenContext {
-        pipeline: PipelineId::parse(pipeline).expect("a valid pipeline id"),
-    };
-    destination.open(&context).await.expect("the session opens")
 }
 
 /// The table `name` at the path `path`, merging by `key` where one is given.
@@ -140,14 +134,14 @@ pub(super) fn refusal<T: std::fmt::Debug>(
 async fn a_listed_child_table_of_another_pipeline_is_refused() {
     let destination = store("owned-children").await;
     let items = table("items", "items", Some("key"));
-    let mut victim = open(destination.as_ref(), "victim").await;
+    let mut victim = open_as(destination.as_ref(), "victim").await;
     stage(&mut victim, &items, 1, &[1, 2]).await;
     victim
         .session
         .commit(&meta(&victim, 1, &[1]))
         .await
         .expect("the victim commits");
-    let mut intruder = open(destination.as_ref(), "intruder").await;
+    let mut intruder = open_as(destination.as_ref(), "intruder").await;
     stage(&mut intruder, &table("r", "r", Some("id")), 1, &[2]).await;
     let mut listing = meta(&intruder, 1, &[1]);
     listing.child_tables = vec![ChildTable {
@@ -175,7 +169,7 @@ async fn a_listed_child_table_of_another_pipeline_is_refused() {
 async fn replaced_beside_a_namesake(store_name: &str, dropping: bool) -> Vec<i64> {
     let destination = store(store_name).await;
     let orders = table("orders", "orders", None);
-    let mut a = open(destination.as_ref(), "a").await;
+    let mut a = open_as(destination.as_ref(), "a").await;
     stage(&mut a, &orders, 1, &[1]).await;
     a.session
         .commit(&meta(&a, 1, &[1]))
@@ -191,7 +185,7 @@ async fn replaced_beside_a_namesake(store_name: &str, dropping: bool) -> Vec<i64
         .await
         .expect("the generation's rows commit");
     let namesake = table("orders_abc234", "orders", None);
-    let mut b = open(destination.as_ref(), "b").await;
+    let mut b = open_as(destination.as_ref(), "b").await;
     stage(&mut b, &namesake, 1, &[99]).await;
     b.session
         .commit(&meta(&b, 1, &[1]))
@@ -227,7 +221,7 @@ async fn a_path_another_pipeline_registered_swaps_the_pipeline_s_own_table() {
 async fn a_writer_of_a_table_dropped_since_stages_nothing() {
     let destination = store("owned-dropped").await;
     let orders = table("orders", "orders", None);
-    let mut session = open(destination.as_ref(), "a").await;
+    let mut session = open_as(destination.as_ref(), "a").await;
     let create = TableChange::Create {
         table: orders.clone(),
         schema: TableSchema::from_arrow(&rows(&[1]).schema()).expect("a schema"),
@@ -263,7 +257,7 @@ async fn a_writer_of_a_table_dropped_since_stages_nothing() {
 async fn a_generation_finished_for_a_table_dropped_since_creates_nothing() {
     let destination = store("owned-finished").await;
     let orders = table("orders", "orders", None);
-    let mut session = open(destination.as_ref(), "a").await;
+    let mut session = open_as(destination.as_ref(), "a").await;
     stage(&mut session, &orders, 1, &[1]).await;
     session
         .session
@@ -285,7 +279,7 @@ async fn a_generation_finished_for_a_table_dropped_since_creates_nothing() {
         .expect("the commit lands");
     assert!(rdlt_connector_reference::tables("owned-finished").is_empty());
     // A table another pipeline creates since is not what the path named either.
-    let mut other = open(destination.as_ref(), "b").await;
+    let mut other = open_as(destination.as_ref(), "b").await;
     stage(&mut other, &orders, 1, &[5]).await;
     other
         .session
@@ -310,7 +304,7 @@ async fn a_generation_finished_for_a_table_dropped_since_creates_nothing() {
 async fn a_writer_or_a_change_of_a_table_never_created_claims_nothing() {
     use rdlt_connector::{Field, Fields, LogicalType};
     let destination = store("owned-never-created").await;
-    let mut session = open(destination.as_ref(), "p").await;
+    let mut session = open_as(destination.as_ref(), "p").await;
     let ghost = table("ghost", "ghost", None);
     let unowned = (ConnectorErrorKind::Config, Some("table_unowned".to_owned()));
     let generation = TableRef {
@@ -354,7 +348,7 @@ async fn a_writer_or_a_change_of_a_table_never_created_claims_nothing() {
     assert_eq!(refusal(created).0, ConnectorErrorKind::Data);
     assert!(rdlt_connector_reference::tables("owned-never-created").is_empty());
     // Any pipeline may create the table, and load it.
-    let mut other = open(destination.as_ref(), "q").await;
+    let mut other = open_as(destination.as_ref(), "q").await;
     stage(&mut other, &ghost, 1, &[7]).await;
     other
         .session
@@ -362,4 +356,39 @@ async fn a_writer_or_a_change_of_a_table_never_created_claims_nothing() {
         .await
         .expect("the load lands");
     assert_eq!(ids("owned-never-created", "ghost"), [7]);
+}
+
+#[tokio::test]
+async fn a_batch_of_a_column_the_table_lacks_or_does_not_hold_stages_nothing() {
+    let destination = store("owned-columns").await;
+    let mut session = open_as(destination.as_ref(), "p").await;
+    let orders = table("orders", "orders", None);
+    stage(&mut session, &orders, 1, &[1]).await;
+    let mut extra = rows(&[2]).columns().to_vec();
+    extra.push(Arc::new(Int64Array::from(vec![2])));
+    let mut fields: Vec<_> = rows(&[2]).schema().fields().iter().cloned().collect();
+    fields.push(Arc::new(arrow_schema::Field::new(
+        "extra",
+        arrow_schema::DataType::Int64,
+        true,
+    )));
+    let lacked =
+        RecordBatch::try_new(Arc::new(arrow_schema::Schema::new(fields)), extra).expect("a batch");
+    let texts = Arc::new(arrow_array::StringArray::from(vec!["abc"])) as ArrayRef;
+    let retyped = RecordBatch::try_from_iter([("id", texts)]).expect("a batch");
+    for (batch, code) in [(lacked, "column_missing"), (retyped, "type_unconvertible")] {
+        let mut writer = session
+            .session
+            .writer(&orders)
+            .await
+            .expect("a table writer opens");
+        writer
+            .write(SegmentId(2), batch)
+            .await
+            .expect("the write buffers");
+        let refused = (ConnectorErrorKind::Data, Some(code.to_owned()));
+        assert_eq!(refusal(writer.flush().await), refused);
+    }
+    let staged = rdlt_connector_reference::staged("owned-columns", "orders");
+    assert_eq!(staged, 1, "the first row alone is staged");
 }
