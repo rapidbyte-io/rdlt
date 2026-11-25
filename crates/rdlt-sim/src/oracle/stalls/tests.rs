@@ -45,7 +45,7 @@ fn a_dropped_partition_past_the_bound_held_short_of_its_taken_checkpoint_is_undr
 }
 
 #[test]
-fn a_following_run_waits_three_plans_its_interval_and_two_barriers_at_most() {
+fn a_following_run_waits_three_plans_two_intervals_and_two_barriers_at_most() {
     let ms = Duration::from_millis;
     let configured = |every: Option<Duration>| {
         let policy = CommitPolicy::new(every, Some(10), None).unwrap();
@@ -53,5 +53,5 @@ fn a_following_run_waits_three_plans_its_interval_and_two_barriers_at_most() {
         builder.commit(policy).build().unwrap()
     };
     assert_eq!(bound(&configured(None)), ms(770));
-    assert_eq!(bound(&configured(Some(ms(1000)))), ms(1770));
+    assert_eq!(bound(&configured(Some(ms(1000)))), ms(2770));
 }

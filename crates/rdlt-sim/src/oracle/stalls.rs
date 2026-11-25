@@ -18,13 +18,13 @@ use crate::world::World;
 ///
 /// A read's end waits for a commit, its barrier answered: the policy's interval, or a re-plan's
 /// where it has none. A re-plan then reads the partition again, and the read may wait for a slot
-/// behind another whose cursor waits for a commit of its own.
+/// behind another whose cursor waits for a commit of its own: under an interval, a second one.
 pub(super) fn bound(config: &EngineConfig) -> Duration {
     let every = config
         .commit()
         .and_then(CommitPolicy::every)
         .unwrap_or_default();
-    config.replan() * 3 + every + config.barrier_wait() * 2
+    config.replan() * 3 + every * 2 + config.barrier_wait() * 2
 }
 
 /// The stalls of the runs whose reads `connections` hold, by `now`, each partition of a stream
