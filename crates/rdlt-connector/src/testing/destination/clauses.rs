@@ -45,7 +45,8 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "D-STATE",
-        statement: "committed state records are returned by the next open",
+        statement: "committed state records are returned by the next open of their pipeline, and \
+                    by no other pipeline's",
         unless: "",
     },
     Clause {
