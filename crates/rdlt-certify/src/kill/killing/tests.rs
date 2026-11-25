@@ -83,6 +83,78 @@ impl DestinationWriter for TakingWriter {
     }
 }
 
+/// A destination that takes every write and fails its first commit after a kill, as a connection
+/// a kill ended fails the commit it carries.
+struct Killed {
+    capabilities: Capabilities,
+    kills: Kills,
+    /// The kills counted at the last commit.
+    seen: Arc<AtomicU64>,
+}
+
+struct KilledSession {
+    kills: Kills,
+    seen: Arc<AtomicU64>,
+}
+
+impl Destination for Killed {
+    fn capabilities(&self) -> &Capabilities {
+        &self.capabilities
+    }
+
+    fn check(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn open<'a>(&'a self, _: &'a OpenContext) -> BoxFuture<'a, Result<OpenedSession>> {
+        Box::pin(async {
+            let session = KilledSession {
+                kills: self.kills.clone(),
+                seen: Arc::clone(&self.seen),
+            };
+            Ok(OpenedSession {
+                session: Box::new(session),
+                epoch: Epoch(1),
+                landed: None,
+                state: Vec::new(),
+            })
+        })
+    }
+}
+
+impl DestinationSession for KilledSession {
+    fn apply_schema<'a>(&'a mut self, _: &'a TableChange) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn writer<'a>(
+        &'a mut self,
+        _: &'a TableRef,
+    ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
+        Box::pin(async { Ok(Box::new(TakingWriter) as Box<dyn DestinationWriter>) })
+    }
+
+    fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
+        Box::pin(async move {
+            let now = self.kills.count();
+            if self.seen.swap(now, Ordering::SeqCst) < now {
+                let message = "the connector was killed";
+                return Err(ConnectorError::new(ConnectorErrorKind::Transient, message));
+            }
+            Ok(Receipt {
+                key: meta.key,
+                committed_at: SystemTime::now(),
+                rows: 0,
+                bytes: 0,
+            })
+        })
+    }
+
+    fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 /// A destination that takes every call but fails its `fails`th commit, as a connector killed
 /// before it answers it does.
 struct Failing {
@@ -251,14 +323,21 @@ fn a_killing_destination_carries_the_calls_its_destination_carries() {
 }
 
 #[tokio::test]
-async fn kills_land_after_the_settled_commit_before_the_scheduled_one_and_losing_an_answer() {
+async fn each_point_kills_once_though_a_kill_fails_the_commit_an_answer_is_drawn_on() {
     let kills = Kills::new();
+    // The answer is drawn on the commit a kill precedes, as two of the nine pairs a seed draws
+    // are.
     let schedule = Schedule {
         settled: 2,
         commit: 3,
-        answer: Some(1),
+        answer: Some(3),
     };
-    let killing = Killing::new(Arc::new(Taking(Capabilities::minimal())), &kills, schedule);
+    let killed = Killed {
+        capabilities: Capabilities::minimal(),
+        kills: kills.clone(),
+        seen: Arc::default(),
+    };
+    let killing = Killing::new(Arc::new(killed), &kills, schedule);
     let context = OpenContext {
         pipeline: PipelineId::parse("killing").expect("a valid id"),
     };
@@ -268,33 +347,32 @@ async fn kills_land_after_the_settled_commit_before_the_scheduled_one_and_losing
         .await
         .expect("a table writer");
     writer.write(SegmentId(1), batch()).await.expect("written");
-    assert_eq!(kills.count(), 0, "no commit yet");
+    for _ in 0..2 {
+        session.commit(&meta()).await.expect("answered");
+    }
+    assert_eq!(kills.count(), 0, "nothing before the second commit settles");
+    writer.write(SegmentId(2), batch()).await.expect("written");
+    assert_eq!(kills.count(), 1, "killed at the first write after it");
+    writer.write(SegmentId(3), batch()).await.expect("written");
+    assert_eq!(kills.count(), 1, "and at no write after");
+    let failed = session
+        .commit(&meta())
+        .await
+        .expect_err("the kill before the third commit fails it");
+    assert_ne!(failed.code(), Some(CONNECTOR_LOST));
+    assert_eq!(kills.count(), 2, "killed before the third commit");
     let lost = session
         .commit(&meta())
         .await
-        .expect_err("its answer is lost");
+        .expect_err("the next commit that lands loses its answer");
     assert_eq!(lost.code(), Some(CONNECTOR_LOST));
-    assert_eq!(kills.count(), 1, "killed after the first commit");
-    writer.write(SegmentId(2), batch()).await.expect("written");
+    assert_eq!(kills.count(), 3, "killed after the fourth commit landed");
     session
         .commit(&meta())
         .await
-        .expect("the second commit answers");
-    assert_eq!(kills.count(), 1, "nothing before the second commit settles");
-    writer.write(SegmentId(3), batch()).await.expect("written");
-    assert_eq!(kills.count(), 2, "killed at the first write after it");
-    writer.write(SegmentId(4), batch()).await.expect("written");
-    assert_eq!(kills.count(), 2, "and at no write after");
-    session
-        .commit(&meta())
-        .await
-        .expect("the stub still commits");
-    assert_eq!(kills.count(), 3, "killed before the third commit");
-    session
-        .commit(&meta())
-        .await
-        .expect("the fourth commit answers");
-    assert_eq!(kills.count(), 3, "and before no other");
+        .expect_err("the kill that lost the answer fails the next commit");
+    session.commit(&meta()).await.expect("answered");
+    assert_eq!(kills.count(), 3, "and at no other point");
 }
 
 #[tokio::test]
