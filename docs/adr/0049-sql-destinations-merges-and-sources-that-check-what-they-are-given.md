@@ -71,7 +71,8 @@ generated sources each take something as given unless they check it:
     generation finished for a path swaps the pipeline's own table or nothing.
   - A commit's child table is checked where it publishes, and an open discards the staging of
     the tables its pipeline owns and of no other.
-  - The memory destination holds the same rules in its own store.
+  - The memory destination holds the same rules in its own store, and the files destination
+    in its catalog, whose owner file only a creation writes and a refused creation removes.
 - **A cut name is a hash no uncut name can take.** A derived name longer than the dialect's
   identifiers is `_rdlt_fit_` and the SHA-256 of the whole name, in base32. Every name derived
   from a table is compared with every other the commit touches, and a clash is refused as

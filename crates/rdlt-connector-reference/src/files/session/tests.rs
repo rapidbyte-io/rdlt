@@ -141,6 +141,96 @@ fn a_table_that_keeps_changing_is_checked_a_bounded_number_of_times_and_no_other
     assert_eq!(checked(0, &locked), (1, refused("lock_timeout")));
 }
 
+#[test]
+fn a_creation_refused_answers_its_refusal_though_its_claim_cannot_be_released() {
+    use rdlt_connector::{
+        ConnectorErrorKind, Field, Fields, LogicalType, SchemaVersion, TableChange, TablePath,
+        TableRef, TableSchema,
+    };
+
+    use crate::rooted::trace::{self, Step};
+    // A type out of canonical form, which the change refuses once the table is claimed.
+    let unsorted = Fields::new(vec![
+        Field::new("b", LogicalType::Int64, true),
+        Field::new("a", LogicalType::Int64, true),
+    ])
+    .unwrap();
+    let column = Field::new("meta", LogicalType::Struct(unsorted), true);
+    let table = TableRef {
+        path: TablePath::new(["t"]).unwrap(),
+        name: "t".into(),
+        version: SchemaVersion(1),
+        generation: None,
+        merge: None,
+    };
+    let refused = TableChange::Create {
+        table,
+        schema: TableSchema::new(vec![column]).unwrap(),
+    };
+    let created = |sessions: &Sessions| {
+        super::changed_under_lock(&sessions.location, &sessions.shared, &refused)
+    };
+    let sessions = Sessions::new(FileFormat::Jsonl);
+    trace::clear();
+    created(&sessions).expect_err("the creation is refused");
+    let released = trace::steps()
+        .iter()
+        .position(|step| matches!(step, Step::Rename(_)))
+        .expect("the claim is released");
+    // The release fails: the answer is still the creation's refusal, the release's its cause.
+    let sessions = Sessions::new(FileFormat::Jsonl);
+    trace::fail_at(released);
+    let error = created(&sessions).expect_err("the creation is refused");
+    trace::clear();
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    assert!(std::error::Error::source(&error).is_some(), "{error}");
+}
+
+#[test]
+fn a_creation_whose_write_failed_keeps_that_cause_though_its_claim_cannot_be_released() {
+    use rdlt_connector::{
+        Field, LogicalType, SchemaVersion, TableChange, TablePath, TableRef, TableSchema,
+    };
+
+    use crate::rooted::trace::{self, Step};
+    let table = TableRef {
+        path: TablePath::new(["t"]).unwrap(),
+        name: "t".into(),
+        version: SchemaVersion(1),
+        generation: None,
+        merge: None,
+    };
+    let create = TableChange::Create {
+        table,
+        schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, true)]).unwrap(),
+    };
+    let created = |sessions: &Sessions| {
+        super::changed_under_lock(&sessions.location, &sessions.shared, &create)
+    };
+    let sessions = Sessions::new(FileFormat::Jsonl);
+    trace::clear();
+    created(&sessions).unwrap();
+    let version = |step: &Step| {
+        let json = |path: &std::path::Path| path.extension().is_some_and(|end| end == "json");
+        matches!(step, Step::Link(path) if json(path))
+    };
+    let linked = trace::steps()
+        .iter()
+        .position(version)
+        .expect("the creation links its catalog version");
+    // The process's file system fails from the version's link on: the write fails, and so does
+    // the release of the claim; the answer keeps the write's own cause.
+    let sessions = Sessions::new(FileFormat::Jsonl);
+    trace::crash_at(linked);
+    let error = created(&sessions).expect_err("the creation fails");
+    trace::clear();
+    let cause = std::error::Error::source(&error).expect("the write's cause");
+    assert!(
+        cause.downcast_ref::<std::io::Error>().is_some(),
+        "{error}: {cause}"
+    );
+}
+
 /// One pipeline's sessions over a root, driven as the engine drives them but on the test's own
 /// thread, so each step they take is recorded and can be refused.
 pub(crate) struct Sessions {
