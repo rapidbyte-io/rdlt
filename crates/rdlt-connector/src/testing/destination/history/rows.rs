@@ -7,6 +7,7 @@ use arrow_array::{
 };
 
 use super::super::identifiers::Identifiers;
+use super::super::sequences::sequence;
 use crate::change::{ChangeOp, OP_COLUMN, SEQ_COLUMN};
 use crate::meta::{
     DELETED_AT_COLUMN, IS_CURRENT_COLUMN, ROW_HASH_COLUMN, VALID_FROM_COLUMN, VALID_TO_COLUMN,
@@ -65,8 +66,9 @@ pub(super) struct Version {
     /// When a later change closed it.
     pub(super) to: Option<i64>,
     pub(super) current: bool,
-    /// The last byte of the sequence of the row that opened it.
-    pub(super) seq: u8,
+    /// The ordinal of the sequence of the row that opened it; none for a sequence the clause
+    /// never writes.
+    pub(super) seq: Option<u8>,
     /// Whether its hash is what its data's table writer gave it.
     pub(super) hashed: bool,
 }
@@ -80,7 +82,7 @@ pub(super) fn current(id: i64, name: &str, from: i64, seq: u8) -> Version {
         deleted: None,
         to: None,
         current: true,
-        seq,
+        seq: Some(seq),
         hashed: true,
     }
 }
@@ -132,11 +134,7 @@ impl Kind {
 /// deletes are soft, the history columns, then a change stream's op; each column as `names`
 /// names it.
 pub(super) fn written(names: &Identifiers, rows: &[Row], kind: Kind) -> RecordBatch {
-    let seqs = rows.iter().map(|row| {
-        let mut seq = [0_u8; 16];
-        seq[15] = row.seq;
-        seq
-    });
+    let seqs = rows.iter().map(|row| sequence(row.seq));
     let mut columns: Vec<(&str, ArrayRef)> = vec![
         (
             "id",

@@ -7,6 +7,7 @@ use arrow_array::types::Int64Type;
 use arrow_array::{ArrayRef, BinaryArray, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::DataType;
 
+use super::sequences::sequence;
 use super::{Bench, commit, expect_rows, meta};
 use crate::OpenedSession;
 use crate::change::SEQ_COLUMN;
@@ -265,14 +266,7 @@ impl Bench<'_> {
     pub(super) fn keyed(&self, rows: &[(i64, &str, u8)]) -> RecordBatch {
         let ids: Arc<Int64Array> = Arc::new(rows.iter().map(|row| row.0).collect());
         let names: Arc<StringArray> = Arc::new(rows.iter().map(|row| Some(row.1)).collect());
-        let seqs: BinaryArray = rows
-            .iter()
-            .map(|row| {
-                let mut seq = [0_u8; 16];
-                seq[15] = row.2;
-                Some(seq.to_vec())
-            })
-            .collect();
+        let seqs = BinaryArray::from_iter_values(rows.iter().map(|row| sequence(row.2)));
         let column = |name| self.names.column(name);
         RecordBatch::try_from_iter([
             (column("id"), ids as _),

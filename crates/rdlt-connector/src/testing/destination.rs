@@ -18,6 +18,7 @@ mod owned;
 mod read;
 mod retried;
 mod rows;
+mod sequences;
 mod tables;
 mod widenings;
 mod writers;
