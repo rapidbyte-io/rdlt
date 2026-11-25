@@ -389,10 +389,13 @@ or `False` where `None` is, fails the call, naming the method.
   `rdlt connector install` writes refuses those, as a Rust release serves no probe.
 - **Certification.** `test_certify = rdlt.testing.certify_source(Tickets, config=...)` in a test
   module, or `certify_destination`, makes each clause a pytest test, `test_certify[S-RESUME]`, and
-  its `report()` is rdlt-certify's report. Given
+  its `report()` is rdlt-certify's report, with its `verdict`. A clause that does not apply skips,
+  and `test_certify[verdict]` fails where the verdict is not `passed`, so one that checked nothing
+  fails. Given
   `rdlt.Connector("io.example.tickets", endpoint="grpcs://host:port")` and
   `remote=rdlt.Tls(cert=..., key=..., ca=...)`, they certify a connector listening there over
-  mutual TLS, as rdlt-certify's `Target::listening` does.
+  mutual TLS, as rdlt-certify's `Target::listening` does, and one listening there that serves
+  another role than the one certified passes none.
 
 **Spawned connectors.** `rdlt connector new tickets --lang python` writes a connector project,
 `rdlt-connector-tickets`: a source class, registered as the `rdlt.connectors` entry point
