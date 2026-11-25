@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
-use pyo3::types::{PyAnyMethods as _, PyTypeMethods as _};
+use pyo3::types::{PyAnyMethods as _, PyType, PyTypeMethods as _};
 use pyo3::{Bound, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
 use rdlt_connector::{Emitter, Headroom, Partition};
 use serde_json::value::RawValue;
@@ -194,27 +194,56 @@ impl NativeNotice {
 }
 
 /// A checkpoint a read yields: everything yielded before it is sealed, and a restart resumes
-/// from its cursor, kept as the text it was given, so a number in it is not rounded.
+/// from its cursor, kept as the text it was given, so a number in it is not rounded, with the
+/// class of the cursor it was made of.
 #[pyclass(module = "rdlt._native", name = "Checkpoint", frozen)]
 pub(crate) struct NativeCheckpoint {
     cursor: Box<RawValue>,
+    of: Py<PyType>,
 }
 
 #[pymethods]
 impl NativeCheckpoint {
     #[new]
-    fn new(cursor: &str) -> Result<Self, PyErr> {
+    fn new(cursor: &str, of: Bound<'_, PyType>) -> Result<Self, PyErr> {
         let cursor = RawValue::from_string(cursor.to_owned()).map_err(|error| {
             PyValueError::new_err(format!("a checkpoint's cursor is not JSON: {error}"))
         })?;
-        Ok(Self { cursor })
+        Ok(Self {
+            cursor,
+            of: of.unbind(),
+        })
     }
 }
 
 impl NativeCheckpoint {
-    /// The cursor, as its JSON text.
-    pub(crate) fn cursor(&self) -> &RawValue {
-        &self.cursor
+    /// The cursor, as its JSON text, where its class is the stream's cursor class `declared`
+    /// itself, as a Rust read's emitter takes exactly its stream's cursor.
+    ///
+    /// # Errors
+    ///
+    /// `TypeError` where the cursor is of another class, a subclass included, or the stream
+    /// declares none.
+    pub(crate) fn cursor(
+        &self,
+        py: Python<'_>,
+        declared: Option<&Bound<'_, PyType>>,
+    ) -> Result<&RawValue, PyErr> {
+        let of = self.of.bind(py);
+        let Some(declared) = declared else {
+            return Err(PyTypeError::new_err(format!(
+                "a checkpoint's cursor is a {}, and the stream declares no cursor",
+                of.name()?
+            )));
+        };
+        if !of.is(declared) {
+            return Err(PyTypeError::new_err(format!(
+                "a checkpoint's cursor is a {}: a checkpoint is the stream's cursor, {}",
+                of.name()?,
+                declared.name()?
+            )));
+        }
+        Ok(&self.cursor)
     }
 }
 

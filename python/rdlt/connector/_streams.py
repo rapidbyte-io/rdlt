@@ -77,6 +77,11 @@ class Stream:
         """The stream's description, as JSON."""
         return self._spec
 
+    @property
+    def cursor(self) -> type[Cursor] | None:
+        """The class of the stream's cursor, which each of its checkpoints is; none without one."""
+        return self._cursor
+
     def plan(
         self,
         phase: int,
@@ -108,7 +113,7 @@ class Stream:
 
     def _start(self, partition: str, cursor: object) -> tuple[str, str]:
         """Where a plan starts `partition`, as JSON."""
-        if self._cursor is None or not isinstance(cursor, self._cursor):
+        if self._cursor is None or type(cursor) is not self._cursor:
             expected = "no cursor" if self._cursor is None else self._cursor.__name__
             message = (
                 f"stream {self._name!r}: the plan starts partition {partition!r} at a "
@@ -137,17 +142,22 @@ class Stream:
         """Where the author's code says the stream stands for `partition`, as JSON.
 
         Raises:
-            TypeError: it answered neither the stream's cursor nor `None`.
+            TypeError: it answered neither the stream's cursor, of its class itself, nor `None`.
         """
         if self._acknowledged is None:
             return None
         of = self._cursor
+        method = f"acknowledged= of stream {self._name!r}"
+        stated = f"the stream's cursor, {'none' if of is None else of.__name__}, or None"
         found = answered(
-            f"acknowledged= of stream {self._name!r}",
+            method,
             self._acknowledged(partition),
             type(None) if of is None else (of, type(None)),
-            f"the stream's cursor, {'none' if of is None else of.__name__}, or None",
+            stated,
         )
+        if found is not None and type(found) is not of:
+            message = f"{method} answered a {type(found).__name__}: it answers {stated}"
+            raise TypeError(message)
         return None if found is None else cast("Cursor", found).model_dump_json()
 
     def read(

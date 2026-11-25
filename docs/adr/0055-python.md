@@ -161,7 +161,12 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   where it names `state`. Naming `ctx` promises nothing: a stream checkpoints on demand where its
   `checkpointing=` says so, as a Rust stream's spec says it, and says so only with a cursor to
   checkpoint and a `ctx` to be asked through. A stream without a cursor is read in full alone, since
-  Python's cursor is optional and Rust's is not. A stream's schema is any Arrow schema, read through
+  Python's cursor is optional and Rust's is not. A checkpoint is of its stream's cursor class
+  itself, as a Rust read's emitter takes exactly its stream's cursor, and so is a plan's start and
+  what `acknowledged` answers: a checkpoint of another class, a subclass included, or one a stream
+  without a cursor yields, fails the read where it is yielded, before anything of it commits. A
+  checkpoint also seals a segment, so a stream that seals segments to bound what a run holds
+  declares a cursor, read in full alone or not. A stream's schema is any Arrow schema, read through
   the C Data Interface, so no one Arrow library is required, and refused where it is declared where
   Rust has no table schema for it. Rust checks what a source answers as it checks a Rust source's,
   so a catalog, a plan or a change batch is refused with Rust's own error and code. How a stream's

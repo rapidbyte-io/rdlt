@@ -127,7 +127,7 @@ class Pipeline:
 
 @final
 class Checkpoint:
-    def __new__(cls, cursor: str) -> Checkpoint: ...
+    def __new__(cls, cursor: str, of: type) -> Checkpoint: ...
 
 @final
 class Changes:

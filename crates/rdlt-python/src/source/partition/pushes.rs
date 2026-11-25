@@ -3,6 +3,7 @@
 //! filled.
 
 use arrow_array::RecordBatch;
+use pyo3::types::PyType;
 use pyo3::{Bound, PyAny, Python};
 use rdlt_connector::ConnectorError;
 
@@ -24,20 +25,23 @@ pub(crate) enum Pushes {
 }
 
 impl Pushes {
-    /// What `item` pushes.
+    /// What `item` pushes, a checkpoint's cursor being of the stream's class `cursor`.
     ///
     /// # Errors
     ///
-    /// The failure the read ends with where `item` cannot be pushed: an Arrow producer that
-    /// raised, or what is neither Arrow nor rows.
+    /// The failure the read ends with where `item` cannot be pushed: a checkpoint of another
+    /// cursor, an Arrow producer that raised, or what is neither Arrow nor rows.
     pub(crate) fn of(
         py: Python<'_>,
         item: &Bound<'_, PyAny>,
         limits: JsonLimits,
+        cursor: Option<&Bound<'_, PyType>>,
     ) -> Result<Self, ConnectorError> {
         if let Ok(checkpoint) = item.cast::<NativeCheckpoint>() {
-            let cursor = checkpoint.get().cursor().to_owned();
-            return Ok(Self::One(Some(Pushed::Checkpoint(cursor))));
+            return match checkpoint.get().cursor(py, cursor) {
+                Ok(cursor) => Ok(Self::One(Some(Pushed::Checkpoint(cursor.to_owned())))),
+                Err(error) => Err(Failure::of(py, &error).connector_error()),
+            };
         }
         if let Ok(changes) = item.cast::<NativeChanges>() {
             return match produced(changes.get().batch(py)) {
