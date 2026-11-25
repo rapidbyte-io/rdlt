@@ -120,6 +120,9 @@ they are built apart.
     with the change source's slots).
   - Partitions may be added later (`partitions_later`) or retired (`partitions_retired`), may end
     at their head (`bounded`), and may forget what their group committed (`replayable: false`).
+  - A checkpoint follows every `checkpoint_batches` batches, and a partition that never ends is
+    checkpointed at its head too, where a read returns or waits for what follows, so every
+    message a read pushed lands.
   - It passes the source clauses, `S-ACK` included, replayable or not; `K-SOURCE` is unobserved
     where it forgets (ADR 0022).
 - **The simulation's `streaming` feature**, drawn apart from the seed's generator:

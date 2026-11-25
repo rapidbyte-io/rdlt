@@ -89,7 +89,8 @@ pub struct LoggedStream {
     ///
     /// With more, a read of a bounded partition that ends on a batch no checkpoint follows has no
     /// cursor past its last messages, as a table read to its end has none. A read of an unbounded
-    /// one that returns at its head checkpoints there, so its last messages land.
+    /// one checkpoints at its head, where it returns or waits for the messages that follow, so its
+    /// last messages land.
     #[serde(default = "one")]
     pub checkpoint_batches: u64,
 }
@@ -292,6 +293,24 @@ impl Logged {
         Some(at.saturating_sub(elapsed).max(MIN_WAIT))
     }
 
+    /// Checkpoints a read at its head, the next offset `next`, where `unmarked` batches followed
+    /// its last checkpoint, and counts none since.
+    ///
+    /// A read of a partition that never ends checkpoints there, so its last messages land though
+    /// the read returns or waits there; a bounded one's read ends on them, finishing it.
+    async fn at_head(
+        &self,
+        out: &mut Emitter<Offset>,
+        unmarked: &mut u64,
+        next: u64,
+    ) -> Result<()> {
+        if *unmarked != 0 && !self.0.bounded {
+            out.checkpoint(&Offset { next }).await?;
+            *unmarked = 0;
+        }
+        Ok(())
+    }
+
     /// The messages at `offsets` of partition `partition`.
     fn messages(
         &self,
@@ -308,18 +327,6 @@ impl Logged {
                 })
             })
             .collect()
-    }
-
-    /// Ends a read at its head, `batches` pushed and the next offset `next`: a read of a
-    /// partition that never ends checkpoints there where messages followed its last checkpoint,
-    /// which every read ending so would otherwise read again and none land; a bounded one's read
-    /// ends on them, finishing it.
-    async fn ended(&self, out: &mut Emitter<Offset>, batches: u64, next: u64) -> Result<()> {
-        let unmarked = !batches.is_multiple_of(self.0.checkpoint_batches.max(1));
-        if unmarked && !self.0.bounded {
-            out.checkpoint(&Offset { next }).await?;
-        }
-        Ok(())
     }
 }
 
@@ -385,7 +392,8 @@ impl ReadStream<LogSource> for Logged {
             Ok(())
         };
         let mut partitions = self.partitions(source.elapsed());
-        let mut batches = 0_u64;
+        // Batches pushed since the last checkpoint.
+        let mut unmarked = 0_u64;
         loop {
             let head = if out.follows() {
                 self.head(source.elapsed())
@@ -396,15 +404,16 @@ impl ReadStream<LogSource> for Logged {
                 let end = head.min(next.saturating_add(self.0.batch_rows));
                 out.rows(&self.messages(source.seed, id, next..end)).await?;
                 next = end;
-                batches += 1;
-                if batches.is_multiple_of(self.0.checkpoint_batches.max(1)) {
+                unmarked += 1;
+                if unmarked == self.0.checkpoint_batches.max(1) {
                     out.checkpoint(&Offset { next }).await?;
+                    unmarked = 0;
                 }
                 let behind = self.head(source.elapsed()).saturating_sub(next);
                 out.behind(behind, Headroom::default()).await?;
             }
+            self.at_head(out, &mut unmarked, next).await?;
             if self.0.bounded || !out.follows() {
-                self.ended(out, batches, next).await?;
                 return reached(head);
             }
             // The first partition says when the stream's partitions change, as a consumer that

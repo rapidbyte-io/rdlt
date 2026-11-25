@@ -128,6 +128,20 @@ async fn a_log_that_never_grows_is_followed_until_the_read_is_asked_to_stop() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_following_read_checkpoints_the_batches_it_pushed_since_its_last_checkpoint_at_the_head()
+{
+    let stream = json!({
+        "name": "events", "partitions": 1, "messages": 25, "checkpoint_batches": 2,
+    });
+    let source = connect(&stream, "caught_up").await;
+    let (read, sent) = read(source.as_ref(), None, Some(Duration::from_secs(3600))).await;
+    read.expect("a stopped read ends cleanly");
+    assert_eq!(sent.offsets, (0..25).collect::<Vec<_>>());
+    // Two batches, then the third at the head, where the read waits until asked to stop.
+    assert_eq!(sent.checkpoints, [20, 25]);
+}
+
+#[tokio::test(start_paused = true)]
 async fn partitions_added_later_are_planned_once_they_appear() {
     let stream = json!({
         "name": "events", "partitions": 1, "messages": 1,
