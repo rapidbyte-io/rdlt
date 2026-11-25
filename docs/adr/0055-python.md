@@ -203,6 +203,8 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   clause spawning the installed launcher where one is given; a clause that applies and went
   unobserved fails its test. Given a connector's id and endpoint and the host's TLS, they certify
   the connector listening there over mutual TLS, as rdlt-certify's listening target does.
+  `certify_transform` is told the key and the change time of a stream the transform is given to,
+  as rdlt-certify's `TransformInputs` is, so `T-KEYS` holds it to pass them on as they arrived.
 - **User Python has only Python beneath it.** Every function of a user's that Rust calls, a
   generator's `next`, a source's `check`, `streams` and `discover`, a stream's `partitions`, `plan`,
   `committed` and `acknowledged`, a destination's methods and its sessions' and table writers', a

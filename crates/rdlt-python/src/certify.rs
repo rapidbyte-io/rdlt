@@ -224,9 +224,11 @@ fn configured(config: &str) -> Result<serde_json::Value, PyErr> {
         .map_err(|error| PyValueError::new_err(format!("a configuration is JSON: {error}")))
 }
 
-/// Certifies `transform` with the `T` family over `inputs` and the batches drawn from them, on a
-/// thread of the runtime's blocking pool: every clause waits for the transform's answers.
+/// Certifies `transform` with the `T` family over `inputs` and the batches drawn from them, whose
+/// key is `keys` and whose change time is `change_time`, each a top-level column, on a thread of
+/// the runtime's blocking pool: every clause waits for the transform's answers.
 #[pyfunction]
+#[pyo3(signature = (transform, inputs, keys, change_time = None))]
 #[expect(
     clippy::needless_pass_by_value,
     reason = "PyO3 extracts each argument by value"
@@ -235,6 +237,8 @@ pub(crate) fn certify_transform(
     py: Python<'_>,
     transform: &NativeTransform,
     inputs: Vec<Bound<'_, PyAny>>,
+    keys: Vec<String>,
+    change_time: Option<String>,
 ) -> Result<String, PyErr> {
     let batches = inputs
         .iter()
@@ -245,8 +249,8 @@ pub(crate) fn certify_transform(
         tokio::task::spawn_blocking(move || {
             let inputs = TransformInputs {
                 batches,
-                keys: Vec::new(),
-                change_time: None,
+                keys,
+                change_time,
             };
             rdlt_certify::certify_transform(&transform, &inputs)
         })

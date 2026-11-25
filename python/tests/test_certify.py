@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import gc
 import textwrap
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -203,6 +203,31 @@ def test_a_transform_s_clauses_pass() -> None:
     outcomes = {clause: certification.result(clause).outcome for clause, _ in certification.clauses}
     assert "failed" not in outcomes.values(), outcomes
     assert outcomes["T-ROWS"] == "passed"
+
+
+def test_a_transform_is_held_to_pass_the_keys_and_the_change_time_it_is_given() -> None:
+    def recast(column: str, made: Callable[[pa.Array[Any]], pa.Array[Any]]) -> rdlt.Transform:
+        @rdlt.transform()
+        def recasting(batch: pa.RecordBatch) -> pa.RecordBatch:
+            index = batch.schema.get_field_index(column)
+            recast = made(cast("pa.Array[Any]", batch.column(column)))
+            return batch.set_column(index, column, recast)  # pyright: ignore[reportUnknownMemberType]
+
+        return recasting
+
+    lowered = recast("id", pc.utf8_lower)
+    later = recast("at", lambda at: pc.add(at, pa.scalar(1)))
+    inputs = [pa.record_batch({"id": ["A", "b"], "at": [1, 2], "n": [3, 4]})]
+
+    def held(transform: rdlt.Transform, **given: Any) -> str:  # noqa: ANN401 - the keywords tested
+        return certify_transform(transform, inputs=inputs, **given).result("T-KEYS").outcome
+
+    assert held(lowered, keys=["id"]) == "failed"
+    # A key given alone is its one column's name.
+    assert held(lowered, keys="id") == "failed"
+    assert held(later, keys=["id"]) == "passed"
+    assert held(later, keys=["id"], change_time="at") == "failed"
+    assert held(lowered, change_time="at") == "passed"
 
 
 def test_a_clause_the_certification_does_not_hold_is_refused_naming_it() -> None:

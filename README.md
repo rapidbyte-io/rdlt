@@ -306,7 +306,8 @@ whatever the function returns for it, and it names the stream's keys and change 
 itself, or the stream is refused, coded `transform_invalid`.
 `rdlt.stream("users", transform=[...])` runs them in order, on the engine's compute pool. A
 document names a transform its host registered with `host.transform("name", function)` as
-`{"code": "name"}`, and `rdlt.testing.certify_transform` runs the transform clauses against one.
+`{"code": "name"}`, and `rdlt.testing.certify_transform` runs the transform clauses against one,
+told a stream's `keys=` and `change_time=`, which `T-KEYS` holds it to pass on as they arrived.
 
 **Connectors.** `rdlt.connector` writes a connector as a class, in the Rust SDK's words.
 Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, beneath it. Each
