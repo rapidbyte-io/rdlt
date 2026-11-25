@@ -83,7 +83,14 @@ async fn a_followed_read_beyond_the_places_waits_for_one_until_one_frees() {
     let slots = Slots::new(count(4), None, &budget);
     let mut held = Vec::new();
     for index in 0..3 {
-        held.push(slots.read(&job(index, true), &budget).await.unwrap());
+        let followed = job(index, true);
+        let place = tokio::time::timeout(Duration::from_secs(1), slots.read(&followed, &budget));
+        held.push(
+            place
+                .await
+                .expect("one of the three places is free")
+                .unwrap(),
+        );
     }
     let followed = job(3, true);
     let waiting = tokio::time::timeout(Duration::from_secs(3600), slots.read(&followed, &budget));
@@ -113,7 +120,8 @@ async fn reads_beyond_what_the_source_carries_wait_for_a_slot_until_one_frees() 
     let read = job(0, false);
     let mut held = Vec::new();
     for _ in 0..4 {
-        held.push(slots.read(&read, &budget).await.unwrap());
+        let slot = tokio::time::timeout(Duration::from_secs(1), slots.read(&read, &budget));
+        held.push(slot.await.expect("one of the four slots is free").unwrap());
     }
     let waiting = tokio::time::timeout(Duration::from_secs(3600), slots.read(&read, &budget)).await;
     assert!(waiting.is_err(), "a fifth read found a slot");
