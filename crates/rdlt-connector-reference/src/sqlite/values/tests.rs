@@ -346,3 +346,64 @@ fn a_float_sqlite_would_change_is_refused_where_its_row_is_staged() {
         .collect();
     assert_eq!(bits, exact.map(f64::to_bits));
 }
+
+#[test]
+fn a_column_is_staged_only_into_a_column_declared_for_its_values() {
+    use rdlt_connector::sqlgen::Column;
+    let declared = ["BOOLEAN", "INTEGER", "REAL", "TEXT", "BLOB"];
+    let columns: Vec<Column> = declared
+        .iter()
+        .map(|declared| Column {
+            name: declared.to_lowercase(),
+            declared: (*declared).to_owned(),
+        })
+        .collect();
+    let mut text = StringDictionaryBuilder::<Int32Type>::new();
+    text.append_value("a");
+    let written: [(&str, ArrayRef); 16] = [
+        ("BOOLEAN", Arc::new(BooleanArray::from(vec![true]))),
+        ("INTEGER", Arc::new(Int8Array::from(vec![1]))),
+        ("INTEGER", Arc::new(Int16Array::from(vec![1]))),
+        ("INTEGER", Arc::new(Int32Array::from(vec![1]))),
+        ("INTEGER", Arc::new(Int64Array::from(vec![1]))),
+        ("INTEGER", Arc::new(UInt8Array::from(vec![1]))),
+        ("INTEGER", Arc::new(UInt16Array::from(vec![1]))),
+        ("INTEGER", Arc::new(UInt32Array::from(vec![1]))),
+        ("REAL", Arc::new(Float32Array::from(vec![0.5]))),
+        ("REAL", Arc::new(Float64Array::from(vec![0.5]))),
+        ("TEXT", Arc::new(StringArray::from(vec!["a"]))),
+        ("TEXT", Arc::new(LargeStringArray::from(vec!["a"]))),
+        ("TEXT", Arc::new(text.finish())),
+        ("BLOB", Arc::new(BinaryArray::from_vec(vec![&b"a"[..]]))),
+        (
+            "BLOB",
+            Arc::new(LargeBinaryArray::from_vec(vec![&b"a"[..]])),
+        ),
+        (
+            "BLOB",
+            Arc::new(FixedSizeBinaryArray::try_from_iter([[1_u8]].into_iter()).unwrap()),
+        ),
+    ];
+    let batch = |name: &str, array: &ArrayRef| {
+        let schema = Schema::new(vec![Field::new(name, array.data_type().clone(), true)]);
+        RecordBatch::try_new(Arc::new(schema), vec![Arc::clone(array)]).unwrap()
+    };
+    for (holds, array) in &written {
+        for column in &columns {
+            let taken = super::classed("t", &columns, &batch(&column.name, array));
+            if column.declared == *holds {
+                taken.unwrap_or_else(|error| panic!("{array:?} into {column:?}: {error}"));
+            } else {
+                let refused = taken.expect_err("a column of other values is refused");
+                assert_eq!(refused.kind(), ConnectorErrorKind::Data, "{array:?}");
+            }
+        }
+        // A column the table lacks is left to the staging, which refuses it.
+        super::classed("t", &columns, &batch("other", array)).unwrap();
+    }
+    // Nulls fit any column.
+    let nulls: ArrayRef = Arc::new(NullArray::new(1));
+    for column in &columns {
+        super::classed("t", &columns, &batch(&column.name, &nulls)).unwrap();
+    }
+}

@@ -212,6 +212,53 @@ async fn a_column_of_a_type_sqlite_does_not_store_fails_the_flush() {
 }
 
 #[tokio::test]
+async fn a_column_of_values_its_declared_type_does_not_hold_fails_the_flush() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("classes.db");
+    let destination = connect(&path).await;
+    let mut opened = open(destination.as_ref()).await;
+    let create = TableChange::Create {
+        table: table(),
+        schema: TableSchema::new(vec![Field::new("n", LogicalType::Int64, true)]).unwrap(),
+    };
+    opened.session.apply_schema(&create).await.unwrap();
+    let text = RecordBatch::try_from_iter([(
+        "n",
+        Arc::new(StringArray::from(vec!["12", "abc"])) as ArrayRef,
+    )])
+    .unwrap();
+    let mut writer = opened.session.writer(&table()).await.unwrap();
+    writer.write(SegmentId(1), text).await.unwrap();
+    let error = writer.flush().await.unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    // Nothing of the flush was staged: its segment publishes no row.
+    opened.session.commit(&commit(&opened)).await.unwrap();
+    let published = sqlite::published(&path, "values").unwrap();
+    let rows: usize = published.iter().map(RecordBatch::num_rows).sum();
+    assert_eq!(rows, 0);
+}
+
+#[tokio::test]
+async fn a_value_another_writer_left_of_another_class_than_its_column_s_fails_the_read() {
+    for (column, value) in [
+        ("flag", "'yes'"),
+        ("small", "'abc'"),
+        ("ratio", "'abc'"),
+        ("name", "X'00'"),
+        ("bytes", "12"),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = committed(&directory).await;
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        let update = format!("UPDATE \"values\" SET {column} = {value}");
+        connection.execute_batch(&update).unwrap();
+        drop(connection);
+        let error = sqlite::published(&path, "values").expect_err("the value is no null");
+        assert_eq!(error.kind(), ConnectorErrorKind::Internal, "{column}");
+    }
+}
+
+#[tokio::test]
 async fn a_database_that_cannot_be_opened_is_a_configuration_error() {
     let directory = tempfile::tempdir().unwrap();
     let destination = connect(&directory.path().join("missing").join("x.db")).await;
