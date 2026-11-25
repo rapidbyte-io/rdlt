@@ -738,6 +738,8 @@ struct VaultConfig {
     local_landed: bool,
     /// Keeps one landed key for every pipeline.
     shared_landed: bool,
+    /// Keeps one state for every pipeline.
+    shared_state: bool,
     publish_all: bool,
     /// Publishes, for each segment a commit lists, one it staged and the commit does not list.
     publish_other: bool,
@@ -1116,6 +1118,15 @@ impl VaultConfig {
         }
     }
 
+    /// The pipeline the state of `pipeline` is kept under: one for all under `shared_state`.
+    fn stating(&self, pipeline: &PipelineId) -> PipelineId {
+        if self.shared_state {
+            PipelineId::parse("every").expect("a valid pipeline id")
+        } else {
+            pipeline.clone()
+        }
+    }
+
     /// The pipeline the landed key of `pipeline` is kept under: one for all under
     /// `shared_landed`.
     fn landing(&self, pipeline: &PipelineId) -> PipelineId {
@@ -1262,7 +1273,7 @@ impl DestinationConnector for Vault {
             .state_store(&self.stores)
             .lock()
             .state
-            .get(&context.pipeline)
+            .get(&self.config.stating(&context.pipeline))
             .map(|state| state.values().cloned().collect())
             .unwrap_or_default();
         let reported = self.config.reported(epoch);
@@ -1309,7 +1320,9 @@ impl VaultSession {
         } else {
             &mut shared.state
         };
-        let state = states.entry(self.pipeline.clone()).or_default();
+        let state = states
+            .entry(self.config.stating(&self.pipeline))
+            .or_default();
         for change in &meta.state_delta {
             match change {
                 StateChange::Put(record) => state.insert(record.key.clone(), record.clone()),
@@ -2426,6 +2439,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("recount_landed", &["D-LANDED", "D-RETRY"]),
     ("local_landed", &["D-LANDED"]),
     ("shared_landed", &["D-LANDED", "D-RETRY"]),
+    ("shared_state", &["D-STATE"]),
     ("forget_state", &["D-STATE"]),
     ("ignore_deletes", &["D-STATE"]),
     ("keep_staging", &["D-DISCARD"]),
