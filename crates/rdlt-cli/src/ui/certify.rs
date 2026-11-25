@@ -5,7 +5,7 @@ mod tests;
 
 use std::time::Duration;
 
-use rdlt_certify::{ClauseResult, Outcome, Report, Verdict};
+use rdlt_certify::{ClauseResult, Held, Outcome, Report, Verdict};
 
 use super::{Tone, Ui, out_width, wrapped};
 use crate::output::shown;
@@ -63,8 +63,15 @@ pub(crate) fn in_progress(role: rdlt_connector::Role, clause: Option<&Clause>) -
     }
 }
 
-/// `✓ Passed  source  connector  12 passed, ...`, of `report` as `role`, scrubbed and wrapped.
-pub(crate) fn verdict_line(report: &Report, role: rdlt_connector::Role, ui: &Ui) -> String {
+/// `✓ Passed  source  connector 1.0.0 sha256:0123456789ab  12 passed, ...`, of `report` as `role`,
+/// naming what its certification `held` the connector to, its binary by the start of its digest,
+/// scrubbed and wrapped.
+pub(crate) fn verdict_line(
+    report: &Report,
+    role: rdlt_connector::Role,
+    held: &Held,
+    ui: &Ui,
+) -> String {
     let brush = ui.looks().out();
     let marks = ui.looks().marks();
     let (tone, mark, word) = match report.verdict() {
@@ -76,15 +83,27 @@ pub(crate) fn verdict_line(report: &Report, role: rdlt_connector::Role, ui: &Ui)
     let counts = summary
         .split_once(": ")
         .map_or(summary.as_str(), |(_, counts)| counts);
+    let mut named = shown(&report.connector);
+    if let Some(version) = &held.version {
+        named = format!("{named} {}", shown(version));
+    }
+    if let Some(digest) = held.digest {
+        let start: String = digest.to_string().chars().take(DIGEST_SHOWN).collect();
+        named = format!("{named} sha256:{start}");
+    }
     let line = format!(
         "{}  {}  {}  {}",
         brush.paint(tone, format!("{mark} {word}")),
         role_word(role),
-        brush.paint(Tone::Name, shown(&report.connector)),
+        brush.paint(Tone::Name, named),
         brush.paint(Tone::Dim, counts)
     );
     scrubbed_and_wrapped(line)
 }
+
+/// Hex digits of a binary's digest a verdict shows: enough to tell builds apart at a glance; the
+/// plain and JSON reports carry it whole.
+const DIGEST_SHOWN: usize = 12;
 
 fn role_word(role: rdlt_connector::Role) -> &'static str {
     match role {

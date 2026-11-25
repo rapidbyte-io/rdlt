@@ -4,9 +4,10 @@
 use rdlt_connector::wire::v1;
 use rdlt_connector::{ConnectorId, Role};
 use rdlt_host::remote::client;
-use rdlt_host::{Connection, ConnectorRef, Local, Options, ProviderError, Remote};
+use rdlt_host::{Connection, ConnectorRef, Digest, Local, Options, ProviderError, Remote};
 use rdlt_testkit::tls::Pki;
 use rdlt_wire::PROTOCOL_MAJOR;
+use sha2::Digest as _;
 
 use crate::network::{identity, listening, port};
 use crate::process::example;
@@ -33,6 +34,10 @@ async fn a_client_speaks_the_protocol_raw_over_a_spawned_connectors_wire() {
         .await
         .expect("the connector spawns");
     assert!(format!("{wire:?}").contains("spawned: true"), "{wire:?}");
+    // Named where the file that was hashed is the file that is executed, and nowhere else.
+    let binary = std::fs::read(example("scripted_connector")).expect("the binary reads");
+    let digest = Digest(sha2::Sha256::digest(binary).into());
+    assert_eq!(wire.digest(), cfg!(target_os = "linux").then_some(digest));
     let mut client = client(wire, Options::default())
         .await
         .expect("the client connects");

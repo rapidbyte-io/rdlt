@@ -553,15 +553,15 @@ async fn read_through_a_kill_clause(
     admitted: &rdlt_wire::Limits,
     bytes: usize,
 ) -> rdlt_connector::Result<()> {
-    let id = rdlt_connector::ConnectorId::parse("test.cursors").expect("an id");
     let spec = rdlt_connector::ConnectorSpec {
-        id: id.clone(),
+        id: rdlt_connector::ConnectorId::parse("test.cursors").expect("an id"),
         version: "0.0.0".to_owned(),
         config_schema: serde_json::json!({}),
     };
-    let served = rdlt_connector::serve::Served::new().with_source(Box::new(CursorsFactory(spec)));
+    let served =
+        rdlt_connector::serve::Served::new().with_source(Box::new(CursorsFactory(spec.clone())));
     let target = crate::Target::served(served);
-    let (provider, reference) = target.provider(&id, &rdlt_host::Kills::new(), admitted);
+    let (provider, reference) = target.provider(&spec, &rdlt_host::Kills::new(), admitted);
     let config = serde_json::json!({ "bytes": bytes });
     let placed = provider.source(&reference, &config).await.expect("placed");
     let (sink, mut feed) =
@@ -630,12 +630,12 @@ async fn a_draw_leaves_no_store_in_the_process_however_it_ends() {
 
     use super::source::{Stores, compared};
     let factory = rdlt_connector::source_factory::<GeneratorSource>();
-    let id = factory.spec().id.clone();
+    let spec = factory.spec().clone();
     let target = crate::Target::served(rdlt_connector::serve::Served::new().with_source(factory));
     // A load of five rows commits once, before any point the seed draws.
     let config = serde_json::json!({ "seed": 1, "streams": [{ "name": "events", "rows": 5 }] });
     let run = 0x5eed;
-    let loaded = compared(&target, &id, &config, run, 1).await;
+    let loaded = compared(&target, &spec, &config, run, 1).await;
     assert!(matches!(loaded, Ok(Loaded::Unseen(_))), "both loads ran");
     let stores = Stores::new(run);
     for store in [&stores.clean, &stores.killed] {

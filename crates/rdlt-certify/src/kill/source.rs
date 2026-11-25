@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rdlt_connector::testing::RENDERED_BYTES;
 use rdlt_connector::testing::render::{RenderError, Rendering};
 use rdlt_connector::{
-    BoxFuture, Catalog, ConnectContext, ConnectorId, Cursor, Destination, PartitionId,
+    BoxFuture, Catalog, ConnectContext, ConnectorSpec, Cursor, Destination, PartitionId,
     PartitionPlan, PartitionSink, PipelineId, ReadMode, ReadRequest, Source, StreamName,
     StreamSpec, StreamState, destination_factory,
 };
@@ -23,14 +23,14 @@ use super::{Loaded, Proof, converged};
 use crate::protocol::Violation;
 use crate::target::Target;
 
-/// `K-SOURCE` against the source `target` reaches, which answers to `id`, with `config`.
+/// `K-SOURCE` against the source `target` reaches, which answers as `spec` says, with `config`.
 pub(crate) async fn resumed(
     target: &Target,
-    id: &ConnectorId,
+    spec: &ConnectorSpec,
     config: &serde_json::Value,
 ) -> Loaded {
     super::proven(target.chosen_seed(), super::run(), |run, seed| async move {
-        match compared(target, id, config, run, seed).await {
+        match compared(target, spec, config, run, seed).await {
             Ok(loaded) => loaded,
             Err(Violation(reason)) => Loaded::Broken(format!("{reason} (kill seed {seed})")),
         }
@@ -42,13 +42,13 @@ pub(crate) async fn resumed(
 /// each into a store of its own that `run` names, compared.
 pub(super) async fn compared(
     target: &Target,
-    id: &ConnectorId,
+    spec: &ConnectorSpec,
     config: &serde_json::Value,
     run: u64,
     seed: u64,
 ) -> Result<Loaded, Violation> {
     let unkilled = Kills::new();
-    let source = placed(target, id, config, &unkilled).await?;
+    let source = placed(target, spec, config, &unkilled).await?;
     let catalog = source
         .discover()
         .await
@@ -72,7 +72,7 @@ pub(super) async fn compared(
     }
     loaded.map_err(|Violation(reason)| format!("a load never killed failed: {reason}"))?;
     let kills = Kills::new();
-    let placed = placed(target, id, config, &kills).await?;
+    let placed = placed(target, spec, config, &kills).await?;
     let resumed = Arc::new(Resumed::new(placed, &kills));
     let source: Arc<dyn Source> = Arc::clone(&resumed) as Arc<dyn Source>;
     let (store, beyond) = memory(killed).await?;
@@ -121,17 +121,19 @@ impl Drop for Stores {
 /// The source `target` reaches, placed as an engine's placement places it, killed by `kills`.
 async fn placed(
     target: &Target,
-    id: &ConnectorId,
+    spec: &ConnectorSpec,
     config: &serde_json::Value,
     kills: &Kills,
 ) -> Result<Arc<dyn Source>, Violation> {
-    let (provider, reference) = target.provider(id, kills, &super::limits()?);
+    let (provider, reference) = target.provider(spec, kills, &super::limits()?);
     let placed = provider.source(&reference, config).await.map_err(|error| {
         format!(
             "the source could not be placed: {}",
             crate::connect::described(&error)
         )
     })?;
+    target.hold_digest(placed.digest);
+    super::placed_as(spec, &placed.spec, "source")?;
     Ok(Arc::from(placed.connector))
 }
 

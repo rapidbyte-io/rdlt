@@ -125,6 +125,18 @@ impl ConnectorRef {
         self
     }
 
+    /// Accepts only `version`, exactly.
+    ///
+    /// # Errors
+    ///
+    /// Where `version` is no full semantic version, as "1.2" is not, which no requirement can
+    /// name: a requirement of "=1.2" would match versions a host's check then refuses to read.
+    pub fn exactly(self, version: &str) -> Result<Self, semver::Error> {
+        let parsed = semver::Version::parse(version)?;
+        let required = semver::VersionReq::parse(&format!("={parsed}"))?;
+        Ok(self.version(required))
+    }
+
     /// Runs the connector from the binary at `path`.
     #[must_use]
     pub fn path(mut self, path: impl Into<PathBuf>) -> Self {

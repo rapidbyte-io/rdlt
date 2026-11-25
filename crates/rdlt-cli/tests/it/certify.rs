@@ -360,6 +360,10 @@ async fn the_help_and_the_reports_read_as_they_did() {
     insta::assert_snapshot!("help", String::from_utf8_lossy(&help.stdout));
     let binary = example("serve_reference");
     let binary = binary.to_str().expect("a UTF-8 path");
+    // A binary's digest differs from build to build, and only Linux checks one: the snapshots
+    // hold none, and Linux's reports are held to naming it.
+    let digest = regex::Regex::new(r#", binary sha256:[0-9a-f]{64}|"digest":"[0-9a-f]{64}""#)
+        .expect("a valid pattern");
     for (output, name) in [("plain", "plain_report"), ("json", "json_report")] {
         let certified = certify(&[
             binary,
@@ -377,7 +381,20 @@ async fn the_help_and_the_reports_read_as_they_did() {
             output,
         ])
         .await;
-        insta::assert_snapshot!(name, String::from_utf8_lossy(&certified.stdout));
+        let shown = String::from_utf8_lossy(&certified.stdout);
+        assert_eq!(
+            digest.is_match(&shown),
+            cfg!(target_os = "linux"),
+            "{shown}"
+        );
+        let shown = digest.replace_all(&shown, |found: &regex::Captures<'_>| {
+            if found[0].starts_with(',') {
+                ""
+            } else {
+                r#""digest":null"#
+            }
+        });
+        insta::assert_snapshot!(name, shown);
     }
 }
 

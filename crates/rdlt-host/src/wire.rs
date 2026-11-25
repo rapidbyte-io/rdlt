@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::local::process::{Process, Witness};
 use crate::network::Stream;
+use crate::provider::Digest;
 
 /// A raw connection to a connector, before its handshake: a stream whose other end serves the
 /// protocol, and the connector's process when this process spawned it, which stops once the
@@ -18,6 +19,7 @@ use crate::network::Stream;
 pub struct Wire {
     stream: Box<dyn Stream>,
     process: Option<Process>,
+    digest: Option<Digest>,
 }
 
 impl std::fmt::Debug for Wire {
@@ -31,7 +33,23 @@ impl std::fmt::Debug for Wire {
 
 impl Wire {
     pub(crate) fn new(stream: Box<dyn Stream>, process: Option<Process>) -> Self {
-        Self { stream, process }
+        Self {
+            stream,
+            process,
+            digest: None,
+        }
+    }
+
+    /// This wire, to a connector spawned from a binary of `digest`.
+    pub(crate) fn digested(mut self, digest: Option<Digest>) -> Self {
+        self.digest = digest;
+        self
+    }
+
+    /// The digest of the binary its connector was spawned from, where this process spawned it
+    /// and its platform checks one: on Linux.
+    pub fn digest(&self) -> Option<Digest> {
+        self.digest
     }
 
     /// A witness to how the connector ends, when this process spawned it: what it last said, for

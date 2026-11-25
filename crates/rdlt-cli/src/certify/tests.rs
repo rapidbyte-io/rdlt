@@ -1,4 +1,4 @@
-use rdlt_certify::{Clause, ClauseResult, Outcome, Report, Verdict};
+use rdlt_certify::{Clause, ClauseResult, Held, Outcome, Report, Verdict};
 
 use super::session::within;
 use super::{
@@ -308,11 +308,11 @@ fn a_secret_wider_than_a_line_is_scrubbed_before_the_line_is_wrapped() {
     let lines = report.results.len() + 1;
     let reading =
         std::thread::spawn(move || queue.lines(lines, std::time::Duration::from_secs(60)));
-    watch.finish(&report);
+    watch.finish(&report, &Held::default());
     let shown = reading.join().expect("the reader ends").join("\n");
     assert!(shown.contains("/nonexistent/***/store.db"), "{shown}");
     assert!(!holds_part_of_the_secret(&shown), "{shown}");
-    let printed = redactions().scrubbed(whole_report(&report, role, &ui));
+    let printed = redactions().scrubbed(whole_report(&report, role, &Held::default(), &ui));
     assert!(printed.contains("/nonexistent/***/store.db"), "{printed}");
     assert!(!holds_part_of_the_secret(&printed), "{printed}");
 }
@@ -337,7 +337,7 @@ fn a_secret_in_a_report_is_scrubbed_before_json_escapes_it() {
             note: None,
         }],
     };
-    let printed = json_document(&[report], Verdict::Failed);
+    let printed = json_document(&[report], &[Held::default()], Verdict::Failed);
     assert!(printed.contains("the store said ***"), "{printed}");
     assert!(
         !printed.contains("j5on") && !printed.contains("k7q"),
@@ -352,7 +352,11 @@ fn a_secret_like_a_word_or_punctuation_of_the_report_leaves_it_whole() {
     for value in ["pass", "\",\"", "verdict"] {
         redactions().add(value);
     }
-    let printed = json_document(&[report(&[Outcome::Passed])], Verdict::Passed);
+    let printed = json_document(
+        &[report(&[Outcome::Passed])],
+        &[Held::default()],
+        Verdict::Passed,
+    );
     let document: serde_json::Value = serde_json::from_str(&printed).expect("it parses");
     assert_eq!(document["verdict"], "passed", "{printed}");
     assert_eq!(

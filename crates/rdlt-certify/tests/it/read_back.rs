@@ -292,7 +292,7 @@ async fn a_read_back_of_rows_that_cost_no_bytes_fails_every_clause_that_reads_it
         assert!(reason.len() <= rdlt_certify::REASON_BYTES, "{id}");
     }
     // The whole report is no larger than its clauses' statements and bounded reasons.
-    assert!(rdlt_certify::plain(&report).len() < 100_000);
+    assert!(rdlt_certify::plain(&report, &rdlt_certify::Held::default()).len() < 100_000);
 }
 
 /// A memory destination whose configuration, its `connect`, never answers, as one dialing a
