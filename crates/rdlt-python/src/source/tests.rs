@@ -220,8 +220,13 @@ stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [('p', {unb
     'planned': True, 'stated': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}}))
 streams = [stream]"
             );
-            loaded(py, store, "incremental", &body);
-            loaded(py, store, "incremental", &body);
+            for run in ["first", "second"] {
+                let (_, error) = loaded(py, store, "incremental", &body);
+                assert_eq!(error, None, "{store}: the {run} run");
+            }
+            // Ten rows landed once: the unbounded partition's five, then the five after its
+            // checkpoint, and the bounded one's ten, which it is not read again for.
+            assert_eq!(published_rows(store, "rows"), 10, "{store}");
             let started: Vec<Option<String>> = py
                 .eval(
                     &std::ffi::CString::new(format!("__import__('builtins').started['{store}']"))
