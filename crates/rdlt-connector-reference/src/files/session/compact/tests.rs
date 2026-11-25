@@ -191,6 +191,43 @@ fn merged_files_hold_every_row_in_order_and_what_they_merged_stays_until_the_com
 }
 
 #[test]
+fn a_run_of_more_files_than_the_process_may_hold_open_merges_into_one() {
+    use std::os::fd::AsRawFd as _;
+
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    const FILES: i64 = 300;
+    crate::rooted::trace::without_syncs();
+    for format in [FileFormat::Jsonl, FileFormat::Arrow] {
+        let (_root, location) = location(format);
+        let mut files: Vec<Listed> = (1..=FILES)
+            .map(|id| staged(&location, id.unsigned_abs(), &ids(&[id])))
+            .collect();
+        // Room for 64 descriptors more than the process holds, far fewer than the run's files.
+        let free = std::fs::File::open("/dev/null").unwrap().as_raw_fd();
+        let was = getrlimit(Resource::Nofile);
+        let room = Rlimit {
+            current: Some(u64::try_from(free).unwrap() + 64),
+            maximum: was.maximum,
+        };
+        setrlimit(Resource::Nofile, room).unwrap();
+        let mut created = Vec::new();
+        let added = files.len();
+        compact(
+            &location,
+            "rows",
+            None,
+            &mut files,
+            added,
+            &meta(&location, 1),
+            &mut created,
+        );
+        setrlimit(Resource::Nofile, was).unwrap();
+        assert_eq!(files.len(), 1, "{format:?}");
+        assert_eq!(read(&location, &files), (1..=FILES).collect::<Vec<_>>());
+    }
+}
+
+#[test]
 fn a_merge_that_fails_leaves_the_list_and_nothing_it_made() {
     use crate::rooted::trace::{self, Step};
     for format in [FileFormat::Jsonl, FileFormat::Arrow] {
