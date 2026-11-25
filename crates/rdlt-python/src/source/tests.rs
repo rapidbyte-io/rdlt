@@ -932,3 +932,44 @@ fn a_stopped_read_ends_once_its_thread_has_returned() {
         assert_eq!(reads(), ["began", "returned"]);
     });
 }
+
+#[test]
+fn a_partition_s_read_starts_once_the_read_of_it_the_engine_let_go_has_returned() {
+    embedded::with(|py| {
+        let source_factory = factory(py, RELEASED).factory();
+        let runtime = runtime::get(py).unwrap();
+        py.detach(|| {
+            runtime.block_on(async {
+                let source = source_factory
+                    .connect(serde_json::json!({}), ConnectContext::new())
+                    .await
+                    .unwrap();
+                let (sink, _feed) = partition_channel(std::num::NonZeroUsize::MIN);
+                // Let go while its generator waits, as a retried attempt lets its reads go.
+                let mut first = source.read(request(), sink);
+                begun(&mut first).await;
+                drop(first);
+                let (sink, mut feed) = partition_channel(std::num::NonZeroUsize::new(8).unwrap());
+                let mut second = source.read(request(), sink);
+                let early = tokio::time::timeout(Duration::from_millis(500), &mut second).await;
+                assert!(
+                    early.is_err(),
+                    "the second read waits for the first to return"
+                );
+                assert_eq!(
+                    reads(),
+                    ["began"],
+                    "no read of the partition began beside it"
+                );
+                released();
+                let (read, _) = tokio::time::timeout(Duration::from_secs(30), async {
+                    tokio::join!(&mut second, feed.recv())
+                })
+                .await
+                .expect("within 30 s");
+                read.unwrap();
+            });
+        });
+        assert_eq!(reads(), ["began", "returned", "began", "returned"]);
+    });
+}

@@ -196,7 +196,13 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   as a read whose last yield found it gone. A stopped read ends once its thread has returned, as a
   Rust read's future ends when its code does, so its caller bounds the wait, the engine by its stop
   wait and certification's `S-STOP` by its window, and a sync read that never yields or asks holds
-  its stop until then.
+  its stop until then. A read the engine let go, past its stop wait or as an attempt is cancelled,
+  runs on until it yields or asks, so a partition's read on a connection begins only once the last
+  read of it there has returned, as two Rust reads of one partition never run at once: it waits up
+  to a minute, as long as the engine waits by default for a read it stopped, and past that fails as
+  internal, not retried, naming the stream and the partition, since a generator that has not
+  returned by then ignores its stop and a retry would wait on the same thread; so a generator that
+  takes more than a minute to stop fails its run.
 - **Served mode is the Rust `serve`**, inside the extension, with a connector binary's flags and the
   GIL released while it serves: `serve` takes a source class, a destination class or one of each,
   whose roles one process serves, as `Served` does. A served connector's code runs on Python's
