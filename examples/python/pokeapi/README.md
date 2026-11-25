@@ -22,7 +22,11 @@ package does not. It is certified in its tests, against a local server.
   `types`, `abilities` and `stats` as nested JSON. `types` reads the list `/type?offset=&limit=`,
   each row an `id` read from the entry's URL and a `name`. Each is keyed by `id`.
 - **The cursor** of each is `Position`, `{"offset": n}`: the list offset its next page starts at,
-  checkpointed after each page.
+  checkpointed after each page. An offset keeps its place only in a list that grows at its end
+  alone: an entry the API adds before it is never read, and one it removes shifts the rest past
+  it. PokeAPI's documentation says nothing of its lists' order or of where they grow, so a later
+  run of this example may miss what the API adds: a stream of an API whose lists change anywhere
+  is read in full on a schedule, merged by its key.
 - **What it reads** is parsed strictly into pydantic models, `Page`, `Entry` and `Detail`, as the
   Rust source parses it into structs: no text or float is taken for a count, none is negative or
   past `u64`'s largest, an id is a run of digits, and a page that names no `next` is the last.
