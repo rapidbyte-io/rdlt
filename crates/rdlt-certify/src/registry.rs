@@ -116,7 +116,7 @@ A report's verdict follows from its outcomes:
 | Verdict | When | Exit code |
 |---|---|---|
 | passed | no clause failed, none that applies went unobserved, and one passed at least | 0 |
-| incomplete | no clause failed, yet one that applies was not observed, or none passed | 2 |
+| incomplete | no clause failed, yet one that applies was not observed, or none passed | 1 |
 | failed | a clause failed | 1 |
 
 The clauses a connector must pass are therefore those its declarations leave applicable: a \
@@ -152,8 +152,8 @@ process, on the batches a test or a binding gives it, with no protocol or engine
 |---|---|
 | 0 | every role certified passed, or, with `--require partial`, none failed and each passed a \
 clause |
-| 1 | a clause failed, or the connector serves none of the roles asked |
-| 2 | no clause failed, yet a role's certification is incomplete |
+| 1 | a clause failed, a role's certification is incomplete, or the connector serves none of \
+the roles asked |
 | 64 | the command line was wrong: an option, the configuration's JSON, the endpoint, or a \
 `--timeout` further ahead than the clock holds |
 | 74 | a file named could not be read, the connector's binary is missing or not executable, a \

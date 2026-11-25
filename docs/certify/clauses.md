@@ -18,7 +18,7 @@ A report's verdict follows from its outcomes:
 | Verdict | When | Exit code |
 |---|---|---|
 | passed | no clause failed, none that applies went unobserved, and one passed at least | 0 |
-| incomplete | no clause failed, yet one that applies was not observed, or none passed | 2 |
+| incomplete | no clause failed, yet one that applies was not observed, or none passed | 1 |
 | failed | a clause failed | 1 |
 
 The clauses a connector must pass are therefore those its declarations leave applicable: a connector cannot skip one by how it behaves, only by declaring less, and the engine uses of a connector only what it declares. `--require partial` exits 0 for an incomplete certification in which no clause failed and one passed; the report, and its JSON `verdict` and `passed`, say incomplete all the same. A clause is unobserved when nothing reads back what a destination published, when a source sends no checkpoint to resume or plan again from, when no read of an on-demand stream pushes after it answered a barrier, when a read ends within its first credit, when no kill reaches the connector, or when what a source sends is more than certification holds: certify with a fixture that shows the behaviour. It is unobserved too when a source cannot read again a stream `K-SOURCE` loads, or when a destination's identifier rules leave a table or column a clause names no identifier.
@@ -36,8 +36,7 @@ The `T` clauses certify a transform rather than a connector: `certify_transform`
 | Code | When |
 |---|---|
 | 0 | every role certified passed, or, with `--require partial`, none failed and each passed a clause |
-| 1 | a clause failed, or the connector serves none of the roles asked |
-| 2 | no clause failed, yet a role's certification is incomplete |
+| 1 | a clause failed, a role's certification is incomplete, or the connector serves none of the roles asked |
 | 64 | the command line was wrong: an option, the configuration's JSON, the endpoint, or a `--timeout` further ahead than the clock holds |
 | 74 | a file named could not be read, the connector's binary is missing or not executable, a connector the certification spawned was not seen to stop, or the report could not be written, or off a terminal not within a few seconds |
 | 130, 143, 129, 131 | the certification was interrupted (`SIGINT`), asked to terminate (`SIGTERM`), hung up on (`SIGHUP`) or asked to quit (`SIGQUIT`): the connectors it spawned are stopped first, and killed at once on a second signal |
