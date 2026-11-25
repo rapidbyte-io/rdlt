@@ -373,8 +373,8 @@ fn every_stream_an_engine_reads_is_loaded_as_it_reads_it() {
         ),
         (stream(&[full, changes], true), full, WriteMode::Replace),
         (stream(&[full], false), full, WriteMode::Replace),
-        // A stream read only as changes is merged by its key, and appended when it has none.
-        (stream(&[changes], true), changes, WriteMode::Merge),
+        // A stream read only as changes is loaded as a log, keyed or not: each change a row.
+        (stream(&[changes], true), changes, WriteMode::Append),
         (stream(&[changes], false), changes, WriteMode::Append),
     ];
     for (spec, read, write) in cases {

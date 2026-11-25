@@ -92,6 +92,73 @@ impl Source for ForgetfulSource {
     }
 }
 
+/// A source whose reads from a cursor start a record before it, as a change source that resumes
+/// a change early does: the record before the cursor is read again.
+struct Early(Box<dyn SourceFactory>);
+
+struct EarlySource(Box<dyn Source>);
+
+impl SourceFactory for Early {
+    fn spec(&self) -> &ConnectorSpec {
+        self.0.spec()
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn Source>>> {
+        Box::pin(async move {
+            let source = self.0.connect(config, context).await?;
+            Ok(Box::new(EarlySource(source)) as Box<dyn Source>)
+        })
+    }
+}
+
+impl Source for EarlySource {
+    fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        self.0.check()
+    }
+
+    fn discover(&self) -> BoxFuture<'_, rdlt_connector::Result<Catalog>> {
+        self.0.discover()
+    }
+
+    fn plan<'a>(
+        &'a self,
+        stream: &'a StreamName,
+        state: &'a StreamState,
+    ) -> BoxFuture<'a, rdlt_connector::Result<PartitionPlan>> {
+        self.0.plan(stream, state)
+    }
+
+    fn read(
+        &self,
+        mut request: ReadRequest,
+        sink: PartitionSink,
+    ) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        Box::pin(async move {
+            // The changes source's cursors say the next record to read; the first is 1.
+            if let Some(cursor) = &request.cursor {
+                let mut position: serde_json::Value = cursor.decode(cursor.version())?;
+                if let Some(next) = position["next"].as_u64().filter(|next| *next > 1) {
+                    position["next"] = json!(next - 1);
+                    request.cursor = Some(Cursor::encode(cursor.version(), &position)?);
+                }
+            }
+            self.0.read(request, sink).await
+        })
+    }
+
+    fn committed<'a>(
+        &'a self,
+        stream: &'a StreamName,
+        cursors: &'a [(PartitionId, Cursor)],
+    ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
+        self.0.committed(stream, cursors)
+    }
+}
+
 /// A destination that records each commit's state at once but publishes its rows only with the
 /// next commit, or as the session closes: a kill between them loses rows its state says it has.
 struct Deferring(Box<dyn DestinationFactory>);
@@ -393,4 +460,18 @@ async fn a_change_source_is_killed_as_it_reads_its_changes() {
     // A stream read only as changes is loaded as the engine loads it, and killed as it is.
     let killed = report.outcome("K-SOURCE");
     assert_eq!(killed, Some(&Outcome::Passed), "{report}");
+}
+
+#[tokio::test]
+async fn a_change_source_that_reads_a_record_again_as_it_resumes_fails_k_source() {
+    // Merged by its key, the record read again would change nothing the table holds.
+    let early = Early(source_factory::<ChangesSource>());
+    let target =
+        Target::served(Served::new().with_source(Box::new(early))).credit_watch(crate::BRIEF);
+    let config = json!({
+        "seed": 5,
+        "streams": [{ "name": "accounts", "keys": 400, "changes": 4000, "batch_rows": 20 }],
+    });
+    let report = certify_source(&target, config).await;
+    assert!(failed(report.outcome("K-SOURCE")), "{report}");
 }
