@@ -153,15 +153,17 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   of its own for an async method, generators for an emitter, and a `StreamContext`, with its
   `Exclusion`, `Limits` and `Headroom`, for what a Rust read is told by its partition and asks its
   emitter, given where a read names `ctx`, as a `partitions` or `plan` is given the `StreamState`
-  where it names `state`. A stream without a cursor is read in full alone, since Python's cursor is
-  optional and Rust's is not. A stream's schema is any Arrow schema, read through the C Data
-  Interface, so no one Arrow library is required, and refused where it is declared where Rust has no
-  table schema for it. Rust checks what a source answers as it checks a Rust source's, so a catalog,
-  a plan or a change batch is refused with Rust's own error and code. How a stream's rows land is
-  the pipeline's to say, as for a Rust source. `@stream` makes a function a stream as it makes a
-  method one, under the same rules, so a function moves into a `@source` class taking `self`, as its
-  `partitions=`, `plan=` and `committed=` callables then do too. A pipeline reads its stream
-  functions in process, as the streams of one source, `io.rapidbyte.functions`, which has no
+  where it names `state`. Naming `ctx` promises nothing: a stream checkpoints on demand where its
+  `checkpointing=` says so, as a Rust stream's spec says it, and says so only with a cursor to
+  checkpoint and a `ctx` to be asked through. A stream without a cursor is read in full alone, since
+  Python's cursor is optional and Rust's is not. A stream's schema is any Arrow schema, read through
+  the C Data Interface, so no one Arrow library is required, and refused where it is declared where
+  Rust has no table schema for it. Rust checks what a source answers as it checks a Rust source's,
+  so a catalog, a plan or a change batch is refused with Rust's own error and code. How a stream's
+  rows land is the pipeline's to say, as for a Rust source. `@stream` makes a function a stream as
+  it makes a method one, under the same rules, so a function moves into a `@source` class taking
+  `self`, as its `partitions=`, `plan=` and `committed=` callables then do too. A pipeline reads its
+  stream functions in process, as the streams of one source, `io.rapidbyte.functions`, which has no
   configuration, and is not served, installed or certified: a stream that needs those is a class's.
 - **A class's streams are one answer.** Its `@stream` methods are its `streams()` written as
   declarations, so a class has one or the other, and one with both is refused where it is
@@ -458,10 +460,10 @@ use where its thread made one before the fork. The wheel carries rdlt-certify's 
 connector serves a probe only where its launcher's own code asks for it. The nightly workflow tests
 the wheel on CPython 3.11 to 3.15 and on free-threaded 3.14, on Linux and macOS.
 
-A commit's barrier waits, up to its limit, for every partition still reading that checkpoints
-when asked to, as the generator does, so within one pipeline a transform that runs long on such a
-partition's flush, in Python or not, holds back the pipeline's commits until it returns or the
-barrier's wait ends; the GIL is not what holds them.
+A commit's barrier waits, up to its limit, for every partition still reading that checkpoints when
+asked to, as a stream declared `Checkpointing.ON_DEMAND` does, so within one pipeline a transform
+that runs long on such a partition's flush, in Python or not, holds back the pipeline's commits
+until it returns or the barrier's wait ends; the GIL is not what holds them.
 
 A stream that never checkpoints is read as one segment, so its run holds more of it at once.
 On Linux, glibc gives each thread that allocates, every daemon thread and every host's compute

@@ -14,7 +14,7 @@ from rdlt.model import Json, ReadMode, StreamName
 ReadWord = Literal["full", "incremental", "cdc"]
 """A read mode, by its name in a document."""
 
-_CheckpointingWord = Literal["natural", "on_demand"]
+CheckpointingWord = Literal["natural", "on_demand"]
 """When a stream checkpoints, by its name."""
 
 
@@ -54,7 +54,7 @@ class StreamSpec:
     schema: object = None
     primary_key: str | Sequence[str] | None = None
     read_modes: Sequence[ReadMode | ReadWord] = (ReadMode.FULL,)
-    checkpointing: Checkpointing | _CheckpointingWord = Checkpointing.NATURAL
+    checkpointing: Checkpointing | CheckpointingWord = Checkpointing.NATURAL
     replayable: bool = True
     change_time: str | None = None
     _table: Json = field(default=None, init=False, repr=False, compare=False)

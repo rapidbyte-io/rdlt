@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from rdlt.connector import (
+    Checkpointing,
     Config,
     Cursor,
     Secret,
@@ -55,7 +56,12 @@ class Tickets:
         """The stream's partitions: one, which ends once its last page is read."""
         return ["pages"]
 
-    @stream(primary_key=["id"], cursor=Since, partitions="planned")
+    @stream(
+        primary_key=["id"],
+        cursor=Since,
+        checkpointing=Checkpointing.ON_DEMAND,
+        partitions="planned",
+    )
     def tickets(self, since: Since, ctx: StreamContext) -> Iterator[object]:
         """Reads the pages after `since`."""
         for page in range(since.after + 1, self.config.pages):

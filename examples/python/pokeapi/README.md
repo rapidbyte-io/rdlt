@@ -37,9 +37,8 @@ package does not. It is certified in its tests, against a local server.
   at the list's end or at `limit`.
 - **It stops between requests:** each read asks `ctx.stopped()` before each request and returns
   where the engine asked it to stop. A request in flight blocks its thread, since `urllib`'s call
-  cannot be interrupted, and its timeout bounds each wait. Naming `ctx` declares that the read
-  checkpoints on demand, so it answers a barrier, `ctx.checkpoint_due()`, with a checkpoint before
-  its next page.
+  cannot be interrupted, and its timeout bounds each wait. It checkpoints after each page, at its
+  own points, as the Rust source does.
 
 ## Running it
 
@@ -77,11 +76,9 @@ test reaches the network. `just python-test examples/python/pokeapi` runs them:
 
 - **Certification**, `rdlt.testing.certify_source`, serves the class over a socket in the test's
   process and spawns its launcher for the kill clause. It passes the protocol's seven clauses,
-  S-CHECK, S-DISCOVER, S-PLAN, S-RESUME, S-STOP, S-BARRIER and K-SOURCE. S-PARTITION and S-ACK do
-  not apply, as for the Rust source. S-BARRIER applies here and not to the Rust source: a Python
-  read that names `ctx`, as these do to see a stop, checkpoints on demand, and answers a barrier
-  before its next page. The kill clause observes a kill only in a load that outlasts several
-  commits, so the server lists 40,000 types for it.
+  S-CHECK, S-DISCOVER, S-PLAN, S-RESUME, S-STOP and K-SOURCE. S-PARTITION, S-BARRIER and S-ACK do
+  not apply, as for the Rust source. The kill clause observes a kill only in a load that outlasts
+  several commits, so the server lists 40,000 types for it.
 - **Failures:** each status is the error of its kind, a 429 that names an HTTP date asks for a wait
   until then, a refused connection and a response cut short are `Transient`, a body that is not
   JSON, or JSON of another shape, is `InvalidData`, a count that is text, negative, a float or past
