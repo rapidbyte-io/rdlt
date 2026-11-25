@@ -35,8 +35,9 @@ falls short four ways:
     writes, or its identifier rules leave a table or column a clause names no identifier. None
     counts toward a pass.
   - A report's verdict is passed, incomplete or failed. It passes when no clause failed, none
-    was unobserved and one passed. The binary exits 0, 2 or 1; `--require partial` exits 0 for
-    an incomplete run in which a clause passed, and the report says incomplete all the same.
+    was unobserved and one passed. The binary exits 0 when it passed and 1 when it is incomplete
+    or failed; `--require partial` exits 0 for an incomplete run in which a clause passed, and
+    the report says incomplete all the same.
   - `S-RESUME` is unobserved without a checkpoint. It resumes from every checkpoint of a read
     that sent five at most, and else from five spread from the first to the last, so a resume
     wrong only from a checkpoint between them is not caught. It compares the rows a resumed read
@@ -166,7 +167,7 @@ falls short four ways:
 
 ## Consequences
 
-- A certification with a fixture too small to show a behaviour exits 2 where it exited 0: a
+- A certification with a fixture too small to show a behaviour exits 1 where it exited 0: a
   source needs data enough to checkpoint and for a kill to land, or `--require partial`.
 - `Outcome`, `Clause` and `Report` changed shape: `Skipped` is gone, a reason is a `Reason`,
   a clause has `unless`, and JSON reports carry `verdict` and the outcomes `inapplicable` and
