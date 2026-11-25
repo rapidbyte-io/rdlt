@@ -111,10 +111,10 @@ async fn every_column_a_merge_key_names_is_the_table_s() {
 }
 
 #[tokio::test]
-async fn a_key_of_no_column_on_a_table_without_a_schema_fails_no_commit_by_a_panic() {
+async fn a_key_of_no_column_is_refused_before_the_table_s_owner_is_asked() {
     let destination = store("keys-schemaless").await;
     let mut session = open(destination.as_ref(), "p").await;
-    // No schema was applied, so only the key itself can be judged where the writer opens.
+    // No pipeline created the table: the key is refused before the writer is, as unowned.
     let writer = session.session.writer(&keyed(by(&[], "seq"))).await;
     assert_eq!(
         refusal(writer.map(drop)),

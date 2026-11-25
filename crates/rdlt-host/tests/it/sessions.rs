@@ -5,8 +5,9 @@ use bytes::Bytes;
 use rdlt_connector::serve::{ServeError, Served, serve_connection};
 use rdlt_connector::wire::{error as carried, v1};
 use rdlt_connector::{
-    Destination as _, OpenContext, PipelineId, Role, SchemaVersion, SegmentId, Source as _,
-    TablePath, TableRef, destination_factory, source_factory,
+    Destination as _, Field, LogicalType, OpenContext, PipelineId, Role, SchemaVersion, SegmentId,
+    Source as _, TableChange, TablePath, TableRef, TableSchema, destination_factory,
+    source_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
 use rdlt_host::remote::Client;
@@ -37,6 +38,28 @@ pub(crate) fn table() -> TableRef {
         generation: None,
         merge: None,
     }
+}
+
+/// The creation of [`table`], of one column, `id`, as a destination's table writer of it needs.
+pub(crate) fn created() -> TableChange {
+    TableChange::Create {
+        table: table(),
+        schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
+            .expect("a valid schema"),
+    }
+}
+
+/// Creates [`table`] in the raw `session` of `client`, as [`created`] says.
+pub(crate) async fn create_raw(client: &mut Client, session: u64) {
+    let request = v1::ApplySchemaRequest {
+        session,
+        change: Some(v1::TableChange::from(&created())),
+    };
+    client
+        .rpc
+        .apply_schema(request)
+        .await
+        .expect("the table is created");
 }
 
 pub(crate) fn context() -> OpenContext {
@@ -108,18 +131,9 @@ async fn a_closed_session_refuses_later_calls() {
         .close(v1::CloseRequest { session })
         .await
         .unwrap();
-    let create = rdlt_connector::TableChange::Create {
-        table: table(),
-        schema: rdlt_connector::TableSchema::new(vec![rdlt_connector::Field::new(
-            "id",
-            rdlt_connector::LogicalType::Int64,
-            false,
-        )])
-        .unwrap(),
-    };
     let request = v1::ApplySchemaRequest {
         session,
-        change: Some(v1::TableChange::from(&create)),
+        change: Some(v1::TableChange::from(&created())),
     };
     let status = client.rpc.apply_schema(request).await.unwrap_err();
     assert_eq!(carried(&status, &|text| text).code(), Some("no_session"));

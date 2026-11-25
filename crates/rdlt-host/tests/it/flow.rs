@@ -9,7 +9,7 @@ use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use rdlt_connector::prelude::*;
 use rdlt_connector::serve::Served;
 use rdlt_connector::{
-    CommitKey, CommitMeta, ConnectContext, Destination as _, DestinationWriter, OpenContext,
+    CommitKey, CommitMeta, ConnectContext, Destination as _, DestinationWriter, Field, OpenContext,
     PipelineId, ReadRequest, Role, SchemaVersion, SegmentId, SegmentSet, Source as _, TablePath,
     TableRef, destination_factory, partition_channel, source_factory,
 };
@@ -191,14 +191,22 @@ fn table() -> TableRef {
     }
 }
 
+/// The creation of [`table`], of one column `name` of `logical`.
+fn created(name: &str, logical: LogicalType) -> TableChange {
+    TableChange::Create {
+        table: table(),
+        schema: TableSchema::new(vec![Field::new(name, logical, true)]).expect("a valid schema"),
+    }
+}
+
 fn ids(count: i64) -> RecordBatch {
     let values: Vec<i64> = (0..count).collect();
     RecordBatch::try_from_iter([("id", Arc::new(arrow_array::Int64Array::from(values)) as _)])
         .expect("a valid batch")
 }
 
-/// A table writer of `table` in a session of the destination `served` over `store`, within
-/// `limits`.
+/// A table writer of `table`, created with a text column `b`, in a session of the destination
+/// `served` over `store`, within `limits`.
 pub(crate) async fn writer(
     served: Served,
     limits: Limits,
@@ -216,6 +224,11 @@ pub(crate) async fn writer(
         pipeline: PipelineId::parse("flow").expect("a valid pipeline id"),
     };
     let mut opened = destination.open(&context).await.expect("the session opens");
+    let create = opened
+        .session
+        .apply_schema(&created("b", LogicalType::Utf8))
+        .await;
+    create.expect("the table is created");
     opened
         .session
         .writer(&table())
@@ -604,15 +617,13 @@ async fn five_writers_of_frame_sized_batches_through_one_connection_are_all_take
         pipeline: PipelineId::parse("five").expect("a valid pipeline id"),
     };
     let mut opened = destination.open(&context).await.expect("the session opens");
+    let change = created("id", LogicalType::Int64);
+    let create = opened.session.apply_schema(&change).await;
+    create.expect("the table is created");
     let mut writers = Vec::new();
     for _ in 0..5 {
-        writers.push(
-            opened
-                .session
-                .writer(&table())
-                .await
-                .expect("a table writer opens"),
-        );
+        let writer = opened.session.writer(&table()).await;
+        writers.push(writer.expect("a table writer opens"));
     }
     // Each batch takes a frame of nearly the frame limit: five of them, all in flight, pass the
     // window of four, and the fifth waits for room rather than failing.

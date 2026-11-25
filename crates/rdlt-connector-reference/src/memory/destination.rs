@@ -353,8 +353,7 @@ impl Session for MemorySession {
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
         let mut store = self.store.lock();
-        let entry = store.table(&self.pipeline, self.epoch, change.table())?;
-        entry.change(change)
+        store.change(&self.pipeline, self.epoch, change)
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<MemoryWriter> {
@@ -364,7 +363,7 @@ impl Session for MemorySession {
             let held = store.tables.get(&*table.name);
             holds_key(&table.name, key, held.and_then(|held| held.schema.as_ref()))?;
         }
-        store.table(&self.pipeline, self.epoch, table)?;
+        store.writes(&self.pipeline, self.epoch, table)?;
         drop(store);
         Ok(MemoryWriter {
             store: Arc::clone(&self.store),

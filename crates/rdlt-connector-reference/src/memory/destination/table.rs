@@ -15,7 +15,7 @@ use crate::columns::changed;
 
 #[derive(Debug, Default)]
 pub(super) struct Table {
-    /// The pipeline the table belongs to: the first to refer to it.
+    /// The pipeline that created the table, which it belongs to.
     pub(super) owner: Option<PipelineId>,
     pub(super) schema: Option<TableSchema>,
     /// How the table merges; `None` appends.
