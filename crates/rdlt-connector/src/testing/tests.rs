@@ -894,6 +894,9 @@ struct VaultConfig {
     /// Widens a column by reading what it held back from its text, as the narrower type writes
     /// it, as the wider type.
     widen_through_text: bool,
+    /// Widens a column of the rows it publishes as `widen_through_text` widens it, and takes the
+    /// rows it stages as they are.
+    widen_published_through_text: bool,
     /// Publishes the rows of a table that lost a column outside the pipeline without it, rather
     /// than refusing their commit.
     lose_dropped_columns: bool,
@@ -1642,7 +1645,13 @@ impl Session for VaultSession {
             TableChange::Widen {
                 table, column, to, ..
             } if self.config.widen_through_text => {
-                widened_through_text(&mut store, table, column, to);
+                published_through_text(&mut store, table, column, to);
+                staged_through_text(&mut store, table, column, to);
+            }
+            TableChange::Widen {
+                table, column, to, ..
+            } if self.config.widen_published_through_text => {
+                published_through_text(&mut store, table, column, to);
             }
             _ => {}
         }
@@ -2181,20 +2190,28 @@ fn blanked_names(batch: &RecordBatch) -> RecordBatch {
     RecordBatch::try_new(schema, columns).expect("nulls fit a nullable column")
 }
 
-/// Rewrites what `store` holds of `table`'s column `column` as `to`, read from its text.
-fn widened_through_text(store: &mut VaultStore, table: &TableRef, column: &str, to: &LogicalType) {
-    let through = |batch: &RecordBatch| through_text(batch, column, &to.to_arrow());
+/// Rewrites what `store` publishes of `table`'s column `column` as `to`, read from its text.
+fn published_through_text(
+    store: &mut VaultStore,
+    table: &TableRef,
+    column: &str,
+    to: &LogicalType,
+) {
     for published in store
         .published
         .get_mut(table.name.as_ref())
         .into_iter()
         .flatten()
     {
-        *published = through(published);
+        *published = through_text(published, column, &to.to_arrow());
     }
+}
+
+/// Widens `column` of what `table` holds staged as `published_through_text` widens it.
+fn staged_through_text(store: &mut VaultStore, table: &TableRef, column: &str, to: &LogicalType) {
     for staged in store.staged.values_mut().flatten() {
         if staged.table == table.name.as_ref() {
-            staged.batch = through(&staged.batch);
+            staged.batch = through_text(&staged.batch, column, &to.to_arrow());
         }
     }
 }
@@ -2425,6 +2442,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("merge_cased_names", &["D-NAMES"]),
     ("fold_simply", &["D-NAMES"]),
     ("widen_through_text", &["D-SCHEMA"]),
+    ("widen_published_through_text", &["D-SCHEMA"]),
     ("refuse_check", &["D-CHECK"]),
     ("lose_writers", &["D-WRITERS"]),
     ("keep_dropped", &["D-DROP"]),
