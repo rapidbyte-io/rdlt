@@ -36,12 +36,15 @@ package does not. It is certified in its tests, against a local server.
   `Unauthorized`; any other 4xx `InvalidConfig`, naming the status and the path; a body that is
   not JSON, or JSON of another shape, `InvalidData`.
 - **It asks gently:** `User-Agent: rdlt-example-pokeapi`, one request in flight across both
-  streams, whose reads run on threads of their own, 30 s for each wait on a request's socket
-  (`urlopen`'s timeout, which bounds each wait, not the whole request), and a page loop that stops
-  at the list's end or at `limit`.
+  streams, whose reads run on threads of their own, `TIMEOUT`, 30 s, for the whole of each
+  request, as the Rust client bounds its call, and a page loop that stops at the list's end or
+  at `limit`. A `Watch` starts a timer as the request is sent, and the opener's HTTP and HTTPS
+  handlers, which keep `urllib`'s redirects, open each of the request's connections for it; once
+  30 s have passed, the timer shuts the connection's socket down, so a read blocked on an answer
+  that trickles in, its status line, headers or body, fails `Transient`.
 - **It stops between requests:** each read asks `ctx.stopped()` before each request and returns
   where the engine asked it to stop. A request in flight blocks its thread, since `urllib`'s call
-  cannot be interrupted, and its timeout bounds each wait. It checkpoints after each page, at its
+  cannot be interrupted, and its 30 s bound the wait. It checkpoints after each page, at its
   own points, as the Rust source does.
 
 ## Running it
@@ -87,8 +90,9 @@ test reaches the network. `just python-test examples/python/pokeapi` runs them:
   until then, a refused connection and a response cut short are `Transient`, a body that is not
   JSON, or JSON of another shape, is `InvalidData`, a count that is text, negative, a float or past
   `u64`'s largest, or an id that is no run of digits, among them, and a page that names no `next` is
-  the last. A timeout is `Transient` as a refused connection is, and no test waits for one: the
-  timeout is a fixed 30 s, and a field only a test would set is no part of an example.
+  the last. A response whose head or body is still arriving when the request's time is up is
+  `Transient`, as a refused connection is: those tests shorten the module's `TIMEOUT`, since a
+  field only a test would set is no part of an example.
 - **Runs:** the program prints what the console block above shows, which the test reads from this
   README: 151 pokemon and 21 types, then nothing, each pokemon's nested lists as JSON in its row,
   with never more than one request at the server at once. With a 500, a response cut short and a

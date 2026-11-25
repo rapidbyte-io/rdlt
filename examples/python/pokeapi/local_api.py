@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 import time
@@ -32,6 +33,10 @@ class Response:
     body: str
     cut: bool = False
     """Whether the response claims more than its body, and its connection closes."""
+    trickled: float = 0.0
+    """The pause before each byte of the response, its status line first, in seconds."""
+    head_at_once: bool = False
+    """Whether the status line and headers go at once, and only the body trickles."""
 
 
 class Api:
@@ -40,6 +45,7 @@ class Api:
     def __init__(self, pokemon: int, types: int) -> None:
         self.counts = {"pokemon": pokemon, "type": types}
         self._answers: dict[str, list[Response]] = {}
+        self._trickled: dict[str, list[tuple[float, bool]]] = {}
         self._lock = threading.Lock()
         self._in_flight = 0
         self.most_at_once = 0
@@ -69,6 +75,14 @@ class Api:
         with self._lock:
             self._answers.setdefault(path, []).append(Response(200, None, body, cut=True))
 
+    def trickle(self, path: str, pause: float, *, head_at_once: bool = False) -> None:
+        """Answers the next request for `path` as it would, a byte each `pause` seconds.
+
+        With `head_at_once`, the status line and headers go at once and only the body trickles.
+        """
+        with self._lock:
+            self._trickled.setdefault(path, []).append((pause, head_at_once))
+
     def unserved(self) -> list[str]:
         """The paths of the answers the server has not given."""
         with self._lock:
@@ -92,6 +106,8 @@ class Api:
         with self._lock:
             answers = self._answers.get(parts.path)
             given = answers.pop(0) if answers else None
+            pauses = self._trickled.get(parts.path)
+            pause, head_at_once = pauses.pop(0) if pauses else (0.0, False)
         if agent != "rdlt-example-pokeapi":
             return Response(400, None, json.dumps({"detail": "no User-Agent names the example"}))
         if given is not None:
@@ -99,7 +115,7 @@ class Api:
         found = self._page(parts.path, parse_qs(parts.query))
         if found is None:
             return Response(404, None, json.dumps({"detail": "Not found."}))
-        return Response(200, None, json.dumps(found))
+        return Response(200, None, json.dumps(found), trickled=pause, head_at_once=head_at_once)
 
     def close(self) -> None:
         """Stops answering."""
@@ -169,6 +185,18 @@ class _Handler(BaseHTTPRequestHandler):
         api = cast("_Server", self.server).api
         answered = api.answer(self.path, self.headers.get("User-Agent"))
         payload = answered.body.encode()
+        if answered.trickled:
+            head = f"{self.protocol_version} 200 OK\r\nContent-Length: {len(payload)}\r\n\r\n"
+            trickled = head.encode() + payload
+            if answered.head_at_once:
+                self.wfile.write(head.encode())
+                trickled = payload
+            # A client that stops waiting closes the connection under the response.
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                for byte in trickled:
+                    time.sleep(answered.trickled)
+                    self.wfile.write(bytes([byte]))
+            return
         self.send_response(answered.status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload) + (64 if answered.cut else 0)))
