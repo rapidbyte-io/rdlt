@@ -212,8 +212,9 @@ connector reached at an endpoint, or served in process, is cut by the host, whic
 process stopped: the report notes which was seen.
 - A kill clause loads in a mode the connector declares: a destination in the first of append, \
 merge and replace it writes, a source each stream in the first of incremental, full and change \
-reads it serves. A destination that keeps history alone leaves `K-DESTINATION` unobserved, and \
-one whose identifiers are shorter than the names `D-NAMES` writes leaves that unobserved. A \
+reads it serves, changes appended as a log, keyed or not, so each change is a row. A destination \
+that keeps history alone leaves `K-DESTINATION` unobserved, and one whose identifiers are shorter \
+than the names `D-NAMES` writes leaves that unobserved. A \
 source that cannot read again a stream it loads leaves `K-SOURCE` unobserved, before any load: \
 each load starts from no cursor, which such a source refuses once anything, `S-ACK` among them, \
 told it one.

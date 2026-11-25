@@ -211,9 +211,11 @@ impl Source for Resumed {
 }
 
 /// How a load reads and writes `stream`: incrementally, appending, when it can; else in full,
-/// replacing; else as changes, merged by its key when it has one, and appended when not.
+/// replacing; else as changes, appended as a log, keyed or not.
 ///
-/// Every stream an engine reads is read in one of those, so none is left out of the load.
+/// Every stream an engine reads is read in one of those, so none is left out of the load. A log
+/// holds each change as a row, so a change a resume skips is a row missing and one it repeats a
+/// row too many; a merge would forgive both.
 pub(super) fn planned(stream: &StreamSpec) -> Option<StreamPlan> {
     let plan = StreamPlan::new(stream.name().clone());
     if stream.supports(ReadMode::Incremental) {
@@ -221,13 +223,7 @@ pub(super) fn planned(stream: &StreamSpec) -> Option<StreamPlan> {
     } else if stream.supports(ReadMode::Full) {
         Some(plan.read(ReadMode::Full).write(WriteMode::Replace))
     } else if stream.supports(ReadMode::Cdc) {
-        let keyed = stream.primary_key().is_some_and(|key| !key.is_empty());
-        let write = if keyed {
-            WriteMode::Merge
-        } else {
-            WriteMode::Append
-        };
-        Some(plan.read(ReadMode::Cdc).write(write))
+        Some(plan.read(ReadMode::Cdc).write(WriteMode::Append))
     } else {
         None
     }

@@ -25,8 +25,12 @@ kill what it placed.
   supervised as an engine's placement is: once never killed, and once killed at scheduled
   points. The second load's tables must equal the first's, row for row, without the engine's
   `_rdlt_` columns. Each stream is read in the first of incremental, full and change reads it
-  serves, and appended, replaced or merged as that read requires; a source with no stream read in
-  any mode is inapplicable (ADR 0050). A source that cannot read again a stream the clause loads
+  serves: an incremental read appended, a full read replacing, and changes appended as a log,
+  keyed or not. A log holds each change as a row, so a change a resume skips is a row missing and
+  one it repeats a row too many, where a merge would forgive both, a repeat by its sequence and a
+  skip wherever a later change of the key wins; the destination clauses and the engine's own tests
+  hold the merge, and this clause holds the source's resume. A source with no stream read in any
+  mode is inapplicable (ADR 0050). A source that cannot read again a stream the clause loads
   (`StreamSpec::with_replayable(false)`) leaves the clause unobserved, before any load: each load
   starts from no cursor, into a store of its own, and such a source refuses that read once
   anything told it a cursor, as `S-ACK` and the first load do (ADR 0034). One load alone would not
