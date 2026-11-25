@@ -22,7 +22,7 @@ use rdlt_wire::limits::{CREDIT_FLOOR, Class, MIN_FRAME_BYTES};
 use rdlt_wire::{Encoder, Limits};
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::sessions::{raw_session_within, table};
+use crate::sessions::{create_raw, raw_session_within, table};
 use crate::support::connectors::{Gate, Writes, Writing};
 
 /// Rows: the ids of a frame of seven megabytes, as the default coalescing target makes.
@@ -71,6 +71,7 @@ async fn a_served_write_grows_its_window_to_two_frames_and_answers_a_flush_with_
     use v1::write_frame::Frame;
     let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
     let (mut client, session) = raw_session_within(served, "credit_grows", Limits::default()).await;
+    create_raw(&mut client, session).await;
     let sent = write_frames();
     let sizes: Vec<u64> = sent.iter().map(length).collect();
     let start = Frame::Start(v1::WriteStart {

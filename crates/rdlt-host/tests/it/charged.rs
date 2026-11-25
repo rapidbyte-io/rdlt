@@ -190,6 +190,11 @@ async fn a_writer_releases_each_answer_s_charge_once_it_is_decoded() {
             generation: None,
             merge: None,
         };
+        let create = opened
+            .session
+            .apply_schema(&crate::sessions::created())
+            .await;
+        create.expect("the table is created");
         let mut writer = opened
             .session
             .writer(&table)
