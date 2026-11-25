@@ -1,7 +1,10 @@
 use rdlt_certify::{Clause, ClauseResult, Outcome, Report, Verdict};
 
 use super::session::within;
-use super::{Require, Watch, bound, code, json_document, ran, redactions, verdict, whole_report};
+use super::{
+    Ended, Require, Watch, bound, code, documented, json_document, ran, redactions, verdict,
+    whole_report,
+};
 use crate::Exit;
 use crate::output::Mode;
 use crate::ui::Ui;
@@ -356,4 +359,20 @@ fn a_secret_like_a_word_or_punctuation_of_the_report_leaves_it_whole() {
         document["reports"][0]["clauses"][0]["outcome"], "passed",
         "{printed}"
     );
+}
+
+#[test]
+fn a_failure_is_written_as_a_document_unless_standard_output_failed_to_take_a_write() {
+    let message = || "writing to standard output failed: no space left".to_owned();
+    let failed = || Ended::Failed(Exit::Io, message());
+    assert!(documented(&failed(), Mode::Json));
+    assert!(!documented(&failed(), Mode::Plain));
+    // Whatever its message says, and whatever is said after it.
+    let unwritten = Ended::Unwritten(message()).and(&"a group lingers");
+    assert!(!documented(&unwritten, Mode::Json));
+    assert_eq!(unwritten.exit(), Exit::Io);
+    let Ended::Unwritten(said) = unwritten else {
+        panic!("standard output's own failure stays one");
+    };
+    assert_eq!(said, format!("{}; a group lingers", message()));
 }

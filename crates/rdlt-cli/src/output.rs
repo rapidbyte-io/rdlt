@@ -2,6 +2,7 @@
 //! error, connector text shown as the host shows it, and a closed pipe ending quietly.
 
 use std::io::{IsTerminal as _, Write as _};
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 use tokio::io::AsyncWriteExt as _;
@@ -189,8 +190,8 @@ pub(crate) fn note(text: &str) {
 }
 
 /// Writes `text` to `to` on a thread of its own, waiting within [`FINISHING`], and answers what
-/// the write answered: a terminal that stopped reading holds up only that thread, which the
-/// process's end takes, and is no failure.
+/// the write answered, a `TimedOut` error once the bound passes, or why no thread could write
+/// it: a reader that stopped reading holds up only that thread, which the process's end takes.
 pub(crate) fn written_within(to: Std, text: String) -> std::io::Result<()> {
     let (answer, answered) = std::sync::mpsc::channel();
     let writing = move || {
@@ -206,10 +207,15 @@ pub(crate) fn written_within(to: Std, text: String) -> std::io::Result<()> {
         answer.send(wrote).ok();
     };
     let thread = std::thread::Builder::new().name("rdlt-writer".to_owned());
-    if thread.spawn(writing).is_err() {
-        return Ok(());
+    thread.spawn(writing)?;
+    match answered.recv_timeout(FINISHING) {
+        Ok(wrote) => wrote,
+        Err(RecvTimeoutError::Timeout) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("not written within {FINISHING:?}"),
+        )),
+        Err(RecvTimeoutError::Disconnected) => Ok(()),
     }
-    answered.recv_timeout(FINISHING).unwrap_or(Ok(()))
 }
 
 /// Writes `text` to standard error, whoever holds the reading end; a failure to write is no

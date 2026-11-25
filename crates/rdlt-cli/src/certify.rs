@@ -97,8 +97,33 @@ enum Require {
     Partial,
 }
 
-/// Why the command ended without certifying: how it exits and its message.
-struct Ended(Exit, String);
+/// Why the command ended without certifying.
+enum Ended {
+    /// It exits so, saying why.
+    Failed(Exit, String),
+    /// Standard output did not take what was written to it, as the message says: the failure is
+    /// said on standard error alone, since a document after it would wait on what did not go,
+    /// and could follow it.
+    Unwritten(String),
+}
+
+impl Ended {
+    /// How the command exits.
+    fn exit(&self) -> Exit {
+        match self {
+            Self::Failed(exit, _) => *exit,
+            Self::Unwritten(_) => Exit::Io,
+        }
+    }
+
+    /// This end, its message followed by `more`.
+    fn and(self, more: &impl std::fmt::Display) -> Self {
+        match self {
+            Self::Failed(exit, message) => Self::Failed(exit, format!("{message}; {more}")),
+            Self::Unwritten(message) => Self::Unwritten(format!("{message}; {more}")),
+        }
+    }
+}
 
 /// Certifies the connector `args` names, as `host` lets it be reached, printing what it met as
 /// `mode` says, and answers how the command exits.
@@ -112,9 +137,11 @@ pub(crate) fn certify(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) 
     };
     match ran {
         Ok(exit) => exit,
-        Err(Ended(exit, message)) => {
+        Err(ended) => {
+            let (exit, documented) = (ended.exit(), documented(&ended, mode));
+            let (Ended::Failed(_, message) | Ended::Unwritten(message)) = ended;
             let message = redactions().scrubbed(message);
-            if mode == Mode::Json {
+            if documented {
                 print_json(&failure_json(exit, &message), ui).ok();
             } else if ui.rich_failures() {
                 ui.last_words(ui::certify_failure(&message, ui));
@@ -126,6 +153,12 @@ pub(crate) fn certify(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) 
     }
 }
 
+/// Whether a failure that `ended` the command is written as a JSON document, as `mode` asks: not
+/// where standard output itself failed.
+fn documented(ended: &Ended, mode: Mode) -> bool {
+    mode == Mode::Json && matches!(ended, Ended::Failed(..))
+}
+
 /// The secrets the configuration's references resolved to: nothing this command prints holds
 /// one.
 pub(crate) fn redactions() -> &'static Redactions {
@@ -135,7 +168,7 @@ pub(crate) fn redactions() -> &'static Redactions {
 
 fn run(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) -> Result<Exit, Ended> {
     if host.file.is_some() || !host.connectors.is_empty() || host.allow_network {
-        return Err(Ended(
+        return Err(Ended::Failed(
             Exit::Usage,
             "--host, --connectors and --allow-network are for a pipeline's host: \
              certify takes what its connector may reach from its own flags"
@@ -223,7 +256,7 @@ fn until(args: &CertifyArgs) -> Result<Option<Instant>, Ended> {
     };
     let until = Instant::now().checked_add(bound).ok_or_else(|| {
         let message = "--timeout is further ahead than the clock holds; see --no-timeout";
-        Ended(Exit::Usage, message.to_owned())
+        Ended::Failed(Exit::Usage, message.to_owned())
     })?;
     Ok(Some(until))
 }
@@ -233,7 +266,7 @@ fn credit_watch(millis: u64) -> Result<Duration, Ended> {
     let watch = Duration::from_millis(millis);
     if watch > CREDIT_WATCH {
         let most = CREDIT_WATCH.as_millis();
-        return Err(Ended(
+        return Err(Ended::Failed(
             Exit::Usage,
             format!("--credit-watch is at most {most} ms"),
         ));
@@ -496,15 +529,12 @@ fn target(args: &CertifyArgs, host: &HostArgs) -> Result<Target, Ended> {
     let named = args.target.as_deref().unwrap_or_default();
     // Its id is learned from its handshake: the reference's is only a name for its output.
     let id = ConnectorId::parse("rdlt.certify.target")
-        .map_err(|error| Ended(Exit::Usage, error.to_string()))?;
-    let usage = |message: &str| Ended(Exit::Usage, message.to_owned());
+        .map_err(|error| Ended::Failed(Exit::Usage, error.to_string()))?;
+    let usage = |message: &str| Ended::Failed(Exit::Usage, message.to_owned());
+    let io = |message: String| Ended::Failed(Exit::Io, message);
     if named.starts_with("grpcs://") {
-        Endpoint::parse(named).map_err(|error| {
-            Ended(
-                Exit::Usage,
-                format!("{error}: an endpoint is `grpcs://host:port`"),
-            )
-        })?;
+        Endpoint::parse(named)
+            .map_err(|error| usage(&format!("{error}: an endpoint is `grpcs://host:port`")))?;
         if !args.env.is_empty() {
             return Err(usage("--env is for a spawned connector, not an endpoint"));
         }
@@ -517,10 +547,10 @@ fn target(args: &CertifyArgs, host: &HostArgs) -> Result<Target, Ended> {
         let opening = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
-            .map_err(|error| Ended(Exit::Io, format!("starting the runtime failed: {error}")))?;
+            .map_err(|error| io(format!("starting the runtime failed: {error}")))?;
         let opened = opening.block_on(rdlt::Tls::from_files(cert, key, ca));
         opening.shutdown_background();
-        opened.map_err(|error| Ended(Exit::Io, error.to_string()))?;
+        opened.map_err(|error| io(error.to_string()))?;
         let identity = Identity {
             cert: cert.clone(),
             key: key.clone(),
@@ -543,13 +573,13 @@ fn target(args: &CertifyArgs, host: &HostArgs) -> Result<Target, Ended> {
         // Not repeated: what was typed may be an endpoint mistyped, with a credential in it.
         let message = "the connector named is neither a binary's or a directory connector's \
                        path nor an endpoint, `grpcs://host:port`";
-        return Err(Ended(Exit::Io, message.to_owned()));
+        return Err(io(message.to_owned()));
     }
     let executable = path
         .metadata()
         .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0);
     if !executable {
-        return Err(Ended(Exit::Io, format!("{named} is not executable")));
+        return Err(io(format!("{named} is not executable")));
     }
     Ok(Target::spawned(
         local(args, host)?,
@@ -576,7 +606,7 @@ fn local(args: &CertifyArgs, host: &HostArgs) -> Result<Local, Ended> {
     let granting = args.network || !host.readable.is_empty() || !host.writable.is_empty();
     if host.trust_binaries && granting {
         let message = "--trust-binaries gives a connector your own access: grant it nothing";
-        return Err(Ended(Exit::Usage, message.to_owned()));
+        return Err(Ended::Failed(Exit::Usage, message.to_owned()));
     }
     let local = if host.trust_binaries {
         Local::trusting_binaries()
@@ -585,7 +615,7 @@ fn local(args: &CertifyArgs, host: &HostArgs) -> Result<Local, Ended> {
         sandbox.usable().map_err(|error| {
             let message =
                 format!("{error}; --trust-binaries runs a binary you trust in no sandbox");
-            Ended(Exit::Io, message)
+            Ended::Failed(Exit::Io, message)
         })?;
         Local::sandboxed(sandbox)
     };
@@ -599,18 +629,20 @@ fn local(args: &CertifyArgs, host: &HostArgs) -> Result<Local, Ended> {
 
 /// Prints `text` on standard output, scrubbed of the configuration's secrets: a closed pipe
 /// ends quietly, a terminal that stopped reading is left within its bound, and any other failure
-/// is an I/O error.
+/// is an I/O error, a pipe or file not written within the bound among them.
 fn print(text: &str, ui: &Ui) -> Result<(), Ended> {
     print_json(&redactions().scrubbed(text.to_owned()), ui)
 }
 
 /// Prints `document`, JSON whose texts were scrubbed before it was encoded, as `print` prints: a
 /// scrub of the whole could take its punctuation or a word for an outcome for a secret.
+///
+/// The write is bounded wherever it goes: the signals' handlers are installed by then, and none
+/// is heard while a write blocks.
 fn print_json(document: &str, ui: &Ui) -> Result<(), Ended> {
-    if ui.rich_results() {
-        printed(written_within(Std::Out, document.to_owned()))
-    } else {
-        printed(write_stdout(document))
+    match written_within(Std::Out, document.to_owned()) {
+        Err(late) if late.kind() == std::io::ErrorKind::TimedOut && ui.rich_results() => Ok(()),
+        written => printed(written),
     }
 }
 
@@ -625,8 +657,7 @@ fn write_stdout(text: &str) -> std::io::Result<()> {
 /// How a write ended, for a verb: a closed pipe is no failure, and any other is an I/O error.
 fn printed(written: std::io::Result<()>) -> Result<(), Ended> {
     match written {
-        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(Ended(
-            Exit::Io,
+        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(Ended::Unwritten(
             format!("writing to standard output failed: {error}"),
         )),
         _ => Ok(()),

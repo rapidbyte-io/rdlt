@@ -420,6 +420,28 @@ async fn a_terminal_nobody_reads_holds_up_neither_a_certification_s_signal_nor_i
     drop((master, slave));
 }
 
+/// A certification's report to a terminal nobody reads is left there within its bound, as a
+/// pipe's is not: the exit is the verdict's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_to_a_terminal_nobody_reads_is_left_and_the_exit_is_the_verdict_s() {
+    let scratch = Scratch::new();
+    let (master, slave) = full_terminal(STANDARD);
+    // Five rows end within the first credit and before a kill: the certification is incomplete.
+    let config = r#"{"seed": 11, "streams": [{"name": "events", "rows": 5}]}"#;
+    let command = certifying(
+        &scratch,
+        config,
+        &["--output", "json", "--credit-watch", "50"],
+    );
+    let mut child = spawned_on(command, &slave);
+    let status = tokio::time::timeout(Duration::from_secs(240), child.wait())
+        .await
+        .expect("a terminal nobody reads does not hold the exit")
+        .expect("it ends");
+    assert_eq!(status.code(), Some(1));
+    drop((master, slave));
+}
+
 /// The run's lines reach no screen's last column, and streams past its height collapse.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_narrow_screen_wraps_no_line_and_a_short_one_collapses_its_streams() {

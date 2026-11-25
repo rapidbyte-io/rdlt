@@ -1188,6 +1188,9 @@ standard error holds notes.
   `auto` off a terminal, and in plain text, it is the usual message on standard error.
 - A failure to write events or a report after the run ended is the run's `error` where the run
   has none of its own, as well as a note on standard error; the exit is 74 then.
+- `certify` gives its result a few seconds to be written: off a terminal, a pipe or file that
+  has not taken it all by then exits 74, as one it cannot be written to does; a terminal that
+  stopped reading is left as it is.
 
 With a collector named by `OTEL_EXPORTER_OTLP_ENDPOINT` or its per-signal variables, the process
 waits about ten seconds at most at its end for what it holds to be exported, on top of its own

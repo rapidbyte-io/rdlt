@@ -70,7 +70,10 @@ clauses are ADR 0022's.
   - Plain output shows what the connector said, not obeys it: its controls, line breaks among them,
     and the marks that reorder text are escaped. JSON output carries it verbatim. A reason is shown
     where it is made, so the plain report, its `Display` and the JSON carry the same escaped text
-    (ADR 0043). A closed standard output ends quietly; one that cannot be written exits 74.
+    (ADR 0043). A closed standard output ends quietly; one that cannot be written exits 74, and
+    so does a pipe or file that has not taken the report within a few seconds, since the signals'
+    handlers are installed by then and none is heard while a write blocks. A terminal that stopped
+    reading is left as it is.
   - A malformed endpoint is a wrong command line, and exits 64.
   - Its help and its reports are snapshots, with `insta`.
 - **The clauses' documentation is generated from the registry**: `docs/certify/clauses.md`, which
