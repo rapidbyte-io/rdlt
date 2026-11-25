@@ -278,7 +278,8 @@ class Router:
     once its item is sent, as a sync read's waits for the engine; a notice returns at once. A
     Rust read awaits each notice, so it holds one at a time; the router holds, after the last
     yield waiting, at most one of each kind, a replan being said once and a lag being its newest,
-    which is what the engine makes of a Rust read's.
+    which is what the engine makes of a Rust read's. What fails a send fails the read: the yields
+    waiting raise it, and so does every later yield and the read's end, and nothing more is sent.
     """
 
     def __init__(self, out: Out, context: object, loop: asyncio.AbstractEventLoop) -> None:
@@ -290,6 +291,8 @@ class Router:
         # it is, none for a yield; and the future its yield waits on.
         self._waiting: deque[tuple[object, str | None, asyncio.Future[bool] | None]] = deque()
         self._sending: asyncio.Task[None] | None = None
+        # What failed a send, which fails the read.
+        self._failed: BaseException | None = None
         self._woken: asyncio.Future[None] | None = None
         self._watched = out.watched()
         try:
@@ -302,7 +305,13 @@ class Router:
             raise RuntimeError(message) from refused
 
     async def yielded(self, item: object) -> bool:
-        """Sends `item` after what was said before it; false once the read has gone."""
+        """Sends `item` after what was said before it; false once the read has gone.
+
+        Raises:
+            BaseException: what failed a send.
+        """
+        if self._failed is not None:
+            raise self._failed
         done: asyncio.Future[bool]
         if self._waiting or self._sending is not None:
             done = self._loop.create_future()
@@ -323,6 +332,8 @@ class Router:
 
     def notify(self, notice: object, kind: str) -> None:
         """Gives the engine `notice`, of `kind`, after what was said before it."""
+        if self._failed is not None:
+            return
         if not self._waiting and self._sending is None:
             if self._out.notify(notice) is not None:
                 return
@@ -338,9 +349,15 @@ class Router:
         self._wait(notice, kind, None)
 
     async def sent(self) -> None:
-        """Waits until what was said has been sent."""
+        """Waits until what was said has been sent.
+
+        Raises:
+            BaseException: what failed a send.
+        """
         if self._sending is not None:
             await self._sending
+        if self._failed is not None:
+            raise self._failed
 
     def stop(self) -> None:
         """Stops sending, dropping what waits, and stops watching for room."""
@@ -377,8 +394,20 @@ class Router:
                 self._waiting.popleft()
                 if done is not None and not done.done():
                     done.set_result(sent)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 - a panic beneath a send included
+            self._fail(error)
         finally:
             self._sending = None
+
+    def _fail(self, error: BaseException) -> None:
+        """Fails the read with `error`: each yield waiting raises it, and nothing more is sent."""
+        self._failed = error
+        while self._waiting:
+            _, _, done = self._waiting.popleft()
+            if done is not None and not done.done():
+                done.set_exception(error)
 
     async def _room(self) -> None:
         self._woken = self._loop.create_future()
