@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import email.utils
 import http.client
+import socket
+import ssl
 import threading
 import urllib.error
 import urllib.parse
@@ -35,7 +38,12 @@ USER_AGENT = "rdlt-example-pokeapi"
 """What the connector tells the API it is."""
 
 TIMEOUT = 30.0
-"""The longest each wait on a request's socket may take, in seconds."""
+"""The longest a request may take, its whole answer read, in seconds."""
+
+TLS = ssl.create_default_context()
+"""The TLS context of every request: the system's certificates, checked, and HTTP/1.1 offered, as
+urllib's own context offers it."""
+TLS.set_alpn_protocols(["http/1.1"])
 
 DEFAULT_RETRY_AFTER = 1.0
 """The wait a 429 asks for where it says none, in seconds."""
@@ -207,18 +215,161 @@ class PokeApi:
         request = urllib.request.Request(  # noqa: S310 - its scheme was checked as configured
             f"{self.base_url}/{path}", headers={"User-Agent": USER_AGENT}
         )
+        watch = Watch()
+        opener = urllib.request.build_opener(Watched(watch), WatchedTls(watch))
         with self.turn:
+            watch.timer.start()
             try:
-                with urllib.request.urlopen(request, timeout=TIMEOUT) as response:  # noqa: S310
+                with opener.open(request, timeout=TIMEOUT) as response:
                     body: bytes = response.read()
             except urllib.error.HTTPError as error:
                 raise failure(error.code, error.headers.get("Retry-After"), path) from error
             except (OSError, http.client.HTTPException) as error:
-                raise Transient(f"GET {path} failed: {error!r}") from error
+                raise watch.failure(path, error) from error
+            finally:
+                watch.timer.cancel()
+        if watch.expired:
+            raise watch.failure(path, None)
         try:
             return shape.model_validate_json(body)
         except pydantic.ValidationError as error:
             raise InvalidData(f"{path} answered another shape") from error
+
+
+class Watch:
+    """Ends a request once `TIMEOUT` has passed since it was sent, its answer read or not.
+
+    It shuts the socket of the request's connection down, which ends a read blocked on it however
+    the answer trickles in: its status line, its headers or its body. It keeps the socket the
+    connection connected, which urllib drops from the connection before its body is read, while
+    the response still reads through it.
+    """
+
+    def __init__(self) -> None:
+        self.connection: http.client.HTTPConnection | None = None
+        self.sock: socket.socket | None = None
+        self.expired = False
+        self.timer = threading.Timer(TIMEOUT, self.expire)
+
+    def expire(self) -> None:
+        """Marks the request's time up and ends its connection."""
+        self.expired = True
+        self.end()
+
+    def connected(self, sock: socket.socket) -> None:
+        """Keeps `sock`, the socket a connection of the request connected.
+
+        A redirect's connection replaces it; a time that ran out while it connected ends it at once.
+        """
+        self.sock = sock
+        if self.expired:
+            self.end()
+
+    def end(self) -> None:
+        """Shuts the request's socket down, ending the read waiting on it.
+
+        That is the socket a connection connected, or the one a connection holds before its TLS
+        handshake, such as a proxy's tunnel's.
+        """
+        connecting = None if self.connection is None else self.connection.sock
+        for sock in (self.sock, connecting):
+            if sock is not None:
+                # A socket the response closed since has nothing left to end. The descriptor's own
+                # shutdown, since an `SSLSocket`'s drops its TLS state under a read still using it.
+                with contextlib.suppress(OSError):
+                    socket.socket.shutdown(sock, socket.SHUT_RDWR)
+
+    def failure(self, path: str, error: Exception | None) -> Transient:
+        """What a request for `path` that failed with `error`, if any, failed as."""
+        if self.expired:
+            return Transient(f"GET {path} took longer than {TIMEOUT:g} s")
+        return Transient(f"GET {path} failed: {error!r}")
+
+    def plain(
+        self,
+        host: str,
+        /,
+        *,
+        port: int | None = None,
+        timeout: float = TIMEOUT,
+        source_address: tuple[str, int] | None = None,
+        blocksize: int = 8192,
+    ) -> http.client.HTTPConnection:
+        """A connection to `host`, which the watch ends."""
+        connection = Plain(host, port, timeout, source_address, blocksize)
+        connection.watch = self
+        self.connection = connection
+        return connection
+
+    def tls(
+        self,
+        host: str,
+        /,
+        *,
+        port: int | None = None,
+        timeout: float = TIMEOUT,
+        source_address: tuple[str, int] | None = None,
+        blocksize: int = 8192,
+        context: ssl.SSLContext | None = None,
+    ) -> http.client.HTTPConnection:
+        """A TLS connection to `host`, which the watch ends."""
+        connection = Tls(
+            host,
+            port,
+            timeout=timeout,
+            source_address=source_address,
+            context=context,
+            blocksize=blocksize,
+        )
+        connection.watch = self
+        self.connection = connection
+        return connection
+
+
+class Plain(http.client.HTTPConnection):
+    """An HTTP connection its watch ends."""
+
+    watch: Watch
+
+    def connect(self) -> None:
+        """Connects, the socket its watch's."""
+        super().connect()
+        self.watch.connected(self.sock)
+
+
+class Tls(http.client.HTTPSConnection):
+    """An HTTPS connection its watch ends."""
+
+    watch: Watch
+
+    def connect(self) -> None:
+        """Connects, the socket its watch's."""
+        super().connect()
+        self.watch.connected(self.sock)
+
+
+class Watched(urllib.request.HTTPHandler):
+    """Opens each HTTP connection for `watch`, redirects' too."""
+
+    def __init__(self, watch: Watch) -> None:
+        super().__init__()
+        self.watch = watch
+
+    def http_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        """Opens `req`'s connection for the watch."""
+        return self.do_open(self.watch.plain, req)
+
+
+class WatchedTls(urllib.request.HTTPSHandler):
+    """Opens each HTTPS connection for `watch`, redirects' too, its certificate checked."""
+
+    def __init__(self, watch: Watch) -> None:
+        super().__init__(context=TLS)
+        self.watch = watch
+
+    def https_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        """Opens `req`'s connection for the watch."""
+        return self.do_open(self.watch.tls, req, context=TLS)
 
 
 def failure(status: int, retry_after: str | None, path: str) -> ConnectorError:
