@@ -95,6 +95,12 @@ pub fn schema(store: &str, table: &str) -> Option<TableSchema> {
         .and_then(|table| table.schema.clone())
 }
 
+/// Removes `store` from this process: its tables, staging and state go once no connection to
+/// it is left, and a connection made later finds it empty.
+pub fn forget(store: &str) {
+    STORES.lock().remove(&(None, store.to_owned()));
+}
+
 /// The stores, each by the host it is kept for and its name.
 type Stores = BTreeMap<(Option<String>, String), Arc<Mutex<Store>>>;
 

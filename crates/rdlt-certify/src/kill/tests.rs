@@ -623,3 +623,26 @@ fn the_kill_clauses_run_against_the_kill_target_where_one_is_chosen() {
     let chosen = served().kill_target(installed());
     assert_eq!(chosen.killed().describe(), installed().describe());
 }
+
+#[tokio::test]
+async fn a_draw_leaves_no_store_in_the_process_however_it_ends() {
+    use rdlt_connector_reference::{GeneratorSource, tables};
+
+    use super::source::{Stores, compared};
+    let factory = rdlt_connector::source_factory::<GeneratorSource>();
+    let id = factory.spec().id.clone();
+    let target = crate::Target::served(rdlt_connector::serve::Served::new().with_source(factory));
+    // A load of five rows commits once, before any point the seed draws.
+    let config = serde_json::json!({ "seed": 1, "streams": [{ "name": "events", "rows": 5 }] });
+    let run = 0x5eed;
+    let loaded = compared(&target, &id, &config, run, 1).await;
+    assert!(matches!(loaded, Ok(Loaded::Unseen(_))), "both loads ran");
+    let stores = Stores::new(run);
+    for store in [&stores.clean, &stores.killed] {
+        assert!(
+            tables(store).is_empty(),
+            "{store} holds {:?}",
+            tables(store)
+        );
+    }
+}
