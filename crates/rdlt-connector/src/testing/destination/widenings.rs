@@ -1,18 +1,22 @@
 //! `D-SCHEMA`'s widenings: every pair of kinds a destination widens in place, at the edges of
-//! the narrower type, read back as the values they were.
+//! the narrower type, published before the widening meets them and read back as the values they
+//! were.
 
 #[cfg(test)]
 mod tests;
 
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
-use arrow_array::{Array, ArrayRef, Decimal128Array, Float64Array, Int32Array, Int64Array};
+use arrow_array::{
+    Array, ArrayRef, Decimal128Array, Float64Array, Int32Array, Int64Array, RecordBatch,
+    new_null_array,
+};
+use arrow_schema::DataType;
 
 use super::{Bench, commit, meta};
 use crate::OpenedSession;
 use crate::capabilities::Capabilities;
-use crate::destination::TableChange;
+use crate::destination::{DestinationWriter, TableChange};
 use crate::id::SegmentId;
 use crate::schema::TableSchema;
 use crate::testing::reason::Listed;
@@ -21,8 +25,9 @@ use crate::types::{DecimalType, Field, LogicalType, TimeUnit, TypeKind};
 
 impl Bench<'_> {
     /// Widens a column of a table of its own for each pair of kinds the destination declares it
-    /// stores and widens in place, holding the narrower type's edges, and reads every value back
-    /// as it was.
+    /// stores and widens in place, and reads every value back as it was: the narrower type's
+    /// edges and a null, published before the widening, as a load's earlier commits publish
+    /// them, then the wider type's edges and a null, written after it.
     ///
     /// The engine sends a kind the destination does not store as text, whose widening is the
     /// engine's own.
@@ -30,11 +35,13 @@ impl Bench<'_> {
         &self,
         opened: &mut OpenedSession,
     ) -> Result<(), Violation> {
-        // Each widening's rows in a segment of their own, after those the clause wrote before.
-        let segments = (100..).map(SegmentId);
+        // Each widening's rows in two segments of their own, after those the clause wrote before.
+        let segments = (100..).step_by(2).zip((101..).step_by(2));
         let widenings = checked(self.destination.capabilities());
         let column = self.names.column("v");
-        for (place, ((from, to), segment)) in widenings.into_iter().zip(segments).enumerate() {
+        for (place, ((from, to), (narrow_at, wide_at))) in
+            widenings.into_iter().zip(segments).enumerate()
+        {
             let table = self.other_table(&format!("widened_{place}"));
             let create = TableChange::Create {
                 table: table.clone(),
@@ -42,12 +49,10 @@ impl Bench<'_> {
                     .expect("the certification schema is valid"),
             };
             bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
-            let values = edges(&from);
             let mut writer = bounded_call("table writer", opened.session.writer(&table)).await?;
-            let rows = RecordBatch::try_from_iter([(&*column, Arc::clone(&values))])
-                .expect("the certification batch is valid");
-            bounded_call("write", writer.write(segment, rows)).await?;
-            bounded_call("flush", writer.flush()).await?;
+            let narrow = edges(&from);
+            written(&mut writer, SegmentId(narrow_at), &column, &narrow).await?;
+            commit(opened, meta(&[narrow_at], Vec::new())).await?;
             let widen = TableChange::Widen {
                 table: table.clone(),
                 column: Arc::clone(&column),
@@ -55,8 +60,14 @@ impl Bench<'_> {
                 to: to.clone(),
             };
             bounded_call("apply_schema", opened.session.apply_schema(&widen)).await?;
-            commit(opened, meta(&[segment.0], Vec::new())).await?;
-            let mut expected = denotations(values.as_ref(), &to);
+            let wide = edges(&to);
+            written(&mut writer, SegmentId(wide_at), &column, &wide).await?;
+            commit(opened, meta(&[wide_at], Vec::new())).await?;
+            let mut expected = Vec::new();
+            for values in [&narrow, &wide] {
+                expected.extend(denotations(values.as_ref(), &to));
+                expected.push("null".to_owned());
+            }
             let mut published = Vec::new();
             for batch in self.read(&table).await?.batches() {
                 let stored = batch.stored(&column).ok_or_else(|| {
@@ -78,6 +89,22 @@ impl Bench<'_> {
         }
         Ok(())
     }
+}
+
+/// Writes `values` and a null as `column`'s rows in `segment` through `writer`, and flushes them.
+async fn written(
+    writer: &mut Box<dyn DestinationWriter>,
+    segment: SegmentId,
+    column: &str,
+    values: &ArrayRef,
+) -> Result<(), Violation> {
+    for values in [Arc::clone(values), new_null_array(values.data_type(), 1)] {
+        let rows = RecordBatch::try_from_iter([(column, values)])
+            .expect("the certification batch is valid");
+        bounded_call("write", writer.write(segment, rows)).await?;
+    }
+    bounded_call("flush", writer.flush()).await?;
+    Ok(())
 }
 
 /// The pairs of types the clause widens for a destination of `capabilities`: one of each pair of
@@ -134,8 +161,13 @@ fn typed((from, to): (TypeKind, TypeKind)) -> Option<(LogicalType, LogicalType)>
 /// 32-bit float whose own shortest text names another 64-bit float among them.
 fn edges(logical: &LogicalType) -> ArrayRef {
     let data_type = logical.to_arrow();
+    // Arrow casts integers to a time of micro- or nanoseconds from 64 bits alone.
     let cast = |values: ArrayRef| {
-        arrow_cast::cast(&values, &data_type).expect("certification values are castable")
+        arrow_cast::cast(&values, &data_type)
+            .or_else(|_| {
+                arrow_cast::cast(&arrow_cast::cast(&values, &DataType::Int64)?, &data_type)
+            })
+            .expect("certification values are castable")
     };
     match logical {
         LogicalType::Float32 => cast(Arc::new(Float64Array::from(vec![

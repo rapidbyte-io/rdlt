@@ -44,6 +44,10 @@ fn every_scalar_pair_the_lattice_widens_is_typed_as_a_widening() {
         assert_eq!(values.null_count(), 0, "{narrow}");
         let shown: BTreeSet<String> = denotations(values.as_ref(), &narrow).into_iter().collect();
         assert_eq!(shown.len(), values.len(), "{narrow}: {shown:?}");
+        // The wider type's own edges, written after the widening, are of that type too.
+        let values = edges(&wide);
+        assert_eq!(values.data_type(), &wide.to_arrow());
+        assert_eq!(values.null_count(), 0, "{wide}");
     }
 }
 
