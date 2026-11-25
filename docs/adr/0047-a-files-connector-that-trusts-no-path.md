@@ -116,13 +116,15 @@ when it is read and never written in a form its reader refuses.
   times, and fails with `file_missing` only when the manifest it read is still the latest. A
   discard of what older sessions staged makes the latest manifest's name durable before it
   removes anything: a manifest a power loss could take back decides nothing.
-- **Every durable step is ordered.** A file is synced before it is linked or renamed into
-  place, and its directory after; a commit answered as the landed one syncs its manifests'
-  directory again before it answers, since the commit it repeats may have failed between the
-  link and the sync, and removes nothing where that sync fails. Tests record each step once it
-  has taken place and assert the order, and die at each step in turn of every kind of commit,
-  of an open, of a schema change and of a keeper's write. What they cannot see is whether a
-  sync that was called reached the disk: a call recorded and not made, or made on the wrong
+- **Every durable step is ordered.** A file is synced before it is linked or renamed into place, and
+  its directory after; a commit answered as the landed one syncs its manifests' directory again
+  before it answers, since the commit it repeats may have failed between the link and the sync, and
+  removes nothing where that sync fails. A schema change the catalog already holds syncs the
+  catalog's directory before it answers, for the same reason: the change it repeats may have died
+  between linking the version, or the owner file of the table's creation, and the sync. Tests record
+  each step once it has taken place and assert the order, and die at each step in turn of every kind
+  of commit, of an open, of a schema change and of a keeper's write. What they cannot see is whether
+  a sync that was called reached the disk: a call recorded and not made, or made on the wrong
   descriptor, passes every test, and so does a file system that does not keep its promise. A
   directory whose creation could not be made durable is taken as durable when the call is made
   again: after a sync has failed, nothing a caller does makes what came before it certain.
