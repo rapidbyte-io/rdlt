@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use crate::sink::{BRIDGED_EVENTS, SERVED_EVENTS};
+
 /// How long any single connector call may take during certification.
 pub(super) const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -14,6 +16,26 @@ pub const REASON_BYTES: usize = 2048;
 
 /// How many rows a reason shows of the rows a connector sent, before it only counts them.
 pub(super) const SHOWN_ROWS: usize = 8;
+
+/// Events a read may send after a clause raises a barrier during it, before its source can have
+/// seen the barrier, through rdlt's own serving end and a host that grants back a frame at a
+/// time, besides the pieces its pushes are cut into: what the ends hold, the serving end's queue
+/// and a Python source's bridge.
+///
+/// In this process a read sends fewer, and nothing is cut. A served read's pushes are cut to the
+/// limits its connection agreed, and the clause bounds what their pieces add on the read itself.
+pub const BARRIER_SLACK: usize = HELD_AT_ENDS + SERVED_EVENTS.get() + BRIDGED;
+
+/// Events the ends of a served read hold once a clause takes the push it raises a barrier at:
+/// the next, in the clause's channel of one; the next again, which the host is forwarding; an
+/// event whose frame is in flight, funded by the credit the host granted just before it sent
+/// the barrier; an event the serving end takes once that frame has gone; and an event the source
+/// is sending into the serving end's queue.
+const HELD_AT_ENDS: usize = 5;
+
+/// Events a Python source's bridge holds ahead of its read: its channel's, and the push its
+/// generator is making.
+const BRIDGED: usize = BRIDGED_EVENTS.get() + 1;
 
 /// How many of a partition's checkpoints a resume is checked from, spread over its whole read.
 pub(super) const RESUME_SAMPLES: usize = 5;

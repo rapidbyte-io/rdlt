@@ -7,7 +7,6 @@ mod tests;
 mod window;
 
 use std::collections::VecDeque;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -27,14 +26,12 @@ use crate::error::ConnectorErrorKind;
 use crate::exclusion::Exclusion;
 use crate::id::{PartitionId, StreamName};
 use crate::sink::{
-    Admission, Headroom, PartitionFeed, Push, SourceEvent, admitted_partition_channel,
+    Admission, Headroom, PartitionFeed, Push, SERVED_EVENTS, SourceEvent,
+    admitted_partition_channel,
 };
 use crate::source::{Partition, ReadRequest, Source};
 use crate::wire::{Invalid, frame_error, status, v1};
 use window::Window;
-
-/// Events the source may send ahead of the frames waiting for credit.
-const EVENTS: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is not zero");
 
 /// Starts serving the read the host's first message asks for, whose cursor keeps within `own`,
 /// this end's limits; what it sends keeps within `host`, the lesser of the host's and its own.
@@ -62,7 +59,7 @@ pub(super) async fn serve(
         partition: request.partition.id().clone(),
         start: request.cursor.clone(),
     };
-    let (frames, answer) = mpsc::channel(EVENTS.get());
+    let (frames, answer) = mpsc::channel(SERVED_EVENTS.get());
     let window = Arc::new(Window::new(host));
     tokio::spawn(pump(source, request, barrier, controls, frames, window));
     Ok((Box::pin(ReceiverStream::new(answer)), read))
@@ -232,7 +229,7 @@ async fn pump(
     admission: Arc<dyn Admission>,
 ) {
     let mut outbox = Outbox::new(admission.limits());
-    let (sink, mut feed) = admitted_partition_channel(EVENTS, admission);
+    let (sink, mut feed) = admitted_partition_channel(SERVED_EVENTS, admission);
     // What the source pushes is cut to the host's frames as it is sent, its batches without the
     // columns its stream excludes, whether or not the source left them out.
     let sink = sink.cut().excluding(request.exclude.clone());

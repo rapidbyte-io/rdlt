@@ -173,7 +173,7 @@ impl Reading {
         held: impl Send + 'static,
     ) -> Result<Self, Unanswered> {
         // A yield waits for the engine: the channel holds one push while another is sent.
-        let (sent, received) = mpsc::channel(1);
+        let (sent, received) = mpsc::channel(rdlt_connector::BRIDGED_EVENTS.get());
         let told = Arc::new(AtomicBool::new(false));
         let outlet = context.outlet().clone();
         outlet.open(sent);

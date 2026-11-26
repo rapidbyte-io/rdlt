@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use rdlt_connector::testing::{Clause, DESTINATION_CLAUSES, SOURCE_CLAUSES};
+use rdlt_connector::testing::{BARRIER_SLACK, Clause, DESTINATION_CLAUSES, SOURCE_CLAUSES};
 
 use crate::kill::KILL_CLAUSES;
 use crate::protocol::PROTOCOL_CLAUSES;
@@ -87,7 +87,7 @@ pub fn markdown() -> String {
             .ok();
         }
     }
-    text.push_str(LIMITS);
+    text.push_str(&LIMITS.replace("{slack}", &BARRIER_SLACK.to_string()));
     text
 }
 
@@ -124,9 +124,10 @@ connector cannot skip one by how it behaves, only by declaring less, and the eng
 connector only what it declares. `--require partial` exits 0 for an incomplete certification in \
 which no clause failed and one passed; the report, and its JSON `verdict` and `passed`, say \
 incomplete all the same. A clause is unobserved when nothing reads back what a destination \
-published, when a source sends no checkpoint to resume or plan again from, when a read ends \
-within its first credit, when no kill reaches the connector, or when what a source sends is \
-more than certification holds: certify with a fixture that shows the behaviour. It is unobserved \
+published, when a source sends no checkpoint to resume or plan again from, when no read of an \
+on-demand stream pushes after it answered a barrier, when a read ends within its first credit, \
+when no kill reaches the connector, or when what a source sends is more than certification \
+holds: certify with a fixture that shows the behaviour. It is unobserved \
 too when a source cannot read again a stream `K-SOURCE` loads, or when a destination's \
 identifier rules leave a table or column a clause names no identifier.
 
@@ -172,8 +173,9 @@ and the clauses after are not observed, so it exits 1.
 const LIMITS: &str = "
 ## What certification bounds
 
-- Every call to a connector has a deadline, each connector clause a bound on all its work (30 s a protocol clause, 600 s a \
-source or destination clause, 300 s a kill clause unless `--kill-timeout` says). A whole run \
+- Every call to a connector has a deadline, each connector clause a bound on all its work (30 s a \
+protocol clause, 600 s a source or destination clause, 300 s a kill clause unless \
+`--kill-timeout` says). A whole run \
 takes at most an hour unless `--timeout` says otherwise or `--no-timeout` lifts the bound; the \
 clause being checked then fails, and nothing more is started.
 - A source clause holds at most 64 MiB and 1,048,576 rows of what its reads send, all its reads \
@@ -229,6 +231,22 @@ group is not reached, and neither is anything when the certifier is killed outri
 - `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times, \
 or four times the watch `--credit-watch` chooses: a source that ignores credit and sends less \
 often than that is not told from one that waits.
+- Over the wire, `S-BARRIER`'s reads are granted back each frame as it is taken and no more, so \
+they move a frame per round trip: over a slow link such a read can pass the bound on the \
+clause's work, and so fail it. Every other source clause reads as an engine does.
+- `S-BARRIER` raises a barrier as each read starts, and a second once the read has answered the \
+first and pushed. It judges the second only on a read whose last push comes more than {slack} \
+events after it was raised, besides the pieces a served connector cut the read's batches into: \
+what rdlt's own serving end and host hold of a read, the events the serving end queues ahead of \
+its credit and a Python source's bridge, which a source may all send before it sees the \
+barrier. The clause does not count the pieces: it bounds them, from the limits the connection \
+agreed, the lesser of the host's and the connector's own, and from what the read's batches \
+after the barrier weigh by each limit. A frame's bytes are weighed with a validity bit for \
+every value, against the frame limit less what a frame of the batches' schema takes beside its \
+rows. The bound can be twice the pieces cut and more: a read too short for it leaves the \
+second barrier unjudged, and so does every read of a schema so wide that a frame has no room \
+for rows. A connector served otherwise may send more first; a source that ignores a barrier \
+raised during a shorter read is not told from one that answers it.
 - `P-HEARTBEAT` sends five heartbeats, each once the heartbeat before it was answered, and waits \
 for each answer as long as the host waits between its own heartbeats, 5 s.
 

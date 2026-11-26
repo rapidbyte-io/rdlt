@@ -13,12 +13,12 @@ use tokio::sync::{Notify, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::window::Window;
-use super::{EVENTS, Outbox, finish, pump};
+use super::{Outbox, finish, pump};
 use crate::cost::push_charge;
 use crate::error::Result;
 use crate::id::{PartitionId, StreamName};
 use crate::serve::live::{Live, gone};
-use crate::sink::{Admission, PartitionSink, Permit, Push, SourceEvent};
+use crate::sink::{Admission, PartitionSink, Permit, Push, SERVED_EVENTS, SourceEvent};
 use crate::source::{Partition, PartitionPlan, ReadRequest, Source};
 use crate::spec::BoxFuture;
 use crate::state::StreamState;
@@ -315,7 +315,7 @@ async fn a_read_whose_host_takes_nothing_holds_a_frame_and_one_push_in_its_chann
             held: Arc::clone(&held),
         });
         let (control, controls) = controls(&limits);
-        let (frames, answers) = mpsc::channel(EVENTS.get());
+        let (frames, answers) = mpsc::channel(SERVED_EVENTS.get());
         let pumping = tokio::spawn(pump(source, request(), 0, controls, frames, admission));
         // The host grants the read its first credit, and takes nothing.
         let credit = v1::read_control::Control::Credit(v1::Credit {
@@ -344,7 +344,7 @@ async fn a_read_whose_host_takes_nothing_holds_a_frame_and_one_push_in_its_chann
         );
         let pushes = channel / push;
         assert!(
-            pushes < u64::try_from(EVENTS.get()).expect("a count"),
+            pushes < u64::try_from(SERVED_EVENTS.get()).expect("a count"),
             "the bytes bound the channel, not its count: {pushes} pushes of {push} bytes"
         );
         drop((control, answers));

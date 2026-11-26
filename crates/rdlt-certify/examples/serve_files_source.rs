@@ -1,0 +1,13 @@
+//! The reference files source, served as a connector binary that serves the source role alone.
+
+#![forbid(unsafe_code)]
+
+use std::process::ExitCode;
+
+use rdlt_connector::serve::Served;
+use rdlt_connector::source_factory;
+use rdlt_connector_reference::FilesSource;
+
+fn main() -> ExitCode {
+    Served::serve(|| Served::new().with_source(source_factory::<FilesSource>()))
+}

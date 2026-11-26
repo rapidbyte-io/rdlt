@@ -1,7 +1,9 @@
+use std::fmt::Write as _;
+
 use arrow_array::RecordBatch;
 use rdlt_connector::sqlgen::{SqlDialect as _, Sqlite};
 use rdlt_connector::testing::{
-    Outcome, Probe, Unprobed, Verdict, certify_destination, certify_source,
+    BARRIER_SLACK, Outcome, Probe, Unprobed, Verdict, certify_destination, certify_source,
 };
 use rdlt_connector::{BoxFuture, ConnectorError, Result, TableRef};
 use rdlt_connector_reference::{
@@ -73,11 +75,23 @@ async fn the_memory_source_is_certified() {
     );
 }
 
+/// Pushes a read needs, with a checkpoint after each but the last, for `S-BARRIER` to judge the
+/// barrier it raises during the read with 8 events to spare.
+///
+/// The barrier is raised as the read's first push, its second event, is taken, and a push more
+/// than `BARRIER_SLACK` events after that is judged: the read's last push, its event
+/// `2 * pushes - 1`, comes 8 events past the first so judged.
+fn judged_pushes() -> usize {
+    (BARRIER_SLACK + 11).div_ceil(2)
+}
+
 #[tokio::test]
 async fn the_generator_is_certified() {
+    // Three partitions of rows in batches of five, each read judged on its second barrier.
+    let rows = 3 * 5 * judged_pushes();
     let config = json!({
         "seed": 7,
-        "streams": [{ "name": "events", "rows": 57, "partitions": 3, "batch_rows": 5 }],
+        "streams": [{ "name": "events", "rows": rows, "partitions": 3, "batch_rows": 5 }],
     });
     let report = certify_source::<GeneratorSource>(config).await;
     report.assert_passed();
@@ -189,8 +203,12 @@ fn arrow_file(path: &std::path::Path, rows: i64) {
 #[tokio::test]
 async fn the_files_source_is_certified() {
     let root = crate::fixtures::tempdir().unwrap();
-    let lines =
-        "{\"id\": 0}\n{\"id\": 1, \"name\": \"b\"}\n{\"id\": 2}\n{\"id\": 3}\n{\"id\": 4}\n";
+    // Records two a push, as many as a read whose second barrier is judged sends.
+    let rest = (2..2 * judged_pushes()).fold(String::new(), |mut rest, id| {
+        writeln!(rest, "{{\"id\": {id}}}").expect("a string takes a line");
+        rest
+    });
+    let lines = format!("{{\"id\": 0}}\n{{\"id\": 1, \"name\": \"b\"}}\n{rest}");
     std::fs::write(root.path().join("users.jsonl"), lines).unwrap();
     std::fs::create_dir(root.path().join("events")).unwrap();
     std::fs::write(

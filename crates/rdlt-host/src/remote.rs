@@ -269,6 +269,12 @@ impl Connection {
         &self.spec
     }
 
+    /// The limits what the connector sends keeps within: the lesser of this end's and those its
+    /// handshake declared, as a served connector cuts its reads' batches to.
+    pub fn agreed(&self) -> Limits {
+        self.options.limits.lesser(&self.peer)
+    }
+
     /// Whether the connection takes no new calls: the connector was lost, or is stopping.
     pub(crate) fn is_spent(&self) -> bool {
         self.spent.is_cancelled()
