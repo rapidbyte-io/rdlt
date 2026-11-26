@@ -105,9 +105,22 @@ pub struct Options {
     pub deadlines: Deadlines,
     /// The limits this end enforces on what it receives.
     pub limits: Limits,
-    /// Bytes: the least window of credit a read grants, which opens it; the window grows to two
-    /// of the largest frames the read has taken.
+    /// Bytes: the least window of credit a read grants, which opens it.
     pub read_floor: u64,
+    /// How a read's window grows from its floor as its frames are taken.
+    pub read_window: ReadWindow,
+}
+
+/// How a read's window of credit grows from its floor as the read's frames are taken.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReadWindow {
+    /// Each frame taken is granted back with whatever the window grows by to hold two of the
+    /// largest frames taken, so the next frame is sent while one is taken.
+    #[default]
+    Growing,
+    /// Each frame taken is granted back as it was, and no more: the window stays at its floor,
+    /// and one frame is in flight whatever its size.
+    Fixed,
 }
 
 impl Default for Options {
@@ -118,6 +131,7 @@ impl Default for Options {
             deadlines: Deadlines::default(),
             limits: Limits::default(),
             read_floor: rdlt_wire::limits::CREDIT_FLOOR,
+            read_window: ReadWindow::Growing,
         }
     }
 }
