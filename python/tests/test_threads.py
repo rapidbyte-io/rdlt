@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import logging
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -14,6 +16,7 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
+import pyarrow as pa
 import pytest
 
 import rdlt
@@ -34,32 +37,48 @@ def owned(names: list[str]) -> bool:
 STARTS = """
 import _thread, sys, threading
 
-starters = []
+# Each start of rdlt's, by the thread that made it and whether it was a `Thread`'s; and the threads
+# Python started, as their starts answered them, with the main thread. None of them ends, so no
+# thread of Rust's takes one's ident.
+starts = []
+started = {_thread.get_ident()}
 
 
-def started(function):
-    if function.__module__ == "rdlt._reading":
-        known = vars(threading)["_active"].get(threading.get_ident())
-        starters.append("unknown" if known is None else known.name)
+def rdlt_s(function):
+    target = getattr(getattr(function, "__self__", None), "_target", function)
+    return getattr(target, "__module__", None) == "rdlt._reading"
+
+
+def start(function):
+    return _thread.get_ident(), isinstance(getattr(function, "__self__", None), threading.Thread)
 
 
 def audited(event, arguments):
-    if event == "_thread.start_new_thread":
-        started(arguments[0])
+    if event in {"_thread.start_new_thread", "_thread.start_joinable_thread"}:
+        if rdlt_s(arguments[0]):
+            starts.append(start(arguments[0]))
 
 
-start_new_thread = _thread.start_new_thread
+def recording(starting, ident):
+    def recorded(function, *arguments, **keywords):
+        if sys.argv[2] == "wrapped" and rdlt_s(function):
+            starts.append(start(function))
+        begun = starting(function, *arguments, **keywords)
+        started.add(ident(begun))
+        return begun
 
-
-def recorded(function, *arguments):
-    started(function)
-    return start_new_thread(function, *arguments)
+    return recorded
 
 
 if sys.argv[2] == "audited":
     sys.addaudithook(audited)
+_thread.start_new_thread = recording(_thread.start_new_thread, int)
+if sys.version_info >= (3, 13):
+    threading._start_joinable_thread = recording(
+        threading._start_joinable_thread, lambda handle: handle.ident
+    )
 else:
-    _thread.start_new_thread = recorded
+    threading._start_new_thread = recording(threading._start_new_thread, int)
 sys.path.append(sys.argv[1])
 
 import rdlt
@@ -85,7 +104,13 @@ outcome = rdlt.pipeline(
     streams=[rdlt.stream("rows", transform=[kept])],
     commit=rdlt.Commit(rows=100),
 ).build(rdlt.Host()).run()
-print(" ".join(starters))
+dummy = vars(threading)["_DummyThread"]
+print(
+    sum(not of_threading for _, of_threading in starts),
+    sum(of_threading for _, of_threading in starts),
+    sum(starter not in started for starter, _ in starts),
+    sum(isinstance(thread, dummy) for thread in threading.enumerate()),
+)
 sys.exit(0 if outcome.report.status is rdlt.RunStatus.SUCCEEDED else 3)
 """
 
@@ -111,9 +136,85 @@ def test_every_thread_rdlt_starts_is_started_by_a_thread_python_owns(seen: str) 
         text=True,
     )
     assert finished.returncode == 0, finished.stderr
-    starters = finished.stdout.split()
-    assert starters, "the run started threads"
-    assert owned(starters), f"threads started by threads Python did not start: {starters}"
+    raw, threads, unowned, lent = (int(count) for count in finished.stdout.split())
+    assert raw == 1, "a thread `_thread` started started the first daemon thread"
+    assert threads >= 2, "`threading` started the first daemon thread and a spare"
+    assert not unowned, f"{unowned} of rdlt's threads were started by threads Python did not start"
+    assert not lent, f"`threading` made {lent} dummies of threads it did not start"
+
+
+def test_calls_run_on_daemon_threads_threading_started_never_on_ones_it_was_lent() -> None:
+    ran_on: list[threading.Thread] = []
+
+    # `logging` asks `threading` which thread it runs on, as a user's function may at any moment.
+    @stream(name="rows")
+    def logging_rows() -> Iterator[object]:
+        ran_on.append(threading.current_thread())
+        logging.getLogger(__name__).warning("reading")
+        for n in range(1000):
+            yield {"id": n}
+
+    @rdlt.transform()
+    def kept(batch: pa.RecordBatch) -> pa.RecordBatch:
+        ran_on.append(threading.current_thread())
+        return batch
+
+    outcome = (
+        rdlt.pipeline(
+            "lent",
+            source=logging_rows,
+            destination=rdlt.local(memory.Memory, config={"store": "lent"}),
+            streams=[rdlt.stream("rows", transform=[kept])],
+            commit=rdlt.Commit(rows=100),
+        )
+        .build(rdlt.Host())
+        .run()
+    )
+    assert outcome.report.status is rdlt.RunStatus.SUCCEEDED
+    dummy = cast("type[threading.Thread]", vars(threading)["_DummyThread"])
+    assert ran_on, "the stream function and the transform ran"
+    lent = [thread for thread in ran_on if isinstance(thread, dummy)]
+    assert not lent, f"calls ran on threads threading was lent: {lent}"
+    rdlt_s = [thread for thread in threading.enumerate() if thread.name.startswith("rdlt-")]
+    assert rdlt_s, "threading holds rdlt's daemon threads"
+    unowned = [thread for thread in rdlt_s if isinstance(thread, dummy) or not thread.daemon]
+    assert not unowned, f"rdlt's threads threading did not start as daemons: {unowned}"
+
+
+def test_a_run_whose_first_daemon_thread_does_not_start_fails_rather_than_waits() -> None:
+    script = textwrap.dedent(
+        f"""
+        import sys, threading
+        sys.path.append({str(PYTHON)!r})
+
+        def refused(*_):
+            raise RuntimeError("no threads left")
+
+        threading.Thread.start = refused
+        import rdlt
+        from rdlt.connector import stream
+        from tests.connectors import memory
+
+        @stream(name="rows")
+        def rows():
+            yield {{"id": 1}}
+
+        try:
+            rdlt.pipeline(
+                "refused",
+                source=rows,
+                destination=rdlt.local(memory.Memory, config={{"store": "refused"}}),
+                retry=rdlt.Retry(max_attempts=1),
+            ).build(rdlt.Host()).run()
+        except rdlt.Error:
+            sys.exit(0)
+        sys.exit(3)
+        """
+    )
+    finished = subprocess.run(
+        [sys.executable, "-c", script], timeout=60, check=False, capture_output=True, text=True
+    )
+    assert finished.returncode == 0, finished.stderr
 
 
 def exited(script: str) -> subprocess.CompletedProcess[str]:
@@ -196,7 +297,7 @@ def waits_for_a_call(ident: int) -> bool:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         frame = sys._current_frames().get(ident)  # pyright: ignore[reportPrivateUsage]
-        if frame is not None and frame.f_code.co_name == "serve":
+        if frame is not None and frame.f_code.co_name == "_turn":
             return True
         time.sleep(0.01)
     return False

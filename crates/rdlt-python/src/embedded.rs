@@ -1,7 +1,8 @@
 //! The interpreter a test binary embeds: the development environment's packages importable, the
 //! repository's `python/` first on `sys.path`, this crate's module installed as `rdlt._native`
-//! before anything imports the package, and the first daemon thread started.
+//! before anything imports the package, and the first daemon thread waiting for a call.
 
+use std::ffi::CStr;
 use std::path::Path;
 use std::sync::Once;
 use std::time::Duration;
@@ -16,6 +17,16 @@ use crate::runtime;
 /// The interpreter the crate was built against: `PYO3_PYTHON`, the development environment's.
 const EXECUTABLE: Option<&str> = option_env!("RDLT_PYTHON_EXECUTABLE");
 
+/// Waits, within 10 s, until the first daemon thread waits for a call: `calls::ready` only sets off
+/// its start, and a test may then change how a thread starts or what one runs.
+const FIRST_WAITING: &CStr = c"
+import sys, time
+deadline = time.monotonic() + 10
+while not any(frame.f_code.co_name == '_turn' for frame in sys._current_frames().values()):
+    assert time.monotonic() < deadline, 'the first daemon thread waits for a call within 10 s'
+    time.sleep(0.001)
+";
+
 /// Runs `f` attached to the embedded interpreter, started and prepared once per process.
 #[expect(
     clippy::disallowed_methods,
@@ -28,6 +39,8 @@ pub(crate) fn with<R>(f: impl for<'py> FnOnce(Python<'py>) -> R) -> R {
         Python::attach(|py| {
             prepare(py).expect("the embedded interpreter is prepared");
             calls::ready(py).expect("the first daemon thread starts");
+            py.run(FIRST_WAITING, None, None)
+                .expect("the first daemon thread waits for a call");
         });
     });
     Python::attach(f)

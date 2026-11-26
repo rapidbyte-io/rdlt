@@ -210,20 +210,26 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   itself, since a worker runs many tasks and one that never returns must not hold up the rest. Each
   call starts in a context of its own, as on a fresh thread. Thread-local state, by contrast, is the
   thread's, as in any pool. A call that takes the last idle one has it start another before it
-  calls, so no caller waits for a thread to start. A daemon thread lets go of what a call held, goes
+  calls, so the next call finds one idle. A daemon thread lets go of what a call held, goes
   back on the pool and then hands the answer over, and none ever ends, so none is tearing down when
   the process exits: a user's `SystemExit` or `KeyboardInterrupt` is its call's answer, and a thread
-  a bug of rdlt's own escapes answers the call it held and waits for good. Only threads Python owns
-  start them: the thread that first asks for the runtime or serves, and the daemon threads
-  themselves, each saying as text where one did not start. A child forked from a process that had
-  started its own starts afresh. The caller holds no GIL and touches nothing of Python's: it hands
-  the call over as closures, the daemon thread builds its arguments and reads its answer, and the
-  batches a transform or a table writer takes, a transform answers and a destination reads back are
-  imported and exported in Python, since pyarrow releases the GIL in both. The merge kit's
-  arguments are exported in Python, each by its own `__arrow_c_array__`, `__arrow_c_stream__` or
-  `__arrow_c_schema__`, so no method of the argument itself runs beneath Rust there, though a
-  Python-backed stream's reader does. `rdlt._reading` is imported when the package loads, so no
-  thread imports under Rust.
+  a bug of rdlt's own escapes answers the call it held and waits for good. Every daemon thread is a
+  `threading.Thread`, never the dummy `threading` makes for a thread it did not start once that
+  thread asks which it is, as `logging` does for each record: as the interpreter exits, it clears
+  each thread's state, a dummy's finalizer then waits for `threading`'s lock, and a thread the exit
+  froze while it held that lock, starting a thread or listing them, holds it for good. Only threads
+  Python owns start them, from Python's frames alone, each saying as text where one did not start: a
+  daemon thread starts the next from its own frame, and the process's first is started by a thread
+  `_thread` starts for it as a thread first asks for the runtime or serves, which then waits for
+  good, never asking `threading` which it is and running no user function, though an audit hook runs
+  there. A child forked from a process that had started its own starts afresh. The caller holds no
+  GIL and touches nothing of Python's: it hands the call over as closures, the daemon thread builds
+  its arguments and reads its answer, and the batches a transform or a table writer takes, a
+  transform answers and a destination reads back are imported and exported in Python, since pyarrow
+  releases the GIL in both. The merge kit's arguments are exported in Python, each by its own
+  `__arrow_c_array__`, `__arrow_c_stream__` or `__arrow_c_schema__`, so no method of the argument
+  itself runs beneath Rust there, though a Python-backed stream's reader does. `rdlt._reading` is
+  imported when the package loads, so no thread imports under Rust.
 - **Five cases run under Rust, and are accepted.** Methods of what a generator yields run inside
   `push` with its Rust frames beneath them: a date's or a time's `__eq__` and `isoformat` and a
   UUID's `__str__`, a `list` subclass's `__iter__`, `__getattr__` through `hasattr`, a producer's
@@ -233,11 +239,13 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   raised exception's `__str__`, traceback and declared kind, code and wait, read where a failure is
   turned into an error, and the finalizers of a connector instance and of a destination's sessions
   and table writers, which run where the native side lets go of what holds them. So does a user's
-  audit hook, which `_thread.start_new_thread`'s audit event calls as a daemon thread starts the
-  next. A slow one of these at the instant of exit can abort the process on CPython 3.11, 3.12 and
-  3.13.0 to 3.13.7, as above. Moving them means encoding every row, reading every stream into
-  batches, rendering every failure, releasing every connection, or starting every thread, in Python;
-  a process exiting commits nothing further, so no committed data is at risk.
+  audit hook, which `_thread.start_new_thread`'s audit event calls as the thread that first asks for
+  the runtime or serves starts the thread that starts the first daemon thread. A slow one of these
+  at the instant of exit can abort the process on CPython 3.11, 3.12 and 3.13.0 to 3.13.7, as above.
+  Moving them means encoding every row, reading every stream into batches, rendering every failure,
+  releasing every connection, or starting the first thread, in Python, on a thread with no Rust
+  beneath it, which no thread asking for the runtime is; a process exiting commits nothing further,
+  so no committed data is at risk.
 - **What the native side holds of Python, it reaches weakly.** What the native side holds is opaque
   to Python's collector, so a strong reference from it to a stream function, a transform, a secret
   store or a connector's instance that holds the pipeline it serves could never be collected, and
@@ -388,6 +396,11 @@ Rejected:
 - **Refusing an async method where it is declared.** A method of a session or a table writer, or
   a stream's function given as a `partial` or a callable object, is known only as it is called,
   so its answer is checked there, and that one check serves every method.
+- **Starting the first daemon thread with `threading.Thread.start` on the thread that asks for the
+  runtime or serves.** Bytecode, and a wait for the thread to start, would run beneath that thread's
+  Rust frames, which aborts on CPython 3.11 to 3.13.7 where the exit ends it there, and would add
+  a case to those run under Rust. A thread `_thread` starts for it costs one thread a process, which
+  waits for good.
 - **pyo3-async-runtimes for awaitables.** It hands an awaited answer over by taking the GIL on the
   runtime's blocking pool, and given a runtime whose blocking pool were a daemon thread, the
   closure it hands over would still call asyncio beneath that thread's Rust frames.
@@ -463,12 +476,18 @@ An async read holds a socket pair while it reads, and needs an event loop that w
 through `add_reader`, as asyncio's own loops and uvloop do; on one that cannot, the read fails.
 
 A call costs a hand-off to an idle daemon thread. The process keeps as many daemon threads as
-calls it ever made at once, and one more. pyarrow's own C++ takes no such care as this ADR does:
+calls it ever made at once, and one more, and the thread that started the first, which waits for
+good. pyarrow's own C++ takes no such care as this ADR does:
 a daemon thread building arrays from Python sequences when the interpreter exits can abort on
 CPython 3.11 and 3.12 with or without `rdlt` in the process, so a transform doing so at the
 instant of exit can too. Exit is the price of an interpreter's own daemon-thread rules, the same
 as for any daemon thread, whatever the interpreter's version: on 3.11 to 3.13.7, a daemon thread
-running Python as the interpreter finalizes is ended by it, and its teardown runs then.
+running Python as the interpreter finalizes is ended by it, and its teardown runs then. A process
+holding dummies of its own, as another library's threads become, or as the thread that starts the
+first daemon thread becomes where an audit hook asks `threading` which it is, can still hang at
+exit where the exit freezes a daemon thread of rdlt's while it starts the next, holding
+`threading`'s lock; a free-threaded build has a second such hang, where the exit freezes a thread
+while its thread state is made. Both are CPython's.
 
 A transform that never returns keeps its compute thread and its daemon thread until the process
 ends, since Python code cannot be interrupted and a transform has no cancellation to pass in. A

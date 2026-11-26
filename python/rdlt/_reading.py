@@ -1,9 +1,16 @@
 """The threads Python code runs on: nothing but Python lies beneath a user's function.
 
 Every call from Rust, a partition's read among them, is made on one of the process's daemon
-threads, which `_thread` starts and which run `serve` for as long as the process lives: an
-interpreter that exits ends them in Python's frames, or leaves them waiting, and none ends on its
-own, since a thread that ends runs its libraries' teardown, which races the process's exit.
+threads, which run `serve` for as long as the process lives: an interpreter that exits ends them
+in Python's frames, or leaves them waiting, and none ends on its own, since a thread that ends
+runs its libraries' teardown, which races the process's exit.
+
+Each daemon thread is a `threading.Thread`, started from Python's frames alone: by the daemon
+thread a call took as the last idle one, or, the process's first, by `launch`, on a thread
+`_thread` starts for it. So none is the dummy `threading` makes for a thread it did not start once
+that thread asks which it is, as `logging` does for each record: as the interpreter exits, a
+dummy's finalizer waits for `threading`'s lock, which a thread the exit froze holding it holds for
+good.
 
 Each call starts in a context of its own, as on a fresh thread. Thread-local state, by contrast, is
 the thread's, as in any pool.
@@ -146,12 +153,23 @@ class _Answer(Protocol):
 class _Calls(Protocol):
     """The calls a daemon thread is handed."""
 
-    def next(self) -> tuple[Callable[..., object], tuple[object, ...], _Answer]:
-        """Hands over the last call's answer, then waits for the next call to make."""
+    def next(
+        self,
+    ) -> tuple[_Calls | None, tuple[Callable[..., object], tuple[object, ...], _Answer] | None]:
+        """Hands over the last call's answer, then waits for the next call to make.
+
+        The call comes with the calls of the daemon thread to start before it is made, where it
+        took the last idle one; it is none where its arguments could not be built, its answer then
+        saying why.
+        """
         ...
 
     def abandon(self) -> None:
         """Hands over the last call's answer, where one waits, without waiting for another."""
+        ...
+
+    def unstarted(self, error: BaseException) -> None:
+        """Closes these calls, whose daemon thread did not start, saying `error`."""
         ...
 
 
@@ -169,7 +187,8 @@ def read(  # noqa: PLR0917
 ) -> None:
     """Reads the partition to its end, naming this daemon thread `name` meanwhile.
 
-    It says how the read ended, through `out`.
+    It says how the read ended, through `out`. The thread is the `threading.Thread` it was started
+    as, which `threading.current_thread()` finds without a lock and without making a dummy.
     """
     thread = threading.current_thread()
     thread.name = name
@@ -374,16 +393,17 @@ _REST = object()
 def serve(calls: _Calls) -> None:
     """Makes each call `calls` is handed, on this daemon thread, for as long as the process lives.
 
-    What a call held, its batch among it, is let go before its answer is handed over. A user's
-    function's exception, `SystemExit` and `KeyboardInterrupt` among them, is its call's answer;
-    what else escapes is a bug of rdlt's own, said here. The thread then answers what it held or
-    was handed, with its answer where one was read and as unanswered otherwise, and waits for good,
-    off the pool, rather than end.
+    A call that took the last idle daemon thread has this one start another first, from here, so
+    no Rust frame lies beneath the start. What a call held, its batch among it, is let go before
+    its answer is handed over. A user's function's exception, `SystemExit` and `KeyboardInterrupt`
+    among them, is its call's answer; what else escapes is a bug of rdlt's own, said here. The
+    thread then answers what it held or was handed, with its answer where one was read and as
+    unanswered otherwise, and waits for good, off the pool, rather than end.
     """
     try:
         threading.current_thread().name = _IDLE
         while True:
-            _made(*calls.next())
+            _turn(calls)
     except BaseException:  # noqa: BLE001
         # Guarded by a `try`, which runs no code of its own as `suppress` would.
         try:  # noqa: SIM105
@@ -396,6 +416,40 @@ def serve(calls: _Calls) -> None:
         calls.abandon()
     finally:
         _parked()
+
+
+def launch(calls: _Calls) -> None:
+    """Starts the process's first daemon thread, making the calls `calls` is handed, then waits.
+
+    It runs on a thread `_thread` starts for it, so no Rust frame lies beneath the start. It never
+    asks `threading` which thread it is and runs no user function, so it is no dummy unless an audit
+    hook asks `threading` there (ADR 0055); it waits for good rather than end, as a daemon thread
+    does.
+    """
+    try:
+        _started(calls)
+    finally:
+        _parked()
+
+
+def _turn(calls: _Calls) -> None:
+    """Makes the next call `calls` hands over, in a frame that lets go of it before the next."""
+    spare, call = calls.next()
+    if spare is not None:
+        _started(spare)
+    if call is not None:
+        _made(*call)
+
+
+def _started(calls: _Calls) -> None:
+    """Starts a daemon thread making the calls `calls` is handed; one that fails closes them.
+
+    `daemon` is given, since a `Thread` left to find it asks `threading` which thread starts it.
+    """
+    try:
+        threading.Thread(target=serve, args=(calls,), name=_IDLE, daemon=True).start()
+    except BaseException as error:  # noqa: BLE001
+        calls.unstarted(error)
 
 
 def _parked() -> None:

@@ -5,9 +5,15 @@
 //! aborts the process (ADR 0055). The caller holds no GIL and touches nothing of Python's: it
 //! hands the call over as closures, and its arguments are built and its answer read on the
 //! daemon thread. A call takes the daemon thread that went idle last, and one that takes the last
-//! idle one has it start another before it calls, so no caller waits for a thread to start. No
+//! idle one has it start another before it calls, so the next call finds one idle. No
 //! daemon thread ends: one that ended would run its libraries' teardown, which races the
 //! process's exit.
+//!
+//! Every daemon thread is a `threading.Thread`, started from Python's frames alone, so none is the
+//! dummy `threading` makes for a thread it did not start once that thread asks which it is: as the
+//! interpreter exits, a dummy's finalizer waits for `threading`'s lock, which a thread the exit
+//! froze holding it holds for good. A daemon thread starts the next from its own frame, and the
+//! process's first is started by a thread `_thread` starts for it, which then waits for good.
 
 mod landing;
 #[cfg(test)]
@@ -51,6 +57,10 @@ type Waiting = mpsc::UnboundedReceiver<Call>;
 /// A call as `rdlt._reading` unpacks it: the function, its arguments, and where to answer.
 type Offered<'py> = (Bound<'py, PyAny>, Bound<'py, PyTuple>, Py<CallAnswer>);
 
+/// What a daemon thread is handed: the calls of the spare it starts before the call is made, where
+/// the call took the last idle one, and the call, none where its arguments could not be built.
+type Handed<'py> = (Option<Bound<'py, Calls>>, Option<Offered<'py>>);
+
 /// A call no daemon thread took, to be dropped outside the pool's lock, and why.
 type Unhanded = (Prepare, Give, Unanswered);
 
@@ -62,8 +72,8 @@ struct Call {
     prepare: Prepare,
     /// The daemon thread it was handed to, put back once its answer is read.
     daemon: Daemon,
-    /// The calls of the daemon thread to start before the call is made, where it took the last
-    /// idle one.
+    /// The calls of a spare, which the daemon thread it was handed to starts before making it,
+    /// where it took the last idle one.
     spare: Option<Waiting>,
     give: Give,
 }
@@ -103,8 +113,9 @@ static IDLE: Mutex<Idle> = Mutex::new(Idle {
     unstarted: None,
 });
 
-/// The process whose daemon threads the pool holds, once one has started there; read before the
-/// lock, which a forked child may find held by a thread its parent had.
+/// The process whose daemon threads the pool holds, once the thread that starts its first has
+/// started there; read before the lock, which a forked child may find held by a thread its parent
+/// had.
 static STARTED: AtomicU32 = AtomicU32::new(0);
 
 /// How long a process that has started no daemon thread waits for the pool's lock, which a
@@ -200,12 +211,6 @@ fn claimed(py: Python<'_>, pid: u32) -> bool {
     })
 }
 
-/// Puts `daemon`, started in process `pid`, on the pool, which callers there use from now on.
-fn adopted(pid: u32, daemon: Daemon) {
-    IDLE.lock().daemons.push(daemon);
-    STARTED.store(pid, Ordering::Release);
-}
-
 /// The calls one daemon thread waits for, and what it hands over once a call has let go of what
 /// it held.
 #[pyclass(module = "rdlt._native", name = "Calls", frozen)]
@@ -225,20 +230,15 @@ impl Calls {
         if let Some(done) = done {
             (done.handover)();
         }
-        // What was handed it goes unanswered, once the pool's lock is let go, and nothing is
-        // handed it after.
-        let queued = self
-            .waiting
-            .lock()
-            .as_mut()
-            .map(|waiting| closed(waiting, ABANDONED.to_owned()));
-        drop(queued);
+        self.close(ABANDONED.to_owned());
     }
 
-    /// Hands over the last call's answer, then waits, the GIL released, for the next call.
+    /// Hands over the last call's answer, then waits, the GIL released, for the next call, which
+    /// it hands on with the calls of the spare to start before it is made.
     ///
-    /// A call whose arguments cannot be built is answered with why, here.
-    fn next<'py>(&self, py: Python<'py>) -> Result<Offered<'py>, PyErr> {
+    /// A call whose arguments cannot be built is answered with why, here, and handed on as none
+    /// where it carried a spare, which is started all the same.
+    fn next<'py>(&self, py: Python<'py>) -> Result<Handed<'py>, PyErr> {
         let done = self.done.lock().take();
         if let Some(done) = done {
             done.hand_over();
@@ -249,16 +249,14 @@ impl Calls {
                 .expect(
                     "a daemon thread waiting for a call is on the pool, which holds its sender",
                 );
-            if let Some(waiting) = call.spare {
-                spare(py, waiting);
-            }
+            let spare = call.spare.and_then(|waiting| served(py, waiting).ok());
             match (call.prepare)(py) {
                 Ok((function, arguments)) => {
                     let answer = CallAnswer {
                         give: Mutex::new(Some((call.give, call.daemon))),
                         done: Arc::clone(&self.done),
                     };
-                    return Ok((function, arguments, Py::new(py, answer)?));
+                    return Ok((spare, Some((function, arguments, Py::new(py, answer)?))));
                 }
                 Err(error) => {
                     let handover = (call.give)(py, Err(error));
@@ -267,9 +265,31 @@ impl Calls {
                         handover,
                     }
                     .hand_over();
+                    if spare.is_some() {
+                        return Ok((spare, None));
+                    }
                 }
             }
         }
+    }
+
+    /// Closes these calls, whose daemon thread did not start, saying `error`'s type and message
+    /// to a call that finds the pool empty; what was queued on them goes unanswered.
+    fn unstarted(&self, error: &Bound<'_, PyAny>) {
+        self.close(said(error.py(), &PyErr::from_value(error.clone())));
+    }
+}
+
+impl Calls {
+    /// Closes its calls, keeping `why` for a call that finds the pool empty: what was handed them
+    /// goes unanswered, once the pool's lock is let go, and nothing is handed them after.
+    fn close(&self, why: String) {
+        let queued = self
+            .waiting
+            .lock()
+            .as_mut()
+            .map(|waiting| closed(waiting, why));
+        drop(queued);
     }
 }
 
@@ -314,13 +334,13 @@ pub(crate) fn reading(py: Python<'_>) -> Result<Bound<'_, PyModule>, PyErr> {
     Ok(reading.bind(py).clone())
 }
 
-/// Starts a daemon thread making the calls `calls` waits for, through `_thread` called from here,
-/// so no bytecode runs beneath this thread's Rust frames.
+/// Starts the thread that starts the daemon thread making the calls `calls` waits for: `_thread`,
+/// called from here, starts it, so no bytecode runs beneath this thread's Rust frames.
 fn launched(py: Python<'_>, calls: &Bound<'_, Calls>) -> Result<(), PyErr> {
-    let serve = reading(py)?.getattr(intern!(py, "serve"))?;
+    let launch = reading(py)?.getattr(intern!(py, "launch"))?;
     py.import("_thread")?
         .getattr(intern!(py, "start_new_thread"))?
-        .call1((serve, (calls,)))?;
+        .call1((launch, (calls,)))?;
     Ok(())
 }
 
@@ -334,27 +354,31 @@ fn said(py: Python<'_>, error: &PyErr) -> String {
     format!("{}: {message}", errors::type_name(py, error))
 }
 
-/// Starts the daemon thread that makes the calls `waiting` holds; one that does not start is
-/// closed, saying why, and what was queued on it goes unanswered.
-fn spare(py: Python<'_>, waiting: Waiting) {
-    let mut waiting = Some(waiting);
-    let started = Bound::new(py, Calls::default()).and_then(|calls| {
-        *calls.get().waiting.lock() = waiting.take();
-        launched(py, &calls).inspect_err(|_| waiting = calls.get().waiting.lock().take())
-    });
-    if let (Err(error), Some(mut waiting)) = (started, waiting) {
-        let queued = closed(&mut waiting, said(py, &error));
-        drop(queued);
-    }
-}
-
-/// Starts this process's first daemon thread, on the asking thread, which Python owns: once per
-/// process, so a child forked from one that had started its own starts afresh.
+/// The calls `waiting` holds, as the daemon thread that makes them is started with.
 ///
 /// # Errors
 ///
-/// [`Unanswered::Started`] where the thread did not start, or where the pool stays locked, as by
-/// a thread the fork left behind.
+/// [`Unanswered::Started`] where they cannot be made, which closes `waiting`, saying why: what was
+/// queued on it goes unanswered.
+fn served(py: Python<'_>, mut waiting: Waiting) -> Result<Bound<'_, Calls>, Unanswered> {
+    let calls = Bound::new(py, Calls::default()).map_err(|error| {
+        let why = said(py, &error);
+        drop(closed(&mut waiting, why.clone()));
+        Unanswered::Started(why)
+    })?;
+    *calls.get().waiting.lock() = Some(waiting);
+    Ok(calls)
+}
+
+/// Starts the thread that starts this process's first daemon thread, from the asking thread, which
+/// Python owns: once per process, so a child forked from one that had started its own starts
+/// afresh.
+///
+/// # Errors
+///
+/// [`Unanswered::Started`] where that thread did not start, or where the pool stays locked, as by
+/// a thread the fork left behind. Where it starts and the daemon thread does not, it closes the
+/// daemon thread's calls, saying why.
 pub(crate) fn ready(py: Python<'_>) -> Result<(), Unanswered> {
     let pid = std::process::id();
     if STARTED.load(Ordering::Acquire) == pid {
@@ -368,16 +392,16 @@ pub(crate) fn ready(py: Python<'_>) -> Result<(), Unanswered> {
         ));
     }
     let (daemon, waiting) = mpsc::unbounded_channel();
-    // Its sender is not on the pool yet, so no call can be sent as it closes where it fails.
-    let calls = Calls {
-        waiting: Mutex::new(Some(waiting)),
-        done: Arc::default(),
-    };
-    let started = Bound::new(py, calls).and_then(|calls| launched(py, &calls));
-    if let Err(error) = started {
-        return Err(Unanswered::Started(said(py, &error)));
+    // On the pool before its daemon thread starts, so a start that fails once this has returned
+    // takes it off again, saying why; a call handed it meanwhile waits or goes unanswered.
+    put_back(daemon);
+    let calls = served(py, waiting)?;
+    if let Err(error) = launched(py, &calls) {
+        let why = said(py, &error);
+        calls.get().close(why.clone());
+        return Err(Unanswered::Started(why));
     }
-    adopted(pid, daemon);
+    STARTED.store(pid, Ordering::Release);
     Ok(())
 }
 
