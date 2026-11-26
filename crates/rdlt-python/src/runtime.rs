@@ -32,12 +32,13 @@ enum Unavailable {
     NoThreads(io::Error),
 }
 
-/// The process's runtime, built now if none is, with a daemon thread started to take its calls.
+/// The process's runtime, built now if none is, with a daemon thread's start set off to take its
+/// calls.
 ///
 /// # Errors
 ///
 /// `rdlt.InternalError` in a child forked from a process whose runtime was built, and where the
-/// runtime's threads or the daemon thread do not start.
+/// runtime's threads, or the thread that starts the first daemon thread, do not start.
 pub(crate) fn get(py: Python<'_>) -> Result<&'static Runtime, PyErr> {
     let pid = std::process::id();
     // Released before any error is built: building one runs Python, which may switch the GIL.
@@ -72,8 +73,8 @@ pub(crate) fn get(py: Python<'_>) -> Result<&'static Runtime, PyErr> {
             errors::internal(py, &format!("the runtime's threads did not start: {error}"))
         }
     })?;
-    // The calls a run makes need a daemon thread to take them, which this thread, Python's own,
-    // starts.
+    // The calls a run makes need a daemon thread to take them, whose start this thread, Python's
+    // own, sets off.
     calls::ready(py).map_err(|unready| errors::internal(py, &unready.to_string()))?;
     Ok(runtime)
 }

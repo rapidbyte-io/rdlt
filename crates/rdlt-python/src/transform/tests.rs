@@ -41,12 +41,12 @@ fn native(
 fn a_transform_that_finds_no_daemon_thread_says_why_the_last_did_not_start() {
     embedded::with(|py| {
         py.run(
-            c"import _thread, builtins, threading\n\
+            c"import builtins, threading\n\
               builtins.entered = threading.Event()\n\
               builtins.leave = threading.Event()\n\
-              builtins.started_by = _thread.start_new_thread\n\
+              builtins.started_by = threading.Thread.start\n\
               def refused(*_):\n    raise RuntimeError('no threads left')\n\
-              _thread.start_new_thread = refused\n",
+              threading.Thread.start = refused\n",
             None,
             None,
         )

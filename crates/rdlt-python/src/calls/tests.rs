@@ -365,6 +365,53 @@ fn a_call_whose_arguments_cannot_be_built_is_answered_with_why() {
 }
 
 #[test]
+fn a_call_whose_arguments_cannot_be_built_still_has_the_spare_it_carried_started() {
+    embedded::with(|py| {
+        py.run(
+            c"import builtins, threading; builtins.entered = threading.Event(); builtins.leave = threading.Event()",
+            None,
+            None,
+        )
+    })
+    .unwrap();
+    // It takes the only daemon thread, so it carries a spare, which waits on the pool beneath it.
+    let unbuilt: Result<Result<Py<PyAny>, PyErr>, Unanswered> = super::blocking(
+        |_| Err(pyo3::exceptions::PyValueError::new_err("no arguments")),
+        |_, answered| answered.map(pyo3::Bound::unbind),
+    );
+    assert!(
+        matches!(unbuilt, Ok(Err(_))),
+        "the call is answered with why"
+    );
+    let held = std::thread::spawn(|| {
+        blocked(c"lambda: (__import__('builtins').entered.set(), __import__('builtins').leave.wait(10))[1]")
+    });
+    let entered: bool = embedded::with(|py| {
+        py.eval(c"__import__('builtins').entered.wait(10)", None, None)
+            .unwrap()
+            .extract()
+            .unwrap()
+    });
+    assert!(
+        entered,
+        "the daemon thread that went idle last holds a call"
+    );
+    // The spare takes the next call, and answers it only where it started.
+    let told = Within::new();
+    let telling = told.clone();
+    std::thread::spawn(move || telling.give(blocked(c"lambda: 7")));
+    let answered = told
+        .wait(Duration::from_secs(10))
+        .expect("the call the spare takes is answered within 10 s");
+    embedded::with(|py| {
+        assert_eq!(answered.unwrap().unwrap().extract::<i64>(py).unwrap(), 7);
+        py.run(c"__import__('builtins').leave.set()", None, None)
+            .unwrap();
+    });
+    held.join().unwrap().unwrap().unwrap();
+}
+
+#[test]
 fn a_daemon_thread_whose_answer_panicked_waits_for_good_and_another_makes_the_next_call() {
     embedded::with(|py| {
         let parked = py.detach(|| {
@@ -618,21 +665,21 @@ impl Drop for Unpatch {
 
 /// Gives daemon threads' starts back, as `builtins.started_by` kept them, and lets go the call
 /// that waits for `builtins.leave`.
-pub(crate) const GIVEN_BACK: &std::ffi::CStr = c"import _thread, builtins\n_thread.start_new_thread = builtins.started_by\nbuiltins.leave.set()";
+pub(crate) const GIVEN_BACK: &std::ffi::CStr = c"import builtins, threading\nthreading.Thread.start = builtins.started_by\nbuiltins.leave.set()";
 
 /// Refuses every daemon thread's start once `builtins.queued` is set, as a process out of
 /// threads does, and keeps the start for [`GIVEN_BACK`].
 const REFUSAL: &std::ffi::CStr = c"
-import _thread, builtins, threading
+import builtins, threading
 builtins.starting = threading.Event()
 builtins.queued = threading.Event()
 builtins.leave = threading.Event()
-builtins.started_by = _thread.start_new_thread
+builtins.started_by = threading.Thread.start
 def refused(*_):
     builtins.starting.set()
     builtins.queued.wait(10)
     raise RuntimeError('no threads left')
-_thread.start_new_thread = refused
+threading.Thread.start = refused
 ";
 
 /// The only daemon thread, held by a call, starting the spare it was asked for, whose start is
@@ -734,18 +781,15 @@ fn a_call_queued_on_a_spare_that_did_not_start_is_let_go_and_the_next_start_is_t
 
 #[test]
 fn a_daemon_thread_a_bug_parks_before_its_first_call_is_handed_none() {
-    // The first daemon thread named, a spare whose loop meets a bug before it first waits.
+    // The first daemon thread waits for a call; a spare's loop meets a bug before it first waits.
     embedded::with(|py| {
         py.run(
             c"
-import builtins, threading, time, types, rdlt._reading as reading
-deadline = time.monotonic() + 10
-while not any(t.name == 'rdlt-call' for t in threading.enumerate()) and time.monotonic() < deadline:
-    time.sleep(0.001)
+import builtins, threading, types, rdlt._reading as reading
 builtins.leave = threading.Event()
 def current_thread():
     raise RuntimeError('a bug')
-reading.threading = types.SimpleNamespace(current_thread=current_thread)
+reading.threading = types.SimpleNamespace(current_thread=current_thread, Thread=threading.Thread)
 ",
             None,
             None,
@@ -806,9 +850,8 @@ reading._made = escaping
     let _made_back = Unpatch(
         c"import builtins, rdlt._reading as reading\nreading._made = made_by\nbuiltins.escape = None",
     );
-    // A daemon thread finds what makes its next call as it begins to wait: after this call, both
-    // that wait find `escaping`.
-    blocked(c"lambda: 7").unwrap().unwrap();
+    // A daemon thread finds what makes a call once it is handed one, so each call below finds
+    // `escaping`.
     for (escape, answered) in [(c"'after'", true), (c"'before'", false)] {
         embedded::with(|py| {
             let builtins = py.import("builtins").unwrap();

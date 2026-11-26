@@ -32,8 +32,8 @@ pub(crate) fn serve(
     if source.is_none() && destination.is_none() {
         return Some("nothing is served: serve a source, a destination or both".to_owned());
     }
-    // The server's calls need a daemon thread to take them, which this thread, Python's own,
-    // starts.
+    // The server's calls need a daemon thread to take them, whose start this thread, Python's own,
+    // sets off.
     if let Err(unready) = calls::ready(py) {
         return Some(unready.to_string());
     }
