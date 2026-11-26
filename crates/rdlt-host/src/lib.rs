@@ -40,7 +40,7 @@ pub use rdlt_wire::tls::Identity;
 pub use registry::Registry;
 pub use remote::{
     CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Handshaken, MAX_FREE_FRAMES, Options,
-    RemoteDestination, RemoteSource,
+    ReadWindow, RemoteDestination, RemoteSource,
 };
 pub use secrets::{
     Config, EnvSecrets, NAMED_BY_SECRET, Redactions, ReferenceFault, SecretError, SecretFault,

@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::source::invalid;
-use super::{Connection, lost_error};
+use super::{Connection, ReadWindow, lost_error};
 
 /// Reads `request`'s partition from the connector into `sink`.
 pub(super) async fn run(
@@ -84,10 +84,21 @@ pub(super) async fn run(
                     // them.
                     Read::Nothing => kept.charge(&sink, reader.kept())?,
                 }
-                let credit = v1::Credit { bytes: granting.taken(size) };
+                let credit = v1::Credit {
+                    bytes: granted(&mut granting, connection.options.read_window, size),
+                };
                 controls.send(control(Control::Credit(credit))).await.ok();
             }
         }
+    }
+}
+
+/// The credit a frame of `bytes` the read took gives back, as `window` has the read's window grow
+/// or stay.
+fn granted(granting: &mut Granting, window: ReadWindow, bytes: u64) -> u64 {
+    match window {
+        ReadWindow::Growing => granting.taken(bytes),
+        ReadWindow::Fixed => bytes,
     }
 }
 

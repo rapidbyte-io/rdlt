@@ -55,7 +55,9 @@ socket is.
     included, comes back as credit with any growth of the window, a flush's before its stats; the
     window never shrinks (`rdlt_wire::flow::Granting`). A served write's floor is `CREDIT_FLOOR`,
     a frame at the least frame limit a peer may set (4 MiB); a host's read takes its floor from
-    `Options::read_floor`, `CREDIT_FLOOR` by default.
+    `Options::read_floor`, `CREDIT_FLOOR` by default. `Options::read_window` may hold a read's
+    window at its floor instead (`ReadWindow::Fixed`): each frame comes back as it was and no
+    more, so one frame is in flight whatever its size. Certification's `S-BARRIER` reads so.
   - A sender sends while its credit is above zero, and each frame spends its encoded size, which
     may leave the credit a frame below zero until more is granted (`Spending`). A sender runs at
     most two of its frames ahead of its receiver, and one more below zero; no frame is too large
