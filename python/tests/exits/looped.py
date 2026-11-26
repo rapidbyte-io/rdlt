@@ -2,11 +2,13 @@
 
 `python looped.py RUNS` runs each script `RUNS` times, eight at a time, each within a minute. It
 says how each script's runs ended, and exits 1 where any ended with another status than its
-script's own, by a signal, or past its minute.
+script's own, by a signal, or past its minute. A run past its minute is aborted, so faulthandler
+writes where it was: each thread's stack, or on a free-threaded build the aborted thread's alone.
 """
 
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import sys
@@ -22,24 +24,32 @@ AT_ONCE = 8
 it computes."""
 WITHIN = 60.0
 """Seconds a run may take."""
+ABORTED = 10.0
+"""Seconds an aborted run has to say where its threads were."""
 
 
 def ended(script: str) -> tuple[str, str]:
     """How a run of `script` ended, as its status, a signal's name or `timeout`, and its stderr."""
-    try:
-        done = subprocess.run(
-            [sys.executable, str(HERE / script)],
-            timeout=WITHIN,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.TimeoutExpired as late:
-        # What a run said before its minute ran out comes as bytes, whatever `text` asked.
-        return "timeout", (late.stderr or b"").decode(errors="replace")
-    if done.returncode < 0:
-        return signal.Signals(-done.returncode).name, done.stderr
-    return str(done.returncode), done.stderr
+    with subprocess.Popen(
+        [sys.executable, str(HERE / script)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONFAULTHANDLER": "1"},
+    ) as run:
+        try:
+            _, said = run.communicate(timeout=WITHIN)
+        except subprocess.TimeoutExpired:
+            run.send_signal(signal.SIGABRT)
+            try:
+                _, said = run.communicate(timeout=ABORTED)
+            except subprocess.TimeoutExpired:
+                run.kill()
+                _, said = run.communicate()
+            return "timeout", said
+    if run.returncode < 0:
+        return signal.Signals(-run.returncode).name, said
+    return str(run.returncode), said
 
 
 def main() -> int:
