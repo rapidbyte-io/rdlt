@@ -44,7 +44,7 @@ pub use transform::{TRANSFORM_CLAUSES, TransformInputs, certify_transform};
 
 use rdlt_connector::Role;
 use rdlt_connector::testing::{
-    certify_destination_factory_observed, certify_source_factory_observed,
+    Wired, certify_destination_factory_observed, certify_source_factory_wired,
 };
 use rdlt_connector::{DestinationFactory, SourceFactory};
 
@@ -67,8 +67,14 @@ pub async fn certify_source_observed(
     match connect::Factory::new(target, Role::Source, &config).await {
         Ok(factory) => {
             let protocol = protocol::check(target, Role::Source, &config, observed).await;
-            let mut report =
-                certify_source_factory_observed(&factory, config.clone(), observed).await;
+            let barriers = factory.barriers();
+            let wired = Wired {
+                limits: factory.agreed(),
+                barriers: &barriers,
+            };
+            let certifying =
+                certify_source_factory_wired(&factory, &wired, config.clone(), observed);
+            let mut report = certifying.await;
             report.results.splice(0..0, protocol);
             let id = &SourceFactory::spec(&factory).id;
             let killed = kill::source(target.killed(), id, &config).await;

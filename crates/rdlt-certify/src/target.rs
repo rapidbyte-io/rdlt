@@ -13,7 +13,9 @@ use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_connector::wire::{Invalid, TRANSPORT, v1};
 use rdlt_connector::{BoxFuture, ConnectorError, ConnectorErrorKind, ConnectorId, Role};
 use rdlt_host::remote::{CONNECTOR_LOST, Client, DEADLINE_EXCEEDED, client};
-use rdlt_host::{Connection, ConnectorRef, Local, Options, Redactions, Remote, Stream, Witness};
+use rdlt_host::{
+    Connection, ConnectorRef, Local, Options, ReadWindow, Redactions, Remote, Stream, Witness,
+};
 use rdlt_wire::Limits;
 use rdlt_wire::tonic::{Response, Status};
 
@@ -22,6 +24,12 @@ const LAST_WORDS: Duration = Duration::from_secs(1);
 
 /// Bytes: the floor of the credit a source placed for a kill clause reads within.
 const KILL_FLOOR: u64 = 65_536;
+
+/// Bytes: the window of credit `S-BARRIER`'s reads are granted, which a fixed window
+/// ([`ReadWindow::Fixed`]) keeps: each frame is granted back as it is taken and no more, so one
+/// frame is in flight whatever its size, and a barrier the clause raises during a read reaches
+/// the source within the events the serving end holds.
+const BARRIER_FLOOR: u64 = 1;
 
 /// A connector to certify, and how to reach it.
 #[derive(Debug)]
@@ -126,7 +134,9 @@ impl Target {
         }
     }
 
-    /// Runs each connection with `options`: its deadlines, heartbeat and limits.
+    /// Runs each connection with `options`: its deadlines, heartbeat and limits; the credit
+    /// `S-BARRIER`'s reads and the kill clauses' sources are granted stays the certification's
+    /// own.
     #[must_use]
     pub fn options(mut self, options: Options) -> Self {
         self.options = options;
@@ -262,15 +272,39 @@ impl Target {
         }
     }
 
+    /// How every connection runs, but the kill clauses' and `S-BARRIER`'s.
+    pub(crate) fn connections(&self) -> Options {
+        self.options
+    }
+
+    /// How `S-BARRIER`'s connections run: each read's window fixed at [`BARRIER_FLOOR`].
+    pub(crate) fn barriers_read(&self) -> Options {
+        Options {
+            read_floor: BARRIER_FLOOR,
+            read_window: ReadWindow::Fixed,
+            ..self.options
+        }
+    }
+
     /// A fresh connection to the connector, handshaken as `role` with `config`.
     pub(crate) async fn connect(
         &self,
         role: Role,
         config: &serde_json::Value,
     ) -> Result<Arc<Connection>, ConnectorError> {
+        self.connect_with(role, config, &self.options).await
+    }
+
+    /// A fresh connection as [`connect`](Self::connect) makes, running with `options`.
+    pub(crate) async fn connect_with(
+        &self,
+        role: Role,
+        config: &serde_json::Value,
+        options: &Options,
+    ) -> Result<Arc<Connection>, ConnectorError> {
         let (wire, witness) = self.witnessed().await?;
         let redactions = self.redactions.clone();
-        let connected = Connection::connect(wire, role, config, self.options, redactions).await;
+        let connected = Connection::connect(wire, role, config, *options, redactions).await;
         match (connected, witness) {
             // A spawned connector whose transport failed most likely ended: say what it said.
             (Err(error), Some(witness))
@@ -317,6 +351,18 @@ impl Target {
         }
     }
 
+    /// The options a kill clause places the connector with: a source's credit opens at
+    /// [`KILL_FLOOR`] and grows to two of its frames, and what it sends keeps within `admitted`,
+    /// the limits the loading engine admits within.
+    fn killing(&self, admitted: &Limits) -> Options {
+        Options {
+            read_floor: KILL_FLOOR,
+            read_window: ReadWindow::Growing,
+            limits: self.options.limits.lesser(admitted),
+            ..self.options
+        }
+    }
+
     /// A provider placing the connector as an engine's placement does, supervised, so a lost one
     /// is started or reached again, killed by `kills`; and the reference to it, as `id`, which
     /// its handshake answered.
@@ -342,11 +388,7 @@ impl Target {
                 .map(|reference| reference.access.clone())
                 .unwrap_or_default(),
         };
-        let options = Options {
-            read_floor: KILL_FLOOR,
-            limits: self.options.limits.lesser(admitted),
-            ..self.options
-        };
+        let options = self.killing(admitted);
         match &self.reach {
             Reach::Connected(connect) => {
                 let connect = Arc::clone(connect);

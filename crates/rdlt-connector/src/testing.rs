@@ -38,11 +38,12 @@ pub use destination::{
     DESTINATION_CLAUSES, Probe, Unprobed, certify_destination, certify_destination_factory,
     certify_destination_factory_observed, read_back_integers,
 };
+pub use limits::{BARRIER_SLACK, REASON_BYTES, RENDERED_BYTES};
 use limits::{CALL_TIMEOUT, CLAUSE_TIMEOUT};
-pub use limits::{REASON_BYTES, RENDERED_BYTES};
 pub use reason::Reason;
 pub use source::{
-    SOURCE_CLAUSES, certify_source, certify_source_factory, certify_source_factory_observed,
+    SOURCE_CLAUSES, Wired, certify_source, certify_source_factory, certify_source_factory_observed,
+    certify_source_factory_wired,
 };
 
 /// Runs a clause for at most [`CLAUSE_TIMEOUT`].

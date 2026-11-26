@@ -118,6 +118,14 @@ pub trait Admission: Send + Sync {
     fn limits(&self) -> Limits;
 }
 
+/// Events a served read's source may send ahead of the frames waiting for the host's credit.
+#[cfg(any(feature = "serve", feature = "testing"))]
+pub(crate) const SERVED_EVENTS: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is not zero");
+
+/// Events a read whose source runs in another runtime holds between that runtime and its sink:
+/// the source's push waits there while it makes the next.
+pub const BRIDGED_EVENTS: NonZeroUsize = NonZeroUsize::MIN;
+
 /// Creates the two ends of one partition's channel, buffering up to `capacity` events.
 pub fn partition_channel(capacity: NonZeroUsize) -> (PartitionSink, PartitionFeed) {
     channel(capacity, None)

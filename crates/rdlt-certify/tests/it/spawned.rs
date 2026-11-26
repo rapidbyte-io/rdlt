@@ -61,6 +61,46 @@ async fn a_spawned_source_binary_is_certified_through_the_protocol() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_spawned_source_passes_s_barrier_however_far_ahead_of_the_host_it_reads() {
+    // In a process of its own, the source queues ahead of its credit whatever this one runs.
+    for rows in crate::served::barrier_rows() {
+        let id = ConnectorId::parse("io.rapidbyte.generator").expect("a valid id");
+        let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
+        let target = Target::spawned(local, ConnectorRef::new(id).path(example("serve_source")))
+            .credit_watch(crate::BRIEF)
+            .kill_seed(crate::killed::SETTLED_LATE);
+        let report = certify_source(&target, crate::served::batches_of_five(rows)).await;
+        assert_eq!(
+            report.outcome("S-BARRIER"),
+            Some(&Outcome::Passed),
+            "{rows}: {report}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spawned_source_whose_first_push_is_large_passes_s_barrier() {
+    // Its 61 pushes end at the read's event 121, far past where its barrier is judged.
+    let root = tempfile::tempdir().expect("a temporary directory");
+    crate::served::large_then_small(root.path());
+    let id = ConnectorId::parse("io.rapidbyte.files").expect("a valid id");
+    let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
+    let target = Target::spawned(
+        local,
+        ConnectorRef::new(id).path(example("serve_files_source")),
+    )
+    .credit_watch(crate::BRIEF)
+    .kill_seed(crate::killed::SETTLED_LATE);
+    let config = json!({ "root": root.path(), "batch_rows": 1 });
+    let report = certify_source(&target, config).await;
+    assert_eq!(
+        report.outcome("S-BARRIER"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_spawned_source_killed_as_it_loads_is_spawned_again_and_resumes() {
     let id = ConnectorId::parse("io.rapidbyte.generator").expect("a valid id");
     let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");

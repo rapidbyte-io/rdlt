@@ -9,7 +9,7 @@ use super::json;
 use crate::catalog::StreamSpec;
 use crate::cost::push_charge;
 use crate::cursor::Cursor;
-use crate::sink::{Push, SourceEvent, partition_channel};
+use crate::sink::{PartitionFeed, PartitionSink, Push, SourceEvent, partition_channel};
 use crate::source::{Partition, ReadRequest, Source};
 use crate::testing::limits::{HELD_BYTES, HELD_EVENT_BYTES, HELD_ROWS};
 use crate::testing::{Allowance, Violation, bounded};
@@ -73,8 +73,6 @@ pub(super) struct Recording {
     pub(super) checkpoints: Vec<Cursor>,
     /// Data after the last checkpoint.
     pub(super) tail: Vec<Push>,
-    /// Barriers the checkpoints answered.
-    pub(super) answered: Vec<u64>,
 }
 
 impl Recording {
@@ -90,11 +88,10 @@ impl Recording {
                 }
                 self.tail.push(normalize(push).await);
             }
-            SourceEvent::Checkpoint { cursor, answers } => {
+            SourceEvent::Checkpoint { cursor, .. } => {
                 budget.cursor(&cursor)?;
                 self.segments.push(std::mem::take(&mut self.tail));
                 self.checkpoints.push(cursor);
-                self.answered.extend(answers);
             }
             SourceEvent::Replan | SourceEvent::Behind { .. } => {}
         }
@@ -106,19 +103,28 @@ impl Recording {
 /// that sends more is stopped, and what it sends after is dropped.
 pub(super) async fn record(
     source: &dyn Source,
-    (stream, partition): (&StreamSpec, &Partition),
+    read: (&StreamSpec, &Partition),
     cursor: Option<Cursor>,
-    barrier: Option<u64>,
     budget: &Budget,
 ) -> Result<Recording, Violation> {
-    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("64 is non-zero"));
-    if let Some(barrier) = barrier {
-        feed.request_checkpoint(barrier);
-    }
+    let channel = partition_channel(NonZeroUsize::new(64).expect("64 is non-zero"));
+    record_watched(source, (read, cursor), channel, budget, |_, _| {}).await
+}
+
+/// What a read sends through `channel`, as [`record`] holds it, showing `watch` each event as
+/// it is taken from the channel, before anything the read sends after it.
+pub(super) async fn record_watched(
+    source: &dyn Source,
+    ((stream, partition), cursor): ((&StreamSpec, &Partition), Option<Cursor>),
+    (sink, mut feed): (PartitionSink, PartitionFeed),
+    budget: &Budget,
+    mut watch: impl FnMut(&SourceEvent, &PartitionFeed),
+) -> Result<Recording, Violation> {
     let request = ReadRequest::new(stream.name().clone(), partition.clone(), cursor);
     let collect = async {
         let mut recording = Recording::default();
         while let Some(event) = feed.recv().await {
+            watch(&event, &feed);
             if let Err(beyond) = recording.hold(event, budget).await {
                 feed.stop();
                 while feed.recv().await.is_some() {}

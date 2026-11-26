@@ -19,9 +19,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    Clause, ClauseResult, DESTINATION_CLAUSES, Observed, Outcome, Probe, Report, SOURCE_CLAUSES,
-    Unprobed, Verdict, certify_destination, certify_destination_factory_observed, certify_source,
-    certify_source_factory_observed,
+    BARRIER_SLACK, Clause, ClauseResult, DESTINATION_CLAUSES, Observed, Outcome, Probe, Report,
+    SOURCE_CLAUSES, Unprobed, Verdict, Wired, certify_destination,
+    certify_destination_factory_observed, certify_source, certify_source_factory_observed,
 };
 use crate::capabilities::{
     Capabilities, IdentifierCase, IdentifierChars, IdentifierRules, SchemaChanges,
@@ -40,7 +40,9 @@ use crate::id::{
 };
 use crate::landed::{Answer, Fence, answer};
 use crate::sink::Push;
-use crate::source::{Partition, PartitionPlan, ReadStream, SourceConnector, Streams};
+use crate::source::{
+    Partition, PartitionPlan, ReadStream, SourceConnector, Streams, acknowledging_source_factory,
+};
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::{StateChange, StateRecord, StreamState};
 use crate::types::{Field, LogicalType};
@@ -65,6 +67,12 @@ struct PagesConfig {
     ignore_barriers: bool,
     /// Its reads send no checkpoint at all.
     uncheckpointed: bool,
+    /// Its reads checkpoint once, after their last page, whatever is pending, as a stream that
+    /// checkpoints only where it would anyway does.
+    checkpoint_at_end: bool,
+    /// Its reads send a checkpoint of where they start before their first page, as a stream
+    /// that starts from a position of its own does.
+    opening_checkpoint: bool,
     /// A read from this page's cursor or a later one is shifted as `shifted` shifts every read;
     /// 0 shifts none.
     shifted_from: u32,
@@ -103,6 +111,8 @@ impl Default for PagesConfig {
             shifted: false,
             ignore_barriers: false,
             uncheckpointed: false,
+            checkpoint_at_end: false,
+            opening_checkpoint: false,
             shifted_from: 0,
             natural: false,
             unstable_discover: false,
@@ -262,6 +272,9 @@ impl ReadStream<Pages> for Page {
             1
         };
         let pages: Vec<u32> = (start..end).collect();
+        if source.config.opening_checkpoint {
+            out.checkpoint(&start).await?;
+        }
         for pushed in pages.chunks(width) {
             let rows: Vec<serde_json::Value> =
                 pushed.iter().map(|page| json!({ "page": page })).collect();
@@ -271,12 +284,28 @@ impl ReadStream<Pages> for Page {
             }
             sent?;
             let answers = !source.config.ignore_barriers || !out.checkpoint_due();
-            if answers && !source.config.uncheckpointed {
+            let last = pushed.last() == pages.last();
+            let due = !source.config.checkpoint_at_end || last;
+            if answers && due && !source.config.uncheckpointed {
                 out.checkpoint(&(pushed.last().unwrap() + 1)).await?;
             }
         }
         Ok(())
     }
+}
+
+#[test]
+fn a_wired_certification_shows_the_limits_its_reads_are_cut_to() {
+    let factory = acknowledging_source_factory::<Pages>();
+    let wired = Wired {
+        limits: rdlt_wire::Limits::default(),
+        barriers: factory.as_ref(),
+    };
+    let shown = format!("{wired:?}");
+    assert!(
+        shown.starts_with("Wired { limits: Limits { frame_bytes: "),
+        "{shown}"
+    );
 }
 
 #[tokio::test]
@@ -288,20 +317,67 @@ async fn a_correct_source_passes_every_clause() {
 async fn a_source_with_no_data_is_incomplete_where_nothing_could_be_seen() {
     let empty = certify_source::<Pages>(json!({ "pages": 0 })).await;
     assert_eq!(empty.verdict(), Verdict::Incomplete, "{empty}");
-    assert_eq!(
-        empty.outcome("S-BARRIER"),
-        Some(&Outcome::Passed),
-        "a source with no data owes no answer"
-    );
-    // A stream that never checkpoints leaves nothing to resume, or plan again, from.
-    for clause in ["S-RESUME", "S-PARTITION"] {
+    // A stream that never checkpoints leaves nothing to resume, or plan again, from; one that
+    // never pushes, no barrier it had to answer.
+    for clause in ["S-RESUME", "S-PARTITION", "S-BARRIER"] {
         assert!(
             matches!(empty.outcome(clause), Some(Outcome::Unobserved(_))),
             "{clause}: {empty}"
         );
     }
     let unobserved: Vec<_> = empty.unobserved().map(|result| result.clause.id).collect();
-    assert_eq!(unobserved, ["S-RESUME", "S-PARTITION"]);
+    assert_eq!(unobserved, ["S-RESUME", "S-PARTITION", "S-BARRIER"]);
+}
+
+#[tokio::test]
+async fn a_source_whose_reads_push_once_and_answer_after_shows_nothing_of_its_barriers() {
+    let report = certify_source::<Pages>(json!({ "pages": 1 })).await;
+    assert!(
+        matches!(report.outcome("S-BARRIER"), Some(Outcome::Unobserved(_))),
+        "{report}"
+    );
+}
+
+#[tokio::test]
+async fn a_source_that_answers_a_barrier_only_as_its_read_starts_fails_s_barrier() {
+    // It answers the barrier pending as it starts, and no other until its read ends.
+    let config = json!({ "opening_checkpoint": true, "checkpoint_at_end": true, "pages": 64 });
+    let report = certify_source::<Pages>(config).await;
+    assert_eq!(failed(&report), ["S-BARRIER"], "{report}");
+    // Barrier 2 is raised at the read's first push, so every page after it was sent with it
+    // pending.
+    let Some(Outcome::Failed(reason)) = report.outcome("S-BARRIER") else {
+        panic!("{report}");
+    };
+    assert!(
+        reason.contains("answered barrier 2 only after the last of the 63 pushes"),
+        "{reason}"
+    );
+}
+
+#[tokio::test]
+async fn a_source_that_never_answers_a_barrier_raised_during_its_read_fails_s_barrier() {
+    let config = json!({ "opening_checkpoint": true, "uncheckpointed": true, "pages": 64 });
+    let report = certify_source::<Pages>(config).await;
+    let Some(Outcome::Failed(reason)) = report.outcome("S-BARRIER") else {
+        panic!("{report}");
+    };
+    assert!(
+        reason.contains("never answered barrier 2 before the last of the 63 pushes"),
+        "{reason}"
+    );
+}
+
+#[tokio::test]
+async fn a_read_as_long_as_the_reference_sources_fixtures_has_its_second_barrier_judged() {
+    // The reference sources' fixtures, a checkpoint after each push but the last, end their reads
+    // at event `2 * pushes - 1`, 8 past the first `S-BARRIER` judges: a read whose last push
+    // comes as late, and that answers only as it starts, fails.
+    let pushes = (BARRIER_SLACK + 11).div_ceil(2);
+    let pages = 2 * pushes - 1;
+    let config = json!({ "opening_checkpoint": true, "checkpoint_at_end": true, "pages": pages });
+    let report = certify_source::<Pages>(config).await;
+    assert_eq!(failed(&report), ["S-BARRIER"], "{report}");
 }
 
 #[tokio::test]
@@ -413,12 +489,14 @@ async fn the_barrier_clause_does_not_apply_to_natural_checkpointing() {
 
 #[tokio::test]
 async fn each_broken_source_behavior_fails_exactly_its_clause() {
-    let cases: [(&str, &[&str]); 8] = [
+    let cases: [(&str, &[&str]); 9] = [
         // A read from a cursor that starts over, or elsewhere, reads the wrong rows however it
         // is planned.
         ("ignore_cursor", &["S-RESUME", "S-PARTITION"]),
         ("shifted", &["S-RESUME", "S-PARTITION"]),
         ("ignore_barriers", &["S-BARRIER"]),
+        // It answers the barrier, after its last push.
+        ("checkpoint_at_end", &["S-BARRIER"]),
         ("unstable_discover", &["S-DISCOVER"]),
         ("empty_catalog", &["S-DISCOVER"]),
         ("repeat_partitions", &["S-PLAN"]),

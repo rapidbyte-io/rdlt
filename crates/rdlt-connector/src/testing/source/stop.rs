@@ -74,7 +74,7 @@ async fn unbounded(
         let mut ended = BTreeMap::new();
         for partition in &planned.partitions {
             let start = planned.starts.get(partition.id()).cloned();
-            let read = record(source, (stream, partition), start, None, budget).await?;
+            let read = record(source, (stream, partition), start, budget).await?;
             let end = match (read.checkpoints.last(), read.tail.is_empty()) {
                 (_, false) => Some(PartitionState::Done),
                 (Some(last), true) => Some(PartitionState::Cursor(last.clone())),
