@@ -943,11 +943,57 @@ fn transforms_that_drop_or_retype_a_column_the_stream_keeps_are_refused() {
         "{dropped:?}"
     );
     // A mask declares it passes the key on no longer, which is refused before its type is.
-    let retyped = refusal(stream().transform(Op::mask(["id"], Mask::Null)));
+    let masked = refusal(stream().transform(Op::mask(["id"], Mask::Null)));
     assert!(
-        matches!(&retyped, Refusal::Claimed { column, .. } if column == "id"),
+        matches!(&masked, Refusal::Claimed { column, .. } if column == "id"),
+        "{masked:?}"
+    );
+    let retyped = refusal(stream().transform(code(KeyAsText)));
+    assert!(
+        matches!(&retyped, Refusal::Kept { column } if column == "id"),
         "{retyped:?}"
     );
+}
+
+/// A transform outputting `id` as its text, declaring neither lineage nor what it passes on,
+/// written as an embedder's.
+struct KeyAsText;
+
+impl Transform for KeyAsText {
+    fn name(&self) -> &'static str {
+        "key_as_text"
+    }
+
+    fn output(&self, input: &Schema) -> Result<SchemaRef, TransformError> {
+        let fields = input
+            .fields()
+            .iter()
+            .map(|field| match field.name().as_str() {
+                "id" => Arc::new(Field::new("id", DataType::Utf8, field.is_nullable())),
+                _ => Arc::clone(field),
+            });
+        Ok(Arc::new(Schema::new(fields.collect::<Vec<_>>())))
+    }
+
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
+        let output = self.output(batch.schema_ref())?;
+        let columns: Vec<ArrayRef> = output
+            .fields()
+            .iter()
+            .zip(batch.columns())
+            .map(|(field, column)| {
+                if field.name() == "id" {
+                    let ids = column.as_primitive::<Int64Type>();
+                    Arc::new(StringArray::from_iter(
+                        ids.iter().map(|id| id.map(|id| id.to_string())),
+                    )) as ArrayRef
+                } else {
+                    Arc::clone(column)
+                }
+            })
+            .collect();
+        Ok(RecordBatch::try_new(output, columns).unwrap())
+    }
 }
 
 #[test]
