@@ -8,12 +8,12 @@ use std::path::PathBuf;
 use pyo3::exceptions::PyValueError;
 use pyo3::{Bound, FromPyObject, PyAny, PyErr, Python, pyfunction};
 use rdlt_certify::{
-    Clause, ConnectorRef, Endpoint, Identity, KILL_CLAUSES, PROTOCOL_CLAUSES, Probe, Remote,
+    Clause, ConnectorRef, Endpoint, Held, Identity, KILL_CLAUSES, PROTOCOL_CLAUSES, Probe, Remote,
     Report, SOURCE_CLAUSES, TRANSFORM_CLAUSES, Target, TransformInputs, Unprobed,
 };
-use rdlt_connector::ConnectorId;
 use rdlt_connector::serve::Served;
 use rdlt_connector::testing::{Outcome, Reason};
+use rdlt_connector::{ConnectorId, Role};
 
 use crate::destination::NativeDestinationFactory;
 use crate::host::TlsFiles;
@@ -97,8 +97,9 @@ pub(crate) fn clauses(role: &str) -> Result<Vec<(String, String)>, PyErr> {
         .collect())
 }
 
-/// `report` as the JSON `rdlt.testing` reads, its verdict among it.
-fn reported(report: &Report) -> String {
+/// `report` as the JSON `rdlt.testing` reads, its verdict among it, with the version and binary's
+/// digest its certification `held` the connector to, each null where none was.
+fn reported(report: &Report, held: &Held) -> String {
     let results: Vec<serde_json::Value> = report
         .results
         .iter()
@@ -120,6 +121,8 @@ fn reported(report: &Report) -> String {
         .collect();
     serde_json::json!({
         "connector": report.connector,
+        "version": held.version,
+        "digest": held.digest.map(|digest| digest.to_string()),
         "results": results,
         "verdict": report.verdict().as_str(),
     })
@@ -149,10 +152,11 @@ pub(crate) fn certify_source(
     if let Some(launcher) = launcher {
         target = target.kill_target(Target::trusted_binary(id, launcher));
     }
-    let report = runtime::wait(py, async move {
-        rdlt_certify::certify_source(&target, config).await
+    let (report, held) = runtime::wait(py, async move {
+        let report = rdlt_certify::certify_source(&target, config).await;
+        (report, target.held(Role::Source))
     })?;
-    Ok(reported(&report))
+    Ok(reported(&report, &held))
 }
 
 /// Certifies `destination`: the destination a factory makes, served in this process over a
@@ -184,19 +188,21 @@ pub(crate) fn certify_destination(
     if let Some(launcher) = launcher {
         target = target.kill_target(Target::trusted_binary(id, launcher));
     }
-    let report = runtime::wait(py, async move {
+    let (report, held) = runtime::wait(py, async move {
         let read_back = rdlt_certify::read_back(&target, &config).await;
         let probe: &dyn Probe = match &read_back {
             Some(read_back) => read_back,
             None => &Unprobed,
         };
-        rdlt_certify::certify_destination(&target, config, probe).await
+        let report = rdlt_certify::certify_destination(&target, config, probe).await;
+        (report, target.held(Role::Destination))
     })?;
-    Ok(reported(&if killed_elsewhere {
+    let report = if killed_elsewhere {
         read_back_here(report)
     } else {
         report
-    }))
+    };
+    Ok(reported(&report, &held))
 }
 
 /// `report`, its kill clause's reason, where it has one, saying where what the launcher
@@ -263,5 +269,5 @@ pub(crate) fn certify_transform(
         let message = format!("certifying the transform ended without its answer: {joined}");
         errors::internal(py, &message)
     })?;
-    Ok(reported(&report))
+    Ok(reported(&report, &Held::default()))
 }
