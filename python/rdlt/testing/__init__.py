@@ -37,11 +37,16 @@ class ClauseResult:
 class Report:
     """What a certification found, as `rdlt_certify`'s `Report` says it.
 
-    `connector` is the connector's id, `results` each clause's result, in clause order, and
-    `verdict` what they amount to, as its `verdict()` says it.
+    `connector` is the connector's id; `version` the version its first connection answered and
+    `digest` the SHA-256 digest of the binary its first spawn ran, which the certification held
+    every later connection and spawn to, each `None` where it held it to none; `results` each
+    clause's result, in clause order; and `verdict` what they amount to, as its `verdict()` says
+    it.
     """
 
     connector: str
+    version: str | None
+    digest: str | None
     results: tuple[ClauseResult, ...]
     verdict: str
     """`passed` where every clause that applies was seen to be met and one applies, `failed` where
@@ -73,7 +78,9 @@ class Certification:
                 )
                 for entry in found["results"]
             )
-            self._report = Report(found["connector"], results, found["verdict"])
+            self._report = Report(
+                found["connector"], found["version"], found["digest"], results, found["verdict"]
+            )
         return self._report
 
     def result(self, clause: str) -> ClauseResult:
