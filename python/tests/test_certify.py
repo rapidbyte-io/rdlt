@@ -221,6 +221,15 @@ def test_a_certification_keeps_the_connector_it_certifies() -> None:
     assert certification.result("P-HANDSHAKE").outcome == "passed"
 
 
+def test_a_report_names_the_version_its_certification_held_the_connector_to() -> None:
+    report = certify_source(Tickets, config={"pages": 1, "token": "t0ken"}).report()
+    assert (report.connector, report.version, report.digest) == (
+        "io.example.tickets",
+        "1.0.0",
+        None,
+    )
+
+
 def test_a_transform_s_clauses_pass() -> None:
     @rdlt.transform()
     def doubled(batch: pa.RecordBatch) -> pa.RecordBatch:
@@ -232,6 +241,7 @@ def test_a_transform_s_clauses_pass() -> None:
     outcomes = {clause: certification.result(clause).outcome for clause, _ in certification.clauses}
     assert "failed" not in outcomes.values(), outcomes
     assert outcomes["T-ROWS"] == "passed"
+    assert (certification.report().version, certification.report().digest) == (None, None)
 
 
 def test_a_transform_is_held_to_pass_the_keys_and_the_change_time_it_is_given() -> None:
