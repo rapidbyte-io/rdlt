@@ -97,14 +97,14 @@ clauses are ADR 0022's.
   Python source's bridge, besides the pieces the serving end cuts its batches into. Those are
   bounded on each read, not counted: by the rows of its batches after the barrier over the row
   limit its connection agreed, and by twice their values, their views' bytes and their frames'
-  bytes over the limit of each. A frame's bytes are weighed with a validity bit for every value,
-  as the serving end weighs a batch holding a null, against the frame limit less what a frame
-  takes beside its rows, which is what the serving end fills a piece to. The clause judges the
-  second barrier only against the pushes after `BARRIER_SLACK` and that bound, which can be twice
-  the pieces cut and more, and leaves it unjudged on a shorter read, and on every read of a schema
-  so wide that a frame has no room for rows; a connector served by another end may hold more. Over
-  a slow link the fixed window can make the clause's read pass its bound, which fails it. A read
-  answers each barrier it is judged on with a checkpoint before its last push: a stream that
+  bytes over the limit of each. A frame's bytes are weighed with a validity bit for every value, as
+  the serving end weighs each column of a batch that holds a null, against the frame limit less what
+  a frame takes beside its rows, which is what the serving end fills a piece to. The clause judges
+  the second barrier only against the pushes after `BARRIER_SLACK` and that bound, which can be
+  twice the pieces cut and more, and leaves it unjudged on a shorter read, and on every read of a
+  schema so wide that a frame has no room for rows; a connector served by another end may hold more.
+  Over a slow link the fixed window can make the clause's read pass its bound, which fails it. A
+  read answers each barrier it is judged on with a checkpoint before its last push: a stream that
   checkpoints only at its end fails, and so does one that answers the first with an opening
   checkpoint and then checkpoints only at its end. A read that pushes nothing, or pushes once and
   answers after it, shows nothing, and where no read shows an answer, the clause is unobserved.

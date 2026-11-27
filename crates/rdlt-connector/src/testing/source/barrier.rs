@@ -138,8 +138,8 @@ impl Weighed {
 ///   the limit less what a frame takes beside them: such pieces number fewer than twice what
 ///   the pieces weigh by the limit over it, half frames each.
 /// - The serving end weighs a validity bit for each value of a column holding a null anywhere
-///   in its batch, which a piece holding none comes without: each value weighs a bit more in
-///   its frame than the pieces show.
+///   in its batch, which a piece holding none comes without: each value weighs at most a bit
+///   more in its frame than the pieces show.
 ///
 /// Where a frame has no room for rows, each row may go alone and no weight bounds the pieces:
 /// `usize::MAX`, which no read passes. A push of JSON is not weighed, since the serving end
