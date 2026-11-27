@@ -244,6 +244,11 @@ impl PartitionSink {
         }
     }
 
+    /// Whether the engine has asked the read to stop or dropped its end, by now.
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stop.is_cancelled() || self.events.is_closed()
+    }
+
     /// Sends `event`, waiting while the channel is full; a read that runs elsewhere and forwards
     /// its events sends them here.
     ///
