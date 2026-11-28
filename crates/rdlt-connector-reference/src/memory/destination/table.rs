@@ -11,11 +11,11 @@ use rdlt_connector::{
     Deletion, Epoch, GenerationId, MergeKey, PipelineId, RootKey, SCHEMA_CONFLICT, SegmentId,
 };
 
-use crate::columns::changed;
+use crate::columns::{changed, written};
 
 #[derive(Debug, Default)]
 pub(super) struct Table {
-    /// The pipeline the table belongs to: the first to refer to it.
+    /// The pipeline that created the table, which it belongs to.
     pub(super) owner: Option<PipelineId>,
     pub(super) schema: Option<TableSchema>,
     /// How the table merges; `None` appends.
@@ -119,18 +119,24 @@ impl Table {
         Ok(())
     }
 
-    /// Refuses `batch`, written for the table, where its rows cannot be merged into it: a merge
-    /// table's rows each have a sequence, and a change stream's an op and flags it may carry.
-    pub(super) fn admits(&self, batch: &RecordBatch) -> Result<()> {
-        let Some(key) = &self.merge else {
-            return Ok(());
+    /// Refuses the `buffered` batches written for the table `name` unless each holds only the
+    /// table's columns, as [`written`] says, and each row of a merge table can be merged into
+    /// it: it has a sequence, and a change stream's an op and flags it may carry.
+    pub(super) fn admits(&self, name: &str, buffered: &[(SegmentId, RecordBatch)]) -> Result<()> {
+        let Some(schema) = &self.schema else {
+            return Err(ConnectorError::internal(format!(
+                "table {name} has no columns"
+            )));
         };
-        let stored = self
-            .schema
-            .as_ref()
-            .map(|schema| Arc::new(schema.to_arrow()));
-        rdlt_connector::merge::admitted(batch, stored.as_ref(), key)
-            .map_err(|error| failed("staging rows", error))
+        let stored = Arc::new(schema.to_arrow());
+        for (_, batch) in buffered {
+            written(name, &stored, self.merge.as_ref(), batch)?;
+            if let Some(key) = &self.merge {
+                rdlt_connector::merge::admitted(batch, Some(&stored), key)
+                    .map_err(|error| failed("staging rows", error))?;
+            }
+        }
+        Ok(())
     }
 
     /// The table's published rows as a reader is given them: with every column of the table, at

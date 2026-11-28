@@ -275,21 +275,9 @@ impl ConnectorError {
     /// the errors they were are not.
     #[must_use]
     pub fn received(&self, scrubbed: &dyn Fn(String) -> String) -> Self {
-        use crate::limits::{MAX_ERROR_CAUSES, MAX_ERROR_CODE_BYTES, MAX_ERROR_TEXT_BYTES};
+        use crate::limits::{MAX_ERROR_CODE_BYTES, MAX_ERROR_TEXT_BYTES};
         let text = |raw: String| crate::text::shown(scrubbed(raw), MAX_ERROR_TEXT_BYTES);
-        let mut causes = Vec::new();
-        let mut cause = StdError::source(self);
-        while let Some(error) = cause {
-            if causes.len() == MAX_ERROR_CAUSES {
-                break;
-            }
-            causes.push(text(error.to_string()));
-            cause = error.source();
-        }
-        let source = causes
-            .into_iter()
-            .rev()
-            .fold(None, |source, text| Some(Box::new(Cause { text, source })));
+        let causes = self.causes().map(text).collect();
         // A code is a name the engine branches on: rewritten, it would name another.
         let code = self.code.as_deref().map(|code| {
             let kept = published(code) || scrubbed(code.to_owned()) == code;
@@ -302,8 +290,34 @@ impl ConnectorError {
             code,
             retry_after: self.retry_after,
             limit: self.limit,
-            source: source.map(|cause| cause as Box<dyn StdError + Send + Sync>),
+            source: None,
         }
+        .with_causes(causes)
+    }
+
+    /// The texts of the error's first [`MAX_ERROR_CAUSES`](crate::limits::MAX_ERROR_CAUSES)
+    /// causes, the outermost first.
+    pub(crate) fn causes(&self) -> impl Iterator<Item = String> {
+        let mut cause = StdError::source(self);
+        std::iter::from_fn(move || {
+            let error = cause?;
+            cause = error.source();
+            Some(error.to_string())
+        })
+        .take(crate::limits::MAX_ERROR_CAUSES)
+    }
+
+    /// The error with `causes`, texts the outermost first, as its causes in place of its own,
+    /// [`MAX_ERROR_CAUSES`](crate::limits::MAX_ERROR_CAUSES) of them at most.
+    #[must_use]
+    pub(crate) fn with_causes(mut self, causes: Vec<String>) -> Self {
+        let source = causes
+            .into_iter()
+            .take(crate::limits::MAX_ERROR_CAUSES)
+            .rev()
+            .fold(None, |source, text| Some(Box::new(Cause { text, source })));
+        self.source = source.map(|cause| cause as Box<dyn StdError + Send + Sync>);
+        self
     }
 
     /// The failure's kind.

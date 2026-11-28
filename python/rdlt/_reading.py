@@ -18,7 +18,8 @@ the thread's, as in any pool.
 An async read runs on an event loop of its own on its daemon thread, which never waits for the
 engine: an item's push that finds no room is sent by the runtime, and a notice that finds none
 waits for the runtime to see room come, the runtime then making a socket the loop watches
-readable, so the loop runs its other tasks meanwhile.
+readable, so the loop runs its other tasks meanwhile. A read the engine lets go makes the socket
+readable too, and the read is cancelled where it waits, as asyncio cancels any task.
 """
 
 from __future__ import annotations
@@ -78,6 +79,10 @@ class Out(Protocol):
         """Takes what made the watched descriptor readable."""
         ...
 
+    def gone(self) -> bool:
+        """Whether the read has gone: it said how it ended, or the engine let it go."""
+        ...
+
     def finished(self) -> None:
         """Says the read has yielded everything."""
         ...
@@ -91,6 +96,11 @@ class _Stream(Protocol):
     @property
     def spec(self) -> str:
         """The stream's description, as JSON."""
+        ...
+
+    @property
+    def cursor(self) -> type | None:
+        """The class of the stream's cursor, which each of its checkpoints is; none without one."""
         ...
 
     def plan(
@@ -228,7 +238,8 @@ async def pushed(opened: AsyncIterable[object], out: Out, context: object) -> No
     """Reads `opened` in one task: a timeout or a context variable may span its yields.
 
     What it yields and what its context `context` tells the engine are sent in the order they
-    were said, none of them waiting for the engine with the event loop held.
+    were said, none of them waiting for the engine with the event loop held. A read the engine
+    lets go is cancelled where it waits, and ends as one whose last yield found it gone.
     """
     router = Router(out, context, asyncio.get_running_loop())
     token = _ROUTER.set(router)
@@ -240,11 +251,18 @@ async def pushed(opened: AsyncIterable[object], out: Out, context: object) -> No
                 if not await router.yielded(item):
                     return
         finally:
+            router.iterated()
             aclose = getattr(iterator, "aclose", None)
             if aclose is not None:
                 await aclose()
         # A read that ended well sends all it said, what its cleanup said among it.
         await router.sent()
+    except asyncio.CancelledError:
+        if not router.ended:
+            raise
+        task = asyncio.current_task()
+        if task is not None:
+            task.uncancel()
     finally:
         router.stop()
         _ROUTER.reset(token)
@@ -273,18 +291,25 @@ class Router:
     once its item is sent, as a sync read's waits for the engine; a notice returns at once. A
     Rust read awaits each notice, so it holds one at a time; the router holds, after the last
     yield waiting, at most one of each kind, a replan being said once and a lag being its newest,
-    which is what the engine makes of a Rust read's.
+    which is what the engine makes of a Rust read's. What fails a send fails the read: the yields
+    waiting raise it, and so does every later yield and the read's end, and nothing more is sent.
     """
 
     def __init__(self, out: Out, context: object, loop: asyncio.AbstractEventLoop) -> None:
         self.context = context
         self.thread = threading.get_ident()
+        self.ended = False
+        """Whether the router cancelled the read, which the engine let go."""
+        self._read = asyncio.current_task()
+        self._iterating = True
         self._out = out
         self._loop = loop
         # What waits its turn: an item, the rest of one part-sent, or a notice; the kind of notice
         # it is, none for a yield; and the future its yield waits on.
         self._waiting: deque[tuple[object, str | None, asyncio.Future[bool] | None]] = deque()
         self._sending: asyncio.Task[None] | None = None
+        # What failed a send, which fails the read.
+        self._failed: BaseException | None = None
         self._woken: asyncio.Future[None] | None = None
         self._watched = out.watched()
         try:
@@ -295,9 +320,17 @@ class Router:
                 f"watches, and {type(loop).__name__} cannot watch one: it has no add_reader"
             )
             raise RuntimeError(message) from refused
+        # A read let go before the loop watched is found as one let go after.
+        loop.call_soon(self._wake)
 
     async def yielded(self, item: object) -> bool:
-        """Sends `item` after what was said before it; false once the read has gone."""
+        """Sends `item` after what was said before it; false once the read has gone.
+
+        Raises:
+            BaseException: what failed a send.
+        """
+        if self._failed is not None:
+            raise self._failed
         done: asyncio.Future[bool]
         if self._waiting or self._sending is not None:
             done = self._loop.create_future()
@@ -318,6 +351,8 @@ class Router:
 
     def notify(self, notice: object, kind: str) -> None:
         """Gives the engine `notice`, of `kind`, after what was said before it."""
+        if self._failed is not None:
+            return
         if not self._waiting and self._sending is None:
             if self._out.notify(notice) is not None:
                 return
@@ -333,9 +368,19 @@ class Router:
         self._wait(notice, kind, None)
 
     async def sent(self) -> None:
-        """Waits until what was said has been sent."""
+        """Waits until what was said has been sent.
+
+        Raises:
+            BaseException: what failed a send.
+        """
         if self._sending is not None:
             await self._sending
+        if self._failed is not None:
+            raise self._failed
+
+    def iterated(self) -> None:
+        """Says the read's iteration has ended: what it cleans up runs whole, never cancelled."""
+        self._iterating = False
 
     def stop(self) -> None:
         """Stops sending, dropping what waits, and stops watching for room."""
@@ -372,8 +417,20 @@ class Router:
                 self._waiting.popleft()
                 if done is not None and not done.done():
                     done.set_result(sent)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:  # noqa: BLE001 - a panic beneath a send included
+            self._fail(error)
         finally:
             self._sending = None
+
+    def _fail(self, error: BaseException) -> None:
+        """Fails the read with `error`: each yield waiting raises it, and nothing more is sent."""
+        self._failed = error
+        while self._waiting:
+            _, _, done = self._waiting.popleft()
+            if done is not None and not done.done():
+                done.set_exception(error)
 
     async def _room(self) -> None:
         self._woken = self._loop.create_future()
@@ -381,6 +438,9 @@ class Router:
 
     def _wake(self) -> None:
         self._out.woken()
+        if self._iterating and not self.ended and self._read is not None and self._out.gone():
+            self.ended = True
+            self._read.cancel()
         woken = self._woken
         if woken is not None and not woken.done():
             woken.set_result(None)

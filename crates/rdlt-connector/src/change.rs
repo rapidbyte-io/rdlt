@@ -15,6 +15,9 @@ use crate::error::{ConnectorError, Result};
 pub const OP_COLUMN: &str = "_rdlt_op";
 
 /// The column holding each row's source position: `FixedSizeBinary(16)`, big-endian, compared bytewise.
+///
+/// Rows that share a position, as a truncate and the rows its transaction writes after it may,
+/// go in one segment: a source checkpoints only between rows of different positions.
 pub const SEQ_COLUMN: &str = "_rdlt_seq";
 
 /// The optional column flagging columns an update left unchanged: a bitmap over field ordinals.

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import gc
 import textwrap
-from collections.abc import Iterator
+import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,7 +14,7 @@ import pyarrow.compute as pc
 import pytest
 
 import rdlt
-from rdlt.connector import Config, Cursor, checkpoint, source, stream
+from rdlt.connector import Config, Cursor, StreamContext, checkpoint, source, stream
 from rdlt.testing import certify_source, certify_transform
 from tests.clauses import KILLED_PAGES, SOURCE_PASSED, SOURCE_UNTOLD, outcomes
 from tests.connectors.inbox import Inbox
@@ -84,6 +85,7 @@ def test_each_clause_is_a_test_of_its_own(pytester: pytest.Pytester) -> None:
     result = pytester.runpytest_subprocess("-v")
     result.stdout.fnmatch_lines(["*test_certify[[]S-RESUME[]] PASSED*"])
     result.stdout.fnmatch_lines(["*test_certify[[]K-SOURCE[]] PASSED*"])
+    result.stdout.fnmatch_lines(["*test_certify[[]verdict[]] PASSED*"])
     # The tickets connector tells nothing of where it stands outside the engine.
     result.stdout.fnmatch_lines(["*test_certify[[]S-ACK[]] SKIPPED*"])
     assert result.ret == pytest.ExitCode.OK
@@ -125,6 +127,7 @@ def test_a_launcher_s_kill_clause_kills_the_installed_connector(tmp_path: Path) 
     assert killed.note is not None
     assert killed.note.startswith("killed: "), killed
     assert outcomes(certification) == {"passed": SOURCE_PASSED, "inapplicable": SOURCE_UNTOLD}
+    assert certification.report().verdict == "passed"
 
 
 def test_a_source_that_tells_where_it_stands_passes_every_source_clause(tmp_path: Path) -> None:
@@ -170,6 +173,32 @@ def test_a_source_whose_position_does_not_move_where_it_is_told_fails_s_ack() ->
     assert certification.result("S-ACK").outcome == "failed"
 
 
+@source(id="io.example.deaf", config=_Pages, version="1.0.0")
+class _Deaf:
+    """A source whose following read waits for data without asking whether it was stopped."""
+
+    def __init__(self, config: _Pages) -> None:
+        self.pages = config.pages
+
+    def check(self) -> None:
+        """Nothing to check."""
+
+    @stream(primary_key=["id"], cursor=_Offset)
+    def rows(self, start: _Offset, ctx: StreamContext) -> Iterator[object]:
+        for page in range(start.next, self.pages):
+            yield [{"id": page}]
+            yield checkpoint(_Offset(next=page + 1))
+        if ctx.follows:
+            # Longer than S-STOP's window, and short enough not to hold back the clauses after.
+            threading.Event().wait(8)
+
+
+def test_a_source_whose_following_read_does_not_hear_its_stop_fails_s_stop() -> None:
+    certification = certify_source(_Deaf, config={"pages": 2})
+    stopped = certification.result("S-STOP")
+    assert stopped.outcome == "failed", stopped
+
+
 def test_a_certification_keeps_the_connector_it_certifies() -> None:
     class PagesConfig(Config):
         pages: int
@@ -192,6 +221,15 @@ def test_a_certification_keeps_the_connector_it_certifies() -> None:
     assert certification.result("P-HANDSHAKE").outcome == "passed"
 
 
+def test_a_report_names_the_version_its_certification_held_the_connector_to() -> None:
+    report = certify_source(Tickets, config={"pages": 1, "token": "t0ken"}).report()
+    assert (report.connector, report.version, report.digest) == (
+        "io.example.tickets",
+        "1.0.0",
+        None,
+    )
+
+
 def test_a_transform_s_clauses_pass() -> None:
     @rdlt.transform()
     def doubled(batch: pa.RecordBatch) -> pa.RecordBatch:
@@ -203,6 +241,32 @@ def test_a_transform_s_clauses_pass() -> None:
     outcomes = {clause: certification.result(clause).outcome for clause, _ in certification.clauses}
     assert "failed" not in outcomes.values(), outcomes
     assert outcomes["T-ROWS"] == "passed"
+    assert (certification.report().version, certification.report().digest) == (None, None)
+
+
+def test_a_transform_is_held_to_pass_the_keys_and_the_change_time_it_is_given() -> None:
+    def recast(column: str, made: Callable[[pa.Array[Any]], pa.Array[Any]]) -> rdlt.Transform:
+        @rdlt.transform()
+        def recasting(batch: pa.RecordBatch) -> pa.RecordBatch:
+            index = batch.schema.get_field_index(column)
+            recast = made(cast("pa.Array[Any]", batch.column(column)))
+            return batch.set_column(index, column, recast)  # pyright: ignore[reportUnknownMemberType]
+
+        return recasting
+
+    lowered = recast("id", pc.utf8_lower)
+    later = recast("at", lambda at: pc.add(at, pa.scalar(1)))
+    inputs = [pa.record_batch({"id": ["A", "b"], "at": [1, 2], "n": [3, 4]})]
+
+    def held(transform: rdlt.Transform, **given: Any) -> str:  # noqa: ANN401 - the keywords tested
+        return certify_transform(transform, inputs=inputs, **given).result("T-KEYS").outcome
+
+    assert held(lowered, keys=["id"]) == "failed"
+    # A key given alone is its one column's name.
+    assert held(lowered, keys="id") == "failed"
+    assert held(later, keys=["id"]) == "passed"
+    assert held(later, keys=["id"], change_time="at") == "failed"
+    assert held(lowered, change_time="at") == "passed"
 
 
 def test_a_clause_the_certification_does_not_hold_is_refused_naming_it() -> None:

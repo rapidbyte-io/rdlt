@@ -105,10 +105,14 @@ model ADR 0037 sets, where a weaker one would:
 - **A host reports committed what it was sent or reads from, and the engine reports every
   partition a commit covers.**
   - A served source remembers, for each host, a keyed hash of each checkpoint its reads sent,
-    of its stream and partition, 2^18 at most, and apart from them where the host's latest read
-    of each partition started. A checkpoint is the source's statement of a position. Where a
-    read started is the host's, which by asking to read from there has said everything before
-    it is committed, and which the source vouched for by accepting the read. A report of any
+    of its stream and partition, 2^18 at most, and apart from them, for 2^18 partitions at most,
+    each partition's newest checkpoint and where the host's latest read of it started. A
+    partition that goes quiet, or ends, at a checkpoint is reported at it by the commit that
+    seals it, however many checkpoints other partitions send the host meanwhile; one forgotten
+    from the ring would have the report refused whole, and every later one that names it. A
+    checkpoint is the source's statement of a position. Where a read started is the host's,
+    which by asking to read from there has said everything before it is committed, and which
+    the source vouched for by accepting the read. A report of any
     other position is refused as transient, with the code `position_unsent`, and nothing of the
     report is told to the source. The positions are remembered for the process, not the
     connection, so a host that dials again reports what it committed. One type holds the rule,
@@ -116,7 +120,8 @@ model ADR 0037 sets, where a weaker one would:
   - Where a read started is noted only once the source has accepted the read: when it sends
     data or a checkpoint, or ends the read cleanly. A read the source refuses, or that fails
     before either, leaves nothing to report. It is one start a partition a host, replaced by
-    the next read's, so no number of checkpoints forgets it.
+    the next read's, so no number of checkpoints forgets it; the partition's newest checkpoint
+    stays beside it.
   - A source therefore refuses, before it sends anything, a cursor it cannot have issued, as
     one beyond everything it holds, with the code `cursor_unissued`: a start it accepts is a
     position its host may report. A source that starts elsewhere than the cursor it was given,

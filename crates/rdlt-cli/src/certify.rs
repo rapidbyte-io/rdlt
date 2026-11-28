@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use clap::ValueEnum;
 use rdlt_certify::{
-    CREDIT_WATCH, ClauseResult, DESTINATION_CLAUSES, KILL_CLAUSES, Observed, Outcome,
+    CREDIT_WATCH, ClauseResult, DESTINATION_CLAUSES, Held, KILL_CLAUSES, Observed, Outcome,
     PROTOCOL_CLAUSES, Probe, RUN_TIMEOUT, Report, SOURCE_CLAUSES, Target, Unprobed, Verdict,
     certify_destination_observed, certify_source_observed, json, markdown, plain, read_back,
 };
@@ -97,8 +97,33 @@ enum Require {
     Partial,
 }
 
-/// Why the command ended without certifying: how it exits and its message.
-struct Ended(Exit, String);
+/// Why the command ended without certifying.
+enum Ended {
+    /// It exits so, saying why.
+    Failed(Exit, String),
+    /// Standard output did not take what was written to it, as the message says: the failure is
+    /// said on standard error alone, since a document after it would wait on what did not go,
+    /// and could follow it.
+    Unwritten(String),
+}
+
+impl Ended {
+    /// How the command exits.
+    fn exit(&self) -> Exit {
+        match self {
+            Self::Failed(exit, _) => *exit,
+            Self::Unwritten(_) => Exit::Io,
+        }
+    }
+
+    /// This end, its message followed by `more`.
+    fn and(self, more: &impl std::fmt::Display) -> Self {
+        match self {
+            Self::Failed(exit, message) => Self::Failed(exit, format!("{message}; {more}")),
+            Self::Unwritten(message) => Self::Unwritten(format!("{message}; {more}")),
+        }
+    }
+}
 
 /// Certifies the connector `args` names, as `host` lets it be reached, printing what it met as
 /// `mode` says, and answers how the command exits.
@@ -112,9 +137,11 @@ pub(crate) fn certify(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) 
     };
     match ran {
         Ok(exit) => exit,
-        Err(Ended(exit, message)) => {
+        Err(ended) => {
+            let (exit, documented) = (ended.exit(), documented(&ended, mode));
+            let (Ended::Failed(_, message) | Ended::Unwritten(message)) = ended;
             let message = redactions().scrubbed(message);
-            if mode == Mode::Json {
+            if documented {
                 print_json(&failure_json(exit, &message), ui).ok();
             } else if ui.rich_failures() {
                 ui.last_words(ui::certify_failure(&message, ui));
@@ -126,6 +153,12 @@ pub(crate) fn certify(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) 
     }
 }
 
+/// Whether a failure that `ended` the command is written as a JSON document, as `mode` asks: not
+/// where standard output itself failed.
+fn documented(ended: &Ended, mode: Mode) -> bool {
+    mode == Mode::Json && matches!(ended, Ended::Failed(..))
+}
+
 /// The secrets the configuration's references resolved to: nothing this command prints holds
 /// one.
 pub(crate) fn redactions() -> &'static Redactions {
@@ -135,7 +168,7 @@ pub(crate) fn redactions() -> &'static Redactions {
 
 fn run(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) -> Result<Exit, Ended> {
     if host.file.is_some() || !host.connectors.is_empty() || host.allow_network {
-        return Err(Ended(
+        return Err(Ended::Failed(
             Exit::Usage,
             "--host, --connectors and --allow-network are for a pipeline's host: \
              certify takes what its connector may reach from its own flags"
@@ -166,10 +199,11 @@ fn run(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) -> Result<Exit,
     session.cleared(ui);
     let heard = certified.as_ref().err().and_then(signalled);
     let (stopped, heard) = session.stopped(stops, heard);
-    let reports = ending(certified, stopped, heard)?;
+    let (roles, reports): (Vec<_>, Vec<_>) = ending(certified, stopped, heard)?.into_iter().unzip();
     let verdict = verdict(&reports);
     if mode == Mode::Json {
-        print_json(&json_document(&reports, verdict), ui)?;
+        let held: Vec<Held> = roles.iter().map(|role| target.held(*role)).collect();
+        print_json(&json_document(&reports, &held, verdict), ui)?;
     }
     if !reports.iter().any(ran) {
         // Told on standard error: JSON's one value, the reports, is written and says it already.
@@ -180,12 +214,14 @@ fn run(args: &CertifyArgs, host: &HostArgs, mode: Mode, ui: &Ui) -> Result<Exit,
     Ok(code(verdict, args.require, &reports))
 }
 
-/// The document `--json` prints of `reports` and their `verdict`, each text a connector can have
-/// put in it scrubbed of the configuration's secrets before JSON escapes it, which would make a
-/// form no scrub knows.
-fn json_document(reports: &[Report], verdict: Verdict) -> String {
+/// The document `--json` prints of `reports` and their `verdict`, each naming what its
+/// certification `held` the connector to as its role, each text a connector can have put in it
+/// scrubbed of the configuration's secrets before JSON escapes it, which would make a form no
+/// scrub knows.
+fn json_document(reports: &[Report], held: &[Held], verdict: Verdict) -> String {
     let passed = verdict == Verdict::Passed;
-    let mut reports: Vec<_> = reports.iter().map(json).collect();
+    let reports = reports.iter().zip(held);
+    let mut reports: Vec<_> = reports.map(|(report, held)| json(report, held)).collect();
     for report in &mut reports {
         scrub_texts(report);
     }
@@ -198,8 +234,8 @@ fn json_document(reports: &[Report], verdict: Verdict) -> String {
 }
 
 /// Scrubs the texts of `report`, one report as JSON, that hold what a connector said: its
-/// connector's name, and each clause's reason and note; its words for outcomes and the clauses'
-/// own statements are left whole.
+/// connector's name and version, and each clause's reason and note; its words for outcomes and
+/// the clauses' own statements are left whole.
 fn scrub_texts(report: &mut serde_json::Value) {
     let scrub = |field: Option<&mut serde_json::Value>| {
         if let Some(serde_json::Value::String(text)) = field {
@@ -207,6 +243,7 @@ fn scrub_texts(report: &mut serde_json::Value) {
         }
     };
     scrub(report.get_mut("connector"));
+    scrub(report.get_mut("version"));
     if let Some(serde_json::Value::Array(clauses)) = report.get_mut("clauses") {
         for clause in clauses {
             scrub(clause.get_mut("reason"));
@@ -223,7 +260,7 @@ fn until(args: &CertifyArgs) -> Result<Option<Instant>, Ended> {
     };
     let until = Instant::now().checked_add(bound).ok_or_else(|| {
         let message = "--timeout is further ahead than the clock holds; see --no-timeout";
-        Ended(Exit::Usage, message.to_owned())
+        Ended::Failed(Exit::Usage, message.to_owned())
     })?;
     Ok(Some(until))
 }
@@ -233,7 +270,7 @@ fn credit_watch(millis: u64) -> Result<Duration, Ended> {
     let watch = Duration::from_millis(millis);
     if watch > CREDIT_WATCH {
         let most = CREDIT_WATCH.as_millis();
-        return Err(Ended(
+        return Err(Ended::Failed(
             Exit::Usage,
             format!("--credit-watch is at most {most} ms"),
         ));
@@ -250,10 +287,11 @@ fn certified(
     target: &Target,
     config: &serde_json::Value,
     session: &mut Session,
-) -> Result<Vec<Report>, Ended> {
+) -> Result<Vec<(rdlt_connector::Role, Report)>, Ended> {
     let mut printed = Printed {
         mode,
         ui,
+        target,
         held: Vec::new(),
     };
     let mut reports = Vec::new();
@@ -272,7 +310,7 @@ fn certified(
         // for, or no role is served, its report is left out.
         if args.role.is_some() || ran(&report) {
             printed.report(&report, &mut watch)?;
-            reports.push(report);
+            reports.push((rdlt_connector::Role::Source, report));
         } else {
             printed.held.push(report);
         }
@@ -295,14 +333,14 @@ fn certified(
         let served = ran(&report);
         if served || reports.is_empty() {
             if !served {
-                reports.append(&mut printed.held);
-                for held in &reports {
-                    let source = rdlt_connector::Role::Source;
-                    printed.report(held, &mut Watch::new(ui, mode, source))?;
+                let source = rdlt_connector::Role::Source;
+                for held in std::mem::take(&mut printed.held) {
+                    printed.report(&held, &mut Watch::new(ui, mode, source))?;
+                    reports.push((source, held));
                 }
             }
             printed.report(&report, &mut watch)?;
-            reports.push(report);
+            reports.push((role, report));
         }
     }
     Ok(reports)
@@ -322,6 +360,8 @@ fn bound(timeout: Option<u64>, unbounded: bool) -> Option<Duration> {
 struct Printed<'a> {
     mode: Mode,
     ui: &'a Ui,
+    /// What was certified: a report names what it held the connector to.
+    target: &'a Target,
     /// Reports of roles the connector does not serve, printed only when it serves none.
     held: Vec<Report>,
 }
@@ -329,28 +369,30 @@ struct Printed<'a> {
 impl Printed<'_> {
     /// Prints `report` as this role's result: what is left of it after what `watch` showed.
     fn report(&self, report: &Report, watch: &mut Watch<'_>) -> Result<(), Ended> {
+        let held = self.target.held(watch.role);
         match self.mode {
             Mode::Json => Ok(()),
             Mode::Plain if watch.live() => {
-                watch.finish(report);
+                watch.finish(report, &held);
                 Ok(())
             }
             Mode::Plain if self.ui.rich_results() => {
-                print(&whole_report(report, watch.role, self.ui), self.ui)
+                print(&whole_report(report, watch.role, &held, self.ui), self.ui)
             }
-            Mode::Plain => print(&plain(report), self.ui),
+            Mode::Plain => print(&plain(report, &held), self.ui),
         }
     }
 }
 
-/// `report` in full, each line scrubbed as it is made, for a terminal nothing is animated on.
-fn whole_report(report: &Report, role: rdlt_connector::Role, ui: &Ui) -> String {
+/// `report` in full, each line scrubbed as it is made, for a terminal nothing is animated on: its
+/// verdict names what its certification `held` the connector to.
+fn whole_report(report: &Report, role: rdlt_connector::Role, held: &Held, ui: &Ui) -> String {
     let mut text = String::new();
     for result in &report.results {
         text.push_str(&ui::kept_line(result, None, ui));
         text.push('\n');
     }
-    text.push_str(&ui::verdict_line(report, role, ui));
+    text.push_str(&ui::verdict_line(report, role, held, ui));
     text.push('\n');
     text
 }
@@ -418,11 +460,12 @@ impl<'a> Watch<'a> {
         self.ui.task(&ui::in_progress(self.role, clause));
     }
 
-    /// Prints what the checks of `report` found that was not shown yet, and its verdict.
-    fn finish(&mut self, report: &Report) {
+    /// Prints what the checks of `report` found that was not shown yet, and its verdict, which
+    /// names what its certification `held` the connector to.
+    fn finish(&mut self, report: &Report, held: &Held) {
         let missed = report.results.iter().skip(self.shown);
         let lines = missed.map(|result| ui::kept_line(result, None, self.ui));
-        for line in lines.chain([ui::verdict_line(report, self.role, self.ui)]) {
+        for line in lines.chain([ui::verdict_line(report, self.role, held, self.ui)]) {
             self.ui.above_waiting(Std::Out, &line);
         }
     }
@@ -496,15 +539,12 @@ fn target(args: &CertifyArgs, host: &HostArgs) -> Result<Target, Ended> {
     let named = args.target.as_deref().unwrap_or_default();
     // Its id is learned from its handshake: the reference's is only a name for its output.
     let id = ConnectorId::parse("rdlt.certify.target")
-        .map_err(|error| Ended(Exit::Usage, error.to_string()))?;
-    let usage = |message: &str| Ended(Exit::Usage, message.to_owned());
+        .map_err(|error| Ended::Failed(Exit::Usage, error.to_string()))?;
+    let usage = |message: &str| Ended::Failed(Exit::Usage, message.to_owned());
+    let io = |message: String| Ended::Failed(Exit::Io, message);
     if named.starts_with("grpcs://") {
-        Endpoint::parse(named).map_err(|error| {
-            Ended(
-                Exit::Usage,
-                format!("{error}: an endpoint is `grpcs://host:port`"),
-            )
-        })?;
+        Endpoint::parse(named)
+            .map_err(|error| usage(&format!("{error}: an endpoint is `grpcs://host:port`")))?;
         if !args.env.is_empty() {
             return Err(usage("--env is for a spawned connector, not an endpoint"));
         }
@@ -517,10 +557,10 @@ fn target(args: &CertifyArgs, host: &HostArgs) -> Result<Target, Ended> {
         let opening = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
-            .map_err(|error| Ended(Exit::Io, format!("starting the runtime failed: {error}")))?;
+            .map_err(|error| io(format!("starting the runtime failed: {error}")))?;
         let opened = opening.block_on(rdlt::Tls::from_files(cert, key, ca));
         opening.shutdown_background();
-        opened.map_err(|error| Ended(Exit::Io, error.to_string()))?;
+        opened.map_err(|error| io(error.to_string()))?;
         let identity = Identity {
             cert: cert.clone(),
             key: key.clone(),
@@ -543,13 +583,13 @@ fn target(args: &CertifyArgs, host: &HostArgs) -> Result<Target, Ended> {
         // Not repeated: what was typed may be an endpoint mistyped, with a credential in it.
         let message = "the connector named is neither a binary's or a directory connector's \
                        path nor an endpoint, `grpcs://host:port`";
-        return Err(Ended(Exit::Io, message.to_owned()));
+        return Err(io(message.to_owned()));
     }
     let executable = path
         .metadata()
         .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0);
     if !executable {
-        return Err(Ended(Exit::Io, format!("{named} is not executable")));
+        return Err(io(format!("{named} is not executable")));
     }
     Ok(Target::spawned(
         local(args, host)?,
@@ -576,7 +616,7 @@ fn local(args: &CertifyArgs, host: &HostArgs) -> Result<Local, Ended> {
     let granting = args.network || !host.readable.is_empty() || !host.writable.is_empty();
     if host.trust_binaries && granting {
         let message = "--trust-binaries gives a connector your own access: grant it nothing";
-        return Err(Ended(Exit::Usage, message.to_owned()));
+        return Err(Ended::Failed(Exit::Usage, message.to_owned()));
     }
     let local = if host.trust_binaries {
         Local::trusting_binaries()
@@ -585,7 +625,7 @@ fn local(args: &CertifyArgs, host: &HostArgs) -> Result<Local, Ended> {
         sandbox.usable().map_err(|error| {
             let message =
                 format!("{error}; --trust-binaries runs a binary you trust in no sandbox");
-            Ended(Exit::Io, message)
+            Ended::Failed(Exit::Io, message)
         })?;
         Local::sandboxed(sandbox)
     };
@@ -599,18 +639,20 @@ fn local(args: &CertifyArgs, host: &HostArgs) -> Result<Local, Ended> {
 
 /// Prints `text` on standard output, scrubbed of the configuration's secrets: a closed pipe
 /// ends quietly, a terminal that stopped reading is left within its bound, and any other failure
-/// is an I/O error.
+/// is an I/O error, a pipe or file not written within the bound among them.
 fn print(text: &str, ui: &Ui) -> Result<(), Ended> {
     print_json(&redactions().scrubbed(text.to_owned()), ui)
 }
 
 /// Prints `document`, JSON whose texts were scrubbed before it was encoded, as `print` prints: a
 /// scrub of the whole could take its punctuation or a word for an outcome for a secret.
+///
+/// The write is bounded wherever it goes: the signals' handlers are installed by then, and none
+/// is heard while a write blocks.
 fn print_json(document: &str, ui: &Ui) -> Result<(), Ended> {
-    if ui.rich_results() {
-        printed(written_within(Std::Out, document.to_owned()))
-    } else {
-        printed(write_stdout(document))
+    match written_within(Std::Out, document.to_owned()) {
+        Err(late) if late.kind() == std::io::ErrorKind::TimedOut && ui.rich_results() => Ok(()),
+        written => printed(written),
     }
 }
 
@@ -625,8 +667,7 @@ fn write_stdout(text: &str) -> std::io::Result<()> {
 /// How a write ended, for a verb: a closed pipe is no failure, and any other is an I/O error.
 fn printed(written: std::io::Result<()>) -> Result<(), Ended> {
     match written {
-        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(Ended(
-            Exit::Io,
+        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(Ended::Unwritten(
             format!("writing to standard output failed: {error}"),
         )),
         _ => Ok(()),

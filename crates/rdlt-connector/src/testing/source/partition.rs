@@ -72,7 +72,7 @@ async fn covered(
     }
     let (mut whole, mut stood) = (Vec::new(), BTreeMap::new());
     for (partition, cursor) in placed(&first, &fresh) {
-        let recording = record(source, (stream, &partition), cursor, None, budget).await?;
+        let recording = record(source, (stream, &partition), cursor, budget).await?;
         if let Some(cursor) = recording.checkpoints.first() {
             let state = PartitionState::Cursor(cursor.clone());
             stood.insert(partition.id().clone(), state);
@@ -91,7 +91,7 @@ async fn covered(
     let again = planned(source, stream, &state).await?;
     let mut rest = Vec::new();
     for (partition, cursor) in placed(&again, &state) {
-        rest.push(record(source, (stream, &partition), cursor, None, budget).await?);
+        rest.push(record(source, (stream, &partition), cursor, budget).await?);
     }
     let mut rendering = Rendering::new(RENDERED_BYTES);
     let (mut once, mut read) = (Rows::default(), Rows::default());

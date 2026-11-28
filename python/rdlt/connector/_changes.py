@@ -11,7 +11,10 @@ OP_COLUMN = _native.OP_COLUMN
 
 SEQ_COLUMN = _native.SEQ_COLUMN
 """The column holding each row's position in its source, 16 bytes, big-endian, compared bytewise:
-`pa.binary(16)`, as `position.to_bytes(16, "big")` makes one."""
+`pa.binary(16)`, as `position.to_bytes(16, "big")` makes one.
+
+Rows that share a position, as a truncate and the rows its transaction writes after it may, go in
+one segment: a source checkpoints only between rows of different positions."""
 
 UNCHANGED_COLUMN = _native.UNCHANGED_COLUMN
 """The optional column flagging the columns an update left unchanged: a `pa.binary()` bitmap a

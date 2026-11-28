@@ -10,6 +10,7 @@ use arrow_schema::DataType;
 
 use super::evolving::GENERATION;
 use super::identifiers::Identifiers;
+use super::sequences::sequence;
 use super::{Bench, commit, meta};
 use crate::change::{ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN};
 use crate::commit::CommitMeta;
@@ -92,13 +93,9 @@ fn written(names: &Identifiers, changes: &[Change], soft: bool) -> RecordBatch {
         ),
         (
             SEQ_COLUMN,
-            Arc::new(BinaryArray::from_iter_values(changes.iter().map(
-                |change| {
-                    let mut seq = [0_u8; 16];
-                    seq[15] = change.seq;
-                    seq
-                },
-            ))),
+            Arc::new(BinaryArray::from_iter_values(
+                changes.iter().map(|change| sequence(change.seq)),
+            )),
         ),
     ];
     if soft {

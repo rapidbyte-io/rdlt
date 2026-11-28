@@ -6,7 +6,7 @@ import datetime
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from decimal import Decimal
-from typing import cast
+from typing import Any, cast
 
 import pyarrow as pa
 import pytest
@@ -135,6 +135,44 @@ def test_a_table_s_struct_column_holding_a_null_entry_fails_the_read() -> None:
     with pytest.raises(rdlt.SourceError) as raised:
         landed("struct-column", column)
     assert raised.value.report().connector_code == "value_error"
+
+
+def _text(offsets: list[int], values: bytes) -> pa.RecordBatch:
+    """A batch of one text column built from its buffers as they are given, which nothing checks."""
+    made = pa.array(offsets, pa.int32()).buffers()[1]
+    text = pa.Array.from_buffers(pa.utf8(), len(offsets) - 1, [None, made, pa.py_buffer(values)])
+    return pa.record_batch([text], names=["s"])
+
+
+def _keyed(key: int) -> pa.RecordBatch:
+    """A batch of one dictionary column whose one key is `key`, into a dictionary of one value."""
+    keys = pa.array([key], pa.int32())
+    column = cast(
+        "pa.Array[Any]",
+        pa.DictionaryArray.from_arrays(keys, pa.array(["a"]), safe=False),  # pyright: ignore[reportUnknownMemberType]
+    )
+    return pa.record_batch([column], names=["s"])
+
+
+@pytest.mark.parametrize(
+    ("store", "made", "code"),
+    [
+        ("text-not-utf8", lambda: _text([0, 2], b"\xff\xfe"), "value_error"),
+        ("offsets-backwards", lambda: _text([0, 2, 1], b"ab"), "value_error"),
+        ("key-past-its-dictionary", lambda: _keyed(5), "value_error"),
+        (
+            "text-not-utf8-in-a-table",
+            lambda: pa.Table.from_batches([_text([0, 2], b"\xff\xfe")]),
+            "arrow_stream",
+        ),
+    ],
+)
+def test_arrow_whose_buffers_break_its_types_fails_the_read_with_its_code(
+    store: str, made: Callable[[], object], code: str
+) -> None:
+    with pytest.raises(rdlt.SourceError) as raised:
+        landed(store, made())
+    assert raised.value.report().connector_code == code
 
 
 def _pandas(name: str) -> Callable[[], object]:

@@ -18,10 +18,10 @@ A report's verdict follows from its outcomes:
 | Verdict | When | Exit code |
 |---|---|---|
 | passed | no clause failed, none that applies went unobserved, and one passed at least | 0 |
-| incomplete | no clause failed, yet one that applies was not observed, or none passed | 2 |
+| incomplete | no clause failed, yet one that applies was not observed, or none passed | 1 |
 | failed | a clause failed | 1 |
 
-The clauses a connector must pass are therefore those its declarations leave applicable: a connector cannot skip one by how it behaves, only by declaring less, and the engine uses of a connector only what it declares. `--require partial` exits 0 for an incomplete certification in which no clause failed and one passed; the report, and its JSON `verdict` and `passed`, say incomplete all the same. A clause is unobserved when nothing reads back what a destination published, when a source sends no checkpoint to resume or plan again from, when a read ends within its first credit, when no kill reaches the connector, or when what a source sends is more than certification holds: certify with a fixture that shows the behaviour. It is unobserved too when a source cannot read again a stream `K-SOURCE` loads, or when a destination's identifier rules leave a table or column a clause names no identifier.
+The clauses a connector must pass are therefore those its declarations leave applicable: a connector cannot skip one by how it behaves, only by declaring less, and the engine uses of a connector only what it declares. `--require partial` exits 0 for an incomplete certification in which no clause failed and one passed; the report, and its JSON `verdict` and `passed`, say incomplete all the same. A clause is unobserved when nothing reads back what a destination published, when a source sends no checkpoint to resume or plan again from, when no read of an on-demand stream pushes after it answered a barrier, when a read ends within its first credit, when no kill reaches the connector, or when what a source sends is more than certification holds: certify with a fixture that shows the behaviour. It is unobserved too when a source cannot read again a stream `K-SOURCE` loads, or when a destination's identifier rules leave a table or column a clause names no identifier.
 
 A kill clause that passed says beside its `pass`, and as `note` in JSON, what it passed on: `killed`, a connection ended with a process a kill ended, or `cut`, kills cut the connection of a connector the host did not start, and no process was seen to stop.
 
@@ -36,10 +36,9 @@ The `T` clauses certify a transform rather than a connector: `certify_transform`
 | Code | When |
 |---|---|
 | 0 | every role certified passed, or, with `--require partial`, none failed and each passed a clause |
-| 1 | a clause failed, or the connector serves none of the roles asked |
-| 2 | no clause failed, yet a role's certification is incomplete |
+| 1 | a clause failed, a role's certification is incomplete, or the connector serves none of the roles asked |
 | 64 | the command line was wrong: an option, the configuration's JSON, the endpoint, or a `--timeout` further ahead than the clock holds |
-| 74 | a file named could not be read, the connector's binary is missing or not executable, or a connector the certification spawned was not seen to stop |
+| 74 | a file named could not be read, the connector's binary is missing or not executable, a connector the certification spawned was not seen to stop, or the report could not be written, or off a terminal not within a few seconds |
 | 130, 143, 129, 131 | the certification was interrupted (`SIGINT`), asked to terminate (`SIGTERM`), hung up on (`SIGHUP`) or asked to quit (`SIGQUIT`): the connectors it spawned are stopped first, and killed at once on a second signal |
 
 A certification cut at its timeout reports what it saw: the clauses already checked keep their outcomes, the clause it was cut in fails, as does the first clause of a role it never started, and the clauses after are not observed, so it exits 1.
@@ -52,7 +51,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `P-ORDER` | a call before the handshake or before the configuration, and a second handshake or configuration, are refused with typed errors | — |
 | `P-ROLE` | a role the connector does not serve is refused as unsupported | the connector serves both roles |
 | `P-LIMITS` | a configuration, a source's cursor or a destination's batch frame beyond the connector's limit is refused with `limit_exceeded` | the connector declares no limit this host can exceed |
-| `P-HEARTBEAT` | each heartbeat is answered with its sequence number, in order | — |
+| `P-HEARTBEAT` | each heartbeat is answered with its sequence number, in order, while the stream of heartbeats stays open | — |
 | `P-MALFORMED` | a call the connector cannot read, or a frame it cannot decode, is refused with a typed error, and the connection serves on | — |
 | `P-CREDIT` | a read sends nothing more once its credit is spent, until more is granted | the connector is certified as a destination, which grants credit and spends none |
 
@@ -66,7 +65,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `S-RESUME` | a read resumed from a checkpoint yields exactly the data after it | — |
 | `S-PARTITION` | a stream's planned partitions cover it exactly once, and those planned again from where they stood cover what is left exactly once | every stream plans an unbounded partition, as one that declares no partitions does |
 | `S-STOP` | a read asked to stop ends promptly and cleanly, a following read of a partition that never ends too, while it waits for data | — |
-| `S-BARRIER` | an on-demand stream answers a pending barrier with a checkpoint | no stream checkpoints on demand |
+| `S-BARRIER` | an on-demand stream answers a barrier pending as its read starts, and one raised during it, with a checkpoint before its last push | no stream checkpoints on demand |
 | `S-ACK` | a stream's position outside the engine moves only when the engine tells it a cursor is committed, and then to that cursor, and a read from a later cursor it issued starts there | the source does not tell where it stands, or reads no stream as changes or incrementally |
 
 ## Destination (`D`)
@@ -79,9 +78,9 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `D-COMMIT` | a commit publishes exactly its segments and reports their rows | — |
 | `D-LANDED` | the commit whose key landed last, sent again from its session or a newer one, returns its receipt and publishes nothing; a commit expecting another key landed fails fenced, coded commit_stale, and publishes nothing | — |
 | `D-RETRY` | a commit whose try failed is taken again from its session, the same commit by the same key, the session's other work between: one lost before it landed lands whole once, one that landed returns its receipt and publishes nothing again, and, where the destination replaces and drops tables, one that failed after swapping its generation in published nothing and lands whole once what failed it is gone | — |
-| `D-STATE` | committed state records are returned by the next open | — |
+| `D-STATE` | committed state records are returned by the next open of their pipeline, and by no other pipeline's | — |
 | `D-DISCARD` | segments staged by an earlier session, or that a commit abandons, are never published | — |
-| `D-REPLACE` | a replace generation stays hidden until the commit that finishes it swaps it in | the destination cannot replace |
+| `D-REPLACE` | a replace generation stays hidden until the commit that finishes it swaps it in, with every row its pipeline's sessions committed into it | the destination cannot replace |
 | `D-SCHEMA` | every declared schema change applies, and applying it again changes nothing; a column of each kind the destination stores and widens in place reads back every value it held, exactly | the destination adds no column and widens no type in place |
 | `D-MERGE` | a merge keeps one row per key: the newest commit's, and within a commit the greatest sequence's; a change stream's change applies only past the sequence of the row its key holds | the destination cannot merge |
 | `D-DELETE` | a change stream's delete removes its key's row, or marks it deleted and keeps its values; no change sequenced before a hard delete, even of a key no row held, brings the row back in any later session, until the table is replaced whole | the destination merges no change stream, or neither removes nor marks deleted rows |
@@ -126,10 +125,13 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 - The `T` clauses see only the batches they are given, and each moves rows in a few ways: the first row last and the first two rows swapped, to show a transform keeps its rows' order; one input column's rows moved by the first, to show what an output column or a filter depends on; two adjacent batches that share a schema joined; one batch cut in halves; and the bound checked on the whole, its halves and its first row. A dependence that a function hides on columns that are constant in the inputs, or a behaviour that shows only on other rows, is not seen. A column whose moved rows do not differ in any batch leaves `T-LINEAGE` and `T-READS` unobserved, and so does an input with fewer than three rows for `T-ROWS`. `T-BOUND` measures the buffers a transform returns, its output and its filter's answer, beyond its input, not scratch memory it frees before returning. The batches hold data columns only. The `T` clauses run in process with no deadline: a transform that never returns hangs `certify_transform`.
 - A reason is at most 2048 bytes, and quotes at most the first eight rows of those it counts.
 - A kill clause passes only when a kill landed: the host saw a connection to the connector end after the kill. A spawned connector's ends once no process holds its other end, which a kill of its process group brings about unless a process left the group and holds it. The connection of a connector reached at an endpoint, or served in process, is cut by the host, which proves no process stopped: the report notes which was seen.
-- A kill clause loads in a mode the connector declares: a destination in the first of append, merge and replace it writes, a source each stream in the first of incremental, full and change reads it serves. A destination that keeps history alone leaves `K-DESTINATION` unobserved, and one whose identifiers are shorter than the names `D-NAMES` writes leaves that unobserved. A source that cannot read again a stream it loads leaves `K-SOURCE` unobserved, before any load: each load starts from no cursor, which such a source refuses once anything, `S-ACK` among them, told it one.
+- A kill clause loads in a mode the connector declares: a destination in the first of append, merge and replace it writes, a source each stream in the first of incremental, full and change reads it serves, changes appended as a log, keyed or not, so each change is a row. A destination that keeps history alone leaves `K-DESTINATION` unobserved, and one whose identifiers are shorter than the names `D-NAMES` writes leaves that unobserved. A source that cannot read again a stream it loads leaves `K-SOURCE` unobserved, before any load: each load starts from no cursor, which such a source refuses once anything, `S-ACK` among them, told it one.
 - The destination clauses name their tables and columns within the destination's identifier rules, as the engine's names are: folded, lengthened with `_` past a reserved word, and a table's name that is longer than the rules allow cut to `certify_` and a digest of it. Rules that reserve every form of a column's name, or a prefix or word of `certify_`, leave every clause that names one unobserved: all but `D-CHECK` and `D-STATE`.
 - A spawned connector leads a process group the certifier stops, then kills, when the certification ends, is cut at its timeout, panics, or hears a signal. A member that left the group is not reached, and neither is anything when the certifier is killed outright.
 - `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times, or four times the watch `--credit-watch` chooses: a source that ignores credit and sends less often than that is not told from one that waits.
+- Over the wire, `S-BARRIER`'s reads are granted back each frame as it is taken and no more, so they move a frame per round trip: over a slow link such a read can pass the bound on the clause's work, and so fail it. Every other source clause reads as an engine does.
+- `S-BARRIER` raises a barrier as each read starts, and a second once the read has answered the first and pushed. It judges the second only on a read whose last push comes more than 23 events after it was raised, besides the pieces a served connector cut the read's batches into: what rdlt's own serving end and host hold of a read, the events the serving end queues ahead of its credit and a Python source's bridge, which a source may all send before it sees the barrier. The clause does not count the pieces: it bounds them, from the limits the connection agreed, the lesser of the host's and the connector's own, and from what the read's batches after the barrier weigh by each limit. A frame's bytes are weighed with a validity bit for every value, against the frame limit less what a frame of the batches' schema takes beside its rows. The bound can be twice the pieces cut and more: a read too short for it leaves the second barrier unjudged, and so does every read of a schema so wide that a frame has no room for rows. A connector served otherwise may send more first; a source that ignores a barrier raised during a shorter read is not told from one that answers it.
+- `P-HEARTBEAT` sends five heartbeats, each once the heartbeat before it was answered, and waits for each answer as long as the host waits between its own heartbeats, 5 s.
 
 ## What certification cannot show
 

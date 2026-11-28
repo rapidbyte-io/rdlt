@@ -4,6 +4,6 @@ mod destination;
 mod source;
 
 pub use destination::{
-    MemoryDestination, MemoryDestinationConfig, published, schema, staged, tables,
+    MemoryDestination, MemoryDestinationConfig, forget, published, schema, staged, tables,
 };
 pub use source::{MemorySource, MemorySourceConfig};

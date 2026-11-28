@@ -154,6 +154,7 @@ fn only_a_rate_limit_keeps_the_wait_it_asks_for() {
                 nanos: 0,
             }),
             limit: None,
+            causes: Vec::new(),
         };
         let error = ConnectorError::from_wire(wire, &|text| text).unwrap();
         Error::connector(Side::Source, "reading", error).retry_after()

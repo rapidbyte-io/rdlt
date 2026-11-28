@@ -160,8 +160,8 @@ pub use secret::Secret;
 #[cfg(feature = "serve")]
 pub use serve::serve;
 pub use sink::{
-    Admission, Headroom, PartitionFeed, PartitionSink, Permit, Push, Requested, SourceEvent,
-    admitted_partition_channel, partition_channel,
+    Admission, BRIDGED_EVENTS, Headroom, PartitionFeed, PartitionSink, Permit, Push, Requested,
+    SourceEvent, admitted_partition_channel, partition_channel,
 };
 pub use source::{
     ACKNOWLEDGED_CODE, InvalidPlan, POSITION_UNSENT, Partition, PartitionPlan, ReadRequest,

@@ -6,7 +6,10 @@ use rdlt_certify::{
     Outcome, Probe, Target, Unprobed, Verdict, certify_destination, certify_source,
 };
 use rdlt_connector::serve::Served;
-use rdlt_connector::{BoxFuture, ConnectorId, TableRef, destination_factory, source_factory};
+use rdlt_connector::{
+    BoxFuture, ConnectContext, ConnectorId, ConnectorSpec, Destination, DestinationFactory, Role,
+    Source, SourceFactory, TableRef, destination_factory, source_factory,
+};
 use rdlt_connector_reference::{GeneratorSource, MemorySource, SqliteDestination, sqlite};
 use rdlt_host::{ConnectorRef, Local};
 use serde_json::json;
@@ -55,6 +58,46 @@ async fn a_spawned_source_binary_is_certified_through_the_protocol() {
     assert_eq!(report.connector, "io.rapidbyte.memory", "{report}");
     assert_eq!(
         report.outcome("P-CREDIT"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spawned_source_passes_s_barrier_however_far_ahead_of_the_host_it_reads() {
+    // In a process of its own, the source queues ahead of its credit whatever this one runs.
+    for rows in crate::served::barrier_rows() {
+        let id = ConnectorId::parse("io.rapidbyte.generator").expect("a valid id");
+        let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
+        let target = Target::spawned(local, ConnectorRef::new(id).path(example("serve_source")))
+            .credit_watch(crate::BRIEF)
+            .kill_seed(crate::killed::SETTLED_LATE);
+        let report = certify_source(&target, crate::served::batches_of_five(rows)).await;
+        assert_eq!(
+            report.outcome("S-BARRIER"),
+            Some(&Outcome::Passed),
+            "{rows}: {report}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spawned_source_whose_first_push_is_large_passes_s_barrier() {
+    // Its 61 pushes end at the read's event 121, far past where its barrier is judged.
+    let root = tempfile::tempdir().expect("a temporary directory");
+    crate::served::large_then_small(root.path());
+    let id = ConnectorId::parse("io.rapidbyte.files").expect("a valid id");
+    let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
+    let target = Target::spawned(
+        local,
+        ConnectorRef::new(id).path(example("serve_files_source")),
+    )
+    .credit_watch(crate::BRIEF)
+    .kill_seed(crate::killed::SETTLED_LATE);
+    let config = json!({ "root": root.path(), "batch_rows": 1 });
+    let report = certify_source(&target, config).await;
+    assert_eq!(
+        report.outcome("S-BARRIER"),
         Some(&Outcome::Passed),
         "{report}"
     );
@@ -244,5 +287,149 @@ async fn a_kill_clause_passes_only_when_a_kill_reached_the_connector() {
             assert!(matches!(killed, Some(Outcome::Unobserved(_))), "{report}");
             assert_eq!(report.verdict(), Verdict::Incomplete, "{report}");
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_binary_replaced_once_it_was_spawned_is_refused_at_its_next_spawn() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let binary = directory.path().join("rdlt-connector-reference");
+    std::fs::copy(example("serve_reference"), &binary).expect("the binary copies");
+    let id = ConnectorId::parse("io.rapidbyte.reference").expect("a valid id");
+    let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
+    let target =
+        Target::spawned(local, ConnectorRef::new(id).path(&binary)).credit_watch(crate::BRIEF);
+    let config = json!({ "streams": { "users": [{"id": 1}, {"id": 2}] }, "page_size": 1 });
+    let report = certify_source(&target, config.clone()).await;
+    assert_eq!(report.failures().count(), 0, "{report}");
+    // Another build at the path every spawn opens, as one a build or a deploy writes there.
+    std::fs::remove_file(&binary).expect("the binary is removed");
+    std::fs::copy(example("serve_source"), &binary).expect("the binary copies");
+    let report = certify_source(&target, config).await;
+    assert_eq!(report.verdict(), Verdict::Failed, "{report}");
+    assert!(
+        report.failures().all(|failed| matches!(
+            &failed.outcome,
+            Outcome::Failed(reason) if reason.contains("has digest")
+        )),
+        "{report}"
+    );
+}
+
+/// A source factory that answers as its connector of another version.
+struct Versioned(Box<dyn SourceFactory>, ConnectorSpec);
+
+impl SourceFactory for Versioned {
+    fn spec(&self) -> &ConnectorSpec {
+        &self.1
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn Source>>> {
+        self.0.connect(config, context)
+    }
+}
+
+/// The generator served in this process, answering as `version`.
+fn served_as(version: &str) -> Served {
+    let generator = source_factory::<GeneratorSource>();
+    let spec = ConnectorSpec {
+        version: version.to_owned(),
+        ..generator.spec().clone()
+    };
+    Served::new().with_source(Box::new(Versioned(generator, spec)))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kill_target_of_another_version_or_build_is_refused() {
+    // Another version; the same version of another build; and a version no requirement names.
+    for version in ["9.9.9", "0.0.0+certified", "0.0"] {
+        let id = ConnectorId::parse("io.rapidbyte.generator").expect("a valid id");
+        let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
+        let installed = Target::spawned(local, ConnectorRef::new(id).path(example("serve_source")));
+        let target = Target::served(served_as(version))
+            .credit_watch(crate::BRIEF)
+            .kill_target(installed);
+        let report = certify_source(&target, crate::killed::read_as_killed(11)).await;
+        let Some(Outcome::Failed(reason)) = report.outcome("K-SOURCE") else {
+            panic!("{version}: the kill clause ran against another version: {report}");
+        };
+        // "0.0" is in the version placed, 0.0.0: the reason is held to its sentence.
+        let said = if version == "0.0" {
+            "answers as version 0.0.0, not 0.0, the version its certification holds it to"
+        } else {
+            version
+        };
+        assert!(reason.contains(said), "{version}: {reason}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connector_of_a_version_no_requirement_names_is_killed_all_the_same() {
+    let target = Target::served(served_as("1.2")).credit_watch(crate::BRIEF);
+    let report = certify_source(&target, crate::killed::read_as_killed(11)).await;
+    assert_eq!(
+        report.outcome("K-SOURCE"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
+}
+
+/// A destination factory that answers as its connector of another version.
+struct VersionedDestination(Box<dyn DestinationFactory>, ConnectorSpec);
+
+impl DestinationFactory for VersionedDestination {
+    fn spec(&self) -> &ConnectorSpec {
+        &self.1
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn Destination>>> {
+        self.0.connect(config, context)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connector_whose_roles_answer_versions_of_their_own_is_held_to_each() {
+    let generator = source_factory::<GeneratorSource>();
+    let source = ConnectorSpec {
+        version: "1.0.0".to_owned(),
+        ..generator.spec().clone()
+    };
+    let memory = destination_factory::<rdlt_connector_reference::MemoryDestination>();
+    let destination = ConnectorSpec {
+        version: "2.0.0".to_owned(),
+        ..memory.spec().clone()
+    };
+    let served = Served::new()
+        .with_source(Box::new(Versioned(generator, source)))
+        .with_destination(Box::new(VersionedDestination(memory, destination)));
+    let target = Target::served(served).credit_watch(crate::BRIEF);
+    let config = json!({ "seed": 3, "streams": [{ "name": "events", "rows": 5 }] });
+    let sourced = certify_source(&target, config).await;
+    let config = json!({ "store": "certify_versions_of_their_own" });
+    let destined = certify_destination(&target, config, &Unprobed).await;
+    for (role, report, version) in [
+        (Role::Source, &sourced, "1.0.0"),
+        (Role::Destination, &destined, "2.0.0"),
+    ] {
+        assert_eq!(report.failures().count(), 0, "{report}");
+        let held = target.held(role);
+        assert_eq!(held.version.as_deref(), Some(version));
+        let named = rdlt_certify::plain(report, &held);
+        assert!(
+            named
+                .lines()
+                .next()
+                .is_some_and(|line| line.ends_with(version)),
+            "{named}"
+        );
     }
 }

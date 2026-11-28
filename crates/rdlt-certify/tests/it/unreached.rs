@@ -104,6 +104,9 @@ fn every_clause_is_registered_once_under_its_family() {
         assert!(clause.id.starts_with(prefix), "{family:?} {}", clause.id);
         assert!(markdown().contains(&format!("| `{}` |", clause.id)));
     }
+    // `S-BARRIER` judges by the slack the documentation states.
+    let slack = rdlt_connector::testing::BARRIER_SLACK;
+    assert!(markdown().contains(&format!("more than {slack} events")));
 }
 
 #[tokio::test(start_paused = true)]

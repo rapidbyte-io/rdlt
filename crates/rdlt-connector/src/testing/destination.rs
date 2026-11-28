@@ -18,6 +18,8 @@ mod owned;
 mod read;
 mod retried;
 mod rows;
+mod sequences;
+mod state;
 mod tables;
 mod widenings;
 mod writers;
@@ -378,40 +380,6 @@ impl Bench<'_> {
             return Err(format!("the receipt reports {} rows, expected 3", receipt.rows).into());
         }
         expect_rows(&self.published_rows().await?, &[1])
-    }
-
-    /// Commits through one connection and reads back through the other, so state kept in one
-    /// connection's memory is caught.
-    async fn state_round_trips(&self) -> Result<(), Violation> {
-        let record = StateRecord {
-            key: "certify".to_owned(),
-            value: Bytes::from_static(b"{\"v\":1}"),
-        };
-        let mut opened = self.open(self.destination).await?;
-        commit(
-            &mut opened,
-            meta(&[], vec![StateChange::Put(record.clone())]),
-        )
-        .await?;
-        let mut reopened = self.open(self.peer).await?;
-        if !reopened.state.contains(&record) {
-            return Err("the next open did not return the committed record".into());
-        }
-        commit(
-            &mut reopened,
-            meta(&[], vec![StateChange::Delete(record.key.clone())]),
-        )
-        .await?;
-        if self
-            .open(self.destination)
-            .await?
-            .state
-            .iter()
-            .any(|stored| stored.key == record.key)
-        {
-            return Err("a deleted record was returned by the next open".into());
-        }
-        Ok(())
     }
 }
 

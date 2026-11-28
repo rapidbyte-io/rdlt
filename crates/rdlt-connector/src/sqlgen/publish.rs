@@ -45,7 +45,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// `segment`.
     ///
     /// Its parameters hold who staged the row; bind the row's values after them, in the order of
-    /// `columns`.
+    /// `columns`. A column named as a staging column is a `Config` error coded
+    /// `column_name_reserved`.
     pub fn stage(
         &self,
         owned: &Owned<'_>,
@@ -55,6 +56,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         columns: &[&str],
     ) -> Result<Statement> {
         owned.is(&table.name)?;
+        self.unreserved(columns.iter().copied())?;
         let pipeline = owned.pipeline();
         let mut sql = self.sql();
         let generation = table
@@ -179,8 +181,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
 
     /// The statements publishing the rows of `staged`, whose table `owned` names, that its
     /// pipeline staged at `epoch` in `segments` with the columns `written` into its target,
-    /// whose columns are `columns`, then removing them from staging; a target without columns
-    /// does not exist, which is a `Data` error.
+    /// whose columns are `columns`, from its staging, whose columns are `staged_columns`, then
+    /// removing them from staging; a target without columns does not exist, a `Data` error.
     ///
     /// A column the rows were written with that the target lacks, as one dropped outside the
     /// pipeline, is a `Data` error coded `column_missing` that names each: the commit publishes
@@ -188,6 +190,10 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// its merge, and no target holds them. A column the staging holds that the rows were not
     /// written with, as one an earlier write mode left, holds none of their values. Staged rows
     /// with no `written` columns are an `Internal` error, since nothing could be checked.
+    ///
+    /// A column the target holds that its staging lacks, as one added outside the pipeline,
+    /// keeps its default in the rows an append publishes; a merge, which deletes the rows it
+    /// replaces, would empty it, so it is a `Data` error coded `column_unstaged` that names each.
     ///
     /// While a table writer of the table appends, a commit reads its own staged rows by the staging
     /// table's index of who staged them, which [`SqlPlanner::staged_index`] creates where the rows
@@ -205,7 +211,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         &self,
         owned: &Owned<'_>,
         staged: &Staged,
-        columns: &[Column],
+        [columns, staged_columns]: [&[Column]; 2],
         written: &[&str],
         epoch: Epoch,
         segments: &SegmentSet,
@@ -227,10 +233,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
             )));
         }
         self.holds_written(&name, staged, columns, written)?;
-        let names: Vec<String> = columns
-            .iter()
-            .map(|column| self.quote(&column.name))
-            .collect();
+        let held = self.staged_of(&name, staged, columns, staged_columns)?;
+        let names: Vec<String> = held.iter().map(|column| self.quote(&column.name)).collect();
         let names = names.join(", ");
         let staging = self.quote(&self.staging_table(&staged.name));
         let target = self.quote(&name);
@@ -259,6 +263,35 @@ impl<D: SqlDialect> SqlPlanner<D> {
         self.rows_of(&mut delete, staged, of.pipeline, epoch, segments);
         plan.push(delete.finish());
         self.bounded(plan)
+    }
+
+    /// The columns of `target`, the table `table` the rows of `staged` publish into, that
+    /// `staging` holds too, compared as the database compares names; for a merge, a column of
+    /// `target` that `staging` lacks is a `Data` error coded `column_unstaged` that names each.
+    fn staged_of<'c>(
+        &self,
+        table: &str,
+        staged: &Staged,
+        target: &'c [Column],
+        staging: &[Column],
+    ) -> Result<Vec<&'c Column>> {
+        let staged_names: BTreeSet<String> = staging
+            .iter()
+            .map(|column| self.dialect.folds(&column.name))
+            .collect();
+        let (held, unstaged): (Vec<&Column>, Vec<&Column>) = target
+            .iter()
+            .partition(|column| staged_names.contains(&self.dialect.folds(&column.name)));
+        if staged.merge.is_some() && !unstaged.is_empty() {
+            let unstaged: Vec<&str> = unstaged.iter().map(|column| &*column.name).collect();
+            return Err(ConnectorError::data(format!(
+                "table {table} holds columns its staging lacks, as ones added outside the \
+                 pipeline, which its merge would empty: {}",
+                unstaged.join(", ")
+            ))
+            .with_code(COLUMN_UNSTAGED));
+        }
+        Ok(held)
     }
 
     /// Refuses the columns of `written` that `target`, the columns of the table `table` the rows
@@ -426,3 +459,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
 
 /// The columns of the segments catalog that say who staged a segment.
 const SEGMENT_COLUMNS: [&str; 3] = ["pipeline", "epoch", "segment"];
+
+/// The code of the error a merge's commit fails with where its table holds a column its staging
+/// lacks: the commit publishes nothing.
+const COLUMN_UNSTAGED: &str = "column_unstaged";

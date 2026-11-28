@@ -37,11 +37,21 @@ class ClauseResult:
 class Report:
     """What a certification found, as `rdlt_certify`'s `Report` says it.
 
-    `connector` is the connector's id, and `results` each clause's result, in clause order.
+    `connector` is the connector's id; `version` the version its first connection answered and
+    `digest` the SHA-256 digest of the binary its first spawn ran, which the certification held
+    every later connection and spawn to, each `None` where it held it to none; `results` each
+    clause's result, in clause order; and `verdict` what they amount to, as its `verdict()` says
+    it.
     """
 
     connector: str
+    version: str | None
+    digest: str | None
     results: tuple[ClauseResult, ...]
+    verdict: str
+    """`passed` where every clause that applies was seen to be met and one applies, `failed` where
+    a clause failed, and `incomplete` otherwise: one that applies went unobserved, or none
+    applies, so nothing was certified."""
 
 
 class Certification:
@@ -68,7 +78,9 @@ class Certification:
                 )
                 for entry in found["results"]
             )
-            self._report = Report(found["connector"], results)
+            self._report = Report(
+                found["connector"], found["version"], found["digest"], results, found["verdict"]
+            )
         return self._report
 
     def result(self, clause: str) -> ClauseResult:
@@ -202,10 +214,26 @@ def _served(connector: type, remote: Tls | None) -> None:
         raise TypeError(message)
 
 
-def certify_transform(transform: Transform, *, inputs: Sequence[pa.RecordBatch]) -> Certification:
-    """The `T` clauses against `transform`, over `inputs` and the batches drawn from them."""
+def certify_transform(
+    transform: Transform,
+    *,
+    inputs: Sequence[pa.RecordBatch],
+    keys: str | Sequence[str] = (),
+    change_time: str | None = None,
+) -> Certification:
+    """The `T` clauses against `transform`, over `inputs` and the batches drawn from them.
+
+    `keys`, a column's name or a sequence of them, and `change_time` name the top-level columns of
+    the key and the change time of a stream the transform is given to, as rdlt_certify's
+    `TransformInputs` does: `T-KEYS` holds the transform to pass each on as it arrives, and does not
+    apply where neither is given.
+    """
+    named = (keys,) if isinstance(keys, str) else tuple(keys)
     return Certification(
-        "transform", lambda: _native.certify_transform(transform._to_native(), list(inputs))
+        "transform",
+        lambda: _native.certify_transform(
+            transform._to_native(), list(inputs), list(named), change_time
+        ),
     )
 
 

@@ -360,6 +360,10 @@ async fn the_help_and_the_reports_read_as_they_did() {
     insta::assert_snapshot!("help", String::from_utf8_lossy(&help.stdout));
     let binary = example("serve_reference");
     let binary = binary.to_str().expect("a UTF-8 path");
+    // A binary's digest differs from build to build, and only Linux checks one: the snapshots
+    // hold none, and Linux's reports are held to naming it.
+    let digest = regex::Regex::new(r#", binary sha256:[0-9a-f]{64}|"digest":"[0-9a-f]{64}""#)
+        .expect("a valid pattern");
     for (output, name) in [("plain", "plain_report"), ("json", "json_report")] {
         let certified = certify(&[
             binary,
@@ -377,7 +381,20 @@ async fn the_help_and_the_reports_read_as_they_did() {
             output,
         ])
         .await;
-        insta::assert_snapshot!(name, String::from_utf8_lossy(&certified.stdout));
+        let shown = String::from_utf8_lossy(&certified.stdout);
+        assert_eq!(
+            digest.is_match(&shown),
+            cfg!(target_os = "linux"),
+            "{shown}"
+        );
+        let shown = digest.replace_all(&shown, |found: &regex::Captures<'_>| {
+            if found[0].starts_with(',') {
+                ""
+            } else {
+                r#""digest":null"#
+            }
+        });
+        insta::assert_snapshot!(name, shown);
     }
 }
 
@@ -691,6 +708,54 @@ async fn an_output_that_cannot_be_written_exits_seventy_four() {
         .expect("rdlt certify ends within its bound")
         .expect("rdlt certify runs");
     assert_eq!(status.code(), Some(74));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_to_a_pipe_nobody_reads_exits_seventy_four_within_its_bound() {
+    use tokio::io::AsyncWriteExt as _;
+    let binary = example("serve_reference");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    // A pipe that holds less than the report, held open and never read.
+    let (reader, writer) = std::io::pipe().expect("a pipe");
+    nix::fcntl::fcntl(&writer, nix::fcntl::FcntlArg::F_SETPIPE_SZ(4096)).expect("the pipe shrinks");
+    // A configuration the destination refuses: every clause fails at once, and their report is
+    // more than the pipe holds.
+    let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt"))
+        .args([
+            "certify",
+            binary,
+            "--role",
+            "destination",
+            "--config-file",
+            "-",
+            "--trust-binaries",
+            "--env",
+            "LLVM_PROFILE_FILE",
+            "--output",
+            "json",
+        ])
+        .args(WATCH)
+        .env(
+            "LLVM_PROFILE_FILE",
+            std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(writer)
+        .stderr(std::process::Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("rdlt certify runs");
+    guarded(&certifying);
+    let mut stdin = certifying.stdin.take().expect("its input is piped");
+    stdin.write_all(USERS.as_bytes()).await.ok();
+    drop(stdin);
+    let status = tokio::time::timeout(CERTIFYING, certifying.wait())
+        .await
+        .expect("rdlt certify ends within its bound")
+        .expect("rdlt certify ends");
+    assert_eq!(status.code(), Some(74));
+    drop(reader);
 }
 
 #[tokio::test]

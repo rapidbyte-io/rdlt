@@ -5,7 +5,8 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::tables;
 
-use super::owned::{meta, open, refusal, stage, store, table};
+use super::owned::{meta, refusal, stage, store, table};
+use crate::fixtures::open_as;
 
 fn keyed(key: MergeKey) -> TableRef {
     TableRef {
@@ -27,7 +28,7 @@ fn by(columns: &[&str], seq: &str) -> MergeKey {
 #[tokio::test]
 async fn a_merge_key_the_table_does_not_hold_is_refused_where_its_writer_opens() {
     let destination = store("keys-writer").await;
-    let mut session = open(destination.as_ref(), "p").await;
+    let mut session = open_as(destination.as_ref(), "p").await;
     stage(&mut session, &keyed(by(&["id"], "seq")), 1, &[1]).await;
     let invalid = (
         ConnectorErrorKind::Data,
@@ -54,7 +55,7 @@ async fn a_merge_key_the_table_does_not_hold_is_refused_where_its_writer_opens()
 #[tokio::test]
 async fn every_column_a_merge_key_names_is_the_table_s() {
     let destination = store("keys-named").await;
-    let mut session = open(destination.as_ref(), "p").await;
+    let mut session = open_as(destination.as_ref(), "p").await;
     stage(&mut session, &keyed(by(&["id"], "seq")), 1, &[1]).await;
     let invalid = (
         ConnectorErrorKind::Data,
@@ -111,10 +112,10 @@ async fn every_column_a_merge_key_names_is_the_table_s() {
 }
 
 #[tokio::test]
-async fn a_key_of_no_column_on_a_table_without_a_schema_fails_no_commit_by_a_panic() {
+async fn a_key_of_no_column_is_refused_before_the_table_s_owner_is_asked() {
     let destination = store("keys-schemaless").await;
-    let mut session = open(destination.as_ref(), "p").await;
-    // No schema was applied, so only the key itself can be judged where the writer opens.
+    let mut session = open_as(destination.as_ref(), "p").await;
+    // No pipeline created the table: the key is refused before the writer is, as unowned.
     let writer = session.session.writer(&keyed(by(&[], "seq"))).await;
     assert_eq!(
         refusal(writer.map(drop)),

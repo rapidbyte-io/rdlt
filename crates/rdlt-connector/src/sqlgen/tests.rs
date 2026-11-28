@@ -342,7 +342,7 @@ fn no_statement_is_planned_for_a_table_from_the_owner_check_of_another() {
             .record_segment(&orders, &users, epoch, segment, [1, 1])
             .map(drop),
         planner
-            .publish(&orders, &staged, columns, &["id"], epoch, &set)
+            .publish(&orders, &staged, [columns, columns], &["id"], epoch, &set)
             .map(drop),
     ];
     for (index, outcome) in refused.into_iter().enumerate() {
@@ -515,7 +515,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
         standing.unwrap().created(pipeline).unwrap()
     }
 
-    /// The publish of `staged`, written with the columns of its target, `columns`.
+    /// The publish of `staged`, written with the columns of its target, `columns`, which its
+    /// staging holds.
     pub(in crate::sqlgen) fn publish_as(
         &self,
         staged: &Staged,
@@ -526,7 +527,14 @@ impl<D: SqlDialect> SqlPlanner<D> {
     ) -> crate::error::Result<Vec<Statement>> {
         let owned = self.own(pipeline, &staged.name);
         let written: Vec<&str> = columns.iter().map(|column| column.name.as_str()).collect();
-        self.publish(&owned, staged, columns, &written, epoch, segments)
+        self.publish(
+            &owned,
+            staged,
+            [columns, columns],
+            &written,
+            epoch,
+            segments,
+        )
     }
 
     pub(in crate::sqlgen) fn abandon_as(
@@ -636,8 +644,37 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 }
 
-pub(super) fn database() -> (Connection, SqlPlanner<Sqlite>) {
+/// An in-memory SQLite that reads a double-quoted name as a name alone, never as the text of a
+/// string where no column has it, as the SQLite destination's own connection does.
+pub(super) fn connection() -> Connection {
+    use rusqlite::config::DbConfig;
     let connection = Connection::open_in_memory().unwrap();
+    for setting in [
+        DbConfig::SQLITE_DBCONFIG_DQS_DML,
+        DbConfig::SQLITE_DBCONFIG_DQS_DDL,
+    ] {
+        connection.set_db_config(setting, false).unwrap();
+    }
+    connection
+}
+
+#[test]
+fn the_test_database_reads_a_double_quoted_name_as_a_name_alone() {
+    let (connection, _) = database();
+    connection
+        .execute_batch("CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1)")
+        .unwrap();
+    // A name no column has is an error, as on the destination's own connection, never the text.
+    let missing = connection.query_row("SELECT \"missing\" FROM t", [], |row| {
+        row.get::<_, Value>(0)
+    });
+    assert!(missing.is_err(), "{missing:?}");
+    let indexed = connection.execute("CREATE INDEX i ON t (\"missing\")", []);
+    assert!(indexed.is_err(), "{indexed:?}");
+}
+
+pub(super) fn database() -> (Connection, SqlPlanner<Sqlite>) {
+    let connection = connection();
     let planner = SqlPlanner::try_new(Sqlite).unwrap();
     for statement in planner.bootstrap() {
         run(&connection, &statement);
@@ -828,6 +865,50 @@ fn a_planner_needs_a_dialect_that_stores_text_integers_and_bytes() {
 }
 
 #[test]
+fn a_column_named_as_a_staging_column_is_refused_where_it_is_declared_and_staged() {
+    let (connection, planner) = database();
+    let orders = table("orders");
+    apply(
+        &connection,
+        &planner,
+        &create(&orders, &[("id", LogicalType::Int64, false)]),
+    )
+    .unwrap();
+    for name in [
+        "_rdlt_epoch",
+        "_RDLT_PIPELINE",
+        "_rdlt_segment",
+        "_rdlt_generation",
+    ] {
+        let added = TableChange::AddColumn {
+            table: orders.clone(),
+            field: Field::new(name, LogicalType::Int64, true),
+        };
+        let created = create(
+            &table("audit"),
+            &[
+                ("id", LogicalType::Int64, false),
+                (name, LogicalType::Int64, true),
+            ],
+        );
+        for change in [&added, &created] {
+            let error = apply(&connection, &planner, change).unwrap_err();
+            assert_eq!(
+                (error.kind(), error.code()),
+                (ConnectorErrorKind::Config, Some("column_name_reserved")),
+                "{name}"
+            );
+        }
+        let owned = planner.own(&pipeline("mine"), "orders");
+        let error = planner
+            .stage(&owned, &orders, Epoch(1), SegmentId(1), &["id", name])
+            .unwrap_err();
+        assert_eq!(error.code(), Some("column_name_reserved"), "{name}");
+    }
+    assert!(columns(&connection, &planner, "audit").is_empty());
+}
+
+#[test]
 fn the_catalog_bootstraps_again_without_change() {
     let (connection, planner) = database();
     run_all(&connection, &planner.bootstrap());
@@ -994,7 +1075,7 @@ proptest! {
 
     #[test]
     fn chunked_state_changes_write_what_the_changes_in_order_would(commits in state_operations()) {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = connection();
         let planner = SqlPlanner::try_new(Narrow).unwrap();
         run_all(&connection, &planner.bootstrap());
         let mine = pipeline("mine");

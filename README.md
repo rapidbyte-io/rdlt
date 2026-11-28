@@ -306,7 +306,8 @@ whatever the function returns for it, and it names the stream's keys and change 
 itself, or the stream is refused, coded `transform_invalid`.
 `rdlt.stream("users", transform=[...])` runs them in order, on the engine's compute pool. A
 document names a transform its host registered with `host.transform("name", function)` as
-`{"code": "name"}`, and `rdlt.testing.certify_transform` runs the transform clauses against one.
+`{"code": "name"}`, and `rdlt.testing.certify_transform` runs the transform clauses against one,
+told a stream's `keys=` and `change_time=`, which `T-KEYS` holds it to pass on as they arrived.
 
 **Connectors.** `rdlt.connector` writes a connector as a class, in the Rust SDK's words.
 Barriers, credit, limits, deadlines, fencing and commits are the Rust SDK's, beneath it. Each
@@ -335,7 +336,9 @@ or `False` where `None` is, fails the call, naming the method.
   `spec()` is: its name, or a `rdlt.StreamName` within a namespace, such as a database schema; its
   `schema=`, any Arrow schema, anything with `__arrow_c_schema__`, refused where it is declared
   where Rust has no table schema for it, as an interval or a union; its `read_modes=`, full and
-  incremental where it has a cursor unless given; and its `change_time=` column.
+  incremental where it has a cursor unless given; its `checkpointing=`, at its own points unless
+  `Checkpointing.ON_DEMAND` says it also answers the barrier `ctx.checkpoint_due()` tells of; and
+  its `change_time=` column.
 - **Partitions.** A stream's `partitions` may answer a `Partition(id, unbounded=True)` that never
   ends, which `ctx.partition` then names. Where it names `state`, it is told the stream's
   committed `StreamState`: its phase, each partition's cursor or `PartitionState.DONE`, the
@@ -386,10 +389,13 @@ or `False` where `None` is, fails the call, naming the method.
   `rdlt connector install` writes refuses those, as a Rust release serves no probe.
 - **Certification.** `test_certify = rdlt.testing.certify_source(Tickets, config=...)` in a test
   module, or `certify_destination`, makes each clause a pytest test, `test_certify[S-RESUME]`, and
-  its `report()` is rdlt-certify's report. Given
+  its `report()` is rdlt-certify's report, with its `verdict`. A clause that does not apply skips,
+  and `test_certify[verdict]` fails where the verdict is not `passed`, so one that checked nothing
+  fails. Given
   `rdlt.Connector("io.example.tickets", endpoint="grpcs://host:port")` and
   `remote=rdlt.Tls(cert=..., key=..., ca=...)`, they certify a connector listening there over
-  mutual TLS, as rdlt-certify's `Target::listening` does.
+  mutual TLS, as rdlt-certify's `Target::listening` does, and one listening there that serves
+  another role than the one certified passes none.
 
 **Spawned connectors.** `rdlt connector new tickets --lang python` writes a connector project,
 `rdlt-connector-tickets`: a source class, registered as the `rdlt.connectors` entry point

@@ -17,7 +17,7 @@ use rdlt_wire::limits::MIN_FRAME_BYTES;
 use rdlt_wire::{Encoder, Limits};
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::sessions::{raw_session_within, table};
+use crate::sessions::{create_raw, created, raw_session_within, table};
 use crate::support::connectors::{Gate, Writes, Writing};
 use crate::support::served_within;
 
@@ -55,6 +55,7 @@ async fn raw_write(
 ) -> (Option<ConnectorError>, usize) {
     use v1::write_frame::Frame;
     let (mut client, session) = raw_session_within(served, store, limits()).await;
+    create_raw(&mut client, session).await;
     let batch = ids(MEBIBYTE);
     let mut encoder = Encoder::default();
     let mut sent = vec![
@@ -175,6 +176,8 @@ async fn the_hosts_writer_flushes_before_it_stages_more_than_the_destination_hol
             pipeline: PipelineId::parse("staging").expect("a valid pipeline id"),
         };
         let mut opened = destination.open(&context).await.expect("the session opens");
+        let create = opened.session.apply_schema(&created()).await;
+        create.expect("the table is created");
         let mut writer = opened
             .session
             .writer(&table())

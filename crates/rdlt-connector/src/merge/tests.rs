@@ -547,14 +547,25 @@ fn a_change_at_a_truncate_s_own_sequence_follows_it() {
         Deletion::Hard,
     );
     assert_eq!(rows(&published), [(2, Some("b".into()), 4, None)]);
-    let later = apply(&published, &[&[row(3, "c", 4)]], Deletion::Hard);
-    assert_eq!(
-        rows(&later),
-        [
-            (2, Some("b".into()), 4, None),
-            (3, Some("c".into()), 4, None)
-        ]
-    );
+}
+
+#[test]
+fn a_key_a_truncate_held_takes_the_row_its_transaction_writes_at_its_sequence() {
+    // A source sends a truncate and the rows its transaction writes after it in one segment, so
+    // they merge in one commit, where the truncate applies first, its deletes hard or soft.
+    for deletion in [Deletion::Hard, soft()] {
+        let published = apply(&empty(), &[&[row(1, "a", 1)]], deletion.clone());
+        let merged = apply(
+            &published,
+            &[&[truncate(4, 100), row(1, "b", 4)]],
+            deletion.clone(),
+        );
+        assert_eq!(
+            rows(&merged),
+            [(1, Some("b".into()), 4, None)],
+            "{deletion:?}"
+        );
+    }
 }
 
 /// The outcome of merging nothing into one stored row whose column `c` holds `stored`, once the

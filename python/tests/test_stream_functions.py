@@ -406,6 +406,29 @@ def test_a_following_read_that_waits_for_data_ends_once_it_is_asked_to_stop(
     assert rows_of(tmp_path, "users") == [(0,)]
 
 
+def test_an_async_read_waiting_for_data_is_cancelled_where_its_read_ends(
+    tmp_path: Path, connectors: Path
+) -> None:
+    ended = threading.Event()
+
+    @stream(primary_key="id", cursor=_Since)
+    async def users(since: _Since) -> AsyncIterator[object]:
+        yield {"id": since.after + 1}
+        yield checkpoint(_Since(after=since.after + 1))
+        try:
+            # A queue that stays idle, which the read waits on without asking whether it stopped.
+            await asyncio.Event().wait()
+        finally:
+            ended.set()
+
+    built = rdlt.pipeline(
+        "idle", source=users, destination=into_sqlite(tmp_path), until=timedelta(seconds=1)
+    )
+    built.build(host(tmp_path, connectors)).run()
+    assert ended.wait(10), "the read went on waiting after its run"
+    assert rows_of(tmp_path, "users") == [(0,)]
+
+
 def test_an_async_read_s_lag_goes_through_its_router_and_is_totalled_in_the_report(
     tmp_path: Path, connectors: Path
 ) -> None:
@@ -589,7 +612,15 @@ def test_a_stream_tells_where_it_stands_in_its_own_cursor_type_or_none() -> None
         del since
         yield from ()
 
-    standing: dict[str, object] = {"eu": _Since(after=3), "us": None, "asia": {"after": 3}}
+    class Later(_Since):
+        """A subclass of the stream's cursor, which is no cursor of its class itself."""
+
+    standing: dict[str, object] = {
+        "eu": _Since(after=3),
+        "us": None,
+        "asia": {"after": 3},
+        "apac": Later(after=3),
+    }
     users = Stream(
         StreamSpec("users"),
         read,
@@ -603,8 +634,9 @@ def test_a_stream_tells_where_it_stands_in_its_own_cursor_type_or_none() -> None
     )
     assert json.loads(users.acknowledged("eu") or "") == {"after": 3}
     assert users.acknowledged("us") is None
-    with pytest.raises(TypeError, match="_Since"):
-        users.acknowledged("asia")
+    for refused in ["asia", "apac"]:
+        with pytest.raises(TypeError, match="_Since"):
+            users.acknowledged(refused)
 
 
 def test_a_stream_without_a_cursor_cannot_say_where_it_stands() -> None:
@@ -639,6 +671,48 @@ def test_a_cursor_committed_in_another_format_fails_the_read_coded_cursor_versio
         bumped.build(placed).run()
     assert raised.value.report().connector_code == "cursor_version"
     assert rows_of(tmp_path, "users") == [(0,), (1,), (2,)]
+
+
+class _Offset(Cursor):
+    next: int = 0
+
+
+def _users_checkpointing(made: Callable[[int], Cursor]) -> ReadStream:
+    @stream(name="users", cursor=_Since)
+    def users(since: _Since) -> Iterator[object]:
+        for n in range(since.after + 1, 3):
+            yield {"id": n}
+        yield checkpoint(made(2))
+
+    return cast("ReadStream", users)
+
+
+def test_a_checkpoint_of_another_cursor_type_fails_its_read_and_commits_nothing(
+    tmp_path: Path, connectors: Path
+) -> None:
+    placed = host(tmp_path, connectors)
+    slipped = _users_checkpointing(lambda n: _Offset(next=n + 1))
+    first = rdlt.pipeline("slipped", source=slipped, destination=into_sqlite(tmp_path))
+    with pytest.raises(rdlt.SourceError) as raised:
+        first.build(placed).run()
+    assert raised.value.report().connector_code == "type_error"
+    # Nothing of it was committed: a read with the stream's own cursor runs from the start.
+    kept = _users_checkpointing(lambda n: _Since(after=n))
+    again = rdlt.pipeline("slipped", source=kept, destination=into_sqlite(tmp_path))
+    assert again.build(placed).run().report.rows == 3
+    assert again.build(placed).run().report.rows == 0
+
+
+def test_a_stream_without_a_cursor_yields_no_checkpoint(tmp_path: Path, connectors: Path) -> None:
+    @stream()
+    def users() -> Iterator[object]:
+        yield {"id": 1}
+        yield checkpoint(_Since(after=1))
+
+    built = rdlt.pipeline("uncursored", source=users, destination=into_sqlite(tmp_path))
+    with pytest.raises(rdlt.SourceError) as raised:
+        built.build(host(tmp_path, connectors)).run()
+    assert raised.value.report().connector_code == "type_error"
 
 
 @pytest.mark.parametrize("version", [-1, 2**16, True, 2.0, "2"])
@@ -1194,6 +1268,9 @@ class _Engine:
         with contextlib.suppress(BlockingIOError):
             self._watched.recv(64)
 
+    def gone(self) -> bool:
+        return False
+
     def close(self) -> None:
         self._watched.close()
         self._rung.close()
@@ -1221,6 +1298,77 @@ def test_an_async_read_leaves_its_event_loop_running_while_the_engine_is_full() 
         await opened
 
     assert _routed(reading) == [{"n": 1}]
+
+
+class _LetGo(_Engine):
+    """An engine that lets its read go when told, waking its loop as the native side does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._let_go = False
+
+    def gone(self) -> bool:
+        return self._let_go
+
+    def let_go(self) -> None:
+        self._let_go = True
+        self._rung.send(b"\0")
+
+
+def test_an_async_read_the_engine_lets_go_is_cancelled_where_it_waits() -> None:
+    ended: list[str] = []
+
+    async def reading(_ctx: StreamContext, engine: _Engine) -> AsyncIterator[object]:
+        engine.room = True
+        yield {"n": 1}
+        try:
+            cast("_LetGo", engine).let_go()
+            await asyncio.Event().wait()
+        finally:
+            ended.append("its finally ran")
+
+    engine = _LetGo()
+    ctx = StreamContext(cast("_native.StreamContext", engine))
+    read = _reading.pushed(reading(ctx, engine), cast("_reading.Out", engine), engine)
+    try:
+        asyncio.run(asyncio.wait_for(read, timeout=30))
+    finally:
+        engine.close()
+    assert engine.sent == [{"n": 1}]
+    assert ended == ["its finally ran"]
+
+
+class _GoneAtYield(_Engine):
+    """An engine that let its read go before its first yield, its loop woken to see it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rung.send(b"\0")
+
+    def send(self, item: object) -> bool | None:
+        return False
+
+    def gone(self) -> bool:
+        return True
+
+
+def test_an_async_read_whose_yield_finds_it_gone_cleans_up_whole() -> None:
+    cleaned: list[str] = []
+
+    async def reading() -> AsyncIterator[object]:
+        try:
+            yield {"n": 1}
+        finally:
+            await asyncio.sleep(0)
+            cleaned.append("cleaned up")
+
+    engine = _GoneAtYield()
+    read = _reading.pushed(reading(), cast("_reading.Out", engine), engine)
+    try:
+        asyncio.run(asyncio.wait_for(read, timeout=30))
+    finally:
+        engine.close()
+    assert cleaned == ["cleaned up"]
 
 
 class _Gone(_Engine):
@@ -1291,6 +1439,56 @@ def test_an_async_read_on_a_loop_that_cannot_watch_a_socket_fails_rather_than_wa
     finally:
         engine.close()
     assert isinstance(raised.value.__cause__, NotImplementedError)
+    assert engine.sent == []
+
+
+class _SendError(Exception):
+    """What reading the rest of an item raised in a test."""
+
+
+class _SendPanic(BaseException):
+    """What reading the rest of an item raised in a test, no `Exception`, as a panic beneath is."""
+
+
+class _Unsendable(_Engine):
+    """An engine whose push of the rest of an item fails, raising `raised`, once room has come."""
+
+    def __init__(self, raised: type[BaseException]) -> None:
+        super().__init__()
+        self._raised = raised
+
+    def resume(self) -> bool | None:
+        if not self.room:
+            return None
+        raise self._raised
+
+
+@pytest.mark.parametrize("raised", [_SendPanic, _SendError], ids=["a-panic", "an-exception"])
+def test_what_fails_an_async_read_s_waiting_push_fails_the_yield_it_serves(
+    raised: type[BaseException], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_native, "Notice", _Notice)
+
+    async def reading(ctx: StreamContext, engine: _Engine) -> AsyncIterator[object]:
+        async def opening() -> None:
+            engine.room = True
+            # Said once the push has failed: nothing more is sent, and the yield does not pass.
+            await asyncio.sleep(0)
+            ctx.replan()
+
+        opened = asyncio.create_task(opening())
+        yield {"n": 1}
+        await opened
+        yield {"n": 2}
+
+    engine = _Unsendable(raised)
+    ctx = StreamContext(cast("_native.StreamContext", engine))
+    read = _reading.pushed(reading(ctx, engine), cast("_reading.Out", engine), engine)
+    try:
+        with pytest.raises(raised):
+            asyncio.run(asyncio.wait_for(read, timeout=5))
+    finally:
+        engine.close()
     assert engine.sent == []
 
 

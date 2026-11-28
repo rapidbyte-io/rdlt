@@ -14,6 +14,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,7 @@ from typing import cast
 
 import pytest
 
+import pokeapi
 import rdlt
 from local_api import Api
 from pokeapi import PokeApi, PokeApiConfig, Position
@@ -82,11 +84,11 @@ def test_the_source_passes_every_clause_that_applies_to_it(serve: Serve, tmp_pat
     assert by_outcome == {
         "passed": [
             *("P-HANDSHAKE", "P-ORDER", "P-ROLE", "P-LIMITS", "P-HEARTBEAT", "P-MALFORMED"),
-            *("P-CREDIT", "S-CHECK", "S-DISCOVER", "S-PLAN", "S-RESUME", "S-STOP", "S-BARRIER"),
-            "K-SOURCE",
+            *("P-CREDIT", "S-CHECK", "S-DISCOVER", "S-PLAN", "S-RESUME", "S-STOP", "K-SOURCE"),
         ],
-        # Its one partition never ends, and it keeps no position outside the engine.
-        "inapplicable": ["S-PARTITION", "S-ACK"],
+        # Its one partition never ends, it checkpoints at its own points alone, and it keeps no
+        # position outside the engine.
+        "inapplicable": ["S-PARTITION", "S-BARRIER", "S-ACK"],
     }
     assert len(results) == sum(map(len, by_outcome.values()))
 
@@ -134,6 +136,34 @@ def test_a_response_cut_short_is_transient(serve: Serve) -> None:
     api.cut("/api/v2/pokemon")
     with pytest.raises(Transient):
         PokeApi(PokeApiConfig(base_url=api.url)).check()
+
+
+def test_a_response_still_arriving_when_its_time_is_up_is_transient(
+    serve: Serve, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = serve(1)
+    # A byte every 60 ms from the status line on: each wait on the socket is short, and the
+    # status line and headers alone take over two seconds.
+    api.trickle("/api/v2/pokemon", 0.06)
+    monkeypatch.setattr(pokeapi, "TIMEOUT", 0.5)
+    started = time.monotonic()
+    with pytest.raises(Transient, match=r"took longer than 0\.5 s"):
+        PokeApi(PokeApiConfig(base_url=api.url)).check()
+    assert time.monotonic() - started < 2
+
+
+def test_a_body_still_arriving_when_its_time_is_up_is_transient(
+    serve: Serve, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = serve(1)
+    # The status line and headers at once, then a byte of the body every 20 ms: each wait on the
+    # socket is short, and the body alone takes over two seconds.
+    api.trickle("/api/v2/pokemon", 0.02, head_at_once=True)
+    monkeypatch.setattr(pokeapi, "TIMEOUT", 0.5)
+    started = time.monotonic()
+    with pytest.raises(Transient, match=r"took longer than 0\.5 s"):
+        PokeApi(PokeApiConfig(base_url=api.url)).check()
+    assert time.monotonic() - started < 2
 
 
 def test_a_connection_the_api_refuses_is_transient(serve: Serve) -> None:

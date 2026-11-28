@@ -7,6 +7,7 @@
 mod args;
 mod binary;
 mod classes;
+mod contained;
 mod handshake;
 mod listen;
 #[cfg(test)]
@@ -159,7 +160,8 @@ where
 {
     let stopping = tokio_util::sync::CancellationToken::new();
     let service = service::Service::new(served, limits, host.name, host.sessions, stopping.clone());
-    let service = traced::Traced(classes::classed(service, &limits, classes::window(&limits)));
+    let classed = classes::classed(service, &limits, classes::window(&limits));
+    let service = traced::Traced(contained::Contained(classed));
     let service = service.map_request(|request: http::Request<hyper::body::Incoming>| {
         request.map(rdlt_wire::tonic::body::Body::new)
     });

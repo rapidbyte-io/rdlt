@@ -43,7 +43,12 @@ landed key must hold across a database's transactions and a file system's operat
   nothing. A column the staging holds
   that the rows were not written with, as a change stream's flags after the table is appended
   to, or a column an abandoned generation added, holds none of their values and stops nothing;
-  a change stream's op and unchanged flags direct its merge, and no table holds them.
+  a change stream's op and unchanged flags direct its merge, and no table holds them. A column
+  the table holds that its staging lacks, as one added outside the pipeline, keeps its default
+  in the rows an append publishes, as a JDBC sink inserts a record's fields alone; a merge
+  deletes the rows it replaces and would empty it, so its commit fails with a `Data` error
+  coded `column_unstaged` that names it. The destination reads the staging's columns, as it
+  reads the table's, at each commit.
 - **Merges delete and insert.** A commit ranks its staged rows per key by sequence, deletes the
   published rows of those keys and inserts the first of each. The table writer's `TableRef` decides:
   each staged segment records its merge key, so a table that switches between append and merge
@@ -59,12 +64,14 @@ landed key must hold across a database's transactions and a file system's operat
   beyond the signed range, so a destination that narrows ids fails certification.
 - **SQLite stores storage classes.** Columns are declared `BOOLEAN`, `INTEGER`, `REAL`, `TEXT` or
   `BLOB`, so widening within the integer or float family changes nothing, and the engine lowers
-  every other type to text. Identifiers fold to lower case, since SQLite compares them without
-  case. `IdentifierRules` has `reserved_table_prefixes`, and the engine prefixes a table
-  identifier with `_` until it starts with none of them: SQLite reserves `_rdlt_`, which every
-  `sqlgen` table starts with, and `sqlite_`, which SQLite keeps for itself, and reserves the
-  staging columns' names as words. Calls run on the blocking pool, each in an
-  immediate transaction.
+  every other type to text. A flush refuses a column of values its table's column is not declared
+  for, before any row is bound, since SQLite's affinity would store text as a number or keep it as
+  text in a number's column; a read gives a value of another class than its column's as an internal
+  error, never as a null. Identifiers fold to lower case, since SQLite compares them without case.
+  `IdentifierRules` has `reserved_table_prefixes`, and the engine prefixes a table identifier with
+  `_` until it starts with none of them: SQLite reserves `_rdlt_`, which every `sqlgen` table starts
+  with, and `sqlite_`, which SQLite keeps for itself, and reserves the staging columns' names as
+  words. Calls run on the blocking pool, each in an immediate transaction.
 - **Manifests are created exclusively.** The files destination publishes a commit by creating
   the pipeline's next manifest version with a hard link, which fails if another session created
   it first: the conditional put on a local filesystem. Opening creates a version with the next

@@ -242,7 +242,7 @@ impl ReadStream<Ticks> for TickStream {
     }
 }
 
-/// A source whose check fails as `Auth`, with code `test.denied`.
+/// A source whose check fails as `Auth`, with code `test.denied`, for a driver's reason.
 #[derive(Debug)]
 pub(crate) struct Denied;
 
@@ -257,8 +257,30 @@ impl SourceConnector for Denied {
     async fn check(&self) -> Result<()> {
         Err(
             ConnectorError::new(ConnectorErrorKind::Auth, "the token was refused")
-                .with_code("test.denied"),
+                .with_code("test.denied")
+                .with_source(Refused("the token".to_owned())),
         )
+    }
+
+    fn streams(&self) -> Streams<Self> {
+        Streams::new()
+    }
+}
+
+/// A source whose check panics, saying its configuration's `said`.
+#[derive(Debug)]
+pub(crate) struct Panicking(String);
+
+#[source(id = "test.panicking")]
+impl SourceConnector for Panicking {
+    type Config = serde_json::Value;
+
+    async fn connect(config: serde_json::Value, _context: &ConnectContext) -> Result<Self> {
+        Ok(Self(config["said"].as_str().unwrap_or_default().to_owned()))
+    }
+
+    async fn check(&self) -> Result<()> {
+        panic!("the check met a bug reading {}", self.0)
     }
 
     fn streams(&self) -> Streams<Self> {

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::testing::{Clause, ClauseResult, Outcome, Probe, Reason};
-use rdlt_connector::{Destination, Role, Source};
+use rdlt_connector::{ConnectorSpec, Destination, Role, Source};
 use rdlt_engine::{
     BatchPolicy, CommitPolicy, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunStatus,
     SystemEnv,
@@ -56,14 +56,18 @@ pub(crate) fn clauses(role: Role) -> &'static [Clause] {
     }
 }
 
-/// `K-SOURCE`'s result for the source `target` reaches, which answers to `id`, with `config`.
+/// `K-SOURCE`'s result for the source `target` reaches, which answers as `spec` says, with
+/// `config`.
 pub(crate) async fn source(
     target: &Target,
-    id: &rdlt_connector::ConnectorId,
+    spec: &ConnectorSpec,
     config: &serde_json::Value,
 ) -> ClauseResult {
-    let (outcome, note) =
-        within(source::resumed(target, id, config), target.chosen_timeout()).await;
+    let (outcome, note) = within(
+        source::resumed(target, spec, config),
+        target.chosen_timeout(),
+    )
+    .await;
     ClauseResult {
         clause: KILL_CLAUSES[0],
         outcome,
@@ -71,15 +75,15 @@ pub(crate) async fn source(
     }
 }
 
-/// `K-DESTINATION`'s result for the destination `target` reaches, which answers to `id`, with
-/// `config`, reading what it published through `probe`.
+/// `K-DESTINATION`'s result for the destination `target` reaches, which answers as `spec` says,
+/// with `config`, reading what it published through `probe`.
 pub(crate) async fn destination(
     target: &Target,
-    id: &rdlt_connector::ConnectorId,
+    spec: &ConnectorSpec,
     config: &serde_json::Value,
     probe: &dyn Probe,
 ) -> ClauseResult {
-    let checking = destination::exactly_once(target, id, config, probe);
+    let checking = destination::exactly_once(target, spec, config, probe);
     let (outcome, note) = within(checking, target.chosen_timeout()).await;
     ClauseResult {
         clause: KILL_CLAUSES[1],
@@ -244,6 +248,25 @@ pub(crate) fn unproven(kills: &Kills, interrupted: bool, seed: u64) -> Option<Lo
         return None;
     };
     Some(Loaded::Unseen(format!("{reason} (kill seed {seed})")))
+}
+
+/// A violation unless the connector placed as `role`, whose spec is `placed`, answers as the
+/// version `spec` names, which its certification holds it to, to the letter: a reference's
+/// requirement admits builds that differ only in their build metadata, and names no version that
+/// is not a semantic one.
+pub(crate) fn placed_as(
+    spec: &ConnectorSpec,
+    placed: &ConnectorSpec,
+    role: &str,
+) -> Result<(), Violation> {
+    if placed.version == spec.version {
+        return Ok(());
+    }
+    Err(Violation(format!(
+        "the {role} placed answers as version {}, not {}, the version its certification holds \
+         it to",
+        placed.version, spec.version
+    )))
 }
 
 /// The configuration of an engine that commits every [`COMMIT_ROWS`] rows and retries

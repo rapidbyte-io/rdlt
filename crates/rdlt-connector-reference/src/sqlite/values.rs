@@ -12,7 +12,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use rdlt_connector::sqlgen::{Column, SqlDialect, Statement};
-use rdlt_connector::{ConnectorError, Result};
+use rdlt_connector::{COLUMN_MISSING, ConnectorError, Result, TableRef};
 use rusqlite::Connection;
 use rusqlite::types::{ToSqlOutput, Value, ValueRef};
 
@@ -60,6 +60,79 @@ pub(super) fn stage(
             .map_err(failed("staging a row"))?;
     }
     Ok(())
+}
+
+/// Refuses `batch`, written to `table` whose columns are `columns`, where one of its columns is
+/// none of the table's, a change stream's op and unchanged flags apart, or holds values the
+/// table's column of its name is not declared for, as text in an integer column or a number in a
+/// boolean one: a `Data` error, before any row is bound.
+///
+/// Names compare as `dialect` folds them. A column the table lacks is coded `column_missing`. A
+/// column of nulls fits any column, a dictionary is the values it stands for, and a type the
+/// destination does not store is refused where its rows are staged.
+pub(super) fn classed(
+    dialect: &impl SqlDialect,
+    table: &TableRef,
+    columns: &[Column],
+    batch: &RecordBatch,
+) -> Result<()> {
+    let changes = table.merge.as_ref().and_then(|key| key.changes.as_ref());
+    let flags: Vec<String> = changes
+        .into_iter()
+        .flat_map(|changes| [Some(&*changes.op), changes.unchanged.as_deref()])
+        .flatten()
+        .map(|flag| dialect.folds(flag))
+        .collect();
+    for field in batch.schema_ref().fields() {
+        let name = dialect.folds(field.name());
+        let Some(column) = columns
+            .iter()
+            .find(|column| dialect.folds(&column.name) == name)
+        else {
+            if flags.contains(&name) {
+                continue;
+            }
+            return Err(ConnectorError::data(format!(
+                "table {}: a batch holds column {}, which the table lacks",
+                table.name,
+                field.name()
+            ))
+            .with_code(COLUMN_MISSING));
+        };
+        let Some(stored) = declared(field.data_type()) else {
+            continue;
+        };
+        if !stored.eq_ignore_ascii_case(&column.declared) {
+            return Err(ConnectorError::data(format!(
+                "table {}: column {} is declared {}, and a batch holds it as {}",
+                table.name,
+                column.name,
+                column.declared,
+                field.data_type()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The type the destination declares a column of the values of `data_type` with, where it stores
+/// them; none for nulls.
+fn declared(data_type: &DataType) -> Option<&'static str> {
+    match data_type {
+        DataType::Boolean => Some("BOOLEAN"),
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32 => Some("INTEGER"),
+        DataType::Float32 | DataType::Float64 => Some("REAL"),
+        DataType::Utf8 | DataType::LargeUtf8 => Some("TEXT"),
+        DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_) => Some("BLOB"),
+        DataType::Dictionary(_, values) => declared(values),
+        _ => None,
+    }
 }
 
 /// A type the destination cannot store, in the column it was found in.
@@ -248,37 +321,32 @@ pub(super) fn read_table_each(
 }
 
 /// `rows` of `table`, whose columns are `columns`, as a batch.
+///
+/// A value of another storage class than its column's, which only a writer other than the
+/// destination leaves, is an `Internal` error naming the table and the column.
 fn batch(table: &str, columns: &[Column], rows: &[Vec<Value>]) -> Result<RecordBatch> {
     let mut fields = Vec::new();
     let mut arrays: Vec<ArrayRef> = Vec::new();
     for (index, column) in columns.iter().enumerate() {
         let values = rows.iter().map(|row| &row[index]);
-        let (data_type, array): (DataType, ArrayRef) = match column.declared.as_str() {
+        let (data_type, array) = match column.declared.as_str() {
             "BOOLEAN" => (
                 DataType::Boolean,
-                Arc::new(
-                    values
-                        .map(|value| integer(value).map(|v| v != 0))
-                        .collect::<BooleanArray>(),
-                ),
+                read::<_, BooleanArray>(values, |value| {
+                    integer(value).map(|held| held.map(|v| v != 0))
+                }),
             ),
-            "INTEGER" => (
-                DataType::Int64,
-                Arc::new(values.map(integer).collect::<Int64Array>()),
-            ),
-            "REAL" => (
-                DataType::Float64,
-                Arc::new(values.map(real).collect::<Float64Array>()),
-            ),
-            "BLOB" => (
-                DataType::Binary,
-                Arc::new(values.map(blob).collect::<BinaryArray>()),
-            ),
-            _ => (
-                DataType::Utf8,
-                Arc::new(values.map(text).collect::<StringArray>()),
-            ),
+            "INTEGER" => (DataType::Int64, read::<_, Int64Array>(values, integer)),
+            "REAL" => (DataType::Float64, read::<_, Float64Array>(values, real)),
+            "BLOB" => (DataType::Binary, read::<_, BinaryArray>(values, blob)),
+            _ => (DataType::Utf8, read::<_, StringArray>(values, text)),
         };
+        let array = array.map_err(|OtherClass| {
+            ConnectorError::internal(format!(
+                "reading table {table}: column {} holds a value it is not declared {} for",
+                column.name, column.declared
+            ))
+        })?;
         fields.push(Field::new(&column.name, data_type, true));
         arrays.push(array);
     }
@@ -286,31 +354,53 @@ fn batch(table: &str, columns: &[Column], rows: &[Vec<Value>]) -> Result<RecordB
         .map_err(|error| ConnectorError::internal(format!("reading table {table}: {error}")))
 }
 
-fn integer(value: &Value) -> Option<i64> {
+/// A stored value of another class than its column is declared for.
+struct OtherClass;
+
+/// The `values` of a column, each as `value` reads it, as an array of `A`.
+fn read<'a, T, A>(
+    values: impl Iterator<Item = &'a Value>,
+    value: impl FnMut(&'a Value) -> Result<Option<T>, OtherClass>,
+) -> Result<ArrayRef, OtherClass>
+where
+    A: Array + FromIterator<Option<T>> + 'static,
+{
+    Ok(Arc::new(values.map(value).collect::<Result<A, _>>()?))
+}
+
+/// A value of a column declared `INTEGER` or `BOOLEAN`: a null or an integer.
+fn integer(value: &Value) -> Result<Option<i64>, OtherClass> {
     match value {
-        Value::Integer(integer) => Some(*integer),
-        _ => None,
+        Value::Null => Ok(None),
+        Value::Integer(integer) => Ok(Some(*integer)),
+        _ => Err(OtherClass),
     }
 }
 
-fn real(value: &Value) -> Option<f64> {
+/// A value of a column declared `REAL`: a null or a real.
+fn real(value: &Value) -> Result<Option<f64>, OtherClass> {
     match value {
+        Value::Null => Ok(None),
         // A column of real type reads back as reals, integral values too.
-        Value::Real(real) => Some(*real),
-        _ => None,
+        Value::Real(real) => Ok(Some(*real)),
+        _ => Err(OtherClass),
     }
 }
 
-fn text(value: &Value) -> Option<&str> {
+/// A value of a column declared `TEXT`: a null or text.
+fn text(value: &Value) -> Result<Option<&str>, OtherClass> {
     match value {
-        Value::Text(text) => Some(text),
-        _ => None,
+        Value::Null => Ok(None),
+        Value::Text(text) => Ok(Some(text)),
+        _ => Err(OtherClass),
     }
 }
 
-fn blob(value: &Value) -> Option<&[u8]> {
+/// A value of a column declared `BLOB`: a null or a blob.
+fn blob(value: &Value) -> Result<Option<&[u8]>, OtherClass> {
     match value {
-        Value::Blob(blob) => Some(blob),
-        _ => None,
+        Value::Null => Ok(None),
+        Value::Blob(blob) => Ok(Some(blob)),
+        _ => Err(OtherClass),
     }
 }

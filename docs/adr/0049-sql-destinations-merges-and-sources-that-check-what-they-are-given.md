@@ -71,7 +71,8 @@ generated sources each take something as given unless they check it:
     generation finished for a path swaps the pipeline's own table or nothing.
   - A commit's child table is checked where it publishes, and an open discards the staging of
     the tables its pipeline owns and of no other.
-  - The memory destination holds the same rules in its own store.
+  - The memory destination holds the same rules in its own store, and the files destination
+    in its catalog, whose owner file only a creation writes and a refused creation removes.
 - **A cut name is a hash no uncut name can take.** A derived name longer than the dialect's
   identifiers is `_rdlt_fit_` and the SHA-256 of the whole name, in base32. Every name derived
   from a table is compared with every other the commit touches, and a clash is refused as
@@ -177,6 +178,13 @@ generated sources each take something as given unless they check it:
     one there. A tombstone is no row, but it counts as one where the change is to its key or
     sequence, which its line holds. The change is checked again under the table's lock, as a
     change of a column's type is.
+- **A table writer stages only its table's columns, at types they hold.** The memory, SQLite and
+  files destinations refuse at the flush, before anything is staged, a batch holding a column
+  the table lacks, a change stream's op and flags apart, as a `Data` error coded
+  `column_missing`, SQLite comparing names as it folds them. A value its column's type cannot
+  hold is refused under the merge's codes below, and SQLite refuses a column of values its
+  column is not declared for (ADR 0006). Nulls are not checked here: a change stream's written
+  batches hold them in any column.
 - **A schema change the held rows do not fit is refused where it is applied.** The memory
   destination converts what a table holds, its rows, generations and tombstones, before a
   column takes a type, and refuses the change as `schema_conflict`: the table stays at the
@@ -191,7 +199,11 @@ generated sources each take something as given unless they check it:
   that says no deletion time (`deletion_untimed`). The merge adds a conversion that keeps no
   value (`type_unconvertible`), a value its wider type cannot hold (`value_unholdable`) and a
   key the rows cannot be merged by (`merge_key_invalid`). Any other failure of the merge is
-  its own, an internal error.
+  its own, an internal error. `sqlgen`'s staging refuses besides a row of a merge table, a
+  truncate apart, that lacks a key column (`merge_key_missing`) or holds a null in one
+  (`merge_key_null`), under the codes the engine refuses such rows with before it writes them:
+  a change of a null first key column, buried as a tombstone, would read as a truncate's bound
+  over every key, and a plain merge compares keys with `=`, which no null equals.
 - **A soft history delete says when.** A history table reads a version as deleted by its
   deletion time. A delete or a truncate without one would open a deleted version that reads as
   live, and the Arrow merge and the SQL plans each made something else of it; none is
@@ -200,7 +212,8 @@ generated sources each take something as given unless they check it:
   but where a truncate and a key's row share one, the truncate removes what is before it and
   the row, which is not, applies: the Arrow merge orders them so wherever each was written,
   a row a truncate of the merge marked takes a change at that sequence, and the SQL plans order
-  a history key's events and choose a soft row's deletion time the same way.
+  a history key's events and choose a soft row's deletion time the same way. The source sends
+  rows of one sequence in one segment (ADR 0023), so they meet in one merge.
 - **A merge costs its rows, and a row the cells it holds.**
   - The Arrow merge reads each batch as the columns one of its rows holds a value in, and
     gives its rows back grouped by the columns they hold: a table is as many batches as its

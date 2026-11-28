@@ -10,7 +10,8 @@ use rdlt_connector::{
     ConnectorError, ConnectorErrorKind, ConnectorSpec, Destination, DestinationFactory, Role,
     Source, SourceFactory,
 };
-use rdlt_host::{RemoteDestination, RemoteSource};
+use rdlt_host::{Options, RemoteDestination, RemoteSource};
+use rdlt_wire::Limits;
 
 use crate::acknowledged;
 use crate::target::Target;
@@ -19,6 +20,10 @@ use crate::target::Target;
 pub(crate) struct Factory<'a> {
     target: &'a Target,
     spec: ConnectorSpec,
+    /// How its connections run.
+    options: Options,
+    /// The limits its first connection agreed.
+    agreed: Limits,
 }
 
 /// Why a role cannot be certified at all.
@@ -72,7 +77,28 @@ impl<'a> Factory<'a> {
             }
         })?;
         let spec = connection.connector_spec().map_err(Unmet::Failed)?;
-        Ok(Self { target, spec })
+        Ok(Self {
+            target,
+            spec,
+            options: target.connections(),
+            agreed: connection.agreed(),
+        })
+    }
+
+    /// The limits its connections agreed, the lesser of the target's and the connector's own.
+    pub(crate) fn agreed(&self) -> Limits {
+        self.agreed
+    }
+
+    /// A factory of the same connections, its sources' reads granted credit as `S-BARRIER`'s
+    /// are.
+    pub(crate) fn barriers(&self) -> Self {
+        Self {
+            target: self.target,
+            spec: self.spec.clone(),
+            options: self.target.barriers_read(),
+            agreed: self.agreed,
+        }
     }
 }
 
@@ -87,8 +113,10 @@ impl SourceFactory for Factory<'_> {
         _context: ConnectContext,
     ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn Source>>> {
         Box::pin(async move {
-            let connection = self.target.connect(Role::Source, &config).await?;
-            Ok(Box::new(RemoteSource::new(connection)) as Box<dyn Source>)
+            let connection = self
+                .target
+                .connect_with(Role::Source, &config, &self.options);
+            Ok(Box::new(RemoteSource::new(connection.await?)) as Box<dyn Source>)
         })
     }
 

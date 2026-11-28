@@ -7,6 +7,7 @@ use arrow_array::types::Int64Type;
 use arrow_array::{ArrayRef, BinaryArray, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::DataType;
 
+use super::sequences::sequence;
 use super::{Bench, commit, expect_rows, meta};
 use crate::OpenedSession;
 use crate::change::SEQ_COLUMN;
@@ -27,7 +28,9 @@ impl Bench<'_> {
         self.table_called(&format!("{}_{suffix}", self.name()))
     }
 
-    /// Stages a generation of the clause's table and one of a second table over two commits: rows
+    /// Stages a generation of the clause's table and one of a second table, commits part of it,
+    /// and finishes it from a newer session, as the engine's next attempt goes on with the
+    /// generation it found recorded and writes again what was staged and not committed: rows
     /// stay hidden until the commit that finishes both generations replaces both tables' rows
     /// with them.
     pub(super) async fn generations_swap_in_atomically(&self) -> Result<(), Violation> {
@@ -53,6 +56,14 @@ impl Bench<'_> {
         commit(&mut opened, meta(&[1, 2], Vec::new())).await?;
         expect_rows(&self.published_rows().await?, &[1])?;
         expect_rows(&self.rows_of(&other).await?, &[])?;
+        drop((writer, other_writer));
+        bounded_call("close", opened.session.close()).await?;
+        // As the engine's next attempt prepares every stream it reads before it reads it.
+        let mut resumed = self.open(self.peer).await?;
+        let mut writer = self.writer_of(&mut resumed.session, &generation).await?;
+        self.writer_of(&mut resumed.session, &other_generation)
+            .await?;
+        write(&mut writer, 3, self.rows(3)).await?;
         let finish = CommitMeta {
             finish_generations: vec![
                 (base.path.clone(), GENERATION),
@@ -60,7 +71,7 @@ impl Bench<'_> {
             ],
             ..meta(&[3], Vec::new())
         };
-        commit(&mut opened, finish).await?;
+        commit(&mut resumed, finish).await?;
         expect_rows(&self.published_rows().await?, &[2, 3])?;
         expect_rows(&self.rows_of(&other).await?, &[2])
     }
@@ -265,14 +276,7 @@ impl Bench<'_> {
     pub(super) fn keyed(&self, rows: &[(i64, &str, u8)]) -> RecordBatch {
         let ids: Arc<Int64Array> = Arc::new(rows.iter().map(|row| row.0).collect());
         let names: Arc<StringArray> = Arc::new(rows.iter().map(|row| Some(row.1)).collect());
-        let seqs: BinaryArray = rows
-            .iter()
-            .map(|row| {
-                let mut seq = [0_u8; 16];
-                seq[15] = row.2;
-                Some(seq.to_vec())
-            })
-            .collect();
+        let seqs = BinaryArray::from_iter_values(rows.iter().map(|row| sequence(row.2)));
         let column = |name| self.names.column(name);
         RecordBatch::try_from_iter([
             (column("id"), ids as _),

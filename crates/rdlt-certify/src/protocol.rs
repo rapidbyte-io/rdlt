@@ -52,7 +52,8 @@ pub const PROTOCOL_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "P-HEARTBEAT",
-        statement: "each heartbeat is answered with its sequence number, in order",
+        statement: "each heartbeat is answered with its sequence number, in order, while the \
+                    stream of heartbeats stays open",
         unless: "",
     },
     Clause {
@@ -196,13 +197,19 @@ async fn handshaken(
         .rpc
         .handshake(request(role, PROTOCOL_MAJOR))
         .await
-        .map_err(|status| format!("the handshake failed: {}", target.error(&status)))?;
+        .map_err(|status| format!("the handshake failed: {}", target.error(&status)))?
+        .into_inner();
+    if let Some(spec) = &answer.spec {
+        target
+            .hold_version(role, &spec.version)
+            .map_err(Violation::of)?;
+    }
     client
         .rpc
         .configure(configure_request(config))
         .await
         .map_err(|status| format!("the configuration failed: {}", target.error(&status)))?;
-    Ok((client, answer.into_inner()))
+    Ok((client, answer))
 }
 
 /// The configuration `config`, as sent.

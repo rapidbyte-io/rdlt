@@ -265,7 +265,7 @@ fn started(event: TraceEvent<'_>) {
 }
 
 #[tokio::test]
-async fn a_commit_of_an_append_a_merge_and_a_child_table_runs_23_statements_two_of_its_fence() {
+async fn a_commit_of_an_append_a_merge_and_a_child_table_runs_26_statements_two_of_its_fence() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let database = Database::open(directory.path().join("counted.db"))
         .await
@@ -307,7 +307,7 @@ async fn a_commit_of_an_append_a_merge_and_a_child_table_runs_23_statements_two_
         .iter()
         .filter(|sql| !sql.starts_with("--"))
         .collect();
-    assert_eq!(run.len(), 23, "{run:#?}");
+    assert_eq!(run.len(), 26, "{run:#?}");
     // The fence row is read under the write lock, then given the commit's key: no other statement
     // of the commit reads or writes it.
     let fenced: Vec<&&String> = run
@@ -389,6 +389,76 @@ async fn a_commit_whose_table_lost_a_column_it_staged_fails_and_publishes_nothin
         assert_eq!(count(table), 0, "{table} published");
         assert_eq!(count(&planner.staging_table(table)), 2, "{table} staged");
     }
+}
+
+#[tokio::test]
+async fn a_column_added_to_an_appended_table_outside_the_pipeline_keeps_its_default() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("added.db");
+    let mut opened = open_session(&path).await;
+    staged_names(&mut opened, &table("events", None), &[1]).await;
+    let outside = rusqlite::Connection::open(&path).expect("the database opens");
+    outside
+        .execute(
+            "ALTER TABLE \"events\" ADD COLUMN \"note\" TEXT DEFAULT 'none'",
+            [],
+        )
+        .expect("the column is added");
+    let meta = first_commit(opened.epoch, &[]);
+    let receipt = opened
+        .session
+        .commit(&meta)
+        .await
+        .expect("the commit lands");
+    assert_eq!(receipt.rows, 2);
+    let notes: Vec<String> = outside
+        .prepare("SELECT \"note\" FROM \"events\" ORDER BY \"id\"")
+        .expect("the query prepares")
+        .query_map([], |row| row.get(0))
+        .expect("the query runs")
+        .collect::<Result<_, _>>()
+        .expect("the notes read");
+    assert_eq!(notes, ["none", "none"]);
+}
+
+#[tokio::test]
+async fn a_column_added_to_a_merged_table_outside_the_pipeline_fails_the_commit_naming_it() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("added.db");
+    let mut opened = open_session(&path).await;
+    let (roots, _) = roots_and_items();
+    opened
+        .session
+        .apply_schema(&create(&roots, "id"))
+        .await
+        .expect("the table is created");
+    let mut writer = opened
+        .session
+        .writer(&roots)
+        .await
+        .expect("a table writer opens");
+    writer
+        .write(SegmentId(1), batch("id"))
+        .await
+        .expect("the write buffers");
+    writer.flush().await.expect("the flush stages");
+    let outside = rusqlite::Connection::open(&path).expect("the database opens");
+    outside
+        .execute("ALTER TABLE \"roots\" ADD COLUMN \"note\" TEXT", [])
+        .expect("the column is added");
+    let meta = first_commit(opened.epoch, &[]);
+    let error = opened
+        .session
+        .commit(&meta)
+        .await
+        .expect_err("the commit is refused");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Data, Some("column_unstaged")),
+        "{error}"
+    );
+    assert!(error.to_string().contains("note"), "{error}");
+    assert_eq!(published(&path, "roots"), 0);
 }
 
 /// The rows `table` publishes in the database at `path`.

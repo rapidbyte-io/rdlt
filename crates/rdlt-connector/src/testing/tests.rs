@@ -19,9 +19,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    Clause, ClauseResult, DESTINATION_CLAUSES, Observed, Outcome, Probe, Report, SOURCE_CLAUSES,
-    Unprobed, Verdict, certify_destination, certify_destination_factory_observed, certify_source,
-    certify_source_factory_observed,
+    BARRIER_SLACK, Clause, ClauseResult, DESTINATION_CLAUSES, Observed, Outcome, Probe, Report,
+    SOURCE_CLAUSES, Unprobed, Verdict, Wired, certify_destination,
+    certify_destination_factory_observed, certify_source, certify_source_factory_observed,
 };
 use crate::capabilities::{
     Capabilities, IdentifierCase, IdentifierChars, IdentifierRules, SchemaChanges,
@@ -40,7 +40,9 @@ use crate::id::{
 };
 use crate::landed::{Answer, Fence, answer};
 use crate::sink::Push;
-use crate::source::{Partition, PartitionPlan, ReadStream, SourceConnector, Streams};
+use crate::source::{
+    Partition, PartitionPlan, ReadStream, SourceConnector, Streams, acknowledging_source_factory,
+};
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::{StateChange, StateRecord, StreamState};
 use crate::types::{Field, LogicalType};
@@ -65,6 +67,12 @@ struct PagesConfig {
     ignore_barriers: bool,
     /// Its reads send no checkpoint at all.
     uncheckpointed: bool,
+    /// Its reads checkpoint once, after their last page, whatever is pending, as a stream that
+    /// checkpoints only where it would anyway does.
+    checkpoint_at_end: bool,
+    /// Its reads send a checkpoint of where they start before their first page, as a stream
+    /// that starts from a position of its own does.
+    opening_checkpoint: bool,
     /// A read from this page's cursor or a later one is shifted as `shifted` shifts every read;
     /// 0 shifts none.
     shifted_from: u32,
@@ -103,6 +111,8 @@ impl Default for PagesConfig {
             shifted: false,
             ignore_barriers: false,
             uncheckpointed: false,
+            checkpoint_at_end: false,
+            opening_checkpoint: false,
             shifted_from: 0,
             natural: false,
             unstable_discover: false,
@@ -262,6 +272,9 @@ impl ReadStream<Pages> for Page {
             1
         };
         let pages: Vec<u32> = (start..end).collect();
+        if source.config.opening_checkpoint {
+            out.checkpoint(&start).await?;
+        }
         for pushed in pages.chunks(width) {
             let rows: Vec<serde_json::Value> =
                 pushed.iter().map(|page| json!({ "page": page })).collect();
@@ -271,12 +284,28 @@ impl ReadStream<Pages> for Page {
             }
             sent?;
             let answers = !source.config.ignore_barriers || !out.checkpoint_due();
-            if answers && !source.config.uncheckpointed {
+            let last = pushed.last() == pages.last();
+            let due = !source.config.checkpoint_at_end || last;
+            if answers && due && !source.config.uncheckpointed {
                 out.checkpoint(&(pushed.last().unwrap() + 1)).await?;
             }
         }
         Ok(())
     }
+}
+
+#[test]
+fn a_wired_certification_shows_the_limits_its_reads_are_cut_to() {
+    let factory = acknowledging_source_factory::<Pages>();
+    let wired = Wired {
+        limits: rdlt_wire::Limits::default(),
+        barriers: factory.as_ref(),
+    };
+    let shown = format!("{wired:?}");
+    assert!(
+        shown.starts_with("Wired { limits: Limits { frame_bytes: "),
+        "{shown}"
+    );
 }
 
 #[tokio::test]
@@ -288,20 +317,67 @@ async fn a_correct_source_passes_every_clause() {
 async fn a_source_with_no_data_is_incomplete_where_nothing_could_be_seen() {
     let empty = certify_source::<Pages>(json!({ "pages": 0 })).await;
     assert_eq!(empty.verdict(), Verdict::Incomplete, "{empty}");
-    assert_eq!(
-        empty.outcome("S-BARRIER"),
-        Some(&Outcome::Passed),
-        "a source with no data owes no answer"
-    );
-    // A stream that never checkpoints leaves nothing to resume, or plan again, from.
-    for clause in ["S-RESUME", "S-PARTITION"] {
+    // A stream that never checkpoints leaves nothing to resume, or plan again, from; one that
+    // never pushes, no barrier it had to answer.
+    for clause in ["S-RESUME", "S-PARTITION", "S-BARRIER"] {
         assert!(
             matches!(empty.outcome(clause), Some(Outcome::Unobserved(_))),
             "{clause}: {empty}"
         );
     }
     let unobserved: Vec<_> = empty.unobserved().map(|result| result.clause.id).collect();
-    assert_eq!(unobserved, ["S-RESUME", "S-PARTITION"]);
+    assert_eq!(unobserved, ["S-RESUME", "S-PARTITION", "S-BARRIER"]);
+}
+
+#[tokio::test]
+async fn a_source_whose_reads_push_once_and_answer_after_shows_nothing_of_its_barriers() {
+    let report = certify_source::<Pages>(json!({ "pages": 1 })).await;
+    assert!(
+        matches!(report.outcome("S-BARRIER"), Some(Outcome::Unobserved(_))),
+        "{report}"
+    );
+}
+
+#[tokio::test]
+async fn a_source_that_answers_a_barrier_only_as_its_read_starts_fails_s_barrier() {
+    // It answers the barrier pending as it starts, and no other until its read ends.
+    let config = json!({ "opening_checkpoint": true, "checkpoint_at_end": true, "pages": 64 });
+    let report = certify_source::<Pages>(config).await;
+    assert_eq!(failed(&report), ["S-BARRIER"], "{report}");
+    // Barrier 2 is raised at the read's first push, so every page after it was sent with it
+    // pending.
+    let Some(Outcome::Failed(reason)) = report.outcome("S-BARRIER") else {
+        panic!("{report}");
+    };
+    assert!(
+        reason.contains("answered barrier 2 only after the last of the 63 pushes"),
+        "{reason}"
+    );
+}
+
+#[tokio::test]
+async fn a_source_that_never_answers_a_barrier_raised_during_its_read_fails_s_barrier() {
+    let config = json!({ "opening_checkpoint": true, "uncheckpointed": true, "pages": 64 });
+    let report = certify_source::<Pages>(config).await;
+    let Some(Outcome::Failed(reason)) = report.outcome("S-BARRIER") else {
+        panic!("{report}");
+    };
+    assert!(
+        reason.contains("never answered barrier 2 before the last of the 63 pushes"),
+        "{reason}"
+    );
+}
+
+#[tokio::test]
+async fn a_read_as_long_as_the_reference_sources_fixtures_has_its_second_barrier_judged() {
+    // The reference sources' fixtures, a checkpoint after each push but the last, end their reads
+    // at event `2 * pushes - 1`, 8 past the first `S-BARRIER` judges: a read whose last push
+    // comes as late, and that answers only as it starts, fails.
+    let pushes = (BARRIER_SLACK + 11).div_ceil(2);
+    let pages = 2 * pushes - 1;
+    let config = json!({ "opening_checkpoint": true, "checkpoint_at_end": true, "pages": pages });
+    let report = certify_source::<Pages>(config).await;
+    assert_eq!(failed(&report), ["S-BARRIER"], "{report}");
 }
 
 #[tokio::test]
@@ -413,12 +489,14 @@ async fn the_barrier_clause_does_not_apply_to_natural_checkpointing() {
 
 #[tokio::test]
 async fn each_broken_source_behavior_fails_exactly_its_clause() {
-    let cases: [(&str, &[&str]); 8] = [
+    let cases: [(&str, &[&str]); 9] = [
         // A read from a cursor that starts over, or elsewhere, reads the wrong rows however it
         // is planned.
         ("ignore_cursor", &["S-RESUME", "S-PARTITION"]),
         ("shifted", &["S-RESUME", "S-PARTITION"]),
         ("ignore_barriers", &["S-BARRIER"]),
+        // It answers the barrier, after its last push.
+        ("checkpoint_at_end", &["S-BARRIER"]),
         ("unstable_discover", &["S-DISCOVER"]),
         ("empty_catalog", &["S-DISCOVER"]),
         ("repeat_partitions", &["S-PLAN"]),
@@ -660,6 +738,8 @@ struct VaultConfig {
     local_landed: bool,
     /// Keeps one landed key for every pipeline.
     shared_landed: bool,
+    /// Keeps one state for every pipeline.
+    shared_state: bool,
     publish_all: bool,
     /// Publishes, for each segment a commit lists, one it staged and the commit does not list.
     publish_other: bool,
@@ -676,6 +756,9 @@ struct VaultConfig {
     merge_keeps_first: bool,
     /// Keeps the last row of each key a merge meets, whatever its sequence.
     merge_keeps_last: bool,
+    /// Stores a sequence as its last eight bytes, the row's, with the segment's zeroed, as a
+    /// destination that keeps it as an integer of those does.
+    seq_low_half: bool,
     refuse_repeated_changes: bool,
     ignore_added_columns: bool,
     refuse_widening: bool,
@@ -734,6 +817,9 @@ struct VaultConfig {
     history_hashes_its_own_way: bool,
     /// Swaps in only the first generation a commit finishes.
     finish_one_generation: bool,
+    /// Keeps the rows a session commits into a generation with that session: the pipeline's next
+    /// open drops them, so a generation a newer session finishes holds only its own.
+    generations_per_session: bool,
     /// Publishes its columns under lower-case names, though it declares it keeps case.
     fold_names: bool,
     /// Publishes one column of those whose names differ only in ASCII case, though it declares
@@ -811,6 +897,9 @@ struct VaultConfig {
     /// Widens a column by reading what it held back from its text, as the narrower type writes
     /// it, as the wider type.
     widen_through_text: bool,
+    /// Widens a column of the rows it publishes as `widen_through_text` widens it, and takes the
+    /// rows it stages as they are.
+    widen_published_through_text: bool,
     /// Publishes the rows of a table that lost a column outside the pipeline without it, rather
     /// than refusing their commit.
     lose_dropped_columns: bool,
@@ -1035,6 +1124,15 @@ impl VaultConfig {
         }
     }
 
+    /// The pipeline the state of `pipeline` is kept under: one for all under `shared_state`.
+    fn stating(&self, pipeline: &PipelineId) -> PipelineId {
+        if self.shared_state {
+            PipelineId::parse("every").expect("a valid pipeline id")
+        } else {
+            pipeline.clone()
+        }
+    }
+
     /// The pipeline the landed key of `pipeline` is kept under: one for all under
     /// `shared_landed`.
     fn landing(&self, pipeline: &PipelineId) -> PipelineId {
@@ -1176,12 +1274,21 @@ impl DestinationConnector for Vault {
             *epoch += 1;
             *epoch
         };
+        if self.config.generations_per_session {
+            let mut store = self.stores.shared.lock();
+            let VaultStore {
+                generations,
+                owners,
+                ..
+            } = &mut *store;
+            generations.retain(|(table, _), _| owners.get(table) != Some(&context.pipeline));
+        }
         let state = self
             .config
             .state_store(&self.stores)
             .lock()
             .state
-            .get(&context.pipeline)
+            .get(&self.config.stating(&context.pipeline))
             .map(|state| state.values().cloned().collect())
             .unwrap_or_default();
         let reported = self.config.reported(epoch);
@@ -1228,7 +1335,9 @@ impl VaultSession {
         } else {
             &mut shared.state
         };
-        let state = states.entry(self.pipeline.clone()).or_default();
+        let state = states
+            .entry(self.config.stating(&self.pipeline))
+            .or_default();
         for change in &meta.state_delta {
             match change {
                 StateChange::Put(record) => state.insert(record.key.clone(), record.clone()),
@@ -1548,7 +1657,13 @@ impl Session for VaultSession {
             TableChange::Widen {
                 table, column, to, ..
             } if self.config.widen_through_text => {
-                widened_through_text(&mut store, table, column, to);
+                published_through_text(&mut store, table, column, to);
+                staged_through_text(&mut store, table, column, to);
+            }
+            TableChange::Widen {
+                table, column, to, ..
+            } if self.config.widen_published_through_text => {
+                published_through_text(&mut store, table, column, to);
             }
             _ => {}
         }
@@ -1709,6 +1824,10 @@ impl VaultWriter {
         } else {
             batch
         };
+        let batch = match &self.merge {
+            Some(key) if self.config.seq_low_half => low_halves(&batch, &key.seq),
+            _ => batch,
+        };
         if self.config.lose_writers {
             for ((pipeline, _), staged) in &mut store.staged {
                 if *pipeline == self.pipeline {
@@ -1746,6 +1865,29 @@ impl VaultWriter {
         let schema = Arc::new(arrow_schema::Schema::new(fields));
         RecordBatch::try_new(schema, batch.columns().to_vec()).expect("same columns")
     }
+}
+
+/// `batch` with each sequence in `column` cut to its last eight bytes, the others zeroed.
+fn low_halves(batch: &RecordBatch, column: &str) -> RecordBatch {
+    let Ok(index) = batch.schema().index_of(column) else {
+        return batch.clone();
+    };
+    let cut: arrow_array::BinaryArray = batch
+        .column(index)
+        .as_binary::<i32>()
+        .iter()
+        .map(|seq| {
+            seq.map(|seq| {
+                let mut cut = seq.to_vec();
+                let segment = cut.len().saturating_sub(8);
+                cut[..segment].fill(0);
+                cut
+            })
+        })
+        .collect();
+    let mut columns = batch.columns().to_vec();
+    columns[index] = Arc::new(cut);
+    RecordBatch::try_new(batch.schema(), columns).expect("the same columns")
 }
 
 impl TableWriter for VaultWriter {
@@ -2060,20 +2202,28 @@ fn blanked_names(batch: &RecordBatch) -> RecordBatch {
     RecordBatch::try_new(schema, columns).expect("nulls fit a nullable column")
 }
 
-/// Rewrites what `store` holds of `table`'s column `column` as `to`, read from its text.
-fn widened_through_text(store: &mut VaultStore, table: &TableRef, column: &str, to: &LogicalType) {
-    let through = |batch: &RecordBatch| through_text(batch, column, &to.to_arrow());
+/// Rewrites what `store` publishes of `table`'s column `column` as `to`, read from its text.
+fn published_through_text(
+    store: &mut VaultStore,
+    table: &TableRef,
+    column: &str,
+    to: &LogicalType,
+) {
     for published in store
         .published
         .get_mut(table.name.as_ref())
         .into_iter()
         .flatten()
     {
-        *published = through(published);
+        *published = through_text(published, column, &to.to_arrow());
     }
+}
+
+/// Widens `column` of what `table` holds staged as `published_through_text` widens it.
+fn staged_through_text(store: &mut VaultStore, table: &TableRef, column: &str, to: &LogicalType) {
     for staged in store.staged.values_mut().flatten() {
         if staged.table == table.name.as_ref() {
-            staged.batch = through(&staged.batch);
+            staged.batch = through_text(&staged.batch, column, &to.to_arrow());
         }
     }
 }
@@ -2304,6 +2454,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("merge_cased_names", &["D-NAMES"]),
     ("fold_simply", &["D-NAMES"]),
     ("widen_through_text", &["D-SCHEMA"]),
+    ("widen_published_through_text", &["D-SCHEMA"]),
     ("refuse_check", &["D-CHECK"]),
     ("lose_writers", &["D-WRITERS"]),
     ("keep_dropped", &["D-DROP"]),
@@ -2318,13 +2469,17 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("recount_landed", &["D-LANDED", "D-RETRY"]),
     ("local_landed", &["D-LANDED"]),
     ("shared_landed", &["D-LANDED", "D-RETRY"]),
+    ("shared_state", &["D-STATE"]),
     ("forget_state", &["D-STATE"]),
     ("ignore_deletes", &["D-STATE"]),
-    ("keep_staging", &["D-DISCARD"]),
+    ("keep_staging", &["D-DISCARD", "D-REPLACE"]),
     ("keep_abandoned", &["D-DISCARD"]),
     ("no_fence", &["D-FENCE"]),
     ("wrong_fence_kind", &["D-DROP", "D-FENCE"]),
-    ("publish_all", &["D-COMMIT", "D-RETRY", "D-DISCARD"]),
+    (
+        "publish_all",
+        &["D-COMMIT", "D-RETRY", "D-DISCARD", "D-REPLACE"],
+    ),
     (
         "blank_names",
         &[
@@ -2375,6 +2530,10 @@ const BROKEN: &[(&str, &[&str])] = &[
     ),
     ("merge_keeps_first", &["D-MERGE"]),
     ("merge_keeps_last", &["D-MERGE"]),
+    (
+        "seq_low_half",
+        &["D-MERGE", "D-DELETE", "D-TRUNCATE", "D-HIST", "D-CHILDREN"],
+    ),
     ("refuse_repeated_changes", &["D-SCHEMA"]),
     ("ignore_added_columns", &["D-SCHEMA"]),
     ("accept_conflicts", &["D-SCHEMA"]),
@@ -2390,6 +2549,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("children_merge_by_key", &["D-CHILDREN"]),
     ("ignore_child_tables", &["D-CHILDREN"]),
     ("finish_one_generation", &["D-REPLACE"]),
+    ("generations_per_session", &["D-REPLACE"]),
     ("ignore_seq_guard", &["D-MERGE", "D-DELETE", "D-TRUNCATE"]),
     ("forget_tombstones", &["D-DELETE", "D-TRUNCATE"]),
     ("truncate_everything", &["D-TRUNCATE"]),

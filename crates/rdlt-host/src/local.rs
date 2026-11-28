@@ -432,6 +432,7 @@ impl Local {
     /// within the connect deadline.
     pub async fn wire(&self, reference: &ConnectorRef) -> Result<Wire, ProviderError> {
         let launch = self.launch(reference).await?;
+        let digest = launch.digest;
         let deadline = self.options.deadlines.connect;
         let redactions = self.redactions.clone().unwrap_or_default();
         let launched = Process::launching(launch, redactions, deadline).await;
@@ -439,7 +440,7 @@ impl Local {
             let (launch, unspawned) = *unspawned;
             refused(&launch, unspawned)
         })?;
-        Ok(Wire::new(stream, Some(process)))
+        Ok(Wire::new(stream, Some(process)).digested(digest))
     }
 
     /// Spawns the connector `reference` names as `role`, and checks it is that connector.

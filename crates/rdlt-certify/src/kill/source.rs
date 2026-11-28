@@ -8,11 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rdlt_connector::testing::RENDERED_BYTES;
 use rdlt_connector::testing::render::{RenderError, Rendering};
 use rdlt_connector::{
-    BoxFuture, Catalog, ConnectContext, ConnectorId, Cursor, Destination, PartitionId,
+    BoxFuture, Catalog, ConnectContext, ConnectorSpec, Cursor, Destination, PartitionId,
     PartitionPlan, PartitionSink, PipelineId, ReadMode, ReadRequest, Source, StreamName,
     StreamSpec, StreamState, destination_factory,
 };
-use rdlt_connector_reference::{MemoryDestination, published, tables};
+use rdlt_connector_reference::{MemoryDestination, forget, published, tables};
 use rdlt_engine::{PipelinePlan, StreamPlan, WriteMode};
 use rdlt_host::Kills;
 
@@ -23,14 +23,14 @@ use super::{Loaded, Proof, converged};
 use crate::protocol::Violation;
 use crate::target::Target;
 
-/// `K-SOURCE` against the source `target` reaches, which answers to `id`, with `config`.
+/// `K-SOURCE` against the source `target` reaches, which answers as `spec` says, with `config`.
 pub(crate) async fn resumed(
     target: &Target,
-    id: &ConnectorId,
+    spec: &ConnectorSpec,
     config: &serde_json::Value,
 ) -> Loaded {
     super::proven(target.chosen_seed(), super::run(), |run, seed| async move {
-        match compared(target, id, config, run, seed).await {
+        match compared(target, spec, config, run, seed).await {
             Ok(loaded) => loaded,
             Err(Violation(reason)) => Loaded::Broken(format!("{reason} (kill seed {seed})")),
         }
@@ -38,15 +38,17 @@ pub(crate) async fn resumed(
     .await
 }
 
-async fn compared(
+/// One draw of the clause: a load never killed and a load killed at the points `seed` draws,
+/// each into a store of its own that `run` names, compared.
+pub(super) async fn compared(
     target: &Target,
-    id: &ConnectorId,
+    spec: &ConnectorSpec,
     config: &serde_json::Value,
     run: u64,
     seed: u64,
 ) -> Result<Loaded, Violation> {
     let unkilled = Kills::new();
-    let source = placed(target, id, config, &unkilled).await?;
+    let source = placed(target, spec, config, &unkilled).await?;
     let catalog = source
         .discover()
         .await
@@ -59,21 +61,21 @@ async fn compared(
     if let Some(reason) = unrepeatable(&catalog) {
         return Ok(Loaded::Unobserved(reason));
     }
-    let name = format!("certify_{run:x}_k");
-    let pipeline = PipelineId::parse(&name).map_err(Violation::of)?;
+    let stores = Stores::new(run);
+    let pipeline = PipelineId::parse(&stores.pipeline).map_err(Violation::of)?;
     let plan = PipelinePlan::new(pipeline, streams).map_err(Violation::of)?;
-    let (clean, killed) = (format!("{name}_clean"), format!("{name}_killed"));
-    let (store, beyond) = memory(&clean).await?;
+    let (clean, killed) = (&stores.clean, &stores.killed);
+    let (store, beyond) = memory(clean).await?;
     let loaded = converged(&plan, &source, &store).await;
     if let Some(reason) = beyond.unobserved() {
         return Ok(Loaded::Unobserved(reason));
     }
     loaded.map_err(|Violation(reason)| format!("a load never killed failed: {reason}"))?;
     let kills = Kills::new();
-    let placed = placed(target, id, config, &kills).await?;
+    let placed = placed(target, spec, config, &kills).await?;
     let resumed = Arc::new(Resumed::new(placed, &kills));
     let source: Arc<dyn Source> = Arc::clone(&resumed) as Arc<dyn Source>;
-    let (store, beyond) = memory(&killed).await?;
+    let (store, beyond) = memory(killed).await?;
     let killing = Killing::new(store, &kills, Schedule::seeded(seed, false));
     let destination: Arc<dyn Destination> = Arc::new(killing);
     let interrupted = converged(&plan, &source, &destination).await;
@@ -86,23 +88,52 @@ async fn compared(
     if let Some(unresumed) = resumed.unproven(seed) {
         return Ok(unresumed);
     }
-    same(&clean, &killed, Proof::of(&kills)).await
+    same(clean, killed, Proof::of(&kills)).await
+}
+
+/// What a draw names: its pipeline, and the stores it loads into, the load never killed's and the
+/// killed load's, which leave this process however the draw ends.
+pub(super) struct Stores {
+    pub(super) pipeline: String,
+    pub(super) clean: String,
+    pub(super) killed: String,
+}
+
+impl Stores {
+    /// The names of the draw `run` tells apart from every other.
+    pub(super) fn new(run: u64) -> Self {
+        let pipeline = format!("certify_{run:x}_k");
+        Self {
+            clean: format!("{pipeline}_clean"),
+            killed: format!("{pipeline}_killed"),
+            pipeline,
+        }
+    }
+}
+
+impl Drop for Stores {
+    fn drop(&mut self) {
+        forget(&self.clean);
+        forget(&self.killed);
+    }
 }
 
 /// The source `target` reaches, placed as an engine's placement places it, killed by `kills`.
 async fn placed(
     target: &Target,
-    id: &ConnectorId,
+    spec: &ConnectorSpec,
     config: &serde_json::Value,
     kills: &Kills,
 ) -> Result<Arc<dyn Source>, Violation> {
-    let (provider, reference) = target.provider(id, kills, &super::limits()?);
+    let (provider, reference) = target.provider(spec, kills, &super::limits()?);
     let placed = provider.source(&reference, config).await.map_err(|error| {
         format!(
             "the source could not be placed: {}",
             crate::connect::described(&error)
         )
     })?;
+    target.hold_digest(placed.digest);
+    super::placed_as(spec, &placed.spec, "source")?;
     Ok(Arc::from(placed.connector))
 }
 
@@ -182,9 +213,11 @@ impl Source for Resumed {
 }
 
 /// How a load reads and writes `stream`: incrementally, appending, when it can; else in full,
-/// replacing; else as changes, merged by its key when it has one, and appended when not.
+/// replacing; else as changes, appended as a log, keyed or not.
 ///
-/// Every stream an engine reads is read in one of those, so none is left out of the load.
+/// Every stream an engine reads is read in one of those, so none is left out of the load. A log
+/// holds each change as a row, so a change a resume skips is a row missing and one it repeats a
+/// row too many; a merge would forgive both.
 pub(super) fn planned(stream: &StreamSpec) -> Option<StreamPlan> {
     let plan = StreamPlan::new(stream.name().clone());
     if stream.supports(ReadMode::Incremental) {
@@ -192,13 +225,7 @@ pub(super) fn planned(stream: &StreamSpec) -> Option<StreamPlan> {
     } else if stream.supports(ReadMode::Full) {
         Some(plan.read(ReadMode::Full).write(WriteMode::Replace))
     } else if stream.supports(ReadMode::Cdc) {
-        let keyed = stream.primary_key().is_some_and(|key| !key.is_empty());
-        let write = if keyed {
-            WriteMode::Merge
-        } else {
-            WriteMode::Append
-        };
-        Some(plan.read(ReadMode::Cdc).write(write))
+        Some(plan.read(ReadMode::Cdc).write(WriteMode::Append))
     } else {
         None
     }

@@ -191,3 +191,31 @@ async fn a_read_is_watched_for_as_long_as_the_target_chooses_and_no_longer() {
         "{report}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn s_barriers_reads_open_at_a_byte_and_are_granted_back_each_frame_and_no_more() {
+    let connected = || Target::connected(|| Box::pin(async { served(Fault::Credited) }));
+    // Options of a certifier's own leave its reads' credit as the certification grants it.
+    for target in [connected(), connected().options(Options::default())] {
+        let target = target.credit_watch(crate::BRIEF);
+        fake::CREDITED.lock().clear();
+        certify_source(&target, serde_json::json!({})).await;
+        let reads = std::mem::take(&mut *fake::CREDITED.lock());
+        // `S-BARRIER`'s reads start with a barrier pending: a byte of credit, each frame's back.
+        let (barriers, others): (Vec<_>, Vec<_>) = reads.iter().partition(|read| read.barrier > 0);
+        assert!(!barriers.is_empty(), "{reads:?}");
+        for read in barriers {
+            assert_eq!(read.grants.first(), Some(&1), "{read:?}");
+            let taken = read.grants.len() - 1;
+            assert_eq!(read.grants[1..], read.frames[..taken], "{read:?}");
+        }
+        // Every other source clause reads as the engine does; the credit clause grants a byte.
+        let floor = Options::default().read_floor;
+        assert!(
+            others
+                .iter()
+                .any(|read| read.grants.first() == Some(&floor)),
+            "{reads:?}"
+        );
+    }
+}

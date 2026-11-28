@@ -1,6 +1,6 @@
 //! Credit sized to the frames a call sends: a receiver's window grows to two of the largest
-//! frames it has taken, never past its own frame limit, and every frame's bytes come back; a
-//! peer that ignores credit is held by HTTP/2's windows.
+//! frames it has taken, never past its own frame limit, or a read's fixed window stays at its
+//! floor; every frame's bytes come back; a peer that ignores credit is held by HTTP/2's windows.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -15,14 +15,14 @@ use rdlt_connector::{
     StreamName, destination_factory, partition_channel,
 };
 use rdlt_connector_reference::MemoryDestination;
-use rdlt_host::{Connection, Options, RemoteSource};
+use rdlt_host::{Connection, Options, ReadWindow, RemoteSource};
 use rdlt_testkit::fake::{Fake, Fault, Granted, Polled, socket};
 use rdlt_wire::flow::Transport;
 use rdlt_wire::limits::{CREDIT_FLOOR, Class, MIN_FRAME_BYTES};
 use rdlt_wire::{Encoder, Limits};
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::sessions::{raw_session_within, table};
+use crate::sessions::{create_raw, raw_session_within, table};
 use crate::support::connectors::{Gate, Writes, Writing};
 
 /// Rows: the ids of a frame of seven megabytes, as the default coalescing target makes.
@@ -71,6 +71,7 @@ async fn a_served_write_grows_its_window_to_two_frames_and_answers_a_flush_with_
     use v1::write_frame::Frame;
     let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
     let (mut client, session) = raw_session_within(served, "credit_grows", Limits::default()).await;
+    create_raw(&mut client, session).await;
     let sent = write_frames();
     let sizes: Vec<u64> = sent.iter().map(length).collect();
     let start = Frame::Start(v1::WriteStart {
@@ -269,6 +270,22 @@ async fn a_hosts_read_grows_its_window_to_two_frames() {
         credits(&GRANTED, 5).await,
         [options.read_floor, schema, grown, frame, frame]
     );
+    assert!(!reading.is_finished(), "the read ended");
+    reading.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hosts_fixed_window_grants_back_each_frame_and_no_more() {
+    static GRANTED: Granted = Granted::new(Vec::new());
+    let frames = large_frames();
+    let (schema, frame) = (length(&frames[0]), length(&frames[1]));
+    let options = Options {
+        read_floor: 1,
+        read_window: ReadWindow::Fixed,
+        ..Options::default()
+    };
+    let reading = read(Fault::Granted(large_frames, &GRANTED), &options, 3).await;
+    assert_eq!(credits(&GRANTED, 5).await, [1, schema, frame, frame, frame]);
     assert!(!reading.is_finished(), "the read ended");
     reading.abort();
 }

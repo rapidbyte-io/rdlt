@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from typing import cast
 
@@ -139,11 +140,15 @@ def test_a_scaffolded_connector_installs_runs_and_certifies(
         assert database.execute('SELECT count(*) FROM "numbers"').fetchone() == (100,)
     finished = certified(project)
     assert finished.returncode == 0, finished.stdout + finished.stderr
-    monkeypatch.setattr(sys, "path", [str(project / "src"), *sys.path])
+    # The class as the wheel installed it, so it answers as the version the launcher does.
+    unpacked = tmp_path / "unpacked"
+    with zipfile.ZipFile(wheel) as archive:
+        archive.extractall(unpacked)
+    monkeypatch.setattr(sys, "path", [str(unpacked), *sys.path])
     tickets = cast("type", importlib.import_module("rdlt_connector_tickets").Tickets)
     # As the scaffold's own certification, enough rows that the kill comes before the read ends.
     killed = certify_source(tickets, config={"rows": 50_000}, launcher=launcher)
-    assert killed.result("K-SOURCE").outcome == "passed"
+    assert killed.result("K-SOURCE").outcome == "passed", killed.result("K-SOURCE").reason
 
 
 BOTH = '''"""A connector of both roles under one id, which one install serves."""

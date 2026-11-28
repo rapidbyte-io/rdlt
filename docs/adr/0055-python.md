@@ -56,25 +56,30 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   cancelled, as `asyncio.wait_for` does at its timeout.
 - **A row lands as its JSON says, as a Rust read's `rows` do.** A dict a read yields is written as
   JSON in Rust, and the engine types it as it types any source's JSON: `None` is null, the one
-  missing value; a bool, text and a finite float are themselves; an integer is exact at any width;
-  a date, datetime or time is the text its `isoformat()` answers, and a UUID its hyphenated text.
-  A `Decimal` is the text of its exact digits, read through `Decimal` itself, since JSON has no
-  decimal and the engine reads a number with a fraction as a 64-bit float. A whole one is text
-  too, though an `Int64` or a `Decimal(p, 0)` would hold it, so a column's type never follows a
-  value's exponent; `5`, `5.0` and `5E+0` are three texts, and so three merge keys. A decimal
-  type a stream declares or a hint gives does not read that text: the text goes where any value
-  its column cannot hold goes. A float or `Decimal` that is not finite, a date or time that is
-  not equal to itself by its own `__eq__`, as pandas' `NaT` is, and a value of any other type
-  fail the read, each with a code of its own, so no value lands as another. A typed decimal,
-  temporal or binary column is yielded as Arrow, which lands as its types say, as a Rust read
-  pushes a batch for one; Arrow is held where it lies, so the author must not write again into a
-  buffer a read yielded, which the engine may still hold. A pyarrow chunked array of structs holding
-  a null entry fails the read, as a batch's struct array holding one does. Another library's
-  stream of struct arrays is read as batches whose own nulls arrow-rs's reader drops, and the
-  extension reads no stream itself (ADR 0048), so a null entry of one lands as a row of what its
-  fields hold there. pyarrow's reader refuses such a stream, but reading every stream through it
-  would import every batch twice, and hold every library's stream to what the installed pyarrow
-  can import.
+  missing value; a bool, text and a finite float are themselves; an integer is exact at any width; a
+  date, datetime or time is the text its `isoformat()` answers, and a UUID its hyphenated text. A
+  `Decimal` is the text of its exact digits, read through `Decimal` itself, since JSON has no
+  decimal and the engine reads a number with a fraction as a 64-bit float. A whole one is text too,
+  though an `Int64` or a `Decimal(p, 0)` would hold it, so a column's type never follows a value's
+  exponent; `5`, `5.0` and `5E+0` are three texts, and so three merge keys. A decimal type a stream
+  declares or a hint gives does not read that text: the text goes where any value its column cannot
+  hold goes. A float or `Decimal` that is not finite, a date or time that is not equal to itself by
+  its own `__eq__`, as pandas' `NaT` is, and a value of any other type fail the read, each with a
+  code of its own, so no value lands as another. A typed decimal, temporal or binary column is
+  yielded as Arrow, which lands as its types say, as a Rust read pushes a batch for one; Arrow is
+  held where it lies, so the author must not write again into a buffer a read yielded, which the
+  engine may still hold. Arrow that crosses into Rust, a read's batches and streams, a transform's
+  answers, the merge kit's arguments and what a destination reads back, is checked against its types
+  as it is imported, its offsets, text, dictionary keys and children, in one pass and with no copy,
+  so a buffer that breaks them fails where it crosses rather than reach the engine. The interface
+  carries no buffer's length: a reader takes each buffer to be as long as the array's length and
+  type say, a values buffer as long as its last offset says, so a buffer shorter than that goes
+  unseen, here as by any reader. A pyarrow chunked array of structs holding a null entry fails the
+  read, as a batch's struct array holding one does. Another library's stream of struct arrays is
+  read as batches whose own nulls arrow-rs's reader drops, and the extension reads no stream itself
+  (ADR 0048), so a null entry of one lands as a row of what its fields hold there. pyarrow's reader
+  refuses such a stream, but reading every stream through it would import every batch twice, and
+  hold every library's stream to what the installed pyarrow can import.
 - **Exceptions cross whole.** A Python exception becomes the connector's or the transform's
   error: its type and message, shown and bounded as connector text, with its traceback as its
   cause. A connector says what kind of failure it met by raising `rdlt.connector.ConnectorError`
@@ -153,15 +158,22 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   of its own for an async method, generators for an emitter, and a `StreamContext`, with its
   `Exclusion`, `Limits` and `Headroom`, for what a Rust read is told by its partition and asks its
   emitter, given where a read names `ctx`, as a `partitions` or `plan` is given the `StreamState`
-  where it names `state`. A stream without a cursor is read in full alone, since Python's cursor is
-  optional and Rust's is not. A stream's schema is any Arrow schema, read through the C Data
-  Interface, so no one Arrow library is required, and refused where it is declared where Rust has no
-  table schema for it. Rust checks what a source answers as it checks a Rust source's, so a catalog,
-  a plan or a change batch is refused with Rust's own error and code. How a stream's rows land is
-  the pipeline's to say, as for a Rust source. `@stream` makes a function a stream as it makes a
-  method one, under the same rules, so a function moves into a `@source` class taking `self`, as its
-  `partitions=`, `plan=` and `committed=` callables then do too. A pipeline reads its stream
-  functions in process, as the streams of one source, `io.rapidbyte.functions`, which has no
+  where it names `state`. Naming `ctx` promises nothing: a stream checkpoints on demand where its
+  `checkpointing=` says so, as a Rust stream's spec says it, and says so only with a cursor to
+  checkpoint and a `ctx` to be asked through. A stream without a cursor is read in full alone, since
+  Python's cursor is optional and Rust's is not. A checkpoint is of its stream's cursor class
+  itself, as a Rust read's emitter takes exactly its stream's cursor, and so is a plan's start and
+  what `acknowledged` answers: a checkpoint of another class, a subclass included, or one a stream
+  without a cursor yields, fails the read where it is yielded, before anything of it commits. A
+  checkpoint also seals a segment, so a stream that seals segments to bound what a run holds
+  declares a cursor, read in full alone or not. A stream's schema is any Arrow schema, read through
+  the C Data Interface, so no one Arrow library is required, and refused where it is declared where
+  Rust has no table schema for it. Rust checks what a source answers as it checks a Rust source's,
+  so a catalog, a plan or a change batch is refused with Rust's own error and code. How a stream's
+  rows land is the pipeline's to say, as for a Rust source. `@stream` makes a function a stream as
+  it makes a method one, under the same rules, so a function moves into a `@source` class taking
+  `self`, as its `partitions=`, `plan=` and `committed=` callables then do too. A pipeline reads its
+  stream functions in process, as the streams of one source, `io.rapidbyte.functions`, which has no
   configuration, and is not served, installed or certified: a stream that needs those is a class's.
 - **A class's streams are one answer.** Its `@stream` methods are its `streams()` written as
   declarations, so a class has one or the other, and one with both is refused where it is
@@ -177,7 +189,20 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   `yield checkpoint(cursor)`; one that yields rows and no checkpoint after any fails
   `checkpoint_missing`, since none of them could land. Any other partition a stream declares ends: a
   read that ends on rows finishes it, and one that ends on a checkpoint leaves it there. A stream
-  without a cursor is read whole every run.
+  without a cursor is read whole every run. A read the engine ends, by a stop or by letting it go,
+  is told at once: its channel closes, so a sync read, which nothing can interrupt, finds it at its
+  next yield, one that pushes nothing included, or by asking `ctx.stopped()`, and an async read is
+  cancelled where it waits, as asyncio cancels a task, its `finally` blocks running then, and ends
+  as a read whose last yield found it gone. A stopped read ends once its thread has returned, as a
+  Rust read's future ends when its code does, so its caller bounds the wait, the engine by its stop
+  wait and certification's `S-STOP` by its window, and a sync read that never yields or asks holds
+  its stop until then. A read the engine let go, past its stop wait or as an attempt is cancelled,
+  runs on until it yields or asks, so a partition's read on a connection begins only once the last
+  read of it there has returned, as two Rust reads of one partition never run at once: it waits up
+  to a minute, as long as the engine waits by default for a read it stopped, and past that fails as
+  internal, not retried, naming the stream and the partition, since a generator that has not
+  returned by then ignores its stop and a retry would wait on the same thread; so a generator that
+  takes more than a minute to stop fails its run.
 - **Served mode is the Rust `serve`**, inside the extension, with a connector binary's flags and the
   GIL released while it serves: `serve` takes a source class, a destination class or one of each,
   whose roles one process serves, as `Served` does. A served connector's code runs on Python's
@@ -199,8 +224,13 @@ rdlt's own tests are, reaches those handlers moments after its last call.
   clause, over an in-process socket pair, a destination read back through its `published` and a
   source that says it tells where it stands asked through its streams' `acknowledged`, the kill
   clause spawning the installed launcher where one is given; a clause that applies and went
-  unobserved fails its test. Given a connector's id and endpoint and the host's TLS, they certify
-  the connector listening there over mutual TLS, as rdlt-certify's listening target does.
+  unobserved fails its test, and one that does not apply skips; one more test is the report's
+  verdict, rdlt-certify's own, which fails where it is not `passed`, so a certification that
+  certified nothing, as one of a role the connector does not serve, fails, as `rdlt certify` exits 1
+  for it (ADR 0020). Given a connector's id and endpoint and the host's TLS, they certify the
+  connector listening there over mutual TLS, as rdlt-certify's listening target does.
+  `certify_transform` is told the key and the change time of a stream the transform is given to, as
+  rdlt-certify's `TransformInputs` is, so `T-KEYS` holds it to pass them on as they arrived.
 - **User Python has only Python beneath it.** Every function of a user's that Rust calls, a
   generator's `next`, a source's `check`, `streams` and `discover`, a stream's `partitions`, `plan`,
   `committed` and `acknowledged`, a destination's methods and its sessions' and table writers', a
@@ -458,10 +488,10 @@ use where its thread made one before the fork. The wheel carries rdlt-certify's 
 connector serves a probe only where its launcher's own code asks for it. The nightly workflow tests
 the wheel on CPython 3.11 to 3.15 and on free-threaded 3.14, on Linux and macOS.
 
-A commit's barrier waits, up to its limit, for every partition still reading that checkpoints
-when asked to, as the generator does, so within one pipeline a transform that runs long on such a
-partition's flush, in Python or not, holds back the pipeline's commits until it returns or the
-barrier's wait ends; the GIL is not what holds them.
+A commit's barrier waits, up to its limit, for every partition still reading that checkpoints when
+asked to, as a stream declared `Checkpointing.ON_DEMAND` does, so within one pipeline a transform
+that runs long on such a partition's flush, in Python or not, holds back the pipeline's commits
+until it returns or the barrier's wait ends; the GIL is not what holds them.
 
 A stream that never checkpoints is read as one segment, so its run holds more of it at once.
 On Linux, glibc gives each thread that allocates, every daemon thread and every host's compute

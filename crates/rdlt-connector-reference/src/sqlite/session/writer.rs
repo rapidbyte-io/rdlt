@@ -100,7 +100,8 @@ impl TableWriter for SqliteWriter {
                 let staging = owned(transaction, &planner, &pipeline, &table.name)?;
                 let target = columns(transaction, planner.dialect(), &planner.target(&table))?;
                 for (segment, batch) in &buffered {
-                    let batch = &sqlgen::staged_changes(batch, &table, &target)?;
+                    let batch = &sqlgen::staged_batch(batch, &table, &target)?;
+                    values::classed(planner.dialect(), &table, &target, batch)?;
                     let schema = batch.schema();
                     let names: Vec<&str> = schema
                         .fields()

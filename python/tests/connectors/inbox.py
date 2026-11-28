@@ -13,6 +13,7 @@ from contextlib import closing
 
 from rdlt.connector import (
     CURSOR_UNISSUED,
+    Checkpointing,
     Config,
     Cursor,
     InvalidData,
@@ -65,6 +66,7 @@ class Inbox:
     @stream(
         primary_key=["id"],
         cursor=Next,
+        checkpointing=Checkpointing.ON_DEMAND,
         partitions="planned",
         committed="settled",
         acknowledged="standing",

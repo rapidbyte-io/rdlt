@@ -119,8 +119,14 @@ class _Elsewhere(Cursor):
     at: int = 0
 
 
+class _Further(Position):
+    """A subclass of the stream's cursor, which is no cursor of its class itself."""
+
+
 @pytest.mark.parametrize(
-    "start", [_Elsewhere(), {"next": 1}], ids=["another-cursor-type", "a-mapping"]
+    "start",
+    [_Elsewhere(), _Further(), {"next": 1}],
+    ids=["another-cursor-type", "a-subclass-of-it", "a-mapping"],
 )
 def test_a_plan_starts_a_partition_at_a_cursor_of_its_stream_s_type(
     start: object, tmp_path: Path, connectors: Path

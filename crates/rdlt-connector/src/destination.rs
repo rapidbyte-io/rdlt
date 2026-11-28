@@ -149,7 +149,10 @@ pub struct HistoryColumns {
 ///   carries no key.
 ///
 /// A source gives each row a position of its own. Where a truncate and a key's row share a
-/// `seq` all the same, the truncate applies first: the row is not before it, and applies.
+/// `seq` all the same, the truncate applies first: the row is not before it, and applies. A
+/// source sends rows that share a `seq` in one segment, so one commit merges them all: across
+/// commits a soft delete leaves a row at its truncate's `seq`, which no later row of that `seq`
+/// would pass.
 ///
 /// `op` and `unchanged` are in written batches only: they are never stored, and no schema change
 /// names them.

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use arrow_array::ffi::{FFI_ArrowSchema, to_ffi};
 use arrow_array::ffi_stream::ArrowArrayStreamReader;
 use arrow_array::{Array as _, RecordBatch, StructArray};
+use arrow_data::ArrayData;
 use arrow_pyarrow::FromPyArrow as _;
 use arrow_schema::{ArrowError, Schema, SchemaRef};
 use pyo3::exceptions::PyValueError;
@@ -22,7 +23,58 @@ pub(crate) enum Produced {
     Batch(RecordBatch),
     /// A stream of batches, read one at a time: a pyarrow `Table`, a polars `DataFrame`, a `DuckDB`
     /// relation, or anything with `__arrow_c_stream__`.
-    Stream(ArrowArrayStreamReader),
+    Stream(Batches),
+}
+
+/// A stream's batches, each checked as it is read, as a batch handed over alone is.
+pub(crate) struct Batches(ArrowArrayStreamReader);
+
+impl Iterator for Batches {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(self.0.next()?.and_then(checked))
+    }
+}
+
+/// `batch`, refused where a column's buffers break what its type says: Arrow crosses the C Data
+/// Interface as its producer made it, so its offsets, text, dictionary keys and children are
+/// checked here, in one pass and with no copy.
+fn checked(batch: RecordBatch) -> Result<RecordBatch, ArrowError> {
+    for column in batch.columns() {
+        column.to_data().validate_full()?;
+    }
+    Ok(batch)
+}
+
+/// The batch `producer` hands over through its `__arrow_c_array__`, checked with the GIL released,
+/// as a stream's batches are.
+///
+/// # Errors
+///
+/// What arrow-pyarrow raises of the producer, or `ValueError` where the batch breaks its types.
+pub(crate) fn batch_of(producer: &Bound<'_, PyAny>) -> Result<RecordBatch, PyErr> {
+    let batch = RecordBatch::from_pyarrow_bound(producer)?;
+    producer
+        .py()
+        .detach(|| checked(batch))
+        .map_err(|error| broken(&error))
+}
+
+/// The array `producer` hands over through its `__arrow_c_array__`, checked as a batch is.
+///
+/// # Errors
+///
+/// What arrow-pyarrow raises of the producer, or `ValueError` where the array breaks its type.
+pub(crate) fn array_of(producer: &Bound<'_, PyAny>) -> Result<ArrayData, PyErr> {
+    let data = ArrayData::from_pyarrow_bound(producer)?;
+    data.validate_full().map_err(|error| broken(&error))?;
+    Ok(data)
+}
+
+/// Why Arrow that was handed over is refused, as Python reads it.
+fn broken(error: &ArrowError) -> PyErr {
+    PyValueError::new_err(format!("Arrow data that breaks its own types: {error}"))
 }
 
 /// What `object` holds of Arrow; none where it is no Arrow producer.
@@ -33,17 +85,17 @@ pub(crate) enum Produced {
 ///
 /// # Errors
 ///
-/// What the producer raises, or `ValueError` for a batch whose struct array holds nulls or a
-/// pyarrow chunked array of structs holding a null entry.
+/// What the producer raises, or `ValueError` for a batch that breaks its types, whose struct
+/// array holds nulls, or a pyarrow chunked array of structs holding a null entry.
 pub(crate) fn produced(object: &Bound<'_, PyAny>) -> Result<Option<Produced>, PyErr> {
     let py = object.py();
     if object.hasattr(intern!(py, "__arrow_c_array__"))? {
-        return RecordBatch::from_pyarrow_bound(object).map(|batch| Some(Produced::Batch(batch)));
+        return batch_of(object).map(|batch| Some(Produced::Batch(batch)));
     }
     if object.hasattr(intern!(py, "__arrow_c_stream__"))? {
         refuse_null_structs(object)?;
         return ArrowArrayStreamReader::from_pyarrow_bound(object)
-            .map(|reader| Some(Produced::Stream(reader)));
+            .map(|reader| Some(Produced::Stream(Batches(reader))));
     }
     Ok(None)
 }
@@ -208,11 +260,11 @@ pub(crate) enum Handed<'py> {
     Stream(Bound<'py, PyAny>),
 }
 
-/// The batch whose capsules Python exported as `schema` and `array`.
+/// The batch whose capsules Python exported as `schema` and `array`, checked.
 ///
 /// # Errors
 ///
-/// What arrow-pyarrow raises of the capsules.
+/// What arrow-pyarrow raises of the capsules, or `ValueError` where the batch breaks its types.
 pub(crate) fn batch<'py>(
     py: Python<'py>,
     schema: Bound<'py, PyAny>,
@@ -220,7 +272,7 @@ pub(crate) fn batch<'py>(
 ) -> Result<RecordBatch, PyErr> {
     let capsules = PyTuple::new(py, [schema, array])?;
     let producer = Bound::new(py, Exported(capsules.into_any().unbind()))?;
-    RecordBatch::from_pyarrow_bound(producer.as_any())
+    batch_of(producer.as_any())
 }
 
 /// What Python exported of a stream, as a C Data Interface producer.
@@ -240,12 +292,13 @@ impl ExportedStream {
     }
 }
 
-/// The batches `handed` holds, in order, each stream's read a batch at a time with the GIL
-/// held, since a Python-backed reader runs Python for its next batch.
+/// The batches `handed` holds, in order, each checked, each stream's read a batch at a time with
+/// the GIL held, since a Python-backed reader runs Python for its next batch.
 ///
 /// # Errors
 ///
-/// What arrow-pyarrow raises of a capsule, or `ValueError` where a stream fails.
+/// What arrow-pyarrow raises of a capsule, or `ValueError` where a stream fails or a batch breaks
+/// its types.
 pub(crate) fn batches(py: Python<'_>, handed: Vec<Handed<'_>>) -> Result<Vec<RecordBatch>, PyErr> {
     let mut batches = Vec::with_capacity(handed.len());
     for item in handed {
@@ -254,7 +307,7 @@ pub(crate) fn batches(py: Python<'_>, handed: Vec<Handed<'_>>) -> Result<Vec<Rec
             Handed::Stream(capsule) => {
                 let producer = Bound::new(py, ExportedStream(capsule.unbind()))?;
                 let reader = ArrowArrayStreamReader::from_pyarrow_bound(producer.as_any())?;
-                for batch in reader {
+                for batch in Batches(reader) {
                     let batch = batch.map_err(|error| {
                         PyValueError::new_err(format!("a stream of batches failed: {error}"))
                     })?;

@@ -14,7 +14,7 @@ use crate::runtime;
 
 /// A stream `rows` read as changes, in one partition, which reads with `read`, defined before it.
 const ROWS: &str = "\
-stream = types.SimpleNamespace(read=read, plan=None, spec=json.dumps({
+stream = types.SimpleNamespace(read=read, cursor=object, plan=None, spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': ['id'], 'read_modes': ['cdc'],
              'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': False,

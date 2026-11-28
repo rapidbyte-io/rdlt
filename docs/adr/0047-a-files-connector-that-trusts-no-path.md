@@ -116,13 +116,15 @@ when it is read and never written in a form its reader refuses.
   times, and fails with `file_missing` only when the manifest it read is still the latest. A
   discard of what older sessions staged makes the latest manifest's name durable before it
   removes anything: a manifest a power loss could take back decides nothing.
-- **Every durable step is ordered.** A file is synced before it is linked or renamed into
-  place, and its directory after; a commit answered as the landed one syncs its manifests'
-  directory again before it answers, since the commit it repeats may have failed between the
-  link and the sync, and removes nothing where that sync fails. Tests record each step once it
-  has taken place and assert the order, and die at each step in turn of every kind of commit,
-  of an open, of a schema change and of a keeper's write. What they cannot see is whether a
-  sync that was called reached the disk: a call recorded and not made, or made on the wrong
+- **Every durable step is ordered.** A file is synced before it is linked or renamed into place, and
+  its directory after; a commit answered as the landed one syncs its manifests' directory again
+  before it answers, since the commit it repeats may have failed between the link and the sync, and
+  removes nothing where that sync fails. A schema change the catalog already holds syncs the
+  catalog's directory before it answers, for the same reason: the change it repeats may have died
+  between linking the version, or the owner file of the table's creation, and the sync. Tests record
+  each step once it has taken place and assert the order, and die at each step in turn of every kind
+  of commit, of an open, of a schema change and of a keeper's write. What they cannot see is whether
+  a sync that was called reached the disk: a call recorded and not made, or made on the wrong
   descriptor, passes every test, and so does a file system that does not keep its promise. A
   directory whose creation could not be made durable is taken as durable when the call is made
   again: after a sync has failed, nothing a caller does makes what came before it certain.
@@ -160,9 +162,10 @@ when it is read and never written in a form its reader refuses.
   what it was read from. A dictionary inside a map, a union, a run-end column or a list view
   is not written as its values, and files that hold one merge with none. A merge that fails
   leaves the list as it was and removes what it wrote; the commit goes on, and the next
-  commit tries again, at the cost of opening and reading those files once more. Each commit
-  opens the files it may merge to compare their schemas, and a commit answered as the landed
-  one walks its session's staged tree: both are bounded by the list.
+  commit tries again, at the cost of opening and reading those files once more. A merge holds
+  one of its files open at a time, so no count of files a commit adds exhausts the process's
+  descriptors. Each commit opens the files it may merge to compare their schemas, and a commit
+  answered as the landed one walks its session's staged tree: both are bounded by the list.
 - **A merge table's files hold the columns their rows hold.** A merge gives the destination
   its rows as batches of the columns they hold, as ADR 0049 says, and each is written under
   those columns: JSON lines, which name their own columns, as one file, and Arrow, where a

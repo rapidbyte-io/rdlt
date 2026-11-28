@@ -32,11 +32,13 @@ pub const MAX_RESERVED_BYTES: usize = 256;
 pub const MIN_IDENTIFIER_LEN: u16 = 16;
 
 /// Positions: how many checkpoints its reads sent one host a served source remembers, to hear
-/// that host report one of them committed, and for how many partitions where a read started.
+/// that host report one of them committed, and for how many partitions their newest checkpoint
+/// and where their latest read started.
 ///
 /// Beyond them the oldest checkpoint is forgotten, and a report of it refused as transient; the
-/// starts are counted apart, so no number of checkpoints forgets where a read started. Each
-/// costs about forty bytes, so a host costs the connector some twenty megabytes at most.
+/// partitions are counted apart, so no number of checkpoints forgets a partition's newest or
+/// where its read started. A checkpoint costs about thirty bytes and a partition about fifty, so
+/// a host costs the connector some twenty megabytes at most.
 pub const MAX_ACKNOWLEDGEABLE: usize = 1 << 18;
 
 /// Bytes: bounds the message, and each cause, of a connector's error as a host keeps it.
@@ -47,6 +49,11 @@ pub const MAX_ERROR_CODE_BYTES: usize = 128;
 
 /// Causes: bounds the chain of causes of a connector's error a host keeps.
 pub const MAX_ERROR_CAUSES: usize = 8;
+
+/// Bytes: bounds each cause of an error a served connector sends its host, so the
+/// [`MAX_ERROR_CAUSES`] it sends take no more than the control string limit beside its message,
+/// and a failed call's trailers fit the host's header limit.
+pub const SENT_CAUSE_BYTES: u64 = 8 * 1024;
 
 /// Bytes: bounds the JSON schema of a connector's configuration, as its handshake answers it.
 pub const MAX_CONFIG_SCHEMA_BYTES: usize = 1024 * 1024;

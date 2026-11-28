@@ -11,7 +11,7 @@ fn lingering(groups: &[u32]) -> Result<(), Lingering> {
 }
 
 fn ended<T>(ending: Result<T, Ended>) -> (Exit, String) {
-    let Err(Ended(code, message)) = ending else {
+    let Err(Ended::Failed(code, message)) = ending else {
         panic!("the certification did not end in error");
     };
     (code, message)
@@ -25,7 +25,7 @@ fn a_group_that_lingers_is_said_however_the_certification_ended() {
     assert_eq!(code, Exit::Io);
     assert!(message.contains("[41]"), "{message}");
     // One that failed keeps its failure, and says what it left beside it.
-    let failed = || Err::<u8, _>(Ended(Exit::Usage, "no such option".to_owned()));
+    let failed = || Err::<u8, _>(Ended::Failed(Exit::Usage, "no such option".to_owned()));
     assert_eq!(
         ended(ending(failed(), Ok(()), None)),
         (Exit::Usage, "no such option".to_owned())
@@ -62,7 +62,10 @@ fn the_last_signal_heard_says_how_the_certification_exits() {
         Exit::Signalled(131)
     );
     // A failure of its own is not taken for a signal's, whatever is heard after.
-    let failed = Err::<u8, _>(Ended(Exit::Findings, "nothing was certified".to_owned()));
+    let failed = Err::<u8, _>(Ended::Failed(
+        Exit::Findings,
+        "nothing was certified".to_owned(),
+    ));
     assert_eq!(ended(ending(failed, Ok(()), Some(129))).0, Exit::Findings);
     for status in [129, 130, 131, 143] {
         assert_eq!(signalled(&interrupted(status)), Some(status));
@@ -74,6 +77,10 @@ fn the_last_signal_heard_says_how_the_certification_exits() {
         Exit::Usage,
         Exit::Io,
     ] {
-        assert_eq!(signalled(&Ended(exit, String::new())), None, "{exit:?}");
+        assert_eq!(
+            signalled(&Ended::Failed(exit, String::new())),
+            None,
+            "{exit:?}"
+        );
     }
 }

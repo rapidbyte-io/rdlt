@@ -60,7 +60,8 @@ fn a_python_transform_s_certification_reports_every_t_clause_in_its_listed_order
                 None,
             )
             .unwrap();
-        let answered = super::certify_transform(py, &transform, vec![batch]).unwrap();
+        let answered =
+            super::certify_transform(py, &transform, vec![batch], Vec::new(), None).unwrap();
         let report: serde_json::Value = serde_json::from_str(&answered).unwrap();
         assert_eq!(report["connector"], "unchanged");
         let results = report["results"].as_array().unwrap();
@@ -79,6 +80,51 @@ fn a_python_transform_s_certification_reports_every_t_clause_in_its_listed_order
             .find(|result| result["clause"] == "T-ROWS")
             .unwrap();
         assert_eq!(rows["outcome"], "passed", "{rows}");
+    });
+}
+
+#[test]
+fn a_python_transform_is_held_to_pass_the_keys_and_the_change_time_it_is_given() {
+    embedded::with(|py| {
+        let function = py
+            .eval(
+                c"lambda batch: batch.set_column(1, 'at', __import__('pyarrow.compute', fromlist=['add']).add(batch.column('at'), 1))",
+                None,
+                None,
+            )
+            .unwrap()
+            .unbind();
+        let transform =
+            NativeTransform::new(py, "later".to_owned(), function, false, None, None).unwrap();
+        let held = |keys: &[&str], change_time: Option<&str>| {
+            let batch = py
+                .eval(
+                    c"__import__('pyarrow').record_batch({'id': [1, 2], 'at': [3, 4]})",
+                    None,
+                    None,
+                )
+                .unwrap();
+            let keys = keys.iter().map(|key| (*key).to_owned()).collect();
+            let change_time = change_time.map(str::to_owned);
+            let answered =
+                super::certify_transform(py, &transform, vec![batch], keys, change_time).unwrap();
+            let report: serde_json::Value = serde_json::from_str(&answered).unwrap();
+            let results = report["results"].as_array().unwrap();
+            let keyed = results
+                .iter()
+                .find(|result| result["clause"] == "T-KEYS")
+                .unwrap();
+            let outcome = keyed["outcome"].as_str().unwrap().to_owned();
+            (outcome, report["verdict"].as_str().unwrap().to_owned())
+        };
+        assert_eq!(held(&[], None).0, "inapplicable");
+        assert_eq!(held(&["id"], None).0, "passed");
+        // A clause that fails fails the report, as its verdict says.
+        assert_eq!(
+            held(&["id"], Some("at")),
+            ("failed".into(), "failed".into())
+        );
+        assert_eq!(held(&[], Some("at")).0, "failed");
     });
 }
 

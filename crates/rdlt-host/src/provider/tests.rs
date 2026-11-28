@@ -1,4 +1,4 @@
-use super::{ConnectorRef, Digest};
+use super::{ConnectorRef, Digest, accepts};
 
 #[test]
 fn a_digest_shows_as_lowercase_hex() {
@@ -49,4 +49,21 @@ fn a_reference_holds_the_access_its_builders_ask_for() {
         }
     );
     assert!(!reference.access.is_empty());
+}
+
+#[test]
+fn a_reference_held_to_a_version_exactly_accepts_that_version_alone() {
+    let id = rdlt_connector::ConnectorId::parse("io.example.sink").expect("a valid id");
+    let reference = ConnectorRef::new(id.clone())
+        .exactly("1.2.3")
+        .expect("a semantic version");
+    assert!(accepts(&reference, "1.2.3").is_ok());
+    for other in ["1.2.4", "1.2.2", "1.3.0", "one"] {
+        assert!(accepts(&reference, other).is_err(), "{other}");
+    }
+    // A version a host cannot read as a full semantic version is no requirement.
+    for partial in ["one", "1", "1.2", "2024.1"] {
+        let held = ConnectorRef::new(id.clone()).exactly(partial);
+        assert!(held.is_err(), "{partial}");
+    }
 }

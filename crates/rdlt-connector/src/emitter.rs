@@ -87,6 +87,11 @@ impl<C: Serialize> Emitter<C> {
         self.sink.stopped().await;
     }
 
+    /// Whether the engine has asked the read to stop, or stopped listening, by now.
+    pub(crate) fn stop_asked(&self) -> bool {
+        self.sink.is_stopped()
+    }
+
     /// Pushes `rows`, each a JSON object, as JSON lines for the engine to infer their schema; an
     /// empty slice pushes nothing.
     ///

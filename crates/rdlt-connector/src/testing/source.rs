@@ -1,6 +1,7 @@
 //! Source clauses.
 
 mod acks;
+mod barrier;
 mod json;
 mod partition;
 pub(super) mod recording;
@@ -8,16 +9,19 @@ pub(super) mod resume;
 mod stop;
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+
+use rdlt_wire::Limits;
 
 use super::limits::{CLAUSE_TIMEOUT, HELD_BYTES};
 use super::{
     Clause, ClauseResult, Observed, Outcome, Reason, Report, Violation, bounded_call, outcome,
     timed,
 };
-use crate::catalog::{Catalog, Checkpointing, StreamSpec};
+use crate::catalog::Catalog;
 use crate::cursor::Cursor;
 use crate::id::StreamName;
 use crate::sink::partition_channel;
@@ -67,7 +71,8 @@ pub const SOURCE_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "S-BARRIER",
-        statement: "an on-demand stream answers a pending barrier with a checkpoint",
+        statement: "an on-demand stream answers a barrier pending as its read starts, and one \
+                    raised during it, with a checkpoint before its last push",
         unless: "no stream checkpoints on demand",
     },
     Clause {
@@ -100,7 +105,36 @@ pub async fn certify_source_factory_observed(
     config: serde_json::Value,
     observed: &Observed,
 ) -> Report {
-    certified(factory, config, observed, HELD_BYTES).await
+    certified(factory, config, observed, HELD_BYTES, None).await
+}
+
+/// How a source certified over the wire is read.
+pub struct Wired<'a> {
+    /// The limits its connections agreed, the lesser of the host's and the connector's own: a
+    /// served connector cuts its reads' batches to them.
+    pub limits: Limits,
+    /// What makes the sources `S-BARRIER` reads, whose reads it judges a barrier's answer on.
+    pub barriers: &'a dyn SourceFactory,
+}
+
+impl fmt::Debug for Wired<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Wired")
+            .field("limits", &self.limits)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Certifies the source `factory` creates from `config` over the wire, as `wired` says, telling
+/// `observed` each clause's result as its check ends.
+pub async fn certify_source_factory_wired(
+    factory: &dyn SourceFactory,
+    wired: &Wired<'_>,
+    config: serde_json::Value,
+    observed: &Observed,
+) -> Report {
+    certified(factory, config, observed, HELD_BYTES, Some(wired)).await
 }
 
 /// Certifies source connector `C` with `config`, each clause holding `held` bytes of what its
@@ -111,21 +145,27 @@ pub(super) async fn certify_source_holding<C: SourceConnector>(
     held: usize,
 ) -> Report {
     let factory = acknowledging_source_factory::<C>();
-    certified(factory.as_ref(), config, &Observed::new(), held).await
+    certified(factory.as_ref(), config, &Observed::new(), held, None).await
 }
 
 /// Certifies the source `factory` creates from `config`, each clause holding `held` bytes,
-/// telling `observed` each clause's result as its check ends.
+/// telling `observed` each clause's result as its check ends; over the wire where `wired` says
+/// how.
 async fn certified(
     factory: &dyn SourceFactory,
     config: serde_json::Value,
     observed: &Observed,
     held: usize,
+    wired: Option<&Wired<'_>>,
 ) -> Report {
     let connector = factory.spec().id.to_string();
     observed.named(&connector);
+    let barriers = wired.map(|wired| (wired, config.clone()));
     let results = match connected(factory, config).await {
-        Ok((source, told)) => check_all(source.as_ref(), told, observed, held).await,
+        Ok((source, told)) => {
+            let checked = check_all(source.as_ref(), told, observed, held, barriers.as_ref());
+            checked.await
+        }
         Err(violation) => {
             let outcome = violation.of("connect failed").outcome();
             let failed = |clause: &Clause| ClauseResult {
@@ -181,6 +221,26 @@ async fn connected(
     Ok((Arc::from(source), told))
 }
 
+/// `S-BARRIER` over the wire: a source of its own from `wired`'s factory, connected with
+/// `config`, the pieces of whose batches are bounded by the limits its connection agreed.
+async fn barriers_wired(
+    wired: &Wired<'_>,
+    config: &serde_json::Value,
+    catalog: &Catalog,
+    budget: &Budget,
+) -> Outcome {
+    let connecting = wired
+        .barriers
+        .connect(config.clone(), ConnectContext::new());
+    match bounded_call("connect", connecting).await {
+        Ok(source) => {
+            let limits = Some(&wired.limits);
+            barrier::barriers_are_answered(source.as_ref(), catalog, budget, limits).await
+        }
+        Err(violation) => violation.of("connect failed").outcome(),
+    }
+}
+
 /// Where the source stands before any clause reads it, which `S-ACK`, last, checks: asked within
 /// a clause's bound, however many partitions the source plans.
 async fn stood(
@@ -210,6 +270,7 @@ async fn check_all(
     told: Told,
     observed: &Observed,
     held: usize,
+    wired: Option<&(&Wired<'_>, serde_json::Value)>,
 ) -> Vec<ClauseResult> {
     let catalog = bounded_call("discover", source.discover()).await;
     let mut told = stood(source, told, catalog.as_ref().ok()).await;
@@ -253,9 +314,15 @@ async fn check_all(
                 )))
                 .await
             }
-            (Ok(catalog), _) => {
-                within(Box::pin(barriers_are_answered(source, catalog, &budget))).await
-            }
+            (Ok(catalog), _) => match wired {
+                None => {
+                    let answered = barrier::barriers_are_answered(source, catalog, &budget, None);
+                    within(Box::pin(answered)).await
+                }
+                Some((wired, config)) => {
+                    within(Box::pin(barriers_wired(wired, config, catalog, &budget))).await
+                }
+            },
         };
         let result = ClauseResult {
             clause: *clause,
@@ -392,38 +459,3 @@ const START_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// How long a read asked to stop has to end, or fail, before it counts as started.
 const STOP_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
-
-async fn barriers_are_answered(source: &dyn Source, catalog: &Catalog, budget: &Budget) -> Outcome {
-    let on_demand: Vec<&StreamSpec> = catalog
-        .iter()
-        .filter(|stream| stream.checkpointing() == Checkpointing::OnDemand)
-        .collect();
-    if on_demand.is_empty() {
-        return Outcome::Inapplicable("no stream checkpoints on demand".into());
-    }
-    let check = async {
-        for stream in on_demand {
-            for (partition, start) in plan(source, stream.name()).await? {
-                let read = (stream, &partition);
-                let recording = recording::record(source, read, start, Some(1), budget).await?;
-                let pushed = recording
-                    .segments
-                    .iter()
-                    .flatten()
-                    .chain(&recording.tail)
-                    .next()
-                    .is_some();
-                if pushed && !recording.answered.contains(&1) {
-                    return Err(format!(
-                        "stream {} partition {} never answered barrier 1",
-                        stream.name(),
-                        partition.id()
-                    )
-                    .into());
-                }
-            }
-        }
-        Ok(())
-    };
-    outcome(check.await)
-}

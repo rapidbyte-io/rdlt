@@ -9,7 +9,9 @@
 //! A sync read's push waits for the engine with the GIL released. An async read's never waits:
 //! an item's push that finds the channel full is sent by a task of the runtime, and a notice that
 //! finds it full is said again once a task has seen room come; the task then wakes the read's
-//! event loop through a socket the loop watches, so the loop runs on meanwhile.
+//! event loop through a socket the loop watches, so the loop runs on meanwhile. A read the engine
+//! lets go closes its channel and wakes the loop the same way, which then cancels the read where
+//! it waits; a sync read, which nothing interrupts, finds its channel closed at its next yield.
 
 mod pushes;
 mod room;
@@ -24,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use parking_lot::Mutex;
-use pyo3::types::PyAnyMethods as _;
+use pyo3::types::{PyAnyMethods as _, PyType};
 use pyo3::{Bound, IntoPyObject as _, Py, PyAny, PyErr, Python, intern, pyclass, pymethods};
 use rdlt_connector::{ConnectorError, Headroom};
 use serde_json::value::RawValue;
@@ -37,7 +39,7 @@ use crate::json::JsonLimits;
 use crate::runtime;
 use crate::source::context::{NativeNotice, NativeStreamContext};
 use pushes::Pushes;
-use room::Room;
+use room::{Room, Wake};
 
 /// What a partition's thread sends its read.
 #[derive(Debug)]
@@ -63,45 +65,98 @@ pub(crate) enum Pushed {
     Failed(ConnectorError),
 }
 
-/// Where a partition's thread sends what it pushes, which its out and its context share: none
-/// once the read has said how it ended, which closes the channel at once, since Python's collector
-/// may keep either object, and with it the channel, alive long after.
+/// Where a partition's thread sends what it pushes, which its out, its context and its read share,
+/// and the socket an async read's event loop watches: none once the read has said how it ended,
+/// which closes the channel at once, since Python's collector may keep either object, and with it
+/// the channel, alive long after.
 #[derive(Clone, Default)]
-pub(crate) struct Outlet(Arc<Mutex<Option<mpsc::Sender<Pushed>>>>);
+pub(crate) struct Outlet(Arc<Mutex<Held>>);
+
+/// What an outlet holds.
+#[derive(Default)]
+struct Held {
+    sent: Option<mpsc::Sender<Pushed>>,
+    /// Made at the event loop's first ask.
+    wake: Option<Arc<Wake>>,
+}
 
 impl Outlet {
     /// Opens the outlet onto `sent`.
     fn open(&self, sent: mpsc::Sender<Pushed>) {
-        *self.0.lock() = Some(sent);
+        self.0.lock().sent = Some(sent);
     }
 
     /// Where to send, cloned out of the lock, which is never held while a send waits for the
-    /// engine; none once the read has said how it ended.
+    /// engine; none once the read has said how it ended or the engine stopped listening.
     pub(crate) fn sender(&self) -> Option<mpsc::Sender<Pushed>> {
-        self.0.lock().clone()
+        let held = self.0.lock();
+        held.sent.as_ref().filter(|sent| !sent.is_closed()).cloned()
     }
 
     /// Closes the outlet, answering where it sent.
     fn close(&self) -> Option<mpsc::Sender<Pushed>> {
-        self.0.lock().take()
+        self.0.lock().sent.take()
     }
 
     /// Whether the read has gone: it said how it ended, or the engine stopped listening.
     pub(crate) fn gone(&self) -> bool {
-        self.0.lock().as_ref().is_none_or(mpsc::Sender::is_closed)
+        let held = self.0.lock();
+        held.sent.as_ref().is_none_or(mpsc::Sender::is_closed)
+    }
+
+    /// The socket the read's event loop watches, made at the first ask.
+    fn wake(&self) -> std::io::Result<Arc<Wake>> {
+        let mut held = self.0.lock();
+        if let Some(wake) = &held.wake {
+            return Ok(Arc::clone(wake));
+        }
+        Ok(Arc::clone(held.wake.insert(Arc::new(Wake::new()?))))
+    }
+
+    /// Wakes the read's event loop, where it watches.
+    fn ring(&self) {
+        if let Some(wake) = &self.0.lock().wake {
+            wake.ring();
+        }
+    }
+
+    /// Takes what made the watched socket readable.
+    fn woken(&self) {
+        if let Some(wake) = &self.0.lock().wake {
+            wake.drain();
+        }
+    }
+
+    /// Lets go of the socket the loop watched, which closes once the runtime lets go of it too.
+    fn unwatched(&self) -> Option<Arc<Wake>> {
+        self.0.lock().wake.take()
     }
 }
 
 /// A partition's read, and what it sends.
+///
+/// Dropping it, as the engine does a read it stops or lets go, tells the read's thread it has
+/// gone: a sync read at its next yield, an async one where it waits.
 pub(crate) struct Reading {
     received: mpsc::Receiver<Pushed>,
     /// Whether the read said how it ended.
     told: Arc<AtomicBool>,
+    outlet: Outlet,
+}
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        // Closed before the loop wakes, so the loop finds the read gone.
+        self.received.close();
+        self.outlet.ring();
+    }
 }
 
 impl Reading {
     /// Starts reading, on a daemon thread named `name` meanwhile, what
-    /// `stream.read(partition, cursor, context)` returns: an iterator or an async iterator.
+    /// `stream.read(partition, cursor, context)` returns: an iterator or an async iterator, whose
+    /// checkpoints are of the class `stream.cursor` names; `held` is let go once the read has
+    /// returned and its thread let go of what it held.
     ///
     /// Nothing here takes the GIL or waits.
     ///
@@ -115,22 +170,27 @@ impl Reading {
         cursor: Option<String>,
         context: NativeStreamContext,
         limits: JsonLimits,
+        held: impl Send + 'static,
     ) -> Result<Self, Unanswered> {
         // A yield waits for the engine: the channel holds one push while another is sent.
-        let (sent, received) = mpsc::channel(1);
+        let (sent, received) = mpsc::channel(rdlt_connector::BRIDGED_EVENTS.get());
         let told = Arc::new(AtomicBool::new(false));
         let outlet = context.outlet().clone();
         outlet.open(sent);
-        let out = PartitionOut {
-            sent: outlet.clone(),
-            limits,
-            told: Arc::clone(&told),
-            room: Mutex::default(),
-        };
-        let unread = (outlet, Arc::clone(&told));
+        let read = outlet.clone();
+        let unread = (outlet.clone(), Arc::clone(&told));
+        let saying = Arc::clone(&told);
         let name = name.to_owned();
         calls::start(
             move |py| {
+                let of = stream.bind(py).getattr(intern!(py, "cursor"))?.extract()?;
+                let out = PartitionOut {
+                    sent: outlet,
+                    limits,
+                    told: saying,
+                    cursor: of,
+                    room: Mutex::default(),
+                };
                 let context = Py::new(py, context)?;
                 let out = Py::new(py, out)?;
                 let read = calls::reading(py)?.getattr(intern!(py, "read"))?;
@@ -143,10 +203,14 @@ impl Reading {
                     let (outlet, told) = unread;
                     failed(py, &outlet, &told, &error);
                 }
-                Box::new(|| ())
+                Box::new(move || drop(held))
             },
         )?;
-        Ok(Self { received, told })
+        Ok(Self {
+            received,
+            told,
+            outlet: read,
+        })
     }
 
     /// The next push, none once the read ended.
@@ -169,13 +233,15 @@ pub(crate) fn send(py: Python<'_>, sent: &mpsc::Sender<Pushed>, pushed: Pushed) 
     py.detach(|| sent.blocking_send(pushed).is_ok())
 }
 
-/// What a partition's thread pushes to: its read's channel, the limits a read keeps within, and
-/// what an async read has waiting for room.
+/// What a partition's thread pushes to: its read's channel, the limits a read keeps within, the
+/// class its checkpoints' cursors are, and what an async read has waiting for room.
 #[pyclass(module = "rdlt._native", name = "PartitionOut", frozen)]
 pub(crate) struct PartitionOut {
     sent: Outlet,
     limits: JsonLimits,
     told: Arc<AtomicBool>,
+    /// The stream's cursor class, none where it declares no cursor.
+    cursor: Option<Py<PyType>>,
     /// Locked only by the read's own thread, for Rust alone: nothing under it runs Python.
     room: Mutex<Room>,
 }
@@ -183,12 +249,14 @@ pub(crate) struct PartitionOut {
 #[pymethods]
 impl PartitionOut {
     /// Pushes what a sync read yielded, in order, waiting for the engine with the GIL released;
-    /// false once the read has gone or the item failed it, the read then being told so.
+    /// false once the read has gone, an item that pushes nothing included, or the item failed it,
+    /// the read then being told so.
     fn push(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> bool {
         let Some(sent) = self.sent.sender() else {
             return false;
         };
-        pushed(py, item, self.limits, &sent)
+        let cursor = self.cursor.as_ref().map(|cursor| cursor.bind(py));
+        pushed(py, item, self.limits, cursor, &sent)
     }
 
     /// Sends what an async read yielded without waiting for the engine: true once all of it is
@@ -200,7 +268,8 @@ impl PartitionOut {
         let Some(sender) = self.sent.sender() else {
             return Some(false);
         };
-        match Pushes::of(py, item, self.limits) {
+        let cursor = self.cursor.as_ref().map(|cursor| cursor.bind(py));
+        match Pushes::of(py, item, self.limits, cursor) {
             Ok(pushes) => self.sending(py, &sender, pushes),
             Err(error) => Some(self.fail(py, &sender, error)),
         }
@@ -233,16 +302,21 @@ impl PartitionOut {
         }
     }
 
-    /// The descriptor of the socket that is readable once what waited for room was sent, or
-    /// room came; it is made at the first ask, and closes once the read has said how it ended
-    /// and the runtime has let go of it.
+    /// The descriptor of the socket that is readable once what waited for room was sent, room
+    /// came, or the read has gone; it is made at the first ask, and closes once the read has said
+    /// how it ended and the runtime has let go of it.
     fn watched(&self) -> Result<RawFd, PyErr> {
-        Ok(self.room.lock().watched()?)
+        Ok(self.sent.wake()?.watched())
     }
 
     /// Takes what made the watched socket readable.
     fn woken(&self) {
-        self.room.lock().woken();
+        self.sent.woken();
+    }
+
+    /// Whether the read has gone: it said how it ended, or the engine stopped listening.
+    fn gone(&self) -> bool {
+        self.sent.gone()
     }
 
     /// Says the read yielded everything, lets go of what waits for room, and closes its channel.
@@ -250,13 +324,13 @@ impl PartitionOut {
         self.told.store(true, Ordering::Release);
         let room = mem::take(&mut *self.room.lock());
         self.sent.close();
-        drop(room);
+        drop((room, self.sent.unwatched()));
     }
 
     /// Says the read ended with `error`, lets go of what waits for room, and closes its channel.
     fn failed(&self, py: Python<'_>, error: &Bound<'_, PyAny>) {
         let room = mem::take(&mut *self.room.lock());
-        drop(room);
+        drop((room, self.sent.unwatched()));
         failed(
             py,
             &self.sent,
@@ -304,9 +378,13 @@ impl PartitionOut {
         push: Option<Pushed>,
         rest: Option<Pushes>,
     ) -> Option<bool> {
-        let waited = match runtime::get(py) {
-            Ok(runtime) => self.room.lock().wait(runtime, sender, push),
-            Err(error) => Err(std::io::Error::other(error.to_string())),
+        let waited = match (runtime::get(py), self.sent.wake()) {
+            (Ok(runtime), Ok(wake)) => {
+                self.room.lock().wait(runtime, sender, push, wake);
+                Ok(())
+            }
+            (Err(error), _) => Err(std::io::Error::other(error.to_string())),
+            (_, Err(error)) => Err(error),
         };
         match waited {
             Ok(()) => {
@@ -363,9 +441,10 @@ fn pushed(
     py: Python<'_>,
     item: &Bound<'_, PyAny>,
     limits: JsonLimits,
+    cursor: Option<&Bound<'_, PyType>>,
     sent: &mpsc::Sender<Pushed>,
 ) -> bool {
-    let mut pushes = match Pushes::of(py, item, limits) {
+    let mut pushes = match Pushes::of(py, item, limits, cursor) {
         Ok(pushes) => pushes,
         Err(error) => {
             send(py, sent, Pushed::Failed(error));

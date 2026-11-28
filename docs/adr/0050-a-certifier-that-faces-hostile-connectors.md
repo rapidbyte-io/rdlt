@@ -35,8 +35,9 @@ falls short four ways:
     writes, or its identifier rules leave a table or column a clause names no identifier. None
     counts toward a pass.
   - A report's verdict is passed, incomplete or failed. It passes when no clause failed, none
-    was unobserved and one passed. The binary exits 0, 2 or 1; `--require partial` exits 0 for
-    an incomplete run in which a clause passed, and the report says incomplete all the same.
+    was unobserved and one passed. The binary exits 0 when it passed and 1 when it is incomplete
+    or failed; `--require partial` exits 0 for an incomplete run in which a clause passed, and
+    the report says incomplete all the same.
   - `S-RESUME` is unobserved without a checkpoint. It resumes from every checkpoint of a read
     that sent five at most, and else from five spread from the first to the last, so a resume
     wrong only from a checkpoint between them is not caught. It compares the rows a resumed read
@@ -127,6 +128,20 @@ falls short four ways:
       signalled.
 
     A sandboxed spawn with a process namespace of its own closes the first three.
+- **A certification is of one connector, and says which.** A target holds its connector, from
+  its first connection as a role on, to the version that connection's handshake answered, a
+  version for each role, as a binary may serve a source and a destination of their own: every
+  later connection as the role must answer it, or the clause it is made in fails, coded
+  `version_mismatch`. Each placement of the kill clauses, a kill target's included, requires
+  it where it is a full semantic version, and answers it to the letter, compared as text once
+  placed, so an installed binary of another version, or another build of it that differs only
+  in its build metadata, is refused; a version no requirement names, as "1.2", is held by that
+  comparison alone. A spawned connector is held, on Linux, where the host checks a binary's
+  digest as it spawns, to the digest of the binary its first spawn ran: a binary replaced at
+  the path while it is certified, by a build or a deploy, fails the clause it is met in, coded
+  `digest_mismatch`. Each report names what its role was held to: the plain report's first
+  line the version and the digest, the verdict at a terminal the version and the digest's first
+  twelve hex digits, and the JSON `version` and `digest`, null where none was held.
 - **A kill clause passes on a kill that landed.** The host's end of a connection counts a kill
   as landed when it sees the connection end after the kill: a socket ends only when no process
   holds its other end. The answer `K-DESTINATION` loses by itself is no evidence. For a
@@ -152,7 +167,7 @@ falls short four ways:
 
 ## Consequences
 
-- A certification with a fixture too small to show a behaviour exits 2 where it exited 0: a
+- A certification with a fixture too small to show a behaviour exits 1 where it exited 0: a
   source needs data enough to checkpoint and for a kill to land, or `--require partial`.
 - `Outcome`, `Clause` and `Report` changed shape: `Skipped` is gone, a reason is a `Reason`,
   a clause has `unless`, and JSON reports carry `verdict` and the outcomes `inapplicable` and

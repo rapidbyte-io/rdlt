@@ -11,7 +11,9 @@
 #[cfg(test)]
 mod tests;
 
+use std::fs::File;
 use std::ops::Range;
+use std::path::PathBuf;
 
 use arrow_schema::{DataType, SchemaRef};
 use rdlt_connector::prelude::*;
@@ -64,14 +66,11 @@ fn merged(
     meta: &CommitMeta,
     created: &mut Vec<String>,
 ) -> Result<Listed> {
-    // Every file to merge is opened before anything is written: one that cannot be read costs
-    // the try nothing.
-    let mut opened = Vec::with_capacity(files.len());
+    // Every file to merge is opened before anything is written, so one that cannot be read costs
+    // the try nothing; each is then open again only while its rows are copied, so a merge of any
+    // number of files holds one open at a time.
     for merging in files {
-        let (parent, name) = manifest::located(&location.dir, &merging.path)?;
-        let reached = parent.at(name);
-        let file = parent.file(name).map_err(io::listed("opening", &reached))?;
-        opened.push((file, reached));
+        opened(location, merging)?;
     }
     let schema = schema_of(location, &files[0])?
         .unwrap_or_else(|| SchemaRef::new(arrow_schema::Schema::empty()));
@@ -81,7 +80,8 @@ fn merged(
     created.push(path.clone());
     let dir = location.staging(&names)?;
     let mut writer = Writer::create(location.format, &dir, &file, &schema)?;
-    for (file, reached) in opened {
+    for merging in files {
+        let (file, reached) = opened(location, merging)?;
         writer.append(file, reached)?;
     }
     let written = writer.finish()?;
@@ -90,6 +90,14 @@ fn merged(
         rows: written.rows,
         bytes: written.bytes,
     })
+}
+
+/// The listed file `file`, opened, and the path it was reached by.
+fn opened(location: &Location, file: &Listed) -> Result<(File, PathBuf)> {
+    let (parent, name) = manifest::located(&location.dir, &file.path)?;
+    let reached = parent.at(name);
+    let opened = parent.file(name).map_err(io::listed("opening", &reached))?;
+    Ok((opened, reached))
 }
 
 /// The runs of `files` to merge, each into one file, the latest first; the last `added` files

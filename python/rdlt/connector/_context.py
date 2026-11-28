@@ -174,7 +174,11 @@ class StreamContext:
         self._native = native
 
     def checkpoint_due(self) -> bool:
-        """Whether the engine waits for a checkpoint at the read's next safe point."""
+        """Whether the engine waits for a checkpoint at the read's next safe point.
+
+        The engine asks only a stream that declares `Checkpointing.ON_DEMAND`: for any other, this
+        is always false.
+        """
         return self._native.checkpoint_due()
 
     @property
@@ -209,9 +213,10 @@ class StreamContext:
     def stopped(self) -> bool:
         """Whether the engine asked the read to stop, or stopped listening.
 
-        A read that waits for data, as one following its partition does, asks between its waits
-        and returns, as a Rust read selects on its emitter's `stopped()`: its thread then ends
-        with the run, rather than at its next yield.
+        A sync read that waits for data, as one following its partition does, asks between its
+        waits and returns, as a Rust read selects on its emitter's `stopped()`: its thread then
+        ends with the run, rather than at its next yield. An async read need not ask: it is
+        cancelled where it waits once the engine has let it go, as asyncio cancels any task.
         """
         return self._native.stopped()
 
@@ -252,6 +257,11 @@ def checkpoint(cursor: Cursor) -> _native.Checkpoint:
 
     Read `full`, everything a read yields commits. Read incrementally, a partition that never ends,
     as a stream without `partitions` reads, commits only what is yielded before its last checkpoint,
-    and the next run reads the rest again from there, so its read ends on a checkpoint.
+    and the next run reads the rest again from there, so its read ends on a checkpoint. `cursor` is
+    the stream's cursor, of its class itself, as a Rust read's emitter takes exactly its stream's:
+    one of another class, a subclass included, or any a stream without a cursor yields, fails the
+    read as it is yielded, coded `type_error`. A checkpoint also seals a segment, which bounds what
+    a run holds at once, so a stream that seals segments, read in full alone or not, declares a
+    cursor.
     """
-    return _native.Checkpoint(cursor.model_dump_json())
+    return _native.Checkpoint(cursor.model_dump_json(), type(cursor))

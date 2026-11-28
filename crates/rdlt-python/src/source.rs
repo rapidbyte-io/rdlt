@@ -6,6 +6,7 @@ mod described;
 pub(crate) mod partition;
 #[cfg(test)]
 mod tests;
+mod turn;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -22,6 +23,7 @@ use rdlt_connector::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
+use tokio::sync::oneshot;
 
 use crate::calls;
 use crate::errors::Failure;
@@ -29,6 +31,7 @@ use crate::json::JsonLimits;
 use context::{NativeStreamContext, Told};
 use described::{Declared, DeclaredSpec, Planned, plan_of, read_as};
 use partition::{Pushed, Reading};
+use turn::{EARLIER_READ_WAIT, Turn, Turns};
 
 /// How often a read that is waiting on its generator looks whether a checkpoint came due.
 const DUE_REFRESH: Duration = Duration::from_millis(50);
@@ -76,6 +79,8 @@ pub(crate) struct PythonStream {
     committed: bool,
     acknowledged: bool,
     cursor_version: u16,
+    /// Each partition's turn to be read on this connection.
+    turns: Arc<Turns>,
 }
 
 impl PythonStream {
@@ -89,6 +94,7 @@ impl PythonStream {
             committed: declared.committed,
             acknowledged: declared.acknowledged,
             cursor_version: declared.cursor_version,
+            turns: Arc::default(),
         })
     }
 
@@ -287,12 +293,17 @@ impl ReadStream<PythonSource> for PythonStream {
         out: &mut Emitter<PyCursor>,
     ) -> Result<()> {
         let key = partition.id().to_string();
+        let Some(turn) = self.turn(&key, out).await? else {
+            return Ok(());
+        };
         let cursor = cursor.0.map(|cursor| cursor.get().to_owned());
         let limits = out.limits();
         let limits = JsonLimits::new(limits.json_push_bytes, limits.nesting_depth);
         let (context, due) = NativeStreamContext::new(partition, Told::of(out));
         due.set(out.checkpoint_due());
         let name = format!("rdlt-read-{}", self.spec.name());
+        // Dropped once the read's thread has returned, as the turn is given back.
+        let (returning, returned) = oneshot::channel::<()>();
         let mut reading = Reading::start(
             &name,
             Arc::clone(&self.stream),
@@ -300,6 +311,7 @@ impl ReadStream<PythonSource> for PythonStream {
             cursor,
             context,
             limits,
+            (turn, returning),
         )
         .map_err(|error| {
             ConnectorError::internal(format!("a partition's read was not begun: {error}"))
@@ -308,10 +320,9 @@ impl ReadStream<PythonSource> for PythonStream {
         let mut refresh = tokio::time::interval(DUE_REFRESH);
         loop {
             let pushed = tokio::select! {
-                // A stop wins: the read ends, and its daemon thread goes back to waiting at
-                // its next push.
+                // A stop wins.
                 biased;
-                () = out.stopped() => return Ok(()),
+                () = out.stopped() => break,
                 pushed = reading.next() => pushed,
                 _ = refresh.tick() => {
                     due.set(out.checkpoint_due());
@@ -333,6 +344,37 @@ impl ReadStream<PythonSource> for PythonStream {
                 Some(Pushed::Failed(error)) => return Err(error),
             }
             due.set(out.checkpoint_due());
+        }
+        // A stopped read is let go, which its thread is told, a sync read at its next yield and an
+        // async one where it waits, and it ends once its thread has, as a Rust read ends when its
+        // code returns: how long that may take is its caller's to bound.
+        drop(reading);
+        returned.await.ok();
+        Ok(())
+    }
+}
+
+impl PythonStream {
+    /// The turn of the partition `key` names, once the read of it before this one has returned;
+    /// none where this read is stopped first.
+    ///
+    /// # Errors
+    ///
+    /// An internal error, not retried, where the read before has not returned within
+    /// [`EARLIER_READ_WAIT`]: its generator does not end when stopped, and a retry would wait on
+    /// the same blocked thread.
+    async fn turn(&self, key: &str, out: &Emitter<PyCursor>) -> Result<Option<Turn>> {
+        tokio::select! {
+            // A stop wins: a read stopped while the last read of its partition runs on ends.
+            biased;
+            () = out.stopped() => Ok(None),
+            turn = self.turns.taken(key, EARLIER_READ_WAIT) => turn.map(Some).map_err(|_| {
+                ConnectorError::internal(format!(
+                    "stream {}: partition {key}: the read of it before this one has not returned \
+                     within {EARLIER_READ_WAIT:?}, so its generator does not end when stopped",
+                    self.spec.name()
+                ))
+            }),
         }
     }
 }

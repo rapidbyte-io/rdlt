@@ -38,11 +38,11 @@ pub(super) async fn resumes_are_exact(
     for stream in catalog.iter() {
         for (partition, start) in plan(source, stream.name()).await? {
             let read = (stream, &partition);
-            let full = record(source, read, start, None, budget).await?;
+            let full = record(source, read, start, budget).await?;
             for index in sampled(full.checkpoints.len()) {
                 observed = true;
                 let cursor = &full.checkpoints[index];
-                let resumed = record(source, read, Some(cursor.clone()), None, budget).await?;
+                let resumed = record(source, read, Some(cursor.clone()), budget).await?;
                 let expected: Vec<&Push> = full.segments[index + 1..]
                     .iter()
                     .flatten()

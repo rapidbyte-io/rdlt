@@ -2,7 +2,8 @@
 //!
 //! A push that finds the channel full is sent by a task of the runtime; for a notice, which stays
 //! its router's to be said again, the task waits for room alone. Either then writes to a socket
-//! the read's event loop watches, so the loop wakes with no thread but its own taking the GIL.
+//! the read's event loop watches, so the loop wakes with no thread but its own taking the GIL, as
+//! the read's end does once the engine let it go.
 
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsRawFd as _, RawFd};
@@ -18,29 +19,34 @@ use crate::source::partition::Pushed;
 use crate::source::partition::pushes::Pushes;
 
 /// A socket pair, the read's event loop watching one end and a task writing to the other once
-/// what waited for room was sent.
+/// what waited for room was sent, or the read writing to it once the engine let it go.
 ///
 /// Both ends close together, once nothing holds the pair, so no write meets a closed reader.
-struct Wake {
+pub(super) struct Wake {
     watched: UnixStream,
     rung: UnixStream,
 }
 
 impl Wake {
-    fn new() -> io::Result<Self> {
+    pub(super) fn new() -> io::Result<Self> {
         let (watched, rung) = UnixStream::pair()?;
         watched.set_nonblocking(true)?;
         rung.set_nonblocking(true)?;
         Ok(Self { watched, rung })
     }
 
+    /// The descriptor of the end the loop watches.
+    pub(super) fn watched(&self) -> RawFd {
+        self.watched.as_raw_fd()
+    }
+
     /// Wakes the loop: a socket too full to take the byte already holds a wake.
-    fn ring(&self) {
+    pub(super) fn ring(&self) {
         (&self.rung).write_all(&[0]).ok();
     }
 
     /// Takes what was written, so the loop sleeps until the next wake.
-    fn drain(&self) {
+    pub(super) fn drain(&self) {
         let mut buffer = [0_u8; 64];
         while matches!((&self.watched).read(&mut buffer), Ok(read) if read > 0) {}
     }
@@ -61,30 +67,17 @@ impl Drop for Flight {
     }
 }
 
-/// What an async read has waiting for room, one thing at a time, and the socket it is woken by.
+/// What an async read has waiting for room, one thing at a time.
 #[derive(Default)]
 pub(super) struct Room {
-    wake: Option<Arc<Wake>>,
     flight: Option<Flight>,
     /// What is left of the item whose push is in flight.
     rest: Option<Pushes>,
 }
 
 impl Room {
-    /// The descriptor of the socket the read's event loop watches, made at the first ask.
-    pub(super) fn watched(&mut self) -> io::Result<RawFd> {
-        Ok(self.wake()?.watched.as_raw_fd())
-    }
-
-    /// Takes what made the watched socket readable.
-    pub(super) fn woken(&self) {
-        if let Some(wake) = &self.wake {
-            wake.drain();
-        }
-    }
-
     /// Has a task of `runtime` send `push` through `sender`, or wait for room where there is no
-    /// push, then wake the loop.
+    /// push, then wake the loop through `wake`.
     ///
     /// A wait for room joins one still in flight.
     pub(super) fn wait(
@@ -92,13 +85,13 @@ impl Room {
         runtime: &Runtime,
         sender: &mpsc::Sender<Pushed>,
         push: Option<Pushed>,
-    ) -> io::Result<()> {
+        wake: Arc<Wake>,
+    ) {
         let waiting =
             |flight: &mut Flight| matches!(flight.came.try_recv(), Err(TryRecvError::Empty));
         if push.is_none() && self.flight.as_mut().is_some_and(waiting) {
-            return Ok(());
+            return;
         }
-        let wake = Arc::clone(self.wake()?);
         let (said, came) = oneshot::channel();
         let sender = sender.clone();
         let task = runtime.spawn(async move {
@@ -114,7 +107,6 @@ impl Room {
             task: task.abort_handle(),
             came,
         });
-        Ok(())
     }
 
     /// Keeps `rest`, what is left of the item whose push is in flight.
@@ -135,13 +127,5 @@ impl Room {
         };
         self.flight = None;
         Some((came, self.rest.take()))
-    }
-
-    fn wake(&mut self) -> io::Result<&Arc<Wake>> {
-        let wake = match self.wake.take() {
-            Some(wake) => wake,
-            None => Arc::new(Wake::new()?),
-        };
-        Ok(self.wake.insert(wake))
     }
 }

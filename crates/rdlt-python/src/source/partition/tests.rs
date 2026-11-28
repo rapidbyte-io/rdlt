@@ -20,9 +20,13 @@ const LIMITS: JsonLimits = JsonLimits {
 };
 
 /// A stream object whose `read` returns what `body`, the source of a generator function named
-/// `read(partition, cursor, context)`, yields.
+/// `read(partition, cursor, context)`, yields, and whose cursors are of the class `body` names
+/// `CURSOR`, any class where it names none.
 fn stream(py: Python<'_>, body: &str) -> Py<PyAny> {
-    let code = format!("import types\n{body}\nstream = types.SimpleNamespace(read=read)\n");
+    let code = format!(
+        "import types\n{body}\n\
+         stream = types.SimpleNamespace(read=read, cursor=globals().get('CURSOR', object))\n"
+    );
     let globals = pyo3::types::PyDict::new(py);
     py.run(&std::ffi::CString::new(code).unwrap(), Some(&globals), None)
         .unwrap();
@@ -33,7 +37,7 @@ fn started(py: Python<'_>, body: &str) -> Reading {
     let (context, _due) = NativeStreamContext::new(&Partition::single(), Told::default());
     let stream = Arc::new(stream(py, body));
     let whole = "whole".to_owned();
-    Reading::start("rdlt-test", stream, whole, None, context, LIMITS).expect("it starts")
+    Reading::start("rdlt-test", stream, whole, None, context, LIMITS, ()).expect("it starts")
 }
 
 fn drained(py: Python<'_>, mut reading: Reading) -> Vec<Pushed> {
@@ -57,7 +61,7 @@ fn rows_batches_and_checkpoints_arrive_in_the_order_they_were_yielded() {
     embedded::with(|py| {
         let reading = started(
             py,
-            "import pyarrow as pa\nimport rdlt._native as n\ndef read(p, c, x):\n    yield {'n': 1}\n    yield n.Checkpoint('{\"after\": 1}')\n    yield pa.record_batch({'n': [2, 3]})\n    yield [{'n': 4}, {'n': 5}]",
+            "import pyarrow as pa\nimport rdlt._native as n\ndef read(p, c, x):\n    yield {'n': 1}\n    yield n.Checkpoint('{\"after\": 1}', object)\n    yield pa.record_batch({'n': [2, 3]})\n    yield [{'n': 4}, {'n': 5}]",
         );
         let kinds: Vec<&str> = drained(py, reading)
             .iter()
@@ -205,6 +209,7 @@ fn a_thread_that_ends_without_saying_how_fails_the_read() {
         let reading = Reading {
             received,
             told: Arc::new(AtomicBool::new(false)),
+            outlet: super::Outlet::default(),
         };
         let pushed = drained(py, reading);
         let [Pushed::Failed(error)] = &pushed[..] else {
@@ -294,6 +299,67 @@ fn a_stopped_read_returns_while_its_generator_is_blocked() {
             closed,
             "the generator was not closed once its read had gone"
         );
+    });
+}
+
+/// Whether the read `body` defines, once its first push is taken, it says it waits by setting
+/// `builtins.waiting`, and the read is dropped, as the engine drops a read it lets go, says it
+/// ended, by setting `builtins.ended`, within 10 s.
+fn ends_once_let_go(py: Python<'_>, body: &str) -> bool {
+    py.run(
+        c"import builtins, threading; builtins.ended = threading.Event(); builtins.waiting = threading.Event()",
+        None,
+        None,
+    )
+    .unwrap();
+    let reading = started(py, body);
+    let runtime = runtime::get(py).unwrap();
+    py.detach(|| {
+        runtime.block_on(async move {
+            let mut reading = reading;
+            let first = tokio::time::timeout(Duration::from_secs(30), reading.next());
+            assert!(matches!(
+                first.await.expect("within 30 s"),
+                Some(Pushed::Json(_))
+            ));
+            let waiting = embedded::with(|py| {
+                py.eval(c"__import__('builtins').waiting.wait(10)", None, None)
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            });
+            assert!(waiting, "the read waits");
+        });
+    });
+    py.detach(|| {
+        embedded::with(|py| {
+            py.eval(c"__import__('builtins').ended.wait(10)", None, None)
+                .unwrap()
+                .extract::<bool>()
+                .unwrap()
+        })
+    })
+}
+
+#[test]
+fn an_async_read_waiting_where_no_yield_comes_is_cancelled_once_let_go() {
+    embedded::with(|py| {
+        let ended = ends_once_let_go(
+            py,
+            "import asyncio, builtins\nasync def read(p, c, x):\n    yield {'n': 1}\n    await asyncio.sleep(0)\n    try:\n        builtins.waiting.set()\n        await asyncio.Event().wait()\n    finally:\n        builtins.ended.set()",
+        );
+        assert!(ended, "the async read went on waiting once let go");
+    });
+}
+
+#[test]
+fn a_sync_read_whose_yields_push_nothing_finds_it_was_let_go() {
+    embedded::with(|py| {
+        let ended = ends_once_let_go(
+            py,
+            "import builtins, time\ndef read(p, c, x):\n    yield {'n': 1}\n    builtins.waiting.set()\n    try:\n        while True:\n            time.sleep(0.005)\n            yield []\n    finally:\n        builtins.ended.set()",
+        );
+        assert!(ended, "the sync read went on yielding once let go");
     });
 }
 
@@ -454,14 +520,20 @@ fn a_checkpoint_holds_its_cursor_and_refuses_what_is_not_json() {
         crate::register(&module).unwrap();
         namespace.set_item("n", module).unwrap();
         let built = py
-            .eval(c"n.Checkpoint('{\"after\": 1}')", Some(&namespace), None)
+            .eval(
+                c"n.Checkpoint('{\"after\": 1}', int)",
+                Some(&namespace),
+                None,
+            )
             .unwrap();
         let cursor = built
             .cast::<crate::source::context::NativeCheckpoint>()
             .unwrap();
-        assert_eq!(cursor.get().cursor().get(), "{\"after\": 1}");
+        let int = py.get_type::<pyo3::types::PyInt>();
+        let held = cursor.get().cursor(py, Some(&int)).unwrap();
+        assert_eq!(held.get(), "{\"after\": 1}");
         let refused = py
-            .eval(c"n.Checkpoint('not json')", Some(&namespace), None)
+            .eval(c"n.Checkpoint('not json', int)", Some(&namespace), None)
             .expect_err("refused");
         assert!(refused.is_instance_of::<pyo3::exceptions::PyValueError>(py));
     });
@@ -477,7 +549,7 @@ fn a_checkpoint_keeps_its_cursor_s_numbers_as_it_was_given_them() {
         let text = "{\"after\": 1208925819614629174706176, \"at\": 1801439850948199.0}";
         let built = py
             .eval(
-                &std::ffi::CString::new(format!("n.Checkpoint({text:?})")).unwrap(),
+                &std::ffi::CString::new(format!("n.Checkpoint({text:?}, object)")).unwrap(),
                 Some(&namespace),
                 None,
             )
@@ -485,7 +557,68 @@ fn a_checkpoint_keeps_its_cursor_s_numbers_as_it_was_given_them() {
         let checkpoint = built
             .cast::<crate::source::context::NativeCheckpoint>()
             .unwrap();
-        assert_eq!(checkpoint.get().cursor().get(), text);
+        let object = py.get_type::<PyAny>();
+        let held = checkpoint.get().cursor(py, Some(&object)).unwrap();
+        assert_eq!(held.get(), text);
+    });
+}
+
+#[test]
+fn a_checkpoint_is_of_its_stream_s_cursor_class() {
+    embedded::with(|py| {
+        let namespace = pyo3::types::PyDict::new(py);
+        let module = pyo3::types::PyModule::new(py, "checkpoints").unwrap();
+        crate::register(&module).unwrap();
+        namespace.set_item("n", module).unwrap();
+        py.run(
+            c"class Since: pass\nclass Later(Since): pass\nclass Offset: pass",
+            Some(&namespace),
+            None,
+        )
+        .unwrap();
+        let class = |name: &str| -> pyo3::Bound<'_, pyo3::types::PyType> {
+            namespace.get_item(name).unwrap().cast_into().unwrap()
+        };
+        let made = |of: &str| {
+            let code = format!("n.Checkpoint('{{}}', {of})");
+            let code = std::ffi::CString::new(code).unwrap();
+            py.eval(&code, Some(&namespace), None).unwrap()
+        };
+        let since = class("Since");
+        for (of, declared, held) in [
+            ("Since", Some(&since), true),
+            ("Later", Some(&since), false),
+            ("Offset", Some(&since), false),
+            ("Since", None, false),
+        ] {
+            let built = made(of);
+            let checkpoint = built
+                .cast::<crate::source::context::NativeCheckpoint>()
+                .unwrap();
+            let Err(refused) = checkpoint.get().cursor(py, declared) else {
+                assert!(held, "{of} against {declared:?}: refused");
+                continue;
+            };
+            assert!(!held, "{of} against {declared:?}: held");
+            assert!(refused.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+        }
+    });
+}
+
+#[test]
+fn a_read_that_yields_a_checkpoint_of_another_cursor_class_fails_before_it_is_pushed() {
+    embedded::with(|py| {
+        let reading = started(
+            py,
+            "import rdlt._native as n\nclass Since: pass\nclass Other: pass\nCURSOR = Since\ndef read(p, c, x):\n    yield {'n': 1}\n    yield n.Checkpoint('{}', Other)\n    yield {'n': 2}",
+        );
+        let pushed = drained(py, reading);
+        assert_eq!(pushed.len(), 2, "{pushed:?}");
+        assert!(matches!(pushed[0], Pushed::Json(_)));
+        let Pushed::Failed(error) = &pushed[1] else {
+            panic!("a failure: {pushed:?}")
+        };
+        assert_eq!(error.code(), Some("type_error"));
     });
 }
 
@@ -505,6 +638,7 @@ fn out_of_one() -> (PartitionOut, mpsc::Receiver<Pushed>) {
         sent: outlet,
         limits: LIMITS,
         told: Arc::new(AtomicBool::new(false)),
+        cursor: None,
         room: parking_lot::Mutex::default(),
     };
     (out, received)
@@ -661,7 +795,7 @@ fn started_within(py: Python<'_>, body: &str, limits: JsonLimits) -> Reading {
     let (context, _due) = NativeStreamContext::new(&Partition::single(), Told::default());
     let stream = Arc::new(stream(py, body));
     let whole = "whole".to_owned();
-    Reading::start("rdlt-test", stream, whole, None, context, limits).expect("it starts")
+    Reading::start("rdlt-test", stream, whole, None, context, limits, ()).expect("it starts")
 }
 
 /// What `builtins.<name>` holds, read from this thread.
@@ -1152,6 +1286,25 @@ async def read(p, c, x):
             );
         }
         assert!(left.is_empty(), "descriptors left open: {left:?}");
+    });
+}
+
+#[test]
+fn an_async_read_s_socket_closes_as_it_ends_whatever_keeps_its_context() {
+    embedded::with(|py| {
+        let warming = "async def read(p, c, x):\n    yield {'n': 1}";
+        drop(drained(py, started(py, warming)));
+        let before = descriptors();
+        let keeping =
+            "import builtins\nasync def read(p, c, x):\n    builtins.kept = x\n    yield {'n': 1}";
+        drop(drained(py, started(py, keeping)));
+        assert!(
+            descriptors_back_to(py, before),
+            "{} descriptors left open",
+            descriptors() - before
+        );
+        py.run(c"del __import__('builtins').kept", None, None)
+            .unwrap();
     });
 }
 

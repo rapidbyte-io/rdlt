@@ -73,7 +73,7 @@ fn published_rows(store: &str, table: &str) -> usize {
 const ONE_STREAM: &str = "\
 def read(partition, cursor, context):
     yield [{'n': n} for n in range(40)]
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
@@ -97,7 +97,7 @@ def read(partition, cursor, context):
            {'cost': Decimal('5'), 'payload': None},
            {'cost': Decimal('-0E-3'), 'payload': {'n': None, 'note': 'x'}}]
     yield {'cost': Decimal('5.5'), 'payload': {'n': 2, 'note': 'y'}}
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
@@ -147,7 +147,7 @@ def read(partition, cursor, context):
     builtins.idents.add(threading.get_ident())
     barrier.wait(30)
     yield {'partition': partition}
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [('a', False), ('b', False), ('c', False)], []), spec=json.dumps({
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [('a', False), ('b', False), ('c', False)], []), spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': True, 'stated': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
@@ -177,8 +177,8 @@ def read(partition, cursor, context):
     start = 0 if cursor is None else json.loads(cursor)['after'] + 1
     for n in range(start, start + 10):
         yield {'n': n}
-    yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({'after': start + 9}))
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({'after': start + 9}), object)
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
@@ -214,14 +214,19 @@ def read(partition, cursor, context):
     for n in range(start, start + 10):
         yield {{'n': n}}
         if n == start + 4:
-            yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({{'after': n}}))
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [('p', {unbounded})], []), spec=json.dumps({{
+            yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({{'after': n}}), object)
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [('p', {unbounded})], []), spec=json.dumps({{
     'spec': {{'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None}},
     'planned': True, 'stated': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}}))
 streams = [stream]"
             );
-            loaded(py, store, "incremental", &body);
-            loaded(py, store, "incremental", &body);
+            for run in ["first", "second"] {
+                let (_, error) = loaded(py, store, "incremental", &body);
+                assert_eq!(error, None, "{store}: the {run} run");
+            }
+            // Ten rows landed once: the unbounded partition's five, then the five after its
+            // checkpoint, and the bounded one's ten, which it is not read again for.
+            assert_eq!(published_rows(store, "rows"), 10, "{store}");
             let started: Vec<Option<String>> = py
                 .eval(
                     &std::ffi::CString::new(format!("__import__('builtins').started['{store}']"))
@@ -267,10 +272,10 @@ builtins.told = getattr(builtins, 'told', {{}})
 def read(partition, cursor, context):
     for n in range(5):
         yield {{'n': n}}
-    yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({{'after': 4}}))
+    yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({{'after': 4}}), object)
 def committed(cursors):
     builtins.told.setdefault('{store}', []).extend(cursors)
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, {partitions}, []), committed=committed, spec=json.dumps({{
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, {partitions}, []), committed=committed, spec=json.dumps({{
     'spec': {{'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None}},
     'planned': {partitioned}, 'stated': {partitioned}, 'committed': True, 'acknowledged': False, 'cursor_version': 1}}))
 streams = [stream]"
@@ -300,10 +305,10 @@ fn a_stream_that_does_not_ask_is_never_told_its_committed_cursors() {
         let body = "\
 def read(partition, cursor, context):
     yield {'n': 1}
-    yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({'after': 1}))
+    yield __import__('rdlt._native', fromlist=['Checkpoint']).Checkpoint(json.dumps({'after': 1}), object)
 def committed(cursors):
     raise AssertionError('told')
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), committed=committed, spec=json.dumps({
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), committed=committed, spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
@@ -350,7 +355,7 @@ def read(partition, cursor, context):
     yield {'n': 1}
 def acknowledged(partition):
     return json.dumps({'after': 3, 'partition': partition})
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), acknowledged=acknowledged, spec=json.dumps({
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), acknowledged=acknowledged, spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': True, 'cursor_version': 1}))
 streams = [stream]";
@@ -493,7 +498,7 @@ fn a_source_whose_check_raises_fails_the_build_with_its_type() {
         let body = "\
 def read(partition, cursor, context):
     yield {'n': 1}
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]
@@ -535,7 +540,7 @@ fn a_stream_described_wrongly_fails_the_build() {
         let body = "\
 def read(partition, cursor, context):
     yield {'n': 1}
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec='not json')
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec='not json')
 streams = [stream]";
         let error = built_up(py, body).err().expect("the build fails");
         assert_eq!(class_of(py, &error), "SourceError");
@@ -550,8 +555,8 @@ import rdlt._native as n
 def read(partition, cursor, context):
     while not context.checkpoint_due():
         __import__('time').sleep(0.005)
-    yield n.Checkpoint('{\"at\": 1}')
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    yield n.Checkpoint('{\"at\": 1}', object)
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'on_demand', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
@@ -596,7 +601,7 @@ def read(partition, cursor, context):
 def plan(phase, positions, generation, completed):
     builtins.told = (phase, positions, generation, completed)
     return (None, [('b', False)], [])
-stream = types.SimpleNamespace(read=read, plan=plan, spec=json.dumps({{
+stream = types.SimpleNamespace(read=read, cursor=object, plan=plan, spec=json.dumps({{
     'spec': {{'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None}},
     'planned': True, 'stated': {}, 'committed': False, 'acknowledged': False, 'cursor_version': 2}}))
 streams = [stream]",
@@ -652,11 +657,11 @@ def read(partition, cursor, context):
     if cursor is None:
         yield {'n': partition}
         if partition == 'b':
-            yield n.Checkpoint(json.dumps({'after': 7}))
+            yield n.Checkpoint(json.dumps({'after': 7}), object)
 def plan(phase, positions, generation, completed):
     builtins.planned.append((phase, sorted(positions)))
     return (None, [('a', False), ('b', False)], [])
-stream = types.SimpleNamespace(read=read, plan=plan, spec=json.dumps({
+stream = types.SimpleNamespace(read=read, cursor=object, plan=plan, spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': True, 'stated': True, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
@@ -689,7 +694,7 @@ import builtins
 def read(partition, cursor, context):
     builtins.told = (context.follows, context.resumes, context.excluded, dict(context.limits))
     yield {'n': 1}
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
@@ -742,8 +747,8 @@ fn a_stream_s_cursors_are_in_its_format_and_one_of_another_is_refused() {
         let body = "\
 import rdlt._native as n
 def read(partition, cursor, context):
-    yield n.Checkpoint(json.dumps({'after': json.loads(cursor)['after'] + 1}))
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    yield n.Checkpoint(json.dumps({'after': json.loads(cursor)['after'] + 1}), object)
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 2}))
 streams = [stream]";
@@ -784,7 +789,7 @@ fn an_exception_fails_the_run_with_its_type_and_traceback() {
 def read(partition, cursor, context):
     yield {'n': 1}
     raise ValueError('page 2 is malformed')
-stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
@@ -804,7 +809,7 @@ streams = [stream]";
 }
 
 const UNSPLIT: &str =
-    "stream = types.SimpleNamespace(read=read, plan=lambda *state: (None, [], []), spec=json.dumps({
+    "stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec=json.dumps({
     'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full', 'incremental'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
     'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
 streams = [stream]";
@@ -842,5 +847,129 @@ fn an_incremental_read_that_pushes_nothing_ends_clean() {
         );
         let (_, error) = loaded(py, "no-checkpoint-empty", "incremental", &body);
         assert_eq!(error, None);
+    });
+}
+
+/// A stream whose first read waits for `builtins.release`, and which records in `builtins.reads`
+/// as each read begins and returns.
+const RELEASED: &str = "\
+import builtins
+builtins.release = threading.Event()
+builtins.reads = []
+def read(partition, cursor, context):
+    builtins.reads.append('began')
+    if len(builtins.reads) == 1:
+        builtins.release.wait(30)
+    builtins.reads.append('returned')
+    yield {'n': 1}
+stream = types.SimpleNamespace(read=read, cursor=object, plan=lambda *state: (None, [], []), spec=json.dumps({
+    'spec': {'name': 'rows', 'schema': None, 'primary_key': None, 'read_modes': ['full'], 'checkpointing': 'natural', 'replayable': True, 'change_time': None},
+    'planned': False, 'stated': False, 'committed': False, 'acknowledged': False, 'cursor_version': 1}))
+streams = [stream]";
+
+/// What `builtins.reads` holds.
+fn reads() -> Vec<String> {
+    embedded::with(|py| {
+        py.eval(c"list(__import__('builtins').reads)", None, None)
+            .unwrap()
+            .extract()
+            .unwrap()
+    })
+}
+
+/// Lets go of `builtins.release`.
+fn released() {
+    embedded::with(|py| {
+        py.run(c"__import__('builtins').release.set()", None, None)
+            .unwrap();
+    });
+}
+
+/// Drives `read`, a read of `RELEASED`, until its generator has begun, within 30 s.
+async fn begun<F: Future + Unpin>(read: &mut F) {
+    let waited = tokio::time::timeout(Duration::from_secs(30), async {
+        while reads().is_empty() {
+            tokio::select! {
+                biased;
+                _ = &mut *read => panic!("the read ended before its generator began"),
+                () = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
+    });
+    waited.await.expect("the read began within 30 s");
+}
+
+/// A read of `rows`'s one partition.
+fn request() -> ReadRequest {
+    ReadRequest::new(StreamName::new("rows").unwrap(), Partition::single(), None)
+}
+
+#[test]
+fn a_stopped_read_ends_once_its_thread_has_returned() {
+    embedded::with(|py| {
+        let source_factory = factory(py, RELEASED).factory();
+        let runtime = runtime::get(py).unwrap();
+        py.detach(|| {
+            runtime.block_on(async {
+                let source = source_factory
+                    .connect(serde_json::json!({}), ConnectContext::new())
+                    .await
+                    .unwrap();
+                let (sink, feed) = partition_channel(std::num::NonZeroUsize::MIN);
+                let mut read = source.read(request(), sink);
+                begun(&mut read).await;
+                feed.stop();
+                let early = tokio::time::timeout(Duration::from_millis(500), &mut read).await;
+                assert!(
+                    early.is_err(),
+                    "a stopped read ends once its thread has, not before"
+                );
+                released();
+                let ended = tokio::time::timeout(Duration::from_secs(30), read).await;
+                ended.expect("within 30 s").unwrap();
+            });
+        });
+        assert_eq!(reads(), ["began", "returned"]);
+    });
+}
+
+#[test]
+fn a_partition_s_read_starts_once_the_read_of_it_the_engine_let_go_has_returned() {
+    embedded::with(|py| {
+        let source_factory = factory(py, RELEASED).factory();
+        let runtime = runtime::get(py).unwrap();
+        py.detach(|| {
+            runtime.block_on(async {
+                let source = source_factory
+                    .connect(serde_json::json!({}), ConnectContext::new())
+                    .await
+                    .unwrap();
+                let (sink, _feed) = partition_channel(std::num::NonZeroUsize::MIN);
+                // Let go while its generator waits, as a retried attempt lets its reads go.
+                let mut first = source.read(request(), sink);
+                begun(&mut first).await;
+                drop(first);
+                let (sink, mut feed) = partition_channel(std::num::NonZeroUsize::new(8).unwrap());
+                let mut second = source.read(request(), sink);
+                let early = tokio::time::timeout(Duration::from_millis(500), &mut second).await;
+                assert!(
+                    early.is_err(),
+                    "the second read waits for the first to return"
+                );
+                assert_eq!(
+                    reads(),
+                    ["began"],
+                    "no read of the partition began beside it"
+                );
+                released();
+                let (read, _) = tokio::time::timeout(Duration::from_secs(30), async {
+                    tokio::join!(&mut second, feed.recv())
+                })
+                .await
+                .expect("within 30 s");
+                read.unwrap();
+            });
+        });
+        assert_eq!(reads(), ["began", "returned", "began", "returned"]);
     });
 }

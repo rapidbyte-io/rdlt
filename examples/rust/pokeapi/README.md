@@ -32,9 +32,13 @@ Its id is `io.example.pokeapi`, and its configuration's JSON Schema says what ea
   and a `name`. Its key is `id`.
 - **The cursor** of each is `{"offset": n}`, the list offset its next page starts at. A stream
   checkpoints after each page, so an incremental read resumes after the last page a run
-  committed. It plans the default partition, one that never ends: with `limit: null`, a later run
-  reads on from there to what the API has added since, and with a limit, a stream that has read
-  that many rows reads nothing more.
+  committed. It plans the default partition, one that never ends: a later run reads on from
+  there, and with a limit, a stream that has read that many rows reads nothing more. An offset
+  keeps its place only in a list that grows at its end alone: an entry the API adds before it is
+  never read, and one it removes shifts the rest past it. PokeAPI's documentation says nothing
+  of its lists' order or of where they grow, so a later run of this example may miss what the
+  API adds: a stream of an API whose lists change anywhere is read in full on a schedule, merged
+  by its key.
 - **Failures** are the kinds the engine decides a retry by:
 
   | The API answers | The error | The engine |

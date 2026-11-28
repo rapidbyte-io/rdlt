@@ -74,6 +74,9 @@ pub(crate) enum Fault {
     Lingering,
     /// It answers no heartbeat.
     Mute,
+    /// It answers its heartbeats only once their stream ends, as a handler that reads them all
+    /// first does: a host never ends it.
+    AtEnd,
     /// It answers no handshake, though its connection lives on.
     Deaf,
     /// As a destination, it keeps to identifiers of 32 bytes, which breaks no clause.
@@ -92,10 +95,25 @@ pub(crate) enum Fault {
     ReadBackEndless,
     /// It reads back what it published, and ends without its done frame.
     ReadBackUnfinished,
+    /// Its reads send their frames within the credit they are granted, a frame while any is
+    /// left, which breaks no clause; each read's grants are kept in [`CREDITED`].
+    Credited,
+}
+
+/// What the reads of a fake with [`Fault::Credited`] were granted, a read each.
+pub(crate) static CREDITED: parking_lot::Mutex<Vec<Granted>> = parking_lot::Mutex::new(Vec::new());
+
+/// The barrier pending as one read started, the credits it was granted, in order, and the
+/// length of each frame it sent.
+#[derive(Debug, Default)]
+pub(crate) struct Granted {
+    pub(crate) barrier: u64,
+    pub(crate) grants: Vec<u64>,
+    pub(crate) frames: Vec<u64>,
 }
 
 /// The clause each fault breaks.
-pub(crate) const BROKEN: [(Fault, &str); 16] = [
+pub(crate) const BROKEN: [(Fault, &str); 17] = [
     (Fault::AnyVersion, "P-HANDSHAKE"),
     (Fault::MistypedVersion, "P-HANDSHAKE"),
     (Fault::Limitless, "P-HANDSHAKE"),
@@ -104,6 +122,7 @@ pub(crate) const BROKEN: [(Fault, &str); 16] = [
     (Fault::EveryRole, "P-ROLE"),
     (Fault::Unlimited, "P-LIMITS"),
     (Fault::EchoAhead, "P-HEARTBEAT"),
+    (Fault::AtEnd, "P-HEARTBEAT"),
     (Fault::Lenient, "P-MALFORMED"),
     (Fault::Greedy, "P-CREDIT"),
     (Fault::Paced, "P-CREDIT"),
@@ -161,6 +180,57 @@ pub(crate) fn served(fault: Fault) -> std::io::Result<Box<dyn Stream>> {
     Ok(Box::new(host))
 }
 
+/// A read with `barrier` pending as it started that sends eight lags within the credit it is
+/// granted and then ends, keeping in [`CREDITED`] what it was granted and the length of each
+/// frame it sent.
+fn credited(mut controls: Incoming<v1::ReadControl>, barrier: u64) -> Answer<v1::ReadFrame> {
+    use rdlt_wire::prost::Message as _;
+    use v1::read_control::Control;
+    let (frames, answer) = mpsc::channel(8);
+    tokio::spawn(async move {
+        let mut read = Granted {
+            barrier,
+            ..Granted::default()
+        };
+        let mut credit = 0_i64;
+        for records in 1..=8 {
+            while credit <= 0 {
+                match controls.message().await {
+                    Ok(Some(v1::ReadControl {
+                        control: Some(Control::Credit(granted)),
+                    })) => {
+                        read.grants.push(granted.bytes);
+                        credit += i64::try_from(granted.bytes).unwrap_or(i64::MAX);
+                    }
+                    Ok(Some(_)) => {}
+                    _ => {
+                        CREDITED.lock().push(read);
+                        return;
+                    }
+                }
+            }
+            let frame = v1::ReadFrame {
+                frame: Some(v1::read_frame::Frame::Behind(v1::BehindFrame {
+                    records,
+                    headroom: None,
+                })),
+            };
+            let length = u64::try_from(frame.encoded_len()).expect("a frame's length fits");
+            credit -= i64::try_from(length).expect("a frame's length fits");
+            read.frames.push(length);
+            if frames.send(Ok(frame)).await.is_err() {
+                break;
+            }
+        }
+        CREDITED.lock().push(read);
+        let done = v1::ReadFrame {
+            frame: Some(v1::read_frame::Frame::Done(v1::Done {})),
+        };
+        frames.send(Ok(done)).await.ok();
+    });
+    Box::pin(ReceiverStream::new(answer))
+}
+
 fn refused(kind: ConnectorErrorKind, code: &'static str) -> Status {
     status(&ConnectorError::new(kind, format!("refused: {code}")).with_code(code))
 }
@@ -215,11 +285,9 @@ impl Plane for Fake {
 }
 
 impl Fake {
-    /// A read the host controls with `controls`, as the fault says.
-    async fn reading(
-        &self,
-        mut controls: Incoming<v1::ReadControl>,
-    ) -> Result<Answer<v1::ReadFrame>, Status> {
+    /// Takes a read's first message, refusing one the fault does not let pass: the barrier
+    /// pending as the read starts.
+    async fn started(&self, controls: &mut Incoming<v1::ReadControl>) -> Result<u64, Status> {
         use v1::read_control::Control;
         let first = controls
             .message()
@@ -233,6 +301,20 @@ impl Fake {
             if cursor > CURSOR_BYTES && self.keeps(Fault::LenientCursor) {
                 return Err(refused(ConnectorErrorKind::Data, "limit_exceeded"));
             }
+            return Ok(start.barrier);
+        }
+        Ok(0)
+    }
+
+    /// A read the host controls with `controls`, as the fault says.
+    async fn reading(
+        &self,
+        mut controls: Incoming<v1::ReadControl>,
+    ) -> Result<Answer<v1::ReadFrame>, Status> {
+        use v1::read_control::Control;
+        let barrier = self.started(&mut controls).await?;
+        if !self.keeps(Fault::Credited) {
+            return Ok(credited(controls, barrier));
         }
         let paced = !self.keeps(Fault::Paced);
         let greedy = !self.keeps(Fault::Greedy) || paced;
@@ -419,12 +501,21 @@ impl Connector for Fake {
         &self,
         _: Request<v1::DiscoverRequest>,
     ) -> Result<Response<v1::Catalog>, Status> {
+        // Only a fake whose reads keep to their credit declares a stream the source clauses read,
+        // `S-BARRIER`'s among them.
+        let (read_modes, checkpointing) = if self.keeps(Fault::Credited) {
+            (Vec::new(), v1::Checkpointing::Unspecified)
+        } else {
+            (vec![v1::ReadMode::Full as i32], v1::Checkpointing::OnDemand)
+        };
         Ok(Response::new(v1::Catalog {
             streams: vec![v1::StreamSpec {
                 name: Some(v1::StreamName {
                     namespace: None,
                     name: "rows".to_owned(),
                 }),
+                read_modes,
+                checkpointing: checkpointing as i32,
                 ..v1::StreamSpec::default()
             }],
         }))
@@ -513,6 +604,18 @@ impl Connector for Fake {
         let answers: Answer<v1::Pong> = match self.fault {
             Fault::Lingering => Box::pin(pongs.chain(tokio_stream::pending())),
             Fault::Mute => Box::pin(tokio_stream::pending()),
+            Fault::AtEnd => {
+                let (answers, answered) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let pongs: Vec<_> = pongs.collect().await;
+                    for pong in pongs {
+                        if answers.send(pong).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                Box::pin(ReceiverStream::new(answered))
+            }
             _ => Box::pin(pongs),
         };
         Ok(Response::new(answers))

@@ -36,6 +36,7 @@ proptest.workspace = true
 rdlt-connector-reference.workspace = true
 rdlt-testkit.workspace = true
 schemars.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

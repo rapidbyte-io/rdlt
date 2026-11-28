@@ -95,6 +95,12 @@ pub fn schema(store: &str, table: &str) -> Option<TableSchema> {
         .and_then(|table| table.schema.clone())
 }
 
+/// Removes `store` from this process: its tables, staging and state go once no connection to
+/// it is left, and a connection made later finds it empty.
+pub fn forget(store: &str) {
+    STORES.lock().remove(&(None, store.to_owned()));
+}
+
 /// The stores, each by the host it is kept for and its name.
 type Stores = BTreeMap<(Option<String>, String), Arc<Mutex<Store>>>;
 
@@ -347,8 +353,7 @@ impl Session for MemorySession {
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
         let mut store = self.store.lock();
-        let entry = store.table(&self.pipeline, self.epoch, change.table())?;
-        entry.change(change)
+        store.change(&self.pipeline, self.epoch, change)
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<MemoryWriter> {
@@ -358,7 +363,7 @@ impl Session for MemorySession {
             let held = store.tables.get(&*table.name);
             holds_key(&table.name, key, held.and_then(|held| held.schema.as_ref()))?;
         }
-        store.table(&self.pipeline, self.epoch, table)?;
+        store.writes(&self.pipeline, self.epoch, table)?;
         drop(store);
         Ok(MemoryWriter {
             store: Arc::clone(&self.store),
@@ -449,9 +454,7 @@ impl TableWriter for MemoryWriter {
         store.owned(&self.pipeline, &self.table)?;
         let table = store.tables.entry(self.table.clone()).or_default();
         // Nothing of a flush is staged where a batch of it is refused.
-        for (_, batch) in &self.buffered {
-            table.admits(batch)?;
-        }
+        table.admits(&self.table, &self.buffered)?;
         let mut stats = WriteStats::default();
         for (segment, batch) in self.buffered.drain(..) {
             stats.rows += count(batch.num_rows());

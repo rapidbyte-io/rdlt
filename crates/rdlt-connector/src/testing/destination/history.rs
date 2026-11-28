@@ -8,6 +8,7 @@ use arrow_array::types::Int64Type;
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::DataType;
 
+use super::sequences::ordinal;
 use super::{Bench, commit, meta};
 use crate::change::{OP_COLUMN, SEQ_COLUMN};
 use crate::destination::{
@@ -133,7 +134,7 @@ impl Bench<'_> {
                     deleted: at.and_then(|at| valid(at).then(|| at.value(row))),
                     to: valid(to).then(|| to.value(row)),
                     current: current.value(row),
-                    seq: seqs.value(row).last().copied().unwrap_or_default(),
+                    seq: ordinal(seqs.value(row)),
                     hashed: valid(hashes) && written.is_some_and(|hash| hashes.value(row) == hash),
                     name,
                 });
